@@ -1,14 +1,19 @@
 # Among Terminal
 
-[![Watch Among Terminal: panes, workspaces, themes and plugins](docs/media/among-terminal-action-v5.png)](docs/media/among-terminal-action-v5.mp4)
+<p align="center">
+  <video src="docs/media/among-terminal-action-v5.mp4"
+         poster="docs/media/among-terminal-action-v5.png"
+         width="880" autoplay loop muted playsinline
+         title="Among Terminal: panes, workspaces, themes and plugins"></video>
+</p>
 
-**[Watch Among Terminal · 23 seconds](docs/media/among-terminal-action-v5.mp4)**
+<p align="center"><sub>23 seconds · <a href="docs/media/among-terminal-action-v5.mp4">download</a> · <a href="https://among-terminal.github.io/">documentation</a></sub></p>
 
 A terminal multiplexer for GNOME: split panes, workspaces in a collapsible
 sidebar, and a pluggable pipeline that turns shell data into interface content.
 
-The binary is `among`. The public repository and documentation site are still
-being prepared for publication.
+The binary is `among`. Documentation is at
+[among-terminal.github.io](https://among-terminal.github.io).
 
 Terminal emulation is delegated to VTE (`libvte-2.91-gtk4`) through the official
 GNOME World `vte4` crate — the same widget GNOME Terminal is built on. This
