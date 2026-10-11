@@ -8,6 +8,7 @@
 mod app;
 mod context_menu;
 mod pane;
+mod packaged;
 mod plugin;
 mod prefs;
 mod session;
@@ -24,7 +25,7 @@ use gtk::{gio, glib};
 use vte::prelude::*;
 
 fn main() -> glib::ExitCode {
-    if let Err(error) = initialize_snap_schemas().and_then(|()| initialize_snap_images()) {
+    if let Err(error) = packaged::initialize().and_then(|()| initialize_snap_schemas()).and_then(|()| initialize_snap_images()) {
         eprintln!("among: {error}");
         return glib::ExitCode::FAILURE;
     }
@@ -51,13 +52,10 @@ fn main() -> glib::ExitCode {
 }
 
 fn initialize_snap_schemas() -> Result<(), String> {
-    if std::env::var("SNAP_NAME").as_deref() != Ok("among") {
-        return Ok(());
-    }
-    let root = std::env::var_os("SNAP").ok_or("Snap runtime did not provide its payload path")?;
-    let schemas = std::path::PathBuf::from(root).join("usr/share/glib-2.0/schemas");
+    let Some(root) = packaged::root() else { return Ok(()); };
+    let schemas = root.join("usr/share/glib-2.0/schemas");
     if !schemas.join("gschemas.compiled").is_file() {
-        return Err("Snap payload is missing compiled GSettings schemas".to_string());
+        return Err("Packaged payload is missing compiled GSettings schemas".to_string());
     }
     // GLib caches its default source. Initialize it before GTK or worker threads,
     // then restore the caller's environment so host shells/plugins do not inherit
@@ -107,11 +105,7 @@ fn snap_image_modules_follow_binary_architecture() {
 }
 
 fn initialize_snap_images() -> Result<(), String> {
-    if std::env::var("SNAP_NAME").as_deref() != Ok("among") {
-        return Ok(());
-    }
-    let root = std::env::var_os("SNAP").ok_or("Snap runtime did not provide its payload path")?;
-    let root = std::path::PathBuf::from(root);
+    let Some(root) = packaged::root() else { return Ok(()); };
     let mime = root.join("usr/share/mime");
     if !mime.join("mime.cache").is_file() {
         return Err("Snap payload is missing compiled MIME data".to_string());
@@ -124,7 +118,15 @@ fn initialize_snap_images() -> Result<(), String> {
     // GTK caches SVG support during initialization. Register before constructing
     // AdwApplication, not at window creation, and do not export loader/XDG paths
     // into the caller's host shells or external plugin processes.
-    let modules = snap_image_modules(&root, std::env::consts::ARCH)?;
+    let native_modules = snap_image_modules(root, std::env::consts::ARCH)?;
+    let relocated_modules = root.join("usr/lib/gdk-pixbuf-2.0/2.10.0");
+    let modules = if native_modules.join("loaders.cache").is_file() {
+        native_modules
+    } else if relocated_modules.join("loaders.cache").is_file() {
+        relocated_modules
+    } else {
+        return Err("Packaged payload is missing GdkPixbuf loaders.cache".into());
+    };
     let modules = modules
         .to_str()
         .ok_or("Snap image-loader directory is not UTF-8")?;

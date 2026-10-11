@@ -60,6 +60,7 @@ Usage:
   among-tools check-no-python <source-root>
   among-tools check-rpm-spec <source-root>
   among-tools prepare-rpm-release <source-root> <output.spec>
+  among-tools stage-appimage <source-root> <binaries-directory> <launcher> <architecture> <new-AppDir>
   among-tools record-rpm-candidate <source-root> <target> <architecture> <candidate-directory>
   among-tools ci-rpm-install <source-root> <target> <architecture> <candidate-directory> <new-output>
   among-tools review-readme-action <source-root> <new-private-evidence-directory>
@@ -81,6 +82,9 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
+        [command, root, binaries, launcher, architecture, destination] if command == "stage-appimage" => {
+            among_tools::appimage::stage(Path::new(root), Path::new(binaries), Path::new(launcher), architecture, Path::new(destination))?;
+        }
         [command, root, target, architecture, directory] if command == "record-rpm-candidate" => {
             among_tools::rpm_installed::record(Path::new(root), target, architecture, Path::new(directory))?;
         }

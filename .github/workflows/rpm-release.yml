@@ -231,7 +231,7 @@ jobs:
           fi
           # Allowlist: every owned path must be one the spec names. This is
           # what catches an accidental stray file a name blocklist misses.
-          grep -vE '^(/etc/|/usr/share/doc/|/usr/share/licenses/among/|/usr/bin/among$|/usr/share/among/plugins($|/[^/]+$)|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
+          grep -vE '^(/etc/|/usr/share/doc/|/usr/share/licenses/among($|/)|/usr/bin/among$|/usr/share/among/plugins($|/[^/]+$)|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
             /tmp/opencode/rpm-files.txt > /tmp/opencode/rpm-unexpected.txt || true
           if test -s /tmp/opencode/rpm-unexpected.txt; then
             echo 'the payload owns files the spec does not declare' >&2

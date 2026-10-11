@@ -22,6 +22,10 @@ proc-macro2 = { version = "=1.0.107", features = ["span-locations"] }
 name = "among-uninstall"
 path = "src/uninstall.rs"
 
+[[bin]]
+name = "among-apprun"
+path = "src/apprun.rs"
+
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
