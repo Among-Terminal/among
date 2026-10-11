@@ -1,8 +1,10 @@
 # Debian packaging development
 
-This is local packaging work, not an available public `.deb` release. The target
-matrix is Debian 13 and Ubuntu 24.04 on amd64 and arm64. No target is certified
-by staging tests; clean builds and installed-runtime checks remain required.
+The [RC2 preview release](https://github.com/Among-Terminal/among/releases/tag/v0.1.0-rc.2)
+provides downloadable DEBs for Debian 13 and Ubuntu 24.04 on amd64 and arm64.
+[All four native builds and installed checks passed](https://github.com/Among-Terminal/among/actions/runs/38156985889).
+This is scoped preview evidence, not full stable acceptance. Normal user
+installation is documented on the [installation page](https://among-terminal.github.io/install/).
 
 ## GitHub release builds only
 
@@ -18,10 +20,14 @@ version, architecture and SHA-256 are recorded with each Actions artifact.
 
 The builder refuses ordinary local execution. Local work uses the fixture tests
 below; do not register host QEMU/binfmt or build release packages locally.
-Hosted rehearsal attempts have not yet passed the complete build/install gate. Actions artifacts are internal candidates,
-not public GitHub Release attachments or proof of installed runtime acceptance.
-The shared protected Snap/Debian publisher remains outstanding; this workflow
-does not bypass it or publish.
+Actions artifacts remain internal candidates, not public download attachments.
+RC2 was manually staged as a draft prerelease, checked against its exact native
+build/runtime receipts and source archive, then published as a preview with an
+allowlist of four DEBs, source materials and checksums. Anonymous downloads were
+checked against the retained package digests. GitHub normalizes `~` in asset
+filenames to `.`; the version inside each DEB retains the Debian `~rc.N` ordering.
+The protected automated stable publisher remains outstanding; this build workflow
+has no publication permission and does not itself publish.
 
 ## Installed checks in release CI
 
