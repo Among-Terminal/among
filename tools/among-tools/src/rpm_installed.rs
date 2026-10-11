@@ -65,6 +65,8 @@ fn runner(base: &Path) -> Runner {
             ("PATH".into(), "/usr/sbin:/usr/bin:/sbin:/bin".into()),
             ("LC_ALL".into(), "C.UTF-8".into()),
             ("HOME".into(), "/root".into()),
+            ("GITHUB_ACTIONS".into(), "true".into()),
+            ("RUNNER_ENVIRONMENT".into(), "github-hosted".into()),
         ]),
         counter: 0,
     }
@@ -177,7 +179,7 @@ pub fn run(
     let mut runner = runner(&output);
     let mut evidence = json!({"schema":1,"tag":tag,"source_sha":source,"target":target_name,"architecture":architecture,
         "package_sha256":record["sha256"],"checker_sha256":record["checker_sha256"],"status":"in-progress","checks":[],
-        "release_acceptance":false,"scope":"native clean RPM installation, X11 desktop/focus/status/Sessions, remove/reinstall user-state preservation; no historical upgrade or GNOME/Wayland certification"});
+        "release_acceptance":false,"scope":"native clean RPM installation, X11 desktop/focus/status/Sessions, remove/reinstall leaves synthetic user-home files untouched; no application-state migration, historical upgrade or GNOME/Wayland certification"});
     let result = (|| -> Result<()> {
         runner.runtime_only()?;
         let package = package.to_str().ok_or("RPM path is not UTF-8")?;
@@ -288,12 +290,47 @@ pub fn run(
         }
         Ok(())
     })();
-    evidence["status"] = json!(if result.is_ok() { "passed" } else { "failed" });
+    let saved = crate::deb_installed::save_evidence(
+        Path::new("/home/among-check"),
+        &output.join("user-logs"),
+    )
+    .and_then(|()| {
+        crate::deb_installed::save_evidence(
+            Path::new("/tmp/opencode"),
+            &output.join("display-logs"),
+        )
+    });
+    evidence["status"] = json!(if result.is_ok() && saved.is_ok() {
+        "passed"
+    } else {
+        "failed"
+    });
     storage::atomic_write(
         &output,
         Path::new("runtime-record.json"),
         &serde_json::to_vec_pretty(&evidence)?,
         0o644,
     )?;
-    result
+    result?;
+    saved
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_children_receive_explicit_hosted_ci_identity() {
+        let runner = runner(Path::new("/synthetic-evidence"));
+        assert_eq!(
+            runner.environment.get(&OsString::from("GITHUB_ACTIONS")),
+            Some(&OsString::from("true"))
+        );
+        assert_eq!(
+            runner
+                .environment
+                .get(&OsString::from("RUNNER_ENVIRONMENT")),
+            Some(&OsString::from("github-hosted"))
+        );
+    }
 }

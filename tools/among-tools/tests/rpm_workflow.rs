@@ -11,6 +11,36 @@ use std::fs;
 #[test]
 fn installed_checks_match_all_build_targets_and_every_shell_step_parses() -> Result<()> {
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
+    let steps = document["jobs"]["build"]["steps"]
+        .as_sequence()
+        .ok_or("build steps absent")?;
+    let git = steps
+        .iter()
+        .position(|step| {
+            step["run"].as_str().is_some_and(|script| {
+                script.contains("dnf install -y --nodocs git ca-certificates")
+            })
+        })
+        .ok_or("Git bootstrap absent")?;
+    let checkout = steps
+        .iter()
+        .position(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|action| action.starts_with("actions/checkout@"))
+        })
+        .ok_or("checkout absent")?;
+    assert!(
+        git < checkout,
+        "checkout must not fall back to a repository-less source download"
+    );
+    let runtime_steps = document["jobs"]["installed"]["steps"]
+        .as_sequence()
+        .ok_or("runtime steps absent")?;
+    assert!(runtime_steps
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .any(|script| script.contains("desktop-file-utils appstream libappstream-glib")));
     assert_eq!(
         document["jobs"]["installed"]["needs"].as_str(),
         Some("build")

@@ -311,7 +311,7 @@ pub fn run(
     Ok(())
 }
 
-fn save_evidence(source: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn save_evidence(source: &Path, destination: &Path) -> Result<()> {
     if !source.exists() {
         return Ok(());
     }

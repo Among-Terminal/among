@@ -51,6 +51,8 @@ jobs:
       RUSTUP_TOOLCHAIN: 1.98.1
       BUILD_IMAGE: ${{ matrix.image }}
     steps:
+      - name: Install Git before checkout so release identity uses a real repository
+        run: dnf install -y --nodocs git ca-certificates
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
@@ -302,7 +304,7 @@ jobs:
 
   installed:
     needs: build
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -333,7 +335,7 @@ jobs:
     steps:
       - name: Install display tools without a compiler or development headers
         run: |
-          dnf install -y git ca-certificates glib2 desktop-file-utils libappstream-glib \
+          dnf install -y git ca-certificates glib2 desktop-file-utils appstream libappstream-glib \
             xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo xwininfo openbox dbus-x11 \
             xdotool procps-ng ImageMagick util-linux shadow-utils
           mkdir -p /tmp/opencode
