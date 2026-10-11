@@ -8,7 +8,16 @@ and optional status plugins.
 
 ## Installation
 
-### Release packages (recommended)
+Install a ready-made package from [GitHub Releases](https://github.com/Among-Terminal/among/releases).
+No Rust toolchain or compilation is needed.
+
+| Format | Installation | Availability |
+| --- | --- | --- |
+| AppImage | A portable bundle with the main runtime libraries included | In preparation; not downloadable yet |
+| DEB | Debian/Ubuntu package; APT installs runtime dependencies | **RC2 preview available**, amd64 and arm64 |
+| RPM | Fedora package; DNF installs runtime dependencies | In preparation; not downloadable yet |
+
+### Install the available DEB
 
 Download a ready-made **0.1.0 RC2 preview** package for
 [Ubuntu 24.04 or Debian 13](https://among-terminal.github.io/install/),
@@ -24,22 +33,8 @@ This is a prerelease, not a stable release.
 [Release downloads](https://github.com/Among-Terminal/among/releases/tag/v0.1.0-rc.2) ·
 [Updates and removal](https://among-terminal.github.io/install/).
 
-### Cargo from Git
-
-Requires Rust **1.98 or newer**, a C compiler, `pkg-config`, GTK **4.12+**,
-libadwaita **1.5+** and the **GTK4** build of VTE **0.76+**.
-On Ubuntu 24.04 or Debian 13, install the build dependencies:
-
-```sh
-sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev
-cargo install --git https://github.com/Among-Terminal/among --locked among
-among
-```
-
-This builds the current development version from Git and installs the binary
-in Cargo's bin directory (normally `~/.cargo/bin`; add it to `PATH`). It does
-not install a desktop launcher, icon or example plugins. To update, repeat
-`cargo install` with `--force`; to remove, run `cargo uninstall among`.
+For the optional `cargo install --git` source-build route, see
+[building from source](docs/build.md#cargo-install-from-git).
 
 [![Among Terminal: split panes, workspaces and live status](docs/media/among-terminal-preview.gif)](https://among-terminal.github.io/#demo)
 

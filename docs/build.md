@@ -82,6 +82,24 @@ previous package which links to `gtk-4` as well: package `gtk4-sys v0.9.0`
 `libadwaita 0.9` is the release that tracks `gtk4 0.11`. Whenever `gtk4` is
 bumped, `libadwaita` must move with it.
 
+## Cargo install from Git
+
+This is a source build, not a precompiled download. Install Rust **1.98 or newer**,
+a C compiler and `pkg-config`, plus the native development packages described above
+(GTK **4.12+**, libadwaita **1.5+**, GTK4 VTE **0.76+**).
+On Ubuntu 24.04 or Debian 13:
+
+```sh
+sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev
+cargo install --git https://github.com/Among-Terminal/among --locked among
+among
+```
+
+Cargo builds the current development version and installs the executable in
+its bin directory, normally `~/.cargo/bin` (which must be on `PATH`). This does
+not install a desktop launcher, icon or example plugins. Repeat the install
+command with `--force` to update; use `cargo uninstall among` to remove it.
+
 ## Verifying a clean build
 
 ```sh
