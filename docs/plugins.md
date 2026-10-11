@@ -327,39 +327,39 @@ Save this as `my-status.rs` and build it with `rustc -O my-status.rs`:
 
 ```rust
 use std::io::{self, BufRead, Write};
+use serde_json::{json, Value};
 
 fn main() -> io::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { continue };
-        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        match message["type"].as_str().unwrap_or_default() {
+        let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+        let kind = message["type"].as_str().unwrap_or_default();
+        let reply = match kind {
             // The host is going away; stop rather than block on stdin.
             "shutdown" => break,
-            "hello" => {
-                let reply = r#"{"type":"hello","major":1,"minor":1}"#;
-                writeln!(stdout, "{reply}")?;
-            }
+            "hello" => json!({"type": "hello", "major": 1, "minor": 1}),
             "status" => {
                 // Only the app header carries fragments; every other scope
                 // gets an empty list, which the host renders as nothing.
                 let fragments = if message["scope"] == "app_header" {
-                    r#"[{"text":"Hello","priority":10}]"#
+                    json!([{"text": "Hello", "priority": 10}])
                 } else {
-                    "[]"
+                    json!([])
                 };
-                let request = message["request_id"].as_i64().unwrap_or_default();
-                let reply =
-                    format!(r#"{{"type":"status","request_id":{request},"refresh_ms":2000,"fragments":{fragments}}}"#);
-                writeln!(stdout, "{reply}")?;
+                json!({
+                    "type": "status",
+                    "request_id": message["request_id"].as_i64().unwrap_or_default(),
+                    "refresh_ms": 2000,
+                    "fragments": fragments,
+                })
             }
             _ => continue,
-        }
+        };
         // Every reply must be flushed: the host reads line by line and a
         // buffered reply is indistinguishable from a hung plugin.
+        writeln!(stdout, "{reply}")?;
         stdout.flush()?;
     }
     Ok(())
