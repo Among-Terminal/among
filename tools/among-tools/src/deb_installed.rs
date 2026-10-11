@@ -78,6 +78,7 @@ pub fn run(
     let candidate = candidate.canonicalize()?;
     let (package, record) =
         deb::validate_candidate(root, &candidate, &tag, &source, target, architecture)?;
+    crate::binary_archive::validate(&record, &candidate, &tag, target, architecture)?;
     let checker = native_checker::validate(
         &candidate.join("native-checker"),
         &source,

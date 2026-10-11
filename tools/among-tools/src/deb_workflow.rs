@@ -127,7 +127,8 @@ pub fn validate(document: &Value) -> Result<Vec<String>> {
     require(
         commands[0].contains("ci-deb-build . \"$BUILD_TARGET\"")
             && commands[0].contains("\"$BUILD_ARCH\"")
-            && commands[0].contains("--default-toolchain 1.98.1"),
+            && commands[0].contains("--default-toolchain 1.98.1")
+            && commands[0].contains("--test binary_archive"),
         "native builder dispatch/pinned Rust missing",
     )?;
     require(

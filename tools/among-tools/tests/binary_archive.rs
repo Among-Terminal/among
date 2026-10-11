@@ -41,6 +41,23 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
         digest,
         storage::sha256(fs::File::open(output.join(&name))?)?
     );
+    let record = serde_json::json!({"binary_archive":{"filename":name,"sha256":digest}});
+    binary_archive::validate(&record, &output, "v0.1.0-rc.7", "ubuntu24.04", "amd64")?;
+    let repeated = root.join("repeated");
+    fs::create_dir(&repeated)?;
+    assert_eq!(
+        binary_archive::create(
+            &payload,
+            "v0.1.0-rc.7",
+            "ubuntu24.04",
+            "amd64",
+            "libgtk-4-1, libvte-2.91-gtk4-0",
+            &repeated
+        )?
+        .1,
+        digest
+    );
+    assert_eq!(fs::read_dir(&output)?.count(), 1);
     let decoded = std::process::Command::new("/usr/bin/gzip")
         .arg("-dc")
         .arg(output.join(&name))
@@ -63,6 +80,7 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
     )?
     .contains("Libraries are NOT bundled"));
     assert!(members.contains_key(Path::new("THIRD_PARTY/inventory.json")));
+    assert_eq!(members.len(), 8);
     assert!(binary_archive::create(
         &payload,
         "v0.1.0-rc.7",
@@ -73,6 +91,10 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
     )
     .is_err());
     assert!(binary_archive::create(&payload, "v0.1.0", "universal", "amd64", "", &output).is_err());
+    fs::write(output.join(&name), b"corrupted")?;
+    assert!(
+        binary_archive::validate(&record, &output, "v0.1.0-rc.7", "ubuntu24.04", "amd64").is_err()
+    );
     fs::remove_dir_all(root)?;
     Ok(())
 }
