@@ -6,7 +6,6 @@ The recordings use synthetic projects; zsh, Starship, `ll`, `mc` and `htop` are
 demo tools, not software installed or configured by Among Terminal.
 
 [Full-length overview videos](overview.md) ·
-[Browse all video previews](media/features/index.md) ·
 [Default shortcuts](shortcuts.md)
 
 ## Split and resize terminals
@@ -172,5 +171,5 @@ GPU, arm64 or screen-reader support. The overview joins the approved clips with
 direct cuts; no actions are simulated, sped up or replayed by editing.
 
 If your Markdown viewer does not play video inline, open/download the linked MP4.
-The descriptions above and [the preview gallery](media/features/index.md) also
+The descriptions above also
 explain the actions without requiring video playback.

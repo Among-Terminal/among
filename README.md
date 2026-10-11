@@ -95,7 +95,6 @@ The helper never closes terminals or edits shell startup files.
 
 [Overview and full-length videos](docs/overview.md) ·
 [Feature guide with demonstrations](docs/features.md) ·
-[Individual video previews](docs/media/features/index.md)
 
 If GitHub does not play an MP4 inline, open or download the linked video.
 Controls are documented in
@@ -126,7 +125,6 @@ docs/panes.md     pane behaviour
 docs/plugins.md   the plugin protocol
 docs/shortcuts.md the binding list and how it is wired
 docs/build.md     building against the GTK 4 generation of the stack
-openspec/         the requirements, and the archived changes that produced them
 examples/         working plugins
 ```
 

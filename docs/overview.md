@@ -28,7 +28,6 @@ It is retained here separately from the approved 23-second README film.
 ## Explore individual features
 
 - [Feature guide](features.md): demonstrations alongside controls and caveats.
-- [Video gallery](media/features/index.md): separate previews for all 13 features.
 - [Panes](panes.md), [sessions](sessions.md), [preferences](preferences.md)
   and [plugins](plugins.md): detailed references.
 

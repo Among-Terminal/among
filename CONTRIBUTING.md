@@ -11,14 +11,15 @@ That division matters when contributing: a change that reaches into
 
 ## Where the design lives
 
-`openspec/specs/` holds the requirements, one file per capability, each written
-as `SHALL` statements with concrete scenarios. `openspec/changes/` holds work in
-progress; `openspec/changes/archive/` holds completed changes and the reasoning
-behind them.
+The behaviour each subsystem promises is documented next to the code it
+describes: `docs/panes.md` for the pane tree, `docs/sessions.md` for workspace
+state, `docs/plugins.md` for the plugin protocol, and `docs/shortcuts.md` for
+the key bindings and how they are wired. `docs/features.md` summarises what the
+application does from a user's point of view.
 
-Read the relevant spec before changing behaviour. If the code and the spec
-disagree, one of them is a bug — usually the code, but not always; the spec
-changes through a recorded change, not by editing `openspec/specs/` directly.
+Read the relevant document before changing behaviour, and change it in the same
+commit as the code: a document that no longer matches the code is a bug in the
+document.
 
 ## Building
 
