@@ -1,4 +1,52 @@
 #[test]
+fn unsolicited_escape_consumes_the_next_command_character_in_real_bash_readline(
+) -> among_tools::Result<()> {
+    use std::{fs, process::Command};
+    let base =
+        among_tools::storage::private_directory(&std::env::temp_dir(), "among-readline-prefix")?;
+    for escape in [false, true] {
+        let input = base.join("input");
+        fs::write(
+            &input,
+            if escape {
+                b"\x1bcd /tmp\rpwd\rexit\r".as_slice()
+            } else {
+                b"cd /tmp\rpwd\rexit\r".as_slice()
+            },
+        )?;
+        let output = Command::new("/usr/bin/script")
+            .args([
+                "--quiet",
+                "--return",
+                "--command",
+                "/bin/bash --noprofile --norc -i",
+                "/dev/null",
+            ])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("TERM", "dumb")
+            .env("INPUTRC", "/dev/null")
+            .current_dir(&base)
+            .stdin(fs::File::open(input)?)
+            .output()?;
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout)?;
+        if escape {
+            assert!(text.contains("bash: d: command not found"), "{text}");
+            assert!(
+                text.contains(base.to_str().ok_or("fixture path not UTF-8")?),
+                "{text}"
+            );
+        } else {
+            assert!(!text.contains("command not found"), "{text}");
+            assert!(text.contains("\r\n/tmp\r\n"), "{text}");
+        }
+    }
+    fs::remove_dir_all(base)?;
+    Ok(())
+}
+
+#[test]
 fn documented_osc7_hook_encodes_physical_directory_without_external_commands(
 ) -> among_tools::Result<()> {
     use std::{fs, os::unix::fs::symlink, path::Path, process::Command};

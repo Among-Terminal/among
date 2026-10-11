@@ -127,8 +127,8 @@ pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result
                 .iter()
                 .all(|name| text.contains(&format!("{name}=Running")))
     })?;
-    h.key("Escape")?;
-    std::thread::sleep(Duration::from_millis(500));
+    // Startup has no dialog to dismiss. An unsolicited Escape reaches Bash
+    // Readline, leaving a Meta prefix that consumes the next typed character.
     wait(&mut h, 0, 15, |text| {
         text.contains("4:true:true") && text.contains("50x4")
     })?;

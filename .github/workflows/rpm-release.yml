@@ -96,7 +96,7 @@ jobs:
           /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.1
           export PATH="$CARGO_HOME/bin:$PATH"
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
-          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test rpm --test rpm_workflow
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test rpm --test rpm_workflow --test live
           /tmp/opencode/target/debug/among-tools check-rpm-spec .
           /tmp/opencode/target/debug/among-tools prepare-rpm-release . /tmp/opencode/among.spec > /tmp/opencode/rpm-version.txt
           epoch=$(git -c "safe.directory=$(pwd -P)" show -s --format=%ct HEAD)
