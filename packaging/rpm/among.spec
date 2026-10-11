@@ -13,13 +13,17 @@ Source0:        %{name}-%{version}.tar.gz
 BuildRequires:  pkgconfig(gtk4) >= 4.12
 BuildRequires:  pkgconfig(libadwaita-1) >= 1.5
 BuildRequires:  pkgconfig(vte-2.91-gtk4) >= 0.76
-BuildRequires:  cargo >= 1.78
+BuildRequires:  cargo >= 1.98
 BuildRequires:  rust
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
 BuildRequires:  librsvg2-tools
 BuildRequires:  gzip
 BuildRequires:  pkgconf-pkg-config
+Requires:       librsvg2
+Requires:       adwaita-icon-theme
+Requires:       hicolor-icon-theme
+Requires:       gsettings-desktop-schemas
 
 %description
 Organize live terminals in resizable panes and persistent project workspaces.
@@ -40,6 +44,7 @@ cargo build --release --locked --manifest-path Cargo.toml
 cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
 
 %install
+export CARGO_TARGET_DIR=%{_builddir}/cargo-target
 rm -rf %{buildroot}
 mkdir -p %{buildroot}%{_bindir}
 mkdir -p %{buildroot}%{_datadir}/applications
@@ -58,8 +63,8 @@ done
 
 install -m 0644 data/com.github.among-terminal.desktop \
     %{buildroot}%{_datadir}/applications/
-# The packaged icon path must match what the desktop entry references.
-sed -i 's|^Icon=com.github.among-terminal$|Icon=usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg|' \
+# The themed icon is installed in hicolor; a relative Icon path cannot resolve.
+sed -i 's|^Exec=among$|Exec=/usr/bin/among|' \
     %{buildroot}%{_datadir}/applications/com.github.among-terminal.desktop
 install -m 0644 data/com.github.among-terminal.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/
@@ -67,6 +72,10 @@ install -m 0644 data/com.github.among-terminal.metainfo.xml \
     %{buildroot}%{_datadir}/metainfo/
 
 %check
+export CARGO_HOME=%{_builddir}/cargo-home
+export CARGO_TARGET_DIR=%{_builddir}/cargo-target
+cargo test --locked --manifest-path Cargo.toml
+cargo test --locked --manifest-path examples/plugins/Cargo.toml
 desktop-file-validate \
     %{buildroot}%{_datadir}/applications/com.github.among-terminal.desktop
 appstream-util validate-relax \

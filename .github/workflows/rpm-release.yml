@@ -16,8 +16,6 @@ concurrency:
 
 jobs:
   build:
-    # DEB previews use RC tags; RPM release identity remains stable-only.
-    if: ${{ !contains(github.ref, '-rc.') }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -27,37 +25,36 @@ jobs:
             architecture: amd64
             runner: ubuntu-24.04
             fedora: 43
+            image: fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
           - target: fedora43
             architecture: arm64
             runner: ubuntu-24.04-arm
             fedora: 43
+            image: fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
           - target: fedora44
             architecture: amd64
             runner: ubuntu-24.04
             fedora: 44
+            image: fedora@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
           - target: fedora44
             architecture: arm64
             runner: ubuntu-24.04-arm
             fedora: 44
+            image: fedora@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
     runs-on: ${{ matrix.runner }}
     container:
-      image: fedora:${{ matrix.fedora }}
+      image: ${{ matrix.image }}
     env:
       CARGO_HOME: /tmp/opencode/cargo
       CARGO_TARGET_DIR: /tmp/opencode/target
+      RUSTUP_HOME: /opt/among-rustup
+      RUSTUP_TOOLCHAIN: 1.98.1
+      BUILD_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          fetch-depth: 0
           persist-credentials: false
-
-      - name: Validate the spec and the workflow before building anything
-        run: |
-          set -eu
-          # A release job must not be the first place a spec regression is
-          # noticed, so the repository's own checks run here too.
-          cargo test --locked --manifest-path tools/among-tools/Cargo.toml \
-            --test rpm --test rpm_workflow
-          tools/among-tools/target/debug/among-tools check-rpm-spec .
 
       - name: Build tooling without an installed Rust toolchain
         run: |
@@ -77,23 +74,35 @@ jobs:
             rpm-build \
             rpmdevtools \
             git \
-            tar \
-            zstd
-          cargo --version
+             tar \
+             zstd curl ca-certificates cpio
           rpm --version
 
-      - name: The declared tag must match the packaged version
+      - name: Install pinned Rust and validate tag-bound packaging inputs
         run: |
           set -eu
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#v}"
-          echo "tag=$tag version=$version"
-          test -n "$version" || { echo 'tag has no version' >&2; exit 1; }
+          case "$(uname -m)" in
+            x86_64) host=x86_64-unknown-linux-gnu ;;
+            aarch64) host=aarch64-unknown-linux-gnu ;;
+            *) exit 1 ;;
+          esac
+          base="https://static.rust-lang.org/rustup/archive/1.28.2/$host"
+          curl -fsSL "$base/rustup-init" -o /tmp/rustup-init
+          curl -fsSL "$base/rustup-init.sha256" -o /tmp/rustup-init.sha256
+          (cd /tmp && sha256sum --check rustup-init.sha256)
+          chmod 755 /tmp/rustup-init
+          /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.1
+          export PATH="$CARGO_HOME/bin:$PATH"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test rpm --test rpm_workflow
+          /tmp/opencode/target/debug/among-tools check-rpm-spec .
+          /tmp/opencode/target/debug/among-tools prepare-rpm-release . /tmp/opencode/among.spec > /tmp/opencode/rpm-version.txt
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Build the source tarball the spec expects
         run: |
           set -eu
-          version="${GITHUB_REF_NAME#v}"
+          version=$(cat /tmp/opencode/rpm-version.txt)
           # rpmbuild resolves Source0 only in %{_sourcedir}, and writing the
           # archive inside the tree being archived makes tar report "file
           # changed as we read it" and exit non-zero. Write it straight into
@@ -126,7 +135,7 @@ jobs:
           set -eu
           rpmbuild --define "_topdir /tmp/opencode/rpmbuild" \
                    --define "_build_id_links none" \
-                   -ba packaging/rpm/among.spec \
+                    -ba /tmp/opencode/among.spec \
                    > /tmp/opencode/rpmbuild.log 2>&1 || {
             echo 'rpmbuild failed; evidence:' >&2
             tail -40 /tmp/opencode/rpmbuild.log >&2
@@ -168,8 +177,9 @@ jobs:
           # loader cannot run.
           workdir=$(mktemp -d)
           rpm2cpio "$binary" | (cd "$workdir" && cpio -idm --quiet)
-          for binary_path in "$workdir"/usr/bin/among "$workdir"/usr/share/among/plugins/*; do
-            test -f "$binary_path" || continue
+          for binary_path in "$workdir"/usr/bin/among "$workdir"/usr/share/among/plugins/clock \
+              "$workdir"/usr/share/among/plugins/system-status "$workdir"/usr/share/among/plugins/pane-pwd; do
+            test -f "$binary_path" || { echo "missing packaged executable $binary_path" >&2; exit 1; }
             machine=$(od -An -tx1 -j18 -N2 "$binary_path" | tr -d ' \n')
             case "${{ matrix.architecture }}:$machine" in
               amd64:3e00|x86_64:3e00) ;;
@@ -210,7 +220,7 @@ jobs:
           fi
           # Allowlist: every owned path must be one the spec names. This is
           # what catches an accidental stray file a name blocklist misses.
-          grep -vE '^(/etc/|/usr/share/doc/|/usr/bin/among$|/usr/share/among/plugins/[^/]+$|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
+          grep -vE '^(/etc/|/usr/share/doc/|/usr/share/licenses/among/|/usr/bin/among$|/usr/share/among/plugins($|/[^/]+$)|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
             /tmp/opencode/rpm-files.txt > /tmp/opencode/rpm-unexpected.txt || true
           if test -s /tmp/opencode/rpm-unexpected.txt; then
             echo 'the payload owns files the spec does not declare' >&2
@@ -225,17 +235,17 @@ jobs:
           # configured repositories. This resolves what the package declares;
           # a clean install is a separate, later gate.
           rpm -qp --requires "$(cat /tmp/opencode/binary-rpm-path.txt)" \
-            | grep -E '^/' | sort -u > /tmp/opencode/rpm-requires.txt
+            | grep -E '\.so' | sort -u > /tmp/opencode/rpm-requires.txt
           cat /tmp/opencode/rpm-requires.txt
           if ! test -s /tmp/opencode/rpm-requires.txt; then
             echo 'the package declares no shared library requirement at all' >&2
             exit 1
           fi
           for soname in $(cat /tmp/opencode/rpm-requires.txt); do
-            base=$(basename "$soname")
             # The providing package must exist in the archive metadata; a
             # dependency no repository carries would break installation.
-            dnf -q provides "$base" > /dev/null \
+            dnf -q repoquery --whatprovides "$soname" > /tmp/opencode/provider.txt
+            test -s /tmp/opencode/provider.txt \
               || { echo "no package provides $soname" >&2; exit 1; }
           done
 
@@ -246,6 +256,7 @@ jobs:
             echo "target=${{ matrix.target }}"
             echo "architecture=${{ matrix.architecture }}"
             echo "runner=${{ matrix.runner }}"
+            echo "image=${{ matrix.image }}"
             echo "fedora=$(rpm -E %fedora)"
             echo "rust=$(cargo --version)"
             echo "rpm=$(rpm --version | head -1)"
@@ -256,6 +267,12 @@ jobs:
                     "$(cat /tmp/opencode/srpm-path.txt)" \
                     > /tmp/opencode/rpm-digests.txt
           cat /tmp/opencode/rpm-digests.txt
+          cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
+          mkdir -p /tmp/opencode/rpm-candidate
+          cp "$(cat /tmp/opencode/binary-rpm-path.txt)" /tmp/opencode/rpm-candidate/
+          cp /tmp/opencode/target/release/among-tools /tmp/opencode/rpm-candidate/
+          /tmp/opencode/target/release/among-tools record-rpm-candidate . "${{ matrix.target }}" "${{ matrix.architecture }}" /tmp/opencode/rpm-candidate
+          (cd /tmp/opencode/rpm-candidate && sha256sum among-tools *.rpm > SHA256SUMS)
 
       - name: Retain the candidate and its evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -270,8 +287,74 @@ jobs:
             /tmp/opencode/srpm-contents.txt
           retention-days: 5
 
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rpm-${{ matrix.target }}-${{ matrix.architecture }}
+          path: /tmp/opencode/rpm-candidate/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Publication boundary
         if: ${{ always() }}
         run: |
           echo 'RPM candidates are built and inspected only; publication requires the separate protected promotion gate' \
             >> "$GITHUB_STEP_SUMMARY"
+
+  installed:
+    needs: build
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: fedora43
+            architecture: amd64
+            runner: ubuntu-24.04
+            fedora: 43
+            image: fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
+          - target: fedora43
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            fedora: 43
+            image: fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
+          - target: fedora44
+            architecture: amd64
+            runner: ubuntu-24.04
+            fedora: 44
+            image: fedora@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
+          - target: fedora44
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            fedora: 44
+            image: fedora@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install display tools without a compiler or development headers
+        run: |
+          dnf install -y git ca-certificates glib2 desktop-file-utils libappstream-glib \
+            xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo xwininfo openbox dbus-x11 \
+            xdotool procps-ng ImageMagick util-linux shadow-utils
+          mkdir -p /tmp/opencode
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rpm-${{ matrix.target }}-${{ matrix.architecture }}
+          path: release-candidate
+      - name: Install and exercise exact native RPM as an unprivileged user
+        run: |
+          (cd release-candidate && sha256sum --check SHA256SUMS)
+          chmod 755 release-candidate/among-tools
+          release-candidate/among-tools ci-rpm-install . "${{ matrix.target }}" \
+            "${{ matrix.architecture }}" release-candidate runtime-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: rpm-runtime-${{ matrix.target }}-${{ matrix.architecture }}
+          path: runtime-evidence/
+          if-no-files-found: warn
+          retention-days: 14

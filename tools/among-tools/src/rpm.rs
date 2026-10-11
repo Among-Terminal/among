@@ -215,11 +215,7 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
         .into());
     }
 
-    // Identity must agree across the desktop entry, the AppStream metadata and
-    // the packaged icon. The source desktop entry deliberately names the themed
-    // icon; each packager rewrites it to the installed file, exactly as the
-    // Debian and Snap builds already do, so the rewrite is verified here rather
-    // than assumed of the source.
+    // A themed hicolor icon must remain a name, not a cwd-relative file path.
     let desktop = fs::read_to_string(storage::safe_path(
         root,
         Path::new(&format!("data/{APPLICATION_ID}.desktop")),
@@ -234,12 +230,8 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
     if !metainfo.contains(APPLICATION_ID) {
         return Err("AppStream metadata does not carry the application ID".into());
     }
-    // Without the rewrite the packaged desktop entry would ask the icon theme
-    // for a name that no longer resolves once the file is installed directly.
-    if !install.contains(&format!(
-        "s|^Icon={APPLICATION_ID}$|Icon=usr/share/icons/hicolor/scalable/apps/{APPLICATION_ID}.svg|"
-    )) {
-        return Err("RPM install does not point the desktop entry at the packaged icon".into());
+    if install.contains("s|^Icon=") || !install.contains("s|^Exec=among$|Exec=/usr/bin/among|") {
+        return Err("RPM must preserve themed icon and select its own absolute executable".into());
     }
 
     Ok(json!({
@@ -255,4 +247,45 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
 
 pub fn spec_path(root: &Path) -> PathBuf {
     root.join("packaging/rpm/among.spec")
+}
+
+pub fn release_spec(root: &Path, tag: &str) -> Result<(String, String)> {
+    check(root, &spec_path(root))?;
+    let (base, version) = crate::deb::release_version(tag)?;
+    if crate::package_version::read(root)? != base {
+        return Err("RPM release tag base differs from Cargo version".into());
+    }
+    let original = fs::read_to_string(spec_path(root))?;
+    let mut replaced = 0;
+    let transformed = original
+        .lines()
+        .map(|line| {
+            if line.starts_with("Version:") {
+                replaced += 1;
+                format!("Version:        {version}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    if replaced != 1 {
+        return Err("RPM spec must contain exactly one Version header".into());
+    }
+    Ok((version, transformed))
+}
+
+pub fn prepare_release(root: &Path, output: &Path) -> Result<String> {
+    let environment = std::env::vars().collect();
+    let (tag, _) = crate::deb::github_tag_source(root, &environment)?;
+    let (version, spec) = release_spec(root, &tag)?;
+    let parent = output.parent().ok_or("RPM spec output parent absent")?;
+    storage::atomic_write(
+        parent,
+        Path::new(output.file_name().ok_or("spec name absent")?),
+        spec.as_bytes(),
+        0o644,
+    )?;
+    Ok(version)
 }

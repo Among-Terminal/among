@@ -1,6 +1,31 @@
 use among_tools::{rpm, storage, Result};
 use std::fs;
 
+#[test]
+fn release_spec_uses_real_rc_ordering_and_refuses_manifest_mismatch() -> Result<()> {
+    let root = fixture()?;
+    for (tag, expected) in [("v0.1.0", "0.1.0"), ("v0.1.0-rc.3", "0.1.0~rc.3")] {
+        let (version, text) = rpm::release_spec(&root, tag)?;
+        assert_eq!(version, expected);
+        assert!(text.contains(&format!("Version:        {expected}\n")));
+        assert!(text.contains("Source0:        %{name}-%{version}.tar.gz"));
+    }
+    for tag in ["v0.2.0", "v0.1.0-rc.0", "v0.1.0-rc.01", "v0.1.0-rc.1\n"] {
+        assert!(rpm::release_spec(&root, tag).is_err());
+    }
+    let original = spec_of(&root);
+    write_spec(
+        &root,
+        &original.replace(
+            "s|^Exec=among$|Exec=/usr/bin/among|",
+            "s|^Icon=com.github.among-terminal$|Icon=usr/share/icon.svg|",
+        ),
+    )?;
+    assert!(rpm::release_spec(&root, "v0.1.0").is_err());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 fn fixture() -> Result<std::path::PathBuf> {
     let root = storage::private_directory(&std::env::temp_dir(), "among-rpm")?;
     fs::create_dir_all(root.join("packaging/rpm"))?;

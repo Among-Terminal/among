@@ -59,6 +59,9 @@ Usage:
   among-tools release-promotion <record.json> <gates.json> <artifact-directory> <owner/name> <source-root> [--lock=<path>]
   among-tools check-no-python <source-root>
   among-tools check-rpm-spec <source-root>
+  among-tools prepare-rpm-release <source-root> <output.spec>
+  among-tools record-rpm-candidate <source-root> <target> <architecture> <candidate-directory>
+  among-tools ci-rpm-install <source-root> <target> <architecture> <candidate-directory> <new-output>
   among-tools review-readme-action <source-root> <new-private-evidence-directory>
   among-tools review-readme-promo <source-root> <video-basename.mp4> <new-private-evidence-directory>
   among-tools prepare-readme-promo <source-root> <new-private-workspace>
@@ -78,6 +81,15 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
+        [command, root, target, architecture, directory] if command == "record-rpm-candidate" => {
+            among_tools::rpm_installed::record(Path::new(root), target, architecture, Path::new(directory))?;
+        }
+        [command, root, target, architecture, directory, output] if command == "ci-rpm-install" => {
+            among_tools::rpm_installed::run(Path::new(root), target, architecture, Path::new(directory), Path::new(output))?;
+        }
+        [command, root, output] if command == "prepare-rpm-release" => {
+            println!("{}", among_tools::rpm::prepare_release(Path::new(root), Path::new(output))?);
+        }
         [command, root, app, plugins, mode, output] if command == "capture-readme-plugins" => {
             println!(
                 "{}",

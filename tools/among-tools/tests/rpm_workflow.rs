@@ -9,12 +9,59 @@ use among_tools::Result;
 use std::fs;
 
 #[test]
-fn deb_rc_tags_do_not_start_stable_rpm_builds() -> Result<()> {
+fn installed_checks_match_all_build_targets_and_every_shell_step_parses() -> Result<()> {
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
     assert_eq!(
-        document["jobs"]["build"]["if"].as_str(),
-        Some("${{ !contains(github.ref, '-rc.') }}")
+        document["jobs"]["installed"]["needs"].as_str(),
+        Some("build")
     );
+    assert_eq!(
+        document["jobs"]["installed"]["strategy"]["matrix"],
+        document["jobs"]["build"]["strategy"]["matrix"]
+    );
+    for name in ["build", "installed"] {
+        for step in document["jobs"][name]["steps"]
+            .as_sequence()
+            .ok_or("steps absent")?
+        {
+            if let Some(script) = step["run"].as_str() {
+                use std::io::Write;
+                let mut command = std::process::Command::new("/bin/sh")
+                    .arg("-n")
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()?;
+                command
+                    .stdin
+                    .take()
+                    .ok_or("shell input absent")?
+                    .write_all(script.as_bytes())?;
+                assert!(command.wait()?.success(), "invalid {name} shell step");
+            }
+            if let Some(action) = step["uses"].as_str() {
+                assert_eq!(action.rsplit('@').next().unwrap_or_default().len(), 40);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn rpm_release_identity_is_validated_after_bootstrap_and_rc_is_not_skipped() -> Result<()> {
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
+    assert!(document["jobs"]["build"]["if"].is_null());
+    let scripts = document["jobs"]["build"]["steps"]
+        .as_sequence()
+        .ok_or("steps missing")?
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        scripts.find("dnf install").ok_or("bootstrap missing")?
+            < scripts.find("cargo test").ok_or("tests missing")?
+    );
+    assert!(scripts.contains("prepare-rpm-release . /tmp/opencode/among.spec"));
+    assert!(scripts.contains("/tmp/opencode/target/debug/among-tools"));
     Ok(())
 }
 
@@ -248,7 +295,7 @@ fn the_rpm_workflow_has_read_only_scope_and_no_publication_step() -> Result<()> 
 fn the_workflow_builds_the_repository_spec() -> Result<()> {
     let text = workflow()?;
     assert!(
-        text.contains("packaging/rpm/among.spec"),
+        text.contains("prepare-rpm-release . /tmp/opencode/among.spec"),
         "the workflow does not build packaging/rpm/among.spec"
     );
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
