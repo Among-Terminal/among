@@ -53,7 +53,6 @@ jobs:
         env:
           BUILD_ARCH: ${{ matrix.arch }}
         run: |
-          unsquashfs -cat "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" meta/snap.yaml > /tmp/opencode/installed-snap.yaml
           if unsquashfs -ll "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" | grep -E '/(among-tools|among-uninstall)$'; then
             echo 'Internal tooling leaked into Snap payload' >&2
             exit 1
@@ -108,14 +107,14 @@ jobs:
           name: clean-snap-input-${{ matrix.arch }}
           path: clean-snap-input/
           retention-days: 5
-      - name: Retain private package and synthetic evidence
+      - name: Retain built packages
+        # Keep packages at the archive root; evidence paths would change its common root.
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: snap-checked-${{ matrix.arch }}
-          path: |
-            *.snap
-            /tmp/opencode/
+          path: '*.snap'
+          if-no-files-found: error
           retention-days: 5
       - name: Publication boundary
         if: ${{ always() }}

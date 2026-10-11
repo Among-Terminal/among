@@ -1,8 +1,22 @@
+<p><img src="docs/media/logo.png" width="150" alt="Among Terminal logo"></p>
+
 # Among Terminal
 
 A native GNOME terminal multiplexer built with Rust, GTK4, libadwaita and VTE.
 Keep shells running in split panes and named workspaces, with keyboard controls
 and optional status plugins.
+
+## Quick install
+
+On Debian/Ubuntu, with Git and Rust/Cargo 1.98+ installed:
+
+```sh
+git clone https://github.com/Among-Terminal/among.git && cd among && sh scripts/install.sh --install-deps
+```
+
+Launch **Among Terminal** from the applications menu. The installer uses sudo
+only for system dependencies; build and application installation run as your user.
+[Other distributions, updates and removal](https://among-terminal.github.io/install/).
 
 [![Among Terminal: split panes, workspaces and live status](docs/media/among-terminal-preview.gif)](https://among-terminal.github.io/#demo)
 
@@ -19,9 +33,8 @@ and optional status plugins.
 - Add clocks, resource meters and per-pane status through separate-process plugins.
   Plugins are optional and disabled by default.
 
-## Get started
+## Contributing
 
-See the [installation guide](https://among-terminal.github.io/install/).
 For source builds and contributions, see [building](docs/build.md) and
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
