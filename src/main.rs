@@ -7,8 +7,8 @@
 
 mod app;
 mod context_menu;
-mod pane;
 mod packaged;
+mod pane;
 mod plugin;
 mod prefs;
 mod session;
@@ -25,7 +25,10 @@ use gtk::{gio, glib};
 use vte::prelude::*;
 
 fn main() -> glib::ExitCode {
-    if let Err(error) = packaged::initialize().and_then(|()| initialize_snap_schemas()).and_then(|()| initialize_snap_images()) {
+    if let Err(error) = packaged::initialize()
+        .and_then(|()| initialize_snap_schemas())
+        .and_then(|()| initialize_snap_images())
+    {
         eprintln!("among: {error}");
         return glib::ExitCode::FAILURE;
     }
@@ -52,7 +55,9 @@ fn main() -> glib::ExitCode {
 }
 
 fn initialize_snap_schemas() -> Result<(), String> {
-    let Some(root) = packaged::root() else { return Ok(()); };
+    let Some(root) = packaged::root() else {
+        return Ok(());
+    };
     let schemas = root.join("usr/share/glib-2.0/schemas");
     if !schemas.join("gschemas.compiled").is_file() {
         return Err("Packaged payload is missing compiled GSettings schemas".to_string());
@@ -105,7 +110,9 @@ fn snap_image_modules_follow_binary_architecture() {
 }
 
 fn initialize_snap_images() -> Result<(), String> {
-    let Some(root) = packaged::root() else { return Ok(()); };
+    let Some(root) = packaged::root() else {
+        return Ok(());
+    };
     let mime = root.join("usr/share/mime");
     if !mime.join("mime.cache").is_file() {
         return Err("Snap payload is missing compiled MIME data".to_string());

@@ -358,12 +358,23 @@ pub fn run(
     }
     fs::DirBuilder::new().mode(0o755).create(output)?;
     storage::atomic_write(output, Path::new(&identity.filename), &bytes, 0o644)?;
-    let (archive, archive_digest) = crate::binary_archive::create(&extracted, &tag, target, architecture, &dependencies, output)?;
+    let (archive, archive_digest) = crate::binary_archive::create(
+        &extracted,
+        &tag,
+        target,
+        architecture,
+        &dependencies,
+        output,
+    )?;
     record["binary_archive"] = json!({"filename":archive,"sha256":archive_digest,"scope":"exact inspected DEB executables; distribution runtime libraries required"});
     storage::atomic_write(
         output,
         Path::new("SHA256SUMS"),
-        format!("{digest}  {}\n{archive_digest}  {archive}\n", identity.filename).as_bytes(),
+        format!(
+            "{digest}  {}\n{archive_digest}  {archive}\n",
+            identity.filename
+        )
+        .as_bytes(),
         0o644,
     )?;
     storage::atomic_write(

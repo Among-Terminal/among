@@ -348,10 +348,10 @@ fn install_styles() {
         return;
     };
     if let Some(root) = crate::packaged::root() {
-            // Theme discovery is application-private: exporting XDG_DATA_DIRS
-            // would also redirect the user's host shells and external plugins.
-            let icons = root.join("usr/share/icons");
-            gtk::IconTheme::for_display(&display).add_search_path(icons);
+        // Theme discovery is application-private: exporting XDG_DATA_DIRS
+        // would also redirect the user's host shells and external plugins.
+        let icons = root.join("usr/share/icons");
+        gtk::IconTheme::for_display(&display).add_search_path(icons);
     }
     let provider = gtk::CssProvider::new();
     // GTK reports a bad rule through a warning rather than an error, so the

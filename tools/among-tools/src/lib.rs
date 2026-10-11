@@ -1,6 +1,8 @@
 pub mod action_review;
+pub mod appimage;
 pub mod apt_collect;
 pub mod apt_provenance;
+pub mod binary_archive;
 pub mod deb;
 pub mod deb822;
 pub mod deb_build;
@@ -49,9 +51,7 @@ pub mod release_metadata;
 pub mod release_policy;
 pub mod resources;
 pub mod rpm;
-pub mod binary_archive;
 pub mod rpm_installed;
-pub mod appimage;
 pub mod sessions;
 pub mod sha3;
 pub mod snap_runtime;

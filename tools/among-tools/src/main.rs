@@ -1,5 +1,8 @@
 use among_tools::{display, ignored_tests, inventory, platform, preferences, resources, Result};
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 const HELP: &str = "among-tools — independent headless project tooling
 
@@ -82,17 +85,39 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
-        [command, root, binaries, launcher, architecture, destination] if command == "stage-appimage" => {
-            among_tools::appimage::stage(Path::new(root), Path::new(binaries), Path::new(launcher), architecture, Path::new(destination))?;
+        [command, root, binaries, launcher, architecture, destination]
+            if command == "stage-appimage" =>
+        {
+            among_tools::appimage::stage(
+                Path::new(root),
+                Path::new(binaries),
+                Path::new(launcher),
+                architecture,
+                Path::new(destination),
+            )?;
         }
         [command, root, target, architecture, directory] if command == "record-rpm-candidate" => {
-            among_tools::rpm_installed::record(Path::new(root), target, architecture, Path::new(directory))?;
+            among_tools::rpm_installed::record(
+                Path::new(root),
+                target,
+                architecture,
+                Path::new(directory),
+            )?;
         }
         [command, root, target, architecture, directory, output] if command == "ci-rpm-install" => {
-            among_tools::rpm_installed::run(Path::new(root), target, architecture, Path::new(directory), Path::new(output))?;
+            among_tools::rpm_installed::run(
+                Path::new(root),
+                target,
+                architecture,
+                Path::new(directory),
+                Path::new(output),
+            )?;
         }
         [command, root, output] if command == "prepare-rpm-release" => {
-            println!("{}", among_tools::rpm::prepare_release(Path::new(root), Path::new(output))?);
+            println!(
+                "{}",
+                among_tools::rpm::prepare_release(Path::new(root), Path::new(output))?
+            );
         }
         [command, root, app, plugins, mode, output] if command == "capture-readme-plugins" => {
             println!(
@@ -276,7 +301,9 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                     &mut destinations,
                     approved,
                     workdir,
-                    lock.file_name().and_then(|name| name.to_str()).unwrap_or("lock"),
+                    lock.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("lock"),
                 )?
             );
         }
