@@ -14,8 +14,8 @@
     </ul>
   </description>
   <launchable type="desktop-id">com.github.among-terminal.desktop</launchable>
-  <url type="homepage">https://github.com/intech/among-terminal</url>
-  <url type="bugtracker">https://github.com/intech/among-terminal/issues</url>
+  <url type="homepage">https://github.com/Among-Terminal/among</url>
+  <url type="bugtracker">https://github.com/Among-Terminal/among/issues</url>
   <developer id="com.github.among-terminal">
     <name>Among Terminal contributors</name>
   </developer>
