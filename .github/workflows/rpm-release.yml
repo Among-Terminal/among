@@ -99,7 +99,9 @@ jobs:
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test rpm --test rpm_workflow
           /tmp/opencode/target/debug/among-tools check-rpm-spec .
           /tmp/opencode/target/debug/among-tools prepare-rpm-release . /tmp/opencode/among.spec > /tmp/opencode/rpm-version.txt
-          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+          epoch=$(git -c "safe.directory=$(pwd -P)" show -s --format=%ct HEAD)
+          case "$epoch" in ''|*[!0-9]*) echo 'invalid source commit timestamp' >&2; exit 1 ;; esac
+          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
 
       - name: Build the source tarball the spec expects
         run: |
@@ -137,6 +139,7 @@ jobs:
           set -eu
           rpmbuild --define "_topdir /tmp/opencode/rpmbuild" \
                    --define "_build_id_links none" \
+                   --define "debug_package %{nil}" \
                     -ba /tmp/opencode/among.spec \
                    > /tmp/opencode/rpmbuild.log 2>&1 || {
             echo 'rpmbuild failed; evidence:' >&2

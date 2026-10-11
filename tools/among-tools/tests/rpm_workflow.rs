@@ -9,6 +9,22 @@ use among_tools::Result;
 use std::fs;
 
 #[test]
+fn source_timestamp_failure_is_not_hidden_by_echo() -> Result<()> {
+    let text = workflow()?;
+    assert!(text.contains("epoch=$(git -c \"safe.directory=$(pwd -P)\" show -s --format=%ct HEAD)"));
+    assert!(text.contains("case \"$epoch\" in ''|*[!0-9]*)"));
+    assert!(!text.contains("echo \"SOURCE_DATE_EPOCH=$(git"));
+    for epoch in ["", "not-a-timestamp", "1234"] {
+        let result = std::process::Command::new("/bin/sh")
+            .args(["-ec", "case \"$epoch\" in ''|*[!0-9]*) exit 1 ;; esac"])
+            .env("epoch", epoch)
+            .status()?;
+        assert_eq!(result.success(), epoch == "1234");
+    }
+    Ok(())
+}
+
+#[test]
 fn installed_checks_match_all_build_targets_and_every_shell_step_parses() -> Result<()> {
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
     let steps = document["jobs"]["build"]["steps"]
