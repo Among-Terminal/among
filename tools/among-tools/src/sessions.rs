@@ -19,6 +19,98 @@ fn require(condition: bool, message: &str) -> Result<()> {
     }
 }
 
+fn find_application_pid(
+    parent: u32,
+    mut read: impl FnMut(u32) -> Result<(String, Vec<u32>)>,
+) -> Result<u32> {
+    let mut pending = vec![parent];
+    let mut visited = std::collections::BTreeSet::new();
+    let mut candidates = Vec::new();
+    while let Some(pid) = pending.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        if visited.len() > 512 {
+            return Err("owned application process tree exceeds test bound".into());
+        }
+        let (name, children) = read(pid)?;
+        if pid != parent && name == "among" {
+            candidates.push(pid);
+        }
+        pending.extend(children);
+    }
+    match candidates.as_slice() {
+        [pid] => Ok(*pid),
+        [] => Err("native application missing from owned launcher process tree".into()),
+        _ => Err("ambiguous native applications in owned launcher process tree".into()),
+    }
+}
+
+fn owned_application_pid(parent: u32) -> Result<u32> {
+    // AppImage extraction and launcher interpreters add processes between
+    // dbus-run-session and GTK. Never substitute a global `pgrep among`: only
+    // descendants of the process we started are eligible for test input/signals.
+    find_application_pid(parent, |pid| {
+        let name = match fs::read_to_string(format!("/proc/{pid}/comm")) {
+            Ok(name) => name,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((String::new(), Vec::new()))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let children = match fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((String::new(), Vec::new()))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        Ok((
+            name.trim().into(),
+            children
+                .split_whitespace()
+                .map(str::parse)
+                .collect::<std::result::Result<Vec<u32>, _>>()?,
+        ))
+    })
+}
+
+#[cfg(test)]
+mod launcher_tests {
+    use super::*;
+
+    #[test]
+    fn process_discovery_handles_nested_launchers_and_rejects_ambiguous_apps() -> Result<()> {
+        for nested in [false, true] {
+            let tree = BTreeMap::from([
+                (1, ("dbus-run-session".into(), vec![2])),
+                (
+                    2,
+                    (
+                        if nested { "AppImage" } else { "among" }.into(),
+                        if nested { vec![3] } else { vec![] },
+                    ),
+                ),
+                (3, ("among".into(), vec![])),
+            ]);
+            assert_eq!(
+                find_application_pid(1, |pid| tree
+                    .get(&pid)
+                    .cloned()
+                    .ok_or("unknown fixture PID".into()))?,
+                if nested { 3 } else { 2 }
+            );
+        }
+        assert!(find_application_pid(1, |_| Ok(("dbus-run-session".into(), vec![]))).is_err());
+        assert!(find_application_pid(1, |pid| Ok((
+            "among".into(),
+            if pid == 1 { vec![2, 3] } else { vec![] }
+        )))
+        .is_err());
+        Ok(())
+    }
+}
+
 pub fn rectangles(text: &str, name: &str) -> Vec<[f64; 4]> {
     let needle = format!("{name}:");
     text.match_indices(&needle)
@@ -153,12 +245,12 @@ impl Harness {
                             .unwrap_or_else(|error| error.to_string()),
                     );
                 }
-                fs::write(
+                let _ = fs::write(
                     self.base.join("timeout-state.json"),
                     serde_json::to_vec_pretty(
                         &json!({"probes":details,"expected_window":self.window,"evidence_log":self.log}),
                     )?,
-                )?;
+                );
                 if !self.window.is_empty() {
                     let _ = self.screenshot("timeout-window.png");
                 }
@@ -174,7 +266,7 @@ impl Harness {
         Ok(())
     }
     pub(crate) fn key(&self, key: &str) -> Result<()> {
-        self.xdo(&["key", "--clearmodifiers", key])?;
+        self.xdo(&["key", "--clearmodifiers", "--delay", "100", key])?;
         std::thread::sleep(Duration::from_millis(200));
         Ok(())
     }
@@ -233,18 +325,8 @@ impl Harness {
             &log,
         )?);
         self.wait(15, |this| Ok(this.text()?.contains("among[tick1]")))?;
-        let parent = self
-            .process
-            .as_ref()
-            .ok_or("app process missing")?
-            .id()
-            .to_string();
-        let output = self.probe("/usr/bin/pgrep", &["-P", &parent, "-x", "among"])?;
-        let pid = output
-            .split_whitespace()
-            .next()
-            .ok_or("native app PID missing")?
-            .parse::<u32>()?;
+        let parent = self.process.as_ref().ok_or("app process missing")?.id();
+        let pid = owned_application_pid(parent)?;
         let windows = self.probe(
             "/usr/bin/xdotool",
             &["search", "--onlyvisible", "--pid", &pid.to_string()],
@@ -321,7 +403,7 @@ impl Harness {
         Ok(())
     }
     pub(crate) fn command(&self, command: &str) -> Result<()> {
-        self.xdo(&["type", "--clearmodifiers", "--delay", "2", command])?;
+        self.xdo(&["type", "--clearmodifiers", "--delay", "30", command])?;
         self.key("Return")
     }
     fn pwd(&mut self, id: u64, expected: &Path, phase: &str) -> Result<()> {

@@ -15,10 +15,49 @@ fn require(value: bool, message: &str) -> Result<()> {
         Err(message.into())
     }
 }
+#[track_caller]
 fn wait(h: &mut Harness, offset: usize, seconds: u64, test: impl Fn(&str) -> bool) -> Result<()> {
-    h.wait(seconds, |this| {
+    let caller = std::panic::Location::caller();
+    let result = h.wait(seconds, |this| {
         Ok(this.text()?.get(offset..).is_some_and(&test))
-    })
+    });
+    if let Err(error) = result {
+        let _ = h.screenshot("status-timeout.png");
+        if let Ok(processes) = h.probe("/usr/bin/ps", &["-eo", "pid,ppid,args"]) {
+            let _ = fs::write(h.base.join("timeout-processes.txt"), processes);
+        }
+        return Err(format!("live status at {caller}: {error}").into());
+    }
+    Ok(())
+}
+
+fn footer_directory(text: &str, pane: u64, directory: &str) -> bool {
+    // /tmp/opencode is not evidence that `cd /tmp` actually reached the shell.
+    text.replace("\\\"", "\"")
+        .contains(&format!("{pane}:[\"{directory}|"))
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+    #[test]
+    fn a_shared_directory_prefix_is_not_shell_command_evidence() {
+        assert!(!footer_directory(
+            "rendered_footers=[\"4:[\\\"/tmp/opencode/test|/tmp/opencode/test|10x10\\\"]\"]",
+            4,
+            "/tmp"
+        ));
+        assert!(footer_directory(
+            "rendered_footers=[\"4:[\\\"/tmp|/tmp|10x10\\\"]\"]",
+            4,
+            "/tmp"
+        ));
+        assert!(!footer_directory(
+            "rendered_footers=[\"4:[\\\"/var/tmp|/var/tmp|10x10\\\"]\"]",
+            4,
+            "/var"
+        ));
+    }
 }
 fn quoted_values<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
     text.match_indices(prefix)
@@ -116,16 +155,12 @@ pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result
     wait(&mut h, offset, 15, |text| text.contains("fullscreen=false"))?;
     let offset = h.text()?.len();
     h.command("cd /tmp")?;
-    wait(&mut h, offset, 2, |text| {
-        text.replace("\\\"", "\"").contains("4:[\"/tmp")
-    })?;
+    wait(&mut h, offset, 15, |text| footer_directory(text, 4, "/tmp"))?;
     h.command("sleep 1; cd /var")?;
     h.key("ctrl+Page_Up")?;
     std::thread::sleep(Duration::from_secs(2));
     h.key("ctrl+Page_Down")?;
-    wait(&mut h, 0, 15, |text| {
-        text.replace("\\\"", "\"").contains("4:[\"/var")
-    })?;
+    wait(&mut h, 0, 15, |text| footer_directory(text, 4, "/var"))?;
     h.screenshot("workspace-green.png")?;
     h.key("ctrl+Page_Up")?;
     let offset = h.text()?.len();
@@ -140,7 +175,7 @@ pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result
     h.command("cd /var")?;
     let base = h.base.to_string_lossy().to_string();
     wait(&mut h, offset, 2, |text| {
-        text.replace("\\\"", "\"").contains("2:[\"/var")
+        footer_directory(text, 2, "/var")
             && text.contains(&base)
             && text.contains("rendered_footers=")
     })?;
