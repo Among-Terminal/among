@@ -77,7 +77,7 @@ jobs:
             rpmdevtools \
             git \
              tar \
-             zstd curl ca-certificates cpio
+              zstd curl ca-certificates cpio shadow-utils util-linux
           rpm --version
 
       - name: Install pinned Rust and validate tag-bound packaging inputs
@@ -137,7 +137,13 @@ jobs:
       - name: Build the binary RPM and the SRPM
         run: |
           set -eu
-          rpmbuild --define "_topdir /tmp/opencode/rpmbuild" \
+          useradd --create-home --shell /bin/bash among-builder
+          chown among-builder:among-builder /tmp/opencode
+          chown -R among-builder:among-builder /tmp/opencode/rpmbuild /tmp/opencode/cargo
+          /usr/sbin/runuser --user among-builder -- /usr/bin/env \
+            "PATH=$PATH" "RUSTUP_HOME=$RUSTUP_HOME" "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" \
+            "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+            /usr/bin/rpmbuild --define "_topdir /tmp/opencode/rpmbuild" \
                    --define "_build_id_links none" \
                    --define "debug_package %{nil}" \
                     -ba /tmp/opencode/among.spec \

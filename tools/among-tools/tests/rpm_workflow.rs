@@ -25,6 +25,16 @@ fn source_timestamp_failure_is_not_hidden_by_echo() -> Result<()> {
 }
 
 #[test]
+fn package_build_and_permission_tests_run_without_root_privileges() -> Result<()> {
+    let text = workflow()?;
+    assert!(text.contains("/usr/sbin/runuser --user among-builder -- /usr/bin/env"));
+    assert!(text.contains("chown among-builder:among-builder /tmp/opencode"));
+    assert!(text.contains("\"RUSTUP_HOME=$RUSTUP_HOME\" \"RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN\""));
+    assert!(text.contains("\"SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH\""));
+    Ok(())
+}
+
+#[test]
 fn installed_checks_match_all_build_targets_and_every_shell_step_parses() -> Result<()> {
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
     let steps = document["jobs"]["build"]["steps"]
