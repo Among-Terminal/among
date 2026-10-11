@@ -120,12 +120,14 @@ pub fn check_source_inputs(root: &Path) -> Result<()> {
         .get("name")
         .and_then(toml::Value::as_str)
         .ok_or("root package name missing")?;
-    let readme = fs::read_to_string(storage::safe_path(root, Path::new("README.md"))?)?;
-    if !readme.contains(&format!("cargo install --git {repository} --locked {name}"))
-        || !readme.contains(&format!("cargo uninstall {name}"))
+    // Keep executable install/remove instructions bound to this package's identity.
+    let install_guide =
+        fs::read_to_string(storage::safe_path(root, Path::new("docs/install.md"))?)?;
+    if !install_guide.contains(&format!("cargo install --git {repository} --locked {name}"))
+        || !install_guide.contains(&format!("cargo uninstall {name}"))
         || package.get("publish").and_then(toml::Value::as_bool) != Some(false)
     {
-        return Err("Cargo README/package installation identity differs".into());
+        return Err("Cargo installation guide/package identity differs".into());
     }
     Ok(())
 }

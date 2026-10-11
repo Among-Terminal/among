@@ -57,7 +57,7 @@ A pane whose terminal has never set a title, which is rare because most shells d
 at every prompt, falls back to showing the pane's number.
 
 Plugin content for the pane's header appears beside the title; neither replaces
-the other. See [plugins.md](plugins.md).
+the other. See [plugins](plugins.md).
 
 ## Terminal context menu
 

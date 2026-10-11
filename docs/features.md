@@ -148,9 +148,9 @@ job: this is not a detach operation.
 
 ## Appearance and preferences
 
-The native interface supports light and dark styling. Terminal colours and the
-prompt in these recordings come from the private demo shell setup, not a
-GNOME Terminal profile-import feature.
+The native interface supports light and dark styling. Shell prompts and terminal
+colours are configured separately; Among Terminal does not import GNOME Terminal
+profiles.
 
 [![The terminal listing in light and dark appearance](media/features/01-themes.png)](media/features/01-themes.mp4)
 
@@ -163,13 +163,6 @@ Shortcut editing and storage recovery are documented but are not demonstrated
 in these clips. See [shortcut controls](shortcuts.md) and
 [preference persistence](preferences.md).
 
-## Demonstration scope
-
-Videos are silent, with a visible cursor and bold key badges only for actual
-pressed combinations. They show native X11 behaviour, not proof of Wayland,
-GPU, arm64 or screen-reader support. The overview joins the approved clips with
-direct cuts; no actions are simulated, sped up or replayed by editing.
-
-If your Markdown viewer does not play video inline, open/download the linked MP4.
-The descriptions above also
-explain the actions without requiring video playback.
+The written instructions explain each action without requiring video playback.
+Demonstrations show native X11 behaviour; they do not establish support for
+untested platforms or assistive technologies.

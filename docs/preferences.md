@@ -41,21 +41,4 @@ Plugin faults do not change the saved desired enabled state.
 Clock, resources and pane PWD remain optional and disabled by default. Only explicit
 user changes enable them. No terminal contents or workspace layouts are saved here.
 
-For an isolated native X11 restart check, build the headless Rust tools, application
-test executables and example plugins first:
-
-```sh
-cargo build --release --locked --bins --manifest-path tools/among-tools/Cargo.toml
-cargo build --release --locked --bins --manifest-path examples/plugins/Cargo.toml
-mkdir -p /tmp/opencode
-cargo test --locked --no-run --message-format=json > /tmp/opencode/preferences-tests.jsonl
-tools/among-tools/target/release/among-tools ci-x11 \
-  tools/among-tools/target/release/among-tools check-preferences-from-cargo \
-  /tmp/opencode/preferences-tests.jsonl examples/plugins/target/release
-```
-
-Xvfb, Openbox, xdotool, xprop, D-Bus and ImageMagick `import` must be available.
-The checker uses fresh processes, private D-Bus and temporary HOME/XDG directories;
-it never terminates personal terminals. This is source regression coverage, not
-installed-package acceptance. Session consent/checkpoint failure scenarios use
-the companion `ci-x11 ... check-sessions /absolute/path/to/among` command.
+Developer checks are described in [the contributing guide](../CONTRIBUTING.md#checking-changes).

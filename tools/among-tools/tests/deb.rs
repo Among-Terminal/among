@@ -21,8 +21,9 @@ fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() 
         root.join("Cargo.toml"),
         "[package]\nname='among'\nrepository='https://example.test/among'\npublish=false\n",
     )?;
+    fs::create_dir(root.join("docs"))?;
     fs::write(
-        root.join("README.md"),
+        root.join("docs/install.md"),
         "cargo install --git https://example.test/among --locked among\ncargo uninstall among\n",
     )?;
     deb::check_source_inputs(root)?;
@@ -36,8 +37,22 @@ fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() 
     }
     fs::write(root.join("packaging/debian/rules"), rules)?;
     fs::write(
-        root.join("README.md"),
+        root.join("docs/install.md"),
         "cargo install --git wrong --locked among\ncargo uninstall among\n",
+    )?;
+    assert!(deb::check_source_inputs(root).is_err());
+    fs::write(
+        root.join("docs/install.md"),
+        "cargo install --git https://example.test/among --locked among\n",
+    )?;
+    assert!(deb::check_source_inputs(root).is_err());
+    fs::write(
+        root.join("docs/install.md"),
+        "cargo install --git https://example.test/among --locked among\ncargo uninstall among\n",
+    )?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname='among'\nrepository='https://example.test/among'\npublish=true\n",
     )?;
     assert!(deb::check_source_inputs(root).is_err());
     Ok(())

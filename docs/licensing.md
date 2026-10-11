@@ -3,19 +3,14 @@
 ## Original work
 
 Among Terminal's original host, independent example plugins, scripts and original
-artwork use [Apache-2.0](../LICENSE). The owner authorized this transition during
-release planning (recorded in `prepare-public-release/design.md`). Contributor
+artwork use [Apache-2.0](../LICENSE). Contributor
 submissions are made under the same license unless explicitly agreed otherwise.
 The AppStream metadata in `data/com.github.among-terminal.metainfo.xml` is explicitly
 CC0-1.0 for catalog reuse; its project_license still identifies the application
 as Apache-2.0. The original icon is Apache-2.0, not a copied theme asset.
 
-The local provenance audit found no embedded third-party copyright/SPDX headers
-or copied-source attribution in `src/` or `examples/plugins/src/`. Dependencies
-are imported through Cargo and native dynamic linkage, not copied into these
-modules. This directory has no Git history: the audit cannot reconstruct earlier
-authorship independently. Owner authorization applies to original work, not to
-third-party code, and new external contributions require a provenance review.
+Third-party code is not relicensed by the project. New external contributions
+require a provenance review, and copied or adapted code must retain attribution.
 
 ## Rust dependencies
 

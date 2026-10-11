@@ -556,7 +556,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, root] if command == "check-deb-source-inputs" => {
             among_tools::deb::check_source_inputs(Path::new(root))?;
-            println!("PASS locked Debian build inputs and Cargo README identity");
+            println!("PASS locked Debian build inputs and Cargo installation guide identity");
         }
         [command, root, binaries] if command == "check-deb-selection" => {
             among_tools::deb_selection::run(

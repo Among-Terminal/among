@@ -56,7 +56,7 @@ publication without pretending to verify every separate uploader signature.
 
 Use `among-tools check-snap-sources ../native-audit/inventory.json ../native-sources`
 for exact inventory/descriptor checks without signature trust, and
-`among-tools check-native-source-unpack ../native-sources /tmp/opencode/native-unpack-audit`
+`among-tools check-native-source-unpack ../native-sources ../native-unpack-audit`
 inside a disposable container to exercise Debian source extraction and packaging
 patches. The latter records control/rules hashes, not a full native package rebuild.
 `among-tools check-snap-notices ../native-audit/inventory.json /path/to/prime`
@@ -68,7 +68,7 @@ Build the source association only after those audits, using the exact binary,
 preserved original snapshot and builder evidence. Run inside the audit container:
 
 ```sh
-among-tools package-source-delivery candidate.snap original-source.tar native-audit native-sources apt-authentication prime build-environment docs/source-delivery.md /tmp/opencode/new-delivery
+among-tools package-source-delivery candidate.snap original-source.tar native-audit native-sources apt-authentication prime build-environment docs/source-delivery.md ../new-delivery
 ```
 
 The command authenticates repository indices and input digests, compares native

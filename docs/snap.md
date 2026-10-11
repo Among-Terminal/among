@@ -1,15 +1,9 @@
 # Snap distribution preparation
 
-An exploratory amd64 Snap 0.1.0 has been built and inspected locally in an Ubuntu
-24.04 Docker builder under `/tmp/opencode`, without host package installation.
-It has been installed only in a disposable Ubuntu 24.04 KVM guest, with explicit
-authorization; its first launch exposed missing GSettings schemas. The corrected
-candidate passes guest shell/tool/plugin, focus and live-status checks, plus a
-user-modified VTE/GDB experiment; remaining gates prevent release approval. Snapcraft and this
-package are not installed on the development host. Host system provisioning or
-installation still requires separate authorization. The initial experiment targeted
-core24/amd64/classic. Do not use a Debian-built executable as proof of Ubuntu ABI
-compatibility, and do not advertise arm64 or sandbox runtime support.
+Build and inspect Snap candidates in an isolated Ubuntu 24.04 environment.
+Installed-runtime acceptance must use the exact artifact on its target
+architecture. A build alone does not establish release approval or compatibility;
+a Debian-built executable is not proof of Ubuntu ABI compatibility.
 
 The initial [recipe](../snap/snapcraft.yaml) uses the candidate name `among` to
 retain the command name; registration remains owner-only and may fail if the
@@ -112,7 +106,8 @@ an audit of the actual Snap payload.
 
 After installing the exact SHA-256-checked candidate in a dedicated KVM/QEMU
 Ubuntu 24.04 test guest, install Xvfb, Openbox, xdotool, dbus-x11 and x11-utils
-there, not on a personal host. Create `/tmp/opencode` writable by the test user.
+there, not on a personal host. Ensure the checker's temporary workspace is writable
+by the test user.
 Copy the project check scripts into the guest, then run:
 
 ```sh

@@ -109,7 +109,7 @@ Alt+F10 maximize binding. `isolated-x11 COMMAND ARGS...` creates an owned parent
 Xvfb, nested Xephyr and GNOME plus a synthetic system bus; neither personal display
 nor host bus is reused. `vm-x11 COMMAND ARGS...` retains explicit KVM/QEMU-only
 execution. Display-number reads handle partial lines and bounded readiness.
-Evidence logs stay in private `/tmp/opencode/among-rust-display-*` directories.
+Evidence logs stay in private scratch directories owned by the display runner.
 Commands retain their exit status; failures must not be relabeled as passes.
 Injected manager exit/nonreadiness and command timeout now have executed container
 tests proving that owned displays stop accepting clients and unrelated children
@@ -205,13 +205,13 @@ DEB construction command is introduced.
 
 `check-deb-source-inputs SOURCE_ROOT` observes pinned/locked app and plugin build
 commands, maintainer/root policy, absence of the per-user installer and Cargo
-README install/uninstall identity. `check-deb-selection SOURCE_ROOT BINARIES`
+installation-guide install/uninstall identity. `check-deb-selection SOURCE_ROOT BINARIES`
 copies the Debian recipe into a private evidence directory, stages the complete
 payload, runs real `dh_install`, `dh_missing --fail-missing` and desktop validation,
 and compares every selected payload path, digest and permission with staging.
 It calls no build rule, produces no .deb and installs nothing. Use the pinned
 Ubuntu container recipe `containers/Dockerfile.deb-selection` with readonly
-project/binary mounts and only `/tmp/opencode` evidence writable. This fixture
+project/binary mounts and only the checker's scratch workspace writable. This fixture
 image is not the clean installed acceptance image or a release build image.
 Candidate digest/source/inventory, runtime package/tool policy and user-state hash
 validators have negative Rust tests, but are not yet wired into a migrated

@@ -1,10 +1,8 @@
 # First publication guide
 
-No public product release or Snap Store publication has been performed. Private
-`Among-Terminal/ci-probe` runs have exercised actual native and installed Snap
-checks on amd64 and arm64. This internal maintainer guide is not permission to
-publish. The local workflows build and test; protected stable/nightly publication
-orchestration is still pending.
+Release builds and publication are separate operations. A successful build does
+not authorize publication: package acceptance, source delivery, credentials and
+owner approval must be established for the exact artifacts being published.
 
 ### Two-architecture promotion records
 
@@ -89,8 +87,8 @@ The owner approved a separate stable build tree, rather than changing that sourc
 recipe in place. From a reviewed source checkout whose two manifests match the tag:
 
 ```sh
-tools/among-tools/target/release/among-tools prepare-stable-build . /tmp/opencode/among-stable-source v0.1.0
-tools/among-tools/target/release/among-tools check-stable-build /tmp/opencode/among-stable-source
+tools/among-tools/target/release/among-tools prepare-stable-build . ../among-stable-source v0.1.0
+tools/among-tools/target/release/among-tools check-stable-build ../among-stable-source
 ```
 
 The destination must be new, with an existing parent outside the checkout. Only
@@ -206,7 +204,7 @@ treating them as missing releases. Output creation is exclusive; endpoint error
 text and credentials are not returned. Manual read-only use in a container:
 
 ```sh
-among-tools select-nightly . OWNER/REPO /tmp/opencode/new-selection.json
+among-tools select-nightly . OWNER/REPO ./new-selection.json
 ```
 
 This command only selects; it does not build, upload, publish, replace rolling

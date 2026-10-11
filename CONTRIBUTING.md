@@ -58,7 +58,7 @@ workspace set, size reconciliation, the plugin protocol — and need no display.
 Behaviour that only exists in a running window is verified differently: the
 application is driven with scripted actions (`AMONG_SCRIPT`) and real key events
 (`xdotool`), and its state is read back from `AMONG_SELFCHECK`. See
-[Verification aids](README.md#verification-aids) for the full list of switches.
+[Verification aids](docs/testing.md) for the full list of switches.
 
 A change to layout, focus, or the plugin pipeline is not finished until it has
 been observed at that boundary. A test that only proves a function returns a

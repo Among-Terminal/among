@@ -323,7 +323,15 @@ They can use any language; the host launches the file directly, so scripts need
 a shebang, executable permissions and an installed interpreter. Only protocol
 JSON lines belong on stdout, and every reply must be flushed.
 
-Save this as `my-status.rs` and build it with `rustc -O my-status.rs`:
+Create an independent Cargo package with a JSON dependency:
+
+```sh
+cargo new --bin my-status
+cd my-status
+cargo add serde_json@1
+```
+
+Replace `src/main.rs` with:
 
 ```rust
 use std::io::{self, BufRead, Write};
@@ -366,12 +374,13 @@ fn main() -> io::Result<()> {
 }
 ```
 
-Install it under the same name you will register:
+Build it and install it under the same name you will register:
 
 ```sh
 plugin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/among/plugins"
 mkdir -p "$plugin_dir"
-install -m 755 my-status "$plugin_dir/my-status"
+cargo build --release --locked
+install -m 755 target/release/my-status "$plugin_dir/my-status"
 ```
 
 Add `{"name": "my-status", "enabled": false}` to the `plugins` array in
