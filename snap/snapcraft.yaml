@@ -1,0 +1,85 @@
+# Local candidate only: Store name/classic approval and payload gates are pending.
+name: among
+base: core24
+adopt-info: among
+summary: Organize live terminals in project workspaces
+description: |
+  Among Terminal is a native GNOME terminal multiplexer with resizable pane
+  layouts, live background workspaces, session restoration and optional plugins.
+grade: devel
+confinement: classic
+license: Apache-2.0
+
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+  arm64:
+    build-on: [arm64]
+    build-for: [arm64]
+
+apps:
+  among:
+    command: bin/among
+    desktop: usr/share/applications/com.github.among-terminal.desktop
+
+parts:
+  among:
+    plugin: rust
+    source: .
+    rust-channel: "1.98.1"
+    rust-path: [".", examples/plugins]
+    # The Rust plugin already passes --locked to cargo install; do not duplicate it.
+    rust-inherit-ldflags: true
+    build-attributes: [enable-patchelf]
+    build-packages:
+      - pkg-config
+      - libgtk-4-dev
+      - libadwaita-1-dev
+      - libvte-2.91-gtk4-dev
+      - base-files
+      - libglib2.0-bin
+      - libgdk-pixbuf2.0-bin
+      - librsvg2-common
+      - shared-mime-info
+    stage-packages:
+      - libgtk-4-1
+      - libadwaita-1-0
+      - libvte-2.91-gtk4-0
+      - adwaita-icon-theme
+      - gsettings-desktop-schemas
+      - librsvg2-common
+    build-environment:
+      - LDFLAGS: >-
+          -Wl,-rpath=\$ORIGIN/../usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:/snap/core24/current/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR
+    override-build: |
+      set -eu
+      craftctl default
+      # Keep headless build helpers outside the staged user-facing payload.
+      CARGO_TARGET_DIR="$CRAFT_PART_BUILD/among-tools-target" cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
+      version="$("$CRAFT_PART_BUILD/among-tools-target/release/among-tools" package-version .)"
+      craftctl set version="$version"
+      for plugin in clock system-status pane-pwd; do
+        install -Dm755 "$CRAFT_PART_INSTALL/bin/$plugin" "$CRAFT_PART_INSTALL/usr/share/among/plugins/$plugin"
+      done
+      install -Dm644 data/com.github.among-terminal.desktop "$CRAFT_PART_INSTALL/usr/share/applications/com.github.among-terminal.desktop"
+      sed -i 's|^Icon=com.github.among-terminal$|Icon=usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg|' "$CRAFT_PART_INSTALL/usr/share/applications/com.github.among-terminal.desktop"
+      install -Dm644 data/com.github.among-terminal.metainfo.xml "$CRAFT_PART_INSTALL/usr/share/metainfo/com.github.among-terminal.metainfo.xml"
+      install -Dm644 data/com.github.among-terminal.svg "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg"
+      install -Dm644 LICENSE "$CRAFT_PART_INSTALL/usr/share/doc/among/LICENSE"
+      install -Dm644 NOTICE "$CRAFT_PART_INSTALL/usr/share/doc/among/NOTICE"
+      cp -a THIRD_PARTY "$CRAFT_PART_INSTALL/usr/share/doc/among/"
+      # Copyright files reference these absolute paths; keep authentic Ubuntu texts.
+      mkdir -p "$CRAFT_PART_INSTALL/usr/share/common-licenses"
+      cp -a /usr/share/common-licenses/. "$CRAFT_PART_INSTALL/usr/share/common-licenses/"
+      dpkg-query -W -f='${Package} ${Version}\n' base-files > "$CRAFT_PART_INSTALL/usr/share/doc/among/common-licenses-provider.txt"
+    override-stage: |
+      set -eu
+      # Leave prime's automatic classic ELF patching hook intact.
+      glib-compile-schemas --strict "$CRAFT_PART_INSTALL/usr/share/glib-2.0/schemas"
+      update-mime-database "$CRAFT_PART_INSTALL/usr/share/mime"
+      loaders="$CRAFT_PART_INSTALL/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/gdk-pixbuf-2.0/2.10.0"
+      /usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/gdk-pixbuf-2.0/gdk-pixbuf-query-loaders "$loaders"/loaders/*.so > "$loaders/loaders.cache"
+      sed -i "s|$CRAFT_PART_INSTALL|/snap/among/current|g" "$loaders/loaders.cache"
+      grep -q libpixbufloader-svg "$loaders/loaders.cache"
+      craftctl default

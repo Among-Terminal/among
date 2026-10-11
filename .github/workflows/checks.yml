@@ -1,0 +1,113 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_HOME: /tmp/opencode/ci-cargo
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Native and isolated-display prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config \
+            desktop-file-utils appstream librsvg2-common xvfb openbox dbus-x11 \
+            xdotool x11-utils imagemagick
+          mkdir -p /tmp/opencode
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.98.1
+          dirname "$(rustup which cargo)" >> "$GITHUB_PATH"
+      - name: Three independent Cargo packages
+        run: sh scripts/check-packages.sh
+      - name: Native metadata and offline release policy
+        run: |
+          desktop-file-validate data/com.github.among-terminal.desktop
+          appstreamcli validate --no-net --strict data/com.github.among-terminal.metainfo.xml
+          tools/among-tools/target/release/among-tools third-party-notices . THIRD_PARTY check
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test release_policy --test stable_build --test release_metadata --test promotion
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test stable_source
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test menu_geometry --test platform --test launch_identity --test snap_runtime --test snap_workflow
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test native_inventory
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test native_sources --test apt_provenance --test apt_collect --test native_notices --test native_unpack
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test source_delivery --test source_snapshot --test delivery_package --test notices
+          # Promotion admission, the publication state machine (stable and nightly)
+          # and the GitHub/Store destination rules are ported. The former Python
+          # promotion suites stay in the tree as a to-be-rewritten reference but
+          # no longer gate CI; see the openspec audit for the adapter coverage
+          # this leaves open.
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test promotion --test promotion_nightly --test promotion_destinations --test release_policy --test adapter_processes --test promotion_preflight
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test nightly
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test python_guard --test action_review --test promo_review --test promo_prepare --test promo_render --test demo_export --test demo_assembly --test demo_clips --test plugin_capture
+          tools/among-tools/target/release/among-tools check-release-metadata .
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test installation
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test deb
+          tools/among-tools/target/release/among-tools check-deb-source-inputs .
+          tools/among-tools/target/release/among-tools check-rpm-spec .
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test deb_workflow --test rpm --test rpm_workflow --test publication_boundary
+          tools/among-tools/target/release/among-tools check-deb-workflow .
+      - name: Native source extraction in a disposable audit container
+        run: |
+          docker build --file tools/among-tools/containers/Dockerfile.deb-selection --tag among-source-audit:ci .
+          set -- $(find tools/among-tools/target/debug/deps -maxdepth 1 -type f -executable -name 'native_unpack-*')
+          test "$#" -eq 1
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,exec,mode=1777,size=128m \
+            --mount "type=bind,source=$PWD,target=$PWD,readonly" \
+            --workdir "$PWD" among-source-audit:ci \
+            "$PWD/$1" --ignored --exact actual_dpkg_source_extraction_records_build_inputs_and_refuses_owner_output --nocapture
+      - name: Isolated native X11 regressions
+        run: |
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-live-focus target/release/among
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-live-status . target/release/among examples/plugins/target/release
+          cargo build --release --locked --example install --manifest-path examples/plugins/Cargo.toml
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-plugin-install . target/release/among \
+            examples/plugins/target/release examples/plugins/target/release/examples/install
+          cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/preferences-tests.jsonl"
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-preferences-from-cargo \
+            "$RUNNER_TEMP/preferences-tests.jsonl" examples/plugins/target/release
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-sessions target/release/among
+          cargo build --release --locked --example check-clipboard
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-context-menu target/release/among target/release/examples/check-clipboard light
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-context-menu target/release/among target/release/examples/check-clipboard dark
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-context-menu-launch target/release/among
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-desktop . target/release/among
+      - name: Independent Linux measurements
+        run: tools/among-tools/target/release/among-tools check-resource-measurements examples/plugins/target/release/system-status
+      - name: Ignored Rust graphical tests on individual owned displays
+        run: |
+          cargo test --locked --no-run --manifest-path tools/among-tools/Cargo.toml --message-format=json > "$RUNNER_TEMP/tool-tests.jsonl"
+          tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/tool-tests.jsonl"
+          cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/test-executables.jsonl"
+          tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/test-executables.jsonl"

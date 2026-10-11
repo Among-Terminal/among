@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.among-terminal</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Among Terminal</name>
+  <summary>Organize live terminals in project workspaces</summary>
+  <description>
+    <p>A native GNOME terminal multiplexer with project workspaces and flexible pane layouts.</p>
+    <ul>
+      <li>Split, resize and move terminal panes while background workspaces stay alive.</li>
+      <li>Restore workspace layouts and known directories into fresh shells.</li>
+      <li>Customize status panels with independent optional plugins.</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">com.github.among-terminal.desktop</launchable>
+  <url type="homepage">https://github.com/intech/among-terminal</url>
+  <url type="bugtracker">https://github.com/intech/among-terminal/issues</url>
+  <developer id="com.github.among-terminal">
+    <name>Among Terminal contributors</name>
+  </developer>
+  <provides><binary>among</binary></provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-07" type="development">
+      <description><p>Initial local release preparation; distribution is not yet published.</p></description>
+    </release>
+  </releases>
+</component>

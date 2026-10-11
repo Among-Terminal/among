@@ -1,0 +1,29 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Among Terminal
+Upstream-Contact: Among Terminal <hello+amongterminal@highload.zone>
+
+Files: *
+Copyright: Among Terminal contributors
+License: Apache-2.0
+
+Files: data/com.github.among-terminal.metainfo.xml
+Copyright: Among Terminal contributors
+License: CC0-1.0
+
+Files: THIRD_PARTY/*
+Copyright: As recorded in the included upstream license and notice texts
+License: third-party-inventory
+ The individual component declarations, original license texts and notices are
+ included in THIRD_PARTY/inventory.json and THIRD_PARTY/texts/ and installed in
+ /usr/share/doc/among-terminal/THIRD_PARTY/. The inventory includes build-time
+ and non-Linux components as well as the locked host and example dependencies.
+ This paragraph does not relicense them as original project code.
+
+License: Apache-2.0
+ On Debian systems, the complete text of the Apache License version 2.0 is
+ available in /usr/share/common-licenses/Apache-2.0. The original project copy is
+ also installed in /usr/share/doc/among-terminal/LICENSE.
+
+License: CC0-1.0
+ On Debian systems, the complete CC0 1.0 Universal text is available in
+ /usr/share/common-licenses/CC0-1.0.

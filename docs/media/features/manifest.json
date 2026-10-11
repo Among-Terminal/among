@@ -1,0 +1,128 @@
+{
+  "files": [
+    {
+      "name": "01-themes",
+      "title": "Light and dark appearance",
+      "duration": 14.08,
+      "sha256": "fd86c3d345219fd8f91494b793ef2c24237ef0135d6a24fc18dd064d4d9d7611",
+      "bytes": 95875,
+      "poster_sha256": "c59a893d80ce0e1e4d65f9f939b8a38fa62fbb564d722eb03a8c70dc2173f7ac",
+      "poster_second": 9
+    },
+    {
+      "name": "02-split-resize",
+      "title": "Split terminals: ll, mc and htop",
+      "duration": 9.04,
+      "sha256": "d7ab7801424ac2b424d8065793ec282fb14f0df191f5def0a5c89cf311fcccbe",
+      "bytes": 181358,
+      "poster_sha256": "43c840e606f81eb11152d6883f15cc98aa659f087975cb1c3e1553146d8ab4f0",
+      "poster_second": 6
+    },
+    {
+      "name": "02b-keyboard-resize",
+      "title": "Keyboard resize",
+      "duration": 3.52,
+      "sha256": "7798f9fece53b528a796572d71d2a99d61c37204e216f7183dc72bc513cc818c",
+      "bytes": 173524,
+      "poster_sha256": "e73e93276985163992a7d4da31d843468a8baedf8027a42c88d7f385bf051813",
+      "poster_second": 2
+    },
+    {
+      "name": "02c-mouse-resize",
+      "title": "Mouse divider resize",
+      "duration": 5.04,
+      "sha256": "fecc80428ac661eb36f1593de4f0884c0d00a2ffe94ab1553f0f30f9aab154aa",
+      "bytes": 169347,
+      "poster_sha256": "ef003dc730da95145a9b4d57ef658e3f4488d69407f62fecd9a89f4d7e4eb89c",
+      "poster_second": 3
+    },
+    {
+      "name": "03-pane-drag",
+      "title": "Pane header drag-and-drop",
+      "duration": 6.52,
+      "sha256": "7365769fdcc78cd723caaf7cc19bd9a53e06d041a591bef9543db17d0e912cec",
+      "bytes": 202448,
+      "poster_sha256": "45803f6f8e53cc21658b19c4f09ba85f67ea6cc75bfa35e2edafbfe7ee467ec2",
+      "poster_second": 4
+    },
+    {
+      "name": "04-focus",
+      "title": "Keyboard and mouse focus",
+      "duration": 4.52,
+      "sha256": "4622ea9a577ecb818b57e5dd5e938116b33edb9066583170fabb9e922481b6ec",
+      "bytes": 109211,
+      "poster_sha256": "9e7a9ee2bbd4f758b82cc5e87dc744b5706a740d9338cabda531b00f5abdcc9e",
+      "poster_second": 2
+    },
+    {
+      "name": "04b-zoom",
+      "title": "Pane zoom and restore",
+      "duration": 7.04,
+      "sha256": "475fbc4146e12c9a80878a7bb8339fffe6353a262537f6f3a9f889f1b7fac9b9",
+      "bytes": 241137,
+      "poster_sha256": "314575c590d290c1561e3e6f9a3bea7416f6c5555447197efaaf65dde6a53d4d",
+      "poster_second": 2
+    },
+    {
+      "name": "04c-fullscreen",
+      "title": "Fullscreen and restore",
+      "duration": 6.04,
+      "sha256": "185a242e57058f88b8e9550336c3c649d8397170bdf861d57b9dd8dcdd96257a",
+      "bytes": 177481,
+      "poster_sha256": "87a5d8dfee8c25c9c78c5e18b74fe6ca555662b4172fb044f24b6ba6a65df380",
+      "poster_second": 2
+    },
+    {
+      "name": "05-workspaces",
+      "title": "Create, rename and switch workspaces",
+      "duration": 11.52,
+      "sha256": "a3e53b2afb8e12389045ba22aa5ecd0503fd622d1ac7f63bba32f1d6411fa629",
+      "bytes": 281626,
+      "poster_sha256": "17190d35c99fe2f7086798ce4e4b8a99a96141e2c2c6be11983ddadfa5661dfa",
+      "poster_second": 9
+    },
+    {
+      "name": "05b-sidebar",
+      "title": "Hide and show the sidebar",
+      "duration": 7.52,
+      "sha256": "e74997d9672c267ede756b52388adce34039ee6cb4a5b466daea1a0309d7315a",
+      "bytes": 236061,
+      "poster_sha256": "233c634d49ebf91a0795532c6e59b20f7532842deda6a959db90ce14815ed292",
+      "poster_second": 2
+    },
+    {
+      "name": "06-plugins",
+      "title": "Enable and disable the three plugins",
+      "duration": 17.52,
+      "sha256": "21cf143f586920dbb8218cfae3ded2d162a848c1513c1271d5071bc6ab27eaf3",
+      "bytes": 183217,
+      "poster_sha256": "ba6c115e182e6acd2422dfc266cf7a2cc579e97560aaeca5d14626c7433bb2dd",
+      "poster_second": 4
+    },
+    {
+      "name": "07-session-restore",
+      "title": "Consented restoration of separate directories",
+      "duration": 16.52,
+      "sha256": "f83aca60890040d6e45019ad9e4ee43f42b5b253a9dab4bf6b3ea0d12d5add4e",
+      "bytes": 305435,
+      "poster_sha256": "a247abae051ce8f7e69eb76c1ddce764b6ec9fbba9ce51d561c8ce1f5c541a54",
+      "poster_second": 10
+    },
+    {
+      "name": "08-close-pane",
+      "title": "Close a pane and type in the surviving sibling",
+      "duration": 4.52,
+      "sha256": "f09fb1b3457b788e04a937d05cf51546e5bdc7bd513b2ed5a4189ea843f040ae",
+      "bytes": 65904,
+      "poster_sha256": "0b791c83506ece58d92f7bafcf83de2b8153bf07973c30bbbc2788fd5fe9f5b3",
+      "poster_second": 2
+    }
+  ],
+  "full_decode": true,
+  "audio_streams": 0,
+  "subtitle_streams": 0,
+  "visual_privacy_review": "All 20 full-timeline contact sheets at 2 fps and selected full-resolution scenes inspected; ASCII prompt and centred rounded black bold shortcut badges observed. No personal identifiers found; raw logs/config/font not distributed.",
+  "browser_playback": "All 13 exact clips played to ended=true without media error in isolated Chromium over localhost.",
+  "application_sha256": "dce4185d308ba714805ca9a0956c80d7516c0797d7f30e0df83e7019198462da",
+  "publication": "Local repository assets only; no upload or Git operation performed"
+}

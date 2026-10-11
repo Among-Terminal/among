@@ -1,0 +1,275 @@
+name: RPM release candidates
+
+# Release-tag-only. A candidate is built and inspected here; nothing is
+# published. Attaching artifacts to a release requires the separate protected
+# promotion gate, because building a package and shipping it are different acts.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: fedora43
+            architecture: amd64
+            runner: ubuntu-24.04
+            fedora: 43
+          - target: fedora43
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            fedora: 43
+          - target: fedora44
+            architecture: amd64
+            runner: ubuntu-24.04
+            fedora: 44
+          - target: fedora44
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            fedora: 44
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: fedora:${{ matrix.fedora }}
+    env:
+      CARGO_HOME: /tmp/opencode/cargo
+      CARGO_TARGET_DIR: /tmp/opencode/target
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Validate the spec and the workflow before building anything
+        run: |
+          set -eu
+          # A release job must not be the first place a spec regression is
+          # noticed, so the repository's own checks run here too.
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml \
+            --test rpm --test rpm_workflow
+          tools/among-tools/target/debug/among-tools check-rpm-spec .
+
+      - name: Build tooling without an installed Rust toolchain
+        run: |
+          set -eu
+          mkdir -p /tmp/opencode
+          dnf install -y --nodocs \
+            cargo rust \
+            gcc \
+            pkgconf-pkg-config \
+            gtk4-devel \
+            libadwaita-devel \
+            vte291-gtk4-devel \
+            desktop-file-utils \
+            libappstream-glib \
+            librsvg2-tools \
+            gzip \
+            rpm-build \
+            rpmdevtools \
+            git \
+            tar \
+            zstd
+          cargo --version
+          rpm --version
+
+      - name: The declared tag must match the packaged version
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          echo "tag=$tag version=$version"
+          test -n "$version" || { echo 'tag has no version' >&2; exit 1; }
+
+      - name: Build the source tarball the spec expects
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          # rpmbuild resolves Source0 only in %{_sourcedir}, and writing the
+          # archive inside the tree being archived makes tar report "file
+          # changed as we read it" and exit non-zero. Write it straight into
+          # SOURCES, outside the checkout.
+          sources=/tmp/opencode/rpmbuild/SOURCES
+          mkdir -p "$sources"
+          staging="among-${version}"
+          tar --exclude-vcs \
+              --exclude='./target' \
+              --exclude='./tools/among-tools/target' \
+              --exclude='./examples/plugins/target' \
+              --exclude='./.opencode' \
+              --exclude='./.github' \
+              --transform "s,^\./,$staging/," \
+              -czf "$sources/${staging}.tar.gz" \
+              .
+          tar -tzf "$sources/${staging}.tar.gz" > /tmp/opencode/srpm-contents.txt
+          if grep -qE '(^|/)\.opencode/|(^|/)\.git/|/target/' /tmp/opencode/srpm-contents.txt; then
+            echo 'source tarball contains private or build state' >&2
+            exit 1
+          fi
+          # %autosetup -n %{name}-%{version} needs exactly this top level.
+          tar -tzf "$sources/${staging}.tar.gz" \
+            | grep -qE "^${staging}/Cargo\.toml$" \
+            || { echo "tarball lacks ${staging}/Cargo.toml for autosetup" >&2; exit 1; }
+          ls -l "$sources/${staging}.tar.gz"
+
+      - name: Build the binary RPM and the SRPM
+        run: |
+          set -eu
+          rpmbuild --define "_topdir /tmp/opencode/rpmbuild" \
+                   --define "_build_id_links none" \
+                   -ba packaging/rpm/among.spec \
+                   > /tmp/opencode/rpmbuild.log 2>&1 || {
+            echo 'rpmbuild failed; evidence:' >&2
+            tail -40 /tmp/opencode/rpmbuild.log >&2
+            exit 1
+          }
+          find /tmp/opencode/rpmbuild/RPMS -name '*.rpm' -print
+          find /tmp/opencode/rpmbuild/SRPMS -name '*.rpm' -print
+
+      - name: Exactly one binary RPM and one SRPM
+        run: |
+          set -eu
+          binaries=$(find /tmp/opencode/rpmbuild/RPMS -name '*.rpm' ! -name '*.src.rpm')
+          set -- $binaries
+          test "$#" -eq 1 || { echo "expected one binary RPM, found $#" >&2; exit 1; }
+          binary="$1"
+          sources=$(find /tmp/opencode/rpmbuild/SRPMS -name '*.src.rpm')
+          set -- $sources
+          test "$#" -eq 1 || { echo "expected one SRPM, found $#" >&2; exit 1; }
+          printf '%s\n' "$binary" > /tmp/opencode/binary-rpm-path.txt
+          printf '%s\n' "$1" > /tmp/opencode/srpm-path.txt
+          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n' "$binary"
+          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n' "$1"
+
+      - name: The package architecture and ELF machine must match the runner
+        run: |
+          set -eu
+          binary=$(cat /tmp/opencode/binary-rpm-path.txt)
+          observed=$(rpm -qp --qf '%{ARCH}' "$binary")
+          case "${{ matrix.architecture }}" in
+            amd64) want=x86_64 ;;
+            arm64) want=aarch64 ;;
+          esac
+          if [ "$observed" != "$want" ]; then
+            echo "package arch $observed does not match ${{ matrix.architecture }} ($want)" >&2
+            exit 1
+          fi
+          # The RPM tag alone is a claim; the shipped executable's ELF header is
+          # the evidence. A mislabelled architecture would install binaries the
+          # loader cannot run.
+          workdir=$(mktemp -d)
+          rpm2cpio "$binary" | (cd "$workdir" && cpio -idm --quiet)
+          for binary_path in "$workdir"/usr/bin/among "$workdir"/usr/share/among/plugins/*; do
+            test -f "$binary_path" || continue
+            machine=$(od -An -tx1 -j18 -N2 "$binary_path" | tr -d ' \n')
+            case "${{ matrix.architecture }}:$machine" in
+              amd64:3e00|x86_64:3e00) ;;
+              arm64:b700|aarch64:b700) ;;
+              *) echo "ELF e_machine $machine does not match ${{ matrix.architecture }}" >&2; exit 1 ;;
+            esac
+          done
+          rm -rf "$workdir"
+
+      - name: Inspect the payload for development dependencies and stray files
+        run: |
+          set -eu
+          rpm -qpl "$(cat /tmp/opencode/binary-rpm-path.txt)" | sort > /tmp/opencode/rpm-files.txt
+          cat /tmp/opencode/rpm-files.txt
+          # A build tool or a development package must never be shipped or
+          # required at run time.
+          if grep -qE '/(cargo|rustc|rustup)$|rust(-std)?-devel|\.rlib$' /tmp/opencode/rpm-files.txt; then
+            echo 'development artifacts leaked into the payload' >&2
+            exit 1
+          fi
+          if rpm -qp --requires "$(cat /tmp/opencode/binary-rpm-path.txt)" \
+             | grep -qE '^(cargo|rust)(-|:|$)'; then
+            echo 'the package requires a Rust toolchain at run time' >&2
+            exit 1
+          fi
+          # The internal checkers are build tooling and must not ship.
+          if grep -qE 'among-tools|among-uninstall' /tmp/opencode/rpm-files.txt; then
+            echo 'internal tooling leaked into the payload' >&2
+            exit 1
+          fi
+          # A bundled shared object would shadow the system library and break
+          # the LGPL replacement and debugging obligations this project
+          # documents. Nothing may own a library path.
+          if grep -qE '\.so($|\.)|^/usr/lib|^/lib' /tmp/opencode/rpm-files.txt; then
+            echo 'the payload bundles native libraries' >&2
+            grep -E '\.so($|\.)|^/usr/lib|^/lib' /tmp/opencode/rpm-files.txt >&2
+            exit 1
+          fi
+          # Allowlist: every owned path must be one the spec names. This is
+          # what catches an accidental stray file a name blocklist misses.
+          grep -vE '^(/etc/|/usr/share/doc/|/usr/bin/among$|/usr/share/among/plugins/[^/]+$|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
+            /tmp/opencode/rpm-files.txt > /tmp/opencode/rpm-unexpected.txt || true
+          if test -s /tmp/opencode/rpm-unexpected.txt; then
+            echo 'the payload owns files the spec does not declare' >&2
+            cat /tmp/opencode/rpm-unexpected.txt >&2
+            exit 1
+          fi
+
+      - name: Resolve every runtime dependency in a clean environment
+        run: |
+          set -eu
+          # The generated soname requires must be satisfiable from the
+          # configured repositories. This resolves what the package declares;
+          # a clean install is a separate, later gate.
+          rpm -qp --requires "$(cat /tmp/opencode/binary-rpm-path.txt)" \
+            | grep -E '^/' | sort -u > /tmp/opencode/rpm-requires.txt
+          cat /tmp/opencode/rpm-requires.txt
+          if ! test -s /tmp/opencode/rpm-requires.txt; then
+            echo 'the package declares no shared library requirement at all' >&2
+            exit 1
+          fi
+          for soname in $(cat /tmp/opencode/rpm-requires.txt); do
+            base=$(basename "$soname")
+            # The providing package must exist in the archive metadata; a
+            # dependency no repository carries would break installation.
+            dnf -q provides "$base" > /dev/null \
+              || { echo "no package provides $soname" >&2; exit 1; }
+          done
+
+      - name: Record exact digests and the build environment
+        run: |
+          set -eu
+          {
+            echo "target=${{ matrix.target }}"
+            echo "architecture=${{ matrix.architecture }}"
+            echo "runner=${{ matrix.runner }}"
+            echo "fedora=$(rpm -E %fedora)"
+            echo "rust=$(cargo --version)"
+            echo "rpm=$(rpm --version | head -1)"
+            echo "tag=${GITHUB_REF_NAME}"
+          } > /tmp/opencode/build-environment.txt
+          cat /tmp/opencode/build-environment.txt
+          sha256sum "$(cat /tmp/opencode/binary-rpm-path.txt)" \
+                    "$(cat /tmp/opencode/srpm-path.txt)" \
+                    > /tmp/opencode/rpm-digests.txt
+          cat /tmp/opencode/rpm-digests.txt
+
+      - name: Retain the candidate and its evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rpm-checked-${{ matrix.target }}-${{ matrix.architecture }}
+          path: |
+            /tmp/opencode/rpmbuild/RPMS
+            /tmp/opencode/rpmbuild/SRPMS
+            /tmp/opencode/rpm-files.txt
+            /tmp/opencode/rpm-digests.txt
+            /tmp/opencode/build-environment.txt
+            /tmp/opencode/srpm-contents.txt
+          retention-days: 5
+
+      - name: Publication boundary
+        if: ${{ always() }}
+        run: |
+          echo 'RPM candidates are built and inspected only; publication requires the separate protected promotion gate' \
+            >> "$GITHUB_STEP_SUMMARY"

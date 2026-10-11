@@ -1,0 +1,75 @@
+1
+00:00:00,000 --> 00:00:07,000
+Among Terminal - native workspaces and live terminals
+
+2
+00:00:07,000 --> 00:00:14,000
+Ctrl+Shift+T: create and name another project workspace
+
+3
+00:00:14,000 --> 00:00:20,000
+Background terminals stay alive; hide and show the sidebar
+
+4
+00:00:20,000 --> 00:00:26,000
+Ctrl+Shift+N: split the current terminal
+
+5
+00:00:26,000 --> 00:00:31,000
+Split again: each terminal keeps its own project directory
+
+6
+00:00:31,000 --> 00:00:34,000
+Ctrl+Shift+Arrow: resize without leaving the keyboard
+
+7
+00:00:34,000 --> 00:00:38,000
+Drag the divider with the mouse to resize live terminals
+
+8
+00:00:38,000 --> 00:00:43,000
+Drag a pane header onto an edge to rearrange the nested layout
+
+9
+00:00:43,000 --> 00:00:48,000
+Alt+Arrow: move pane focus; click a terminal to focus it directly
+
+10
+00:00:48,000 --> 00:00:54,000
+Ctrl+Shift+X: zoom one pane, then restore the layout
+
+11
+00:00:54,000 --> 00:00:58,000
+Live resource meters above; each pane's path below; clock at bottom right
+
+12
+00:00:58,000 --> 00:01:02,000
+Ctrl+, opens Settings: shortcuts and independent plugins
+
+13
+00:01:02,000 --> 00:01:05,000
+Disable Clock in Plugins: its process and footer disappear
+
+14
+00:01:05,000 --> 00:01:08,000
+Enable Clock again: the live footer returns
+
+15
+00:01:08,000 --> 00:01:12,000
+Ctrl+Page Up / Down: return to the still-running background project
+
+16
+00:01:12,000 --> 00:01:17,000
+Restart Among: restore names, layouts and directories only after consent
+
+17
+00:01:17,000 --> 00:01:23,000
+Choose Restore: fresh shells reopen in their separate directories
+
+18
+00:01:23,000 --> 00:01:26,000
+F11: fullscreen; press again to restore the window
+
+19
+00:01:26,000 --> 00:01:28,050
+Ctrl+Shift+W: close a pane and keep typing in its surviving sibling

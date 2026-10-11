@@ -1,0 +1,8 @@
+FROM ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+
+# separate synthetic desktop; never mount the owner's display or D-Bus sockets.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb xserver-xephyr openbox gnome-shell dbus-x11 xdotool x11-utils imagemagick \
+    ca-certificates gcc libc6-dev pkg-config desktop-file-utils appstream libgtk-4-bin librsvg2-common \
+    libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev \
+    && rm -rf /var/lib/apt/lists/*

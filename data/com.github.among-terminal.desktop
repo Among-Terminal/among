@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Among Terminal
+Comment=Organize live terminals in project workspaces
+Exec=among
+Icon=com.github.among-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;workspace;multiplexer;
+StartupNotify=true
+StartupWMClass=among

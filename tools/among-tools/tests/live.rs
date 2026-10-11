@@ -1,0 +1,87 @@
+#[test]
+fn documented_osc7_hook_encodes_physical_directory_without_external_commands(
+) -> among_tools::Result<()> {
+    use std::{fs, os::unix::fs::symlink, path::Path, process::Command};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let docs = fs::read_to_string(root.join("docs/plugins.md"))?;
+    let hook = docs
+        .split_once("among_osc7() {")
+        .and_then(|(_, tail)| tail.split_once("```"))
+        .ok_or("documented OSC7 hook absent")?
+        .0;
+    let base = among_tools::storage::private_directory(&std::env::temp_dir(), "among-osc7")?;
+    let name = "space %?#'目录\n";
+    let directory = base.join(name);
+    fs::create_dir(&directory)?;
+    let alias = base.join("alias");
+    symlink(&directory, &alias)?;
+    let result = (|| -> among_tools::Result<()> {
+        let output = Command::new("/bin/bash")
+            .env_clear()
+            .env("PATH", "/no-external-commands")
+            .current_dir(&alias)
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                &format!("among_osc7() {{{hook}"),
+            ])
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let prefix = directory.parent().ok_or("parent missing")?.canonicalize()?;
+        let expected = format!(
+            "\x1b]7;file://{}/space%20%25%3F%23%27%E7%9B%AE%E5%BD%95%0A\x07",
+            prefix.display()
+        );
+        assert_eq!(output.stdout, expected.as_bytes());
+        assert!(output.stderr.is_empty());
+        Ok(())
+    })();
+    fs::remove_dir_all(base)?;
+    result
+}
+
+#[test]
+fn native_live_commands_refuse_unowned_display() -> among_tools::Result<()> {
+    for args in [
+        vec!["check-live-focus", "/bin/true"],
+        vec![
+            "check-live-status",
+            "/unread-source",
+            "/bin/true",
+            "/unread-plugins",
+        ],
+        vec!["check-desktop", "/", "/bin/true"],
+        vec!["check-context-menu-launch", "/bin/true"],
+        vec![
+            "check-context-menu",
+            "/bin/true",
+            "/unread-clipboard",
+            "light",
+        ],
+        vec![
+            "check-context-menu-snap",
+            "/unread-clipboard",
+            "light",
+            "--github-hosted",
+        ],
+        vec![
+            "desktop-session",
+            "/synthetic-personal-home",
+            "/unread-entry",
+        ],
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
+            .env_clear()
+            .env("HOME", "/synthetic-personal-home")
+            .args(args)
+            .output()?;
+        assert!(!output.status.success());
+        assert!(String::from_utf8(output.stderr)?.contains("owned display runner"));
+    }
+    Ok(())
+}

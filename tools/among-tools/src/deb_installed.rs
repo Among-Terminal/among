@@ -1,0 +1,373 @@
+use crate::{deb, native_checker, platform, process::OwnedProcess, storage, Result};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::fs::{self, File};
+use std::os::unix::fs::DirBuilderExt;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+pub(crate) struct Runner {
+    pub(crate) env: BTreeMap<OsString, OsString>,
+    pub(crate) base: PathBuf,
+    counter: usize,
+}
+impl Runner {
+    pub(crate) fn execute(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        timeout: u64,
+    ) -> Result<(bool, String)> {
+        self.counter += 1;
+        let path = self.base.join(format!("command-{}.log", self.counter));
+        let file = File::create(&path)?;
+        let mut child =
+            OwnedProcess::spawn(Path::new(program), args, &self.env, &self.base, &file)?;
+        let success = child.wait(Duration::from_secs(timeout))?.success();
+        Ok((success, fs::read_to_string(path)?))
+    }
+    pub(crate) fn command(&mut self, program: &str, args: &[&str], timeout: u64) -> Result<String> {
+        let (success, text) = self.execute(program, args, timeout)?;
+        if !success {
+            eprintln!("{text}");
+            return Err(format!(
+                "installed release command failed; evidence: {}",
+                self.base.display()
+            )
+            .into());
+        }
+        Ok(text)
+    }
+    fn runtime_only(&mut self) -> Result<()> {
+        let packages = self.command(
+            "/usr/bin/dpkg-query",
+            &["-W", "-f=${binary:Package}\t${db:Status-Status}\n"],
+            30,
+        )?;
+        let path = self
+            .env
+            .get(&OsString::from("PATH"))
+            .ok_or("runtime PATH missing")?;
+        let visible = ["cargo", "rustc", "rustup"]
+            .into_iter()
+            .filter(|command| {
+                std::env::split_paths(path).any(|directory| directory.join(command).is_file())
+            })
+            .collect::<Vec<_>>();
+        deb::runtime_inventory_only(&packages, &visible)
+    }
+}
+
+pub fn run(
+    root: &Path,
+    target: &str,
+    architecture: &str,
+    candidate: &Path,
+    output: &Path,
+    caller: &BTreeMap<String, String>,
+) -> Result<()> {
+    let (tag, source) = deb::github_tag_source(root, caller)?;
+    if !nix::unistd::getuid().is_root()
+        || caller.get("RUNNER_ENVIRONMENT").map(String::as_str) != Some("github-hosted")
+    {
+        return Err(
+            "installed package operations require a disposable GitHub-hosted root container".into(),
+        );
+    }
+    let candidate = candidate.canonicalize()?;
+    let (package, record) =
+        deb::validate_candidate(root, &candidate, &tag, &source, target, architecture)?;
+    let checker = native_checker::validate(
+        &candidate.join("native-checker"),
+        &source,
+        &tag,
+        target,
+        architecture,
+    )?;
+    if fs::canonicalize(&checker)? != std::env::current_exe()?.canonicalize()? {
+        return Err(
+            "installed orchestration must execute the exact transferred native checker".into(),
+        );
+    }
+    let env = BTreeMap::from([
+        ("PATH".into(), "/usr/sbin:/usr/bin:/sbin:/bin".into()),
+        ("HOME".into(), "/root".into()),
+        ("LANG".into(), "C.UTF-8".into()),
+        ("DEBIAN_FRONTEND".into(), "noninteractive".into()),
+    ]);
+    // Read-only policy preflight is outside the evidence output. Nothing is
+    // installed until source, package, checker and native OS all agree.
+    let scratch = Path::new(
+        caller
+            .get("RUNNER_TEMP")
+            .ok_or("runner temporary directory missing")?,
+    );
+    let base = scratch.join(format!("among-deb-preflight-{}", std::process::id()));
+    fs::create_dir(&base)?;
+    let mut runner = Runner {
+        env,
+        base,
+        counter: 0,
+    };
+    let arch = runner.command("/usr/bin/dpkg", &["--print-architecture"], 30)?;
+    let os = platform::parse(&fs::read_to_string("/etc/os-release")?, arch.trim())?;
+    let expected = match target {
+        "debian13" => ("debian", "13"),
+        "ubuntu24.04" => ("ubuntu", "24.04"),
+        _ => return Err("unsupported runtime target".into()),
+    };
+    if (
+        os.os.as_str(),
+        os.version.as_str(),
+        os.architecture.as_str(),
+    ) != (expected.0, expected.1, architecture)
+    {
+        return Err("runtime OS/architecture differs from candidate target".into());
+    }
+    for (field, expected) in [
+        ("Package", "among-terminal"),
+        (
+            "Version",
+            record["package_version"]
+                .as_str()
+                .ok_or("candidate version absent")?,
+        ),
+        ("Architecture", architecture),
+    ] {
+        if runner
+            .command(
+                "/usr/bin/dpkg-deb",
+                &[
+                    "-f",
+                    package.to_str().ok_or("package path is not UTF-8")?,
+                    field,
+                ],
+                30,
+            )?
+            .trim()
+            != expected
+        {
+            return Err("candidate metadata differs from build record".into());
+        }
+    }
+    runner.runtime_only()?;
+    fs::DirBuilder::new().mode(0o755).create(output)?;
+    runner.base = output.canonicalize()?;
+    let mut evidence = json!({"schema":1,"target":target,"architecture":architecture,"tag":tag,"source_sha":source,"package_sha256":record["sha256"],"checker_sha256":storage::sha256(File::open(&checker)?)?,"display":"X11/Xvfb/Openbox","checks":[],"status":"failed","scope":"partial-installed-runtime-and-lifecycle","release_acceptance":false});
+    let result = (|| -> Result<()> {
+        missing_dependency(&mut runner)?;
+        add_check(&mut evidence, "unavailable-dependency-rejected")?;
+        // Slim base images exclude most /usr/share/doc files. Acceptance must
+        // observe our complete licensed payload, including the older-only
+        // lifecycle marker, without changing filtering for unrelated packages.
+        let policy_root = Path::new("/etc/dpkg/dpkg.cfg.d");
+        let policy = Path::new("zz-among-release-acceptance");
+        if policy_root.join(policy).symlink_metadata().is_ok() {
+            return Err("disposable acceptance documentation policy already exists".into());
+        }
+        storage::atomic_write(
+            policy_root,
+            policy,
+            b"path-include /usr/share/doc/among-terminal/*\n",
+            0o644,
+        )?;
+        add_check(&mut evidence, "complete-among-documentation-included")?;
+        runner.command(
+            "/usr/bin/apt-get",
+            &[
+                "install",
+                "-y",
+                "--no-install-recommends",
+                package.to_str().ok_or("package path is not UTF-8")?,
+            ],
+            240,
+        )?;
+        let configured = runner.command(
+            "/usr/bin/dpkg-query",
+            &["-W", "-f=${Status}\t${Version}", "among-terminal"],
+            30,
+        )?;
+        if configured
+            != format!(
+                "install ok installed\t{}",
+                record["package_version"]
+                    .as_str()
+                    .ok_or("version missing")?
+            )
+        {
+            return Err("candidate not fully configured at exact version".into());
+        }
+        runner.runtime_only()?;
+        let linkage = runner.command("/usr/bin/ldd", &["/usr/bin/among"], 30)?;
+        fs::write(runner.base.join("linkage.log"), &linkage)?;
+        if linkage.contains("not found") {
+            return Err("installed application has unresolved native libraries".into());
+        }
+        add_check(&mut evidence, "apt-configured-and-linked")?;
+        runner.command(
+            "/usr/sbin/useradd",
+            &["--create-home", "--shell", "/bin/bash", "among-check"],
+            30,
+        )?;
+        let home = Path::new("/home/among-check");
+        for name in ["config", "data", "cache", "runtime"] {
+            fs::DirBuilder::new().mode(0o700).create(home.join(name))?;
+        }
+        fs::create_dir_all("/tmp/opencode")?;
+        runner.command(
+            "/usr/bin/chown",
+            &["among-check:among-check", "/tmp/opencode"],
+            30,
+        )?;
+        runner.command(
+            "/usr/bin/chown",
+            &["-R", "among-check:among-check", "/home/among-check"],
+            30,
+        )?;
+        let root = root.canonicalize()?;
+        let tools = checker.to_str().ok_or("checker path is not UTF-8")?;
+        for (name, args, timeout) in [
+            (
+                "installed-desktop-identity-icon-input",
+                vec!["check-deb-desktop"],
+                120,
+            ),
+            (
+                "installed-live-focus",
+                vec!["check-live-focus", "/usr/bin/among"],
+                180,
+            ),
+            (
+                "installed-check-live-status",
+                vec![
+                    "check-live-status",
+                    root.to_str().ok_or("root path is not UTF-8")?,
+                    "/usr/bin/among",
+                    "/usr/share/among/plugins",
+                ],
+                240,
+            ),
+            (
+                "installed-check-sessions",
+                vec!["check-sessions", "/usr/bin/among"],
+                420,
+            ),
+        ] {
+            let mut argv = vec![
+                "-u",
+                "among-check",
+                "--",
+                "/usr/bin/env",
+                "-i",
+                "PATH=/usr/bin:/bin",
+                "HOME=/home/among-check",
+                "LANG=C.UTF-8",
+                "GITHUB_ACTIONS=true",
+                "XDG_CONFIG_HOME=/home/among-check/config",
+                "XDG_DATA_HOME=/home/among-check/data",
+                "XDG_CACHE_HOME=/home/among-check/cache",
+                "XDG_RUNTIME_DIR=/home/among-check/runtime",
+                tools,
+                "ci-x11",
+                tools,
+            ];
+            argv.extend(args);
+            runner.command("/usr/sbin/runuser", &argv, timeout)?;
+            add_check(&mut evidence, name)?;
+        }
+        for check in crate::deb_lifecycle::run(&mut runner, &package, &record, home)? {
+            add_check(&mut evidence, &check)?;
+        }
+        evidence["status"] = "passed".into();
+        Ok(())
+    })();
+    // A failed scenario retains a failed receipt; it never becomes a release
+    // acceptance result merely because preceding checks succeeded.
+    let saved = save_evidence(
+        Path::new("/home/among-check"),
+        &runner.base.join("user-logs"),
+    )
+    .and_then(|()| {
+        save_evidence(
+            Path::new("/tmp/opencode"),
+            &runner.base.join("display-logs"),
+        )
+    });
+    if saved.is_err() {
+        evidence["status"] = "failed".into();
+    }
+    storage::atomic_write(
+        &runner.base,
+        Path::new("runtime-record.json"),
+        &serde_json::to_vec_pretty(&evidence)?,
+        0o644,
+    )?;
+    result?;
+    saved?;
+    println!(
+        "PASS scoped installed runtime/lifecycle; remaining release acceptance gates are separate"
+    );
+    Ok(())
+}
+
+fn save_evidence(source: &Path, destination: &Path) -> Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    fs::create_dir(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_name() == "runtime" {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            save_evidence(&entry.path(), &destination.join(entry.file_name()))?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), destination.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+fn add_check(evidence: &mut Value, name: &str) -> Result<()> {
+    evidence["checks"]
+        .as_array_mut()
+        .ok_or("runtime evidence checks absent")?
+        .push(name.into());
+    Ok(())
+}
+fn missing_dependency(runner: &mut Runner) -> Result<()> {
+    let tree = runner.base.join("missing-dependency");
+    fs::create_dir_all(tree.join("DEBIAN"))?;
+    fs::write(tree.join("DEBIAN/control"),"Package: among-ci-unavailable-dependency\nVersion: 1.0\nArchitecture: all\nMaintainer: Among Terminal <hello+amongterminal@highload.zone>\nDepends: among-ci-missing-required-library-6fd17630\nDescription: Negative dependency resolution fixture, not a release asset\n")?;
+    let package = runner.base.join("missing-dependency.deb");
+    runner.command(
+        "/usr/bin/dpkg-deb",
+        &[
+            "--build",
+            tree.to_str().ok_or("fixture path is not UTF-8")?,
+            package
+                .to_str()
+                .ok_or("fixture package path is not UTF-8")?,
+        ],
+        30,
+    )?;
+    let (success, text) = runner.execute(
+        "/usr/bin/apt-get",
+        &[
+            "install",
+            "--simulate",
+            package
+                .to_str()
+                .ok_or("fixture package path is not UTF-8")?,
+        ],
+        60,
+    )?;
+    fs::write(runner.base.join("missing-dependency.log"), &text)?;
+    if success || !text.contains("among-ci-missing-required-library-6fd17630") {
+        return Err("APT did not reject unresolved dependency".into());
+    }
+    Ok(())
+}

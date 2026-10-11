@@ -1,0 +1,38 @@
+[package]
+name = "among"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+description = "A GNOME terminal multiplexer with a pluggable shell-data pipeline"
+license = "Apache-2.0"
+repository = "https://github.com/Among-Terminal/among"
+# This is distributed as a GNOME application from its Git repository, not as a
+# crate. Publishing to a registry is a separate decision; leaving this false
+# keeps `cargo publish` from succeeding by accident.
+publish = false
+
+[dependencies]
+# `v4_10` is mandatory: vte4's generated code references gtk::Accessible, which
+# is behind that feature, and without it the dependency tree fails to compile.
+# `v4_12` exposes CssProvider::load_from_string, used to install the application
+# stylesheet. Higher features would need a newer GTK than the system provides.
+gtk = { package = "gtk4", version = "0.11", features = ["v4_10", "v4_12"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+vte = { package = "vte4", version = "0.10", features = ["v0_76"] }
+# vte4 does not re-export these, so PtyFlags/SpawnFlags/Cancellable need them
+# as direct dependencies.
+glib = "0.22"
+gio = { version = "0.22", features = ["v2_60"] }
+# Exposes private loader-cache initialization; core24 already provides 2.42.
+gdk-pixbuf = { version = "0.22", features = ["v2_40"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

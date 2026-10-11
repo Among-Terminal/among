@@ -1,0 +1,318 @@
+/* among — application styles.
+ *
+ * Loaded at startup as a provider on libadwaita's style manager, so these rules
+ * sit above the platform theme and follow the user's light/dark preference
+ * rather than hard-coding colours.
+ */
+
+/* Window chrome ------------------------------------------------------- */
+
+.among-window {
+  background: @window_bg_color;
+}
+
+.app-slot-header,
+.app-slot-workspace,
+.app-slot-footer {
+  padding: 3px 9px;
+  min-height: 26px;
+  border-bottom: 1px solid alpha(currentColor, 0.10);
+}
+
+.app-slot-footer {
+  border-bottom: none;
+  border-top: 1px solid alpha(currentColor, 0.10);
+}
+
+.app-slot-workspace {
+  border-bottom: 1px solid alpha(currentColor, 0.14);
+}
+
+/* A slot with no content is hidden entirely, so a pane without plugin
+ * content gives its whole area to the terminal. */
+
+/* Panes ---------------------------------------------------------------- */
+
+.pane-slot {
+  padding: 2px 6px;
+  min-height: 22px;
+  background: alpha(currentColor, 0.04);
+}
+
+/* The focused pane is marked with an accent bar on its left edge. An outline
+ * alone was not enough: a one-pixel border around a terminal competes with the
+ * text, whereas an accent edge reads as chrome rather than content. */
+.pane-frame {
+  border: 1px solid transparent;
+}
+
+
+/* Pending drop ---------------------------------------------------------
+ *
+ * The half a dragged pane would occupy is shaded, so the result of a drop is
+ * known before committing. Dashed dividers mark the boundary the drop would
+ * create; the shading alone would be easy to mistake for a focus change. */
+
+.pane-frame.drop-left,
+.pane-frame.drop-right,
+.pane-frame.drop-top,
+.pane-frame.drop-bottom {
+  border-color: @accent_bg_color;
+}
+
+.pane-frame.drop-left {
+  background-image: linear-gradient(to right,
+    alpha(@accent_bg_color, 0.35) 0%, alpha(@accent_bg_color, 0.35) 50%,
+    transparent 50%);
+}
+
+.pane-frame.drop-right {
+  background-image: linear-gradient(to left,
+    alpha(@accent_bg_color, 0.35) 0%, alpha(@accent_bg_color, 0.35) 50%,
+    transparent 50%);
+}
+
+.pane-frame.drop-top {
+  background-image: linear-gradient(to bottom,
+    alpha(@accent_bg_color, 0.35) 0%, alpha(@accent_bg_color, 0.35) 50%,
+    transparent 50%);
+}
+
+.pane-frame.drop-bottom {
+  background-image: linear-gradient(to top,
+    alpha(@accent_bg_color, 0.35) 0%, alpha(@accent_bg_color, 0.35) 50%,
+    transparent 50%);
+}
+
+/* Pane header ---------------------------------------------------------- */
+
+.pane-header {
+  padding: 2px 6px;
+  min-height: 22px;
+  background: alpha(currentColor, 0.05);
+}
+
+.pane-title {
+  font-size: 0.9em;
+  opacity: 0.9;
+}
+
+/* A title that changed while the pane was not focused: the program is
+ * announcing something, so the header draws the eye without moving focus. */
+.pane-header.title-changed {
+  background: alpha(@accent_bg_color, 0.28);
+}
+
+
+/* Sidebar --------------------------------------------------------------
+ *
+ * Two presentations of one model: the full list with names, and the narrow
+ * strip. Both are the same widget, sized by the split view. */
+
+.workspace-sidebar {
+  padding: 0;
+}
+
+.workspace-sidebar > .workspace-entry {
+  margin: 0;
+  padding: 4px 8px;
+  min-height: 32px;
+  border-radius: 0;
+}
+
+.workspace-sidebar > .workspace-entry:hover {
+  background: alpha(currentColor, 0.06);
+}
+
+.workspace-row {
+  padding: 2px 0;
+}
+
+/* The workspace's colour, as a marker rather than a background: terminal
+ * output uses colour to mean something, so a tint behind it would both reduce
+ * legibility and read as application state. */
+.workspace-stripe {
+  min-width: 3px;
+  border-radius: 0;
+}
+
+.workspace-name {
+  font-weight: 400;
+}
+
+.workspace-entry.active-workspace .workspace-name {
+  font-weight: 600;
+}
+
+.workspace-sidebar > .workspace-entry.active-workspace {
+  background: alpha(@accent_bg_color, 0.16);
+}
+
+.workspace-sidebar > .workspace-entry.active-workspace:hover,
+.workspace-sidebar > .workspace-entry.editing {
+  background: alpha(@accent_bg_color, 0.22);
+}
+
+.workspace-summary {
+  font-size: 0.85em;
+  opacity: 0.75;
+  padding-left: 4px;
+}
+
+/* Strip ---------------------------------------------------------------- */
+
+.workspace-strip-icon {
+  /* No opacity: the glyph's own colour already clears the contrast floor on
+   * either window background, and fading it would undo that. */
+}
+
+.workspace-strip-count {
+  font-size: 0.85em;
+  font-weight: 600;
+  opacity: 0.9;
+  min-width: 12px;
+}
+
+/* Palette -------------------------------------------------------------
+ *
+ * Flat colours, one class per palette index. The assignment of a colour to a
+ * workspace is model behaviour; only how it is drawn lives here. */
+/* Palette -------------------------------------------------------------
+ *
+ * One colour per palette index, one hue each: eight open workspaces have to
+ * stay tellable apart at the sidebar's stripe width, and an earlier palette
+ * that reused a blue and a green made two of them indistinguishable.
+ *
+ * The colours are not arbitrary. Each one clears a 3:1 contrast ratio against
+ * both a light (#fafafa) and a dark (#2b2b2b) window background, because the
+ * application follows the platform's theme and the stripe has to read on
+ * either. The measured ratios are 3.07 to 4.41 against light and 3.08 to 4.41
+ * against dark. The closest pair, violet and magenta, sits 25.5 apart in
+ * CIE76, which is far beyond the distance at which two colours side by side
+ * are hard to tell apart.
+ *
+ * Only how a colour is drawn lives here; which workspace gets which colour is
+ * model behaviour, in `WorkspaceSet::next_colour`. */
+.workspace-colour-0 { color: #3f8ad8; }
+.workspace-colour-1 { color: #2a9d4f; }
+.workspace-colour-2 { color: #b58900; }
+.workspace-colour-3 { color: #d1423f; }
+.workspace-colour-4 { color: #8a6ff0; }
+.workspace-colour-5 { color: #a86a3d; }
+.workspace-colour-6 { color: #148f8f; }
+.workspace-colour-7 { color: #c25ecf; }
+
+.workspace-stripe.workspace-colour-0 { background: #3f8ad8; }
+.workspace-stripe.workspace-colour-1 { background: #2a9d4f; }
+.workspace-stripe.workspace-colour-2 { background: #b58900; }
+.workspace-stripe.workspace-colour-3 { background: #d1423f; }
+.workspace-stripe.workspace-colour-4 { background: #8a6ff0; }
+.workspace-stripe.workspace-colour-5 { background: #a86a3d; }
+.workspace-stripe.workspace-colour-6 { background: #148f8f; }
+.workspace-stripe.workspace-colour-7 { background: #c25ecf; }
+
+.pane-frame.focused.pane-workspace-colour-0 {
+  border-color: alpha(#3f8ad8, 0.55);
+  background-color: alpha(#3f8ad8, 0.06);
+}
+.pane-frame.focused.pane-workspace-colour-1 {
+  border-color: alpha(#2a9d4f, 0.55);
+  background-color: alpha(#2a9d4f, 0.06);
+}
+.pane-frame.focused.pane-workspace-colour-2 {
+  border-color: alpha(#b58900, 0.55);
+  background-color: alpha(#b58900, 0.06);
+}
+.pane-frame.focused.pane-workspace-colour-3 {
+  border-color: alpha(#d1423f, 0.55);
+  background-color: alpha(#d1423f, 0.06);
+}
+.pane-frame.focused.pane-workspace-colour-4 {
+  border-color: alpha(#8a6ff0, 0.55);
+  background-color: alpha(#8a6ff0, 0.06);
+}
+.pane-frame.focused.pane-workspace-colour-5 {
+  border-color: alpha(#a86a3d, 0.55);
+  background-color: alpha(#a86a3d, 0.06);
+}
+.pane-frame.focused.pane-workspace-colour-6 {
+  border-color: alpha(#148f8f, 0.55);
+  background-color: alpha(#148f8f, 0.06);
+}
+.pane-frame.focused.pane-workspace-colour-7 {
+  border-color: alpha(#c25ecf, 0.55);
+  background-color: alpha(#c25ecf, 0.06);
+}
+
+.pane-frame.focused.drop-left,
+.pane-frame.focused.drop-right,
+.pane-frame.focused.drop-top,
+.pane-frame.focused.drop-bottom {
+  border-color: @accent_bg_color;
+}
+
+/* Plugin content styles -----------------------------------------------
+ *
+ * A plugin picks a style name and the application decides how it is drawn. The
+ * names come from `Style::css_class` in src/slots.rs; every one of them needs a
+ * rule here, because a class that no rule matches renders identically to no
+ * class at all.
+ *
+ * The colours are libadwaita's own semantic colours rather than fixed values.
+ * That is what makes a style readable on whichever background the platform is
+ * using: each was measured, in both schemes, against the background it actually
+ * sits on.
+ *
+ *   success  #007b3d on #fafafb ->  5.16:1     #77e8ab on #222226 -> 10.50:1
+ *   warning  #8f5400 on #fafafb ->  5.86:1     #fec252 on #222226 ->  9.85:1
+ *   error    #c30000 on #fafafb ->  6.06:1     #ff938b on #222226 ->  7.40:1
+ *   accent   #0460bd on #fafafb ->  5.90:1     #80d0ff on #222226 ->  9.35:1
+ *
+ * The closest pair of styles is 38.4 apart in CIE76, well beyond the distance at
+ * which two colours sit beside each other and read as one. Colour is not the
+ * only cue anyway: each state is also its own hue, so the set survives a reader
+ * who cannot distinguish them.
+ *
+ * No background is tinted. A fragment shares the pane's own background, so a
+ * tinted chip behind it would fight the pane styling and would repeat the same
+ * information a second time. */
+.status-fragment {
+  font-size: 0.9em;
+}
+
+.status {
+  color: inherit;
+}
+
+.status.success { color: @success_color; }
+.status.warning { color: @warning_color; }
+.status.error   { color: @error_color; }
+.status.accent  { color: @accent_color; }
+
+/* `dim` means "less important", not a state, so it is expressed as weight
+ * rather than as a sixth colour: the ordinary foreground at reduced opacity.
+ * 0.55 measures 4.69:1 on a light background and 5.75:1 on a dark one, so it
+ * still clears the contrast floor for text while reading as quieter than the
+ * states above. */
+.status.dim {
+  opacity: 0.55;
+}
+.status-meter trough,
+.status-meter progress {
+    min-height: 4px;
+    border-radius: 2px;
+}
+
+.status-meter trough {
+    min-width: 50px;
+}
+
+.app-slot-header label,
+.app-slot-footer label {
+    font-family: monospace;
+    font-weight: bold;
+}
+
+.app-slot-footer label {
+    opacity: 0.7;
+}

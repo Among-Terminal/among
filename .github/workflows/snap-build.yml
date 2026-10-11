@@ -1,0 +1,223 @@
+name: Snap build and installed checks
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  snap:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install disposable hosted prerequisites
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(dpkg --print-architecture)" = "$EXPECTED_ARCH"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends snapd squashfs-tools xvfb openbox dbus-x11 xdotool x11-utils imagemagick
+          sudo systemctl start snapd.socket
+          timeout 180 sudo snap wait system seed.loaded
+          sudo snap install core24
+          sudo snap install snapcraft --classic --channel=8.x/stable
+          mkdir -p /tmp/opencode
+      - name: Build actual native core24 recipe
+        id: build
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          sudo env CARGO_BUILD_JOBS=1 snapcraft --destructive-mode --platform "$BUILD_ARCH" --verbose
+          version="$(sudo parts/among/build/among-tools-target/release/among-tools package-version .)"
+          test -f "among_${version}_${BUILD_ARCH}.snap"
+          sha256sum "among_${version}_${BUILD_ARCH}.snap"
+          printf 'SNAP_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Inspect and install exact bytes
+        id: install
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          unsquashfs -cat "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" meta/snap.yaml > /tmp/opencode/installed-snap.yaml
+          if unsquashfs -ll "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" | grep -E '/(among-tools|among-uninstall)$'; then
+            echo 'Internal tooling leaked into Snap payload' >&2
+            exit 1
+          fi
+          sudo snap install --dangerous --classic "among_${SNAP_VERSION}_${BUILD_ARCH}.snap"
+          snap list among
+      - name: Build native acceptance drivers outside Snap payload
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+          cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
+          CARGO_BUILD_JOBS=1 cargo build --locked --release --example check-clipboard
+      - name: Installed host workflow and terminal controls
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-snap-runtime --github-hosted
+      - name: Installed light and dark menus
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          status=0
+          tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-context-menu-snap "$PWD/target/release/examples/check-clipboard" light --github-hosted || status=1
+          tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-context-menu-snap "$PWD/target/release/examples/check-clipboard" dark --github-hosted || status=1
+          exit "$status"
+      - name: Installed focus plugins and sessions
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          status=0
+          tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-live-focus /snap/bin/among || status=1
+          tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-live-status "$PWD" /snap/bin/among /snap/among/current/usr/share/among/plugins || status=1
+          tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-sessions /snap/bin/among || status=1
+          exit "$status"
+      - name: Bind internal checkers for a separate clean runtime
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir clean-snap-input clean-snap-input/docs
+          tool=tools/among-tools/target/release/among-tools
+          "$tool" package-native-checker "$tool" "$SOURCE_SHA" "v$SNAP_VERSION" ubuntu24.04 "$BUILD_ARCH" clean-snap-input/tools
+          "$tool" package-native-checker target/release/examples/check-clipboard "$SOURCE_SHA" "v$SNAP_VERSION" ubuntu24.04 "$BUILD_ARCH" clean-snap-input/clipboard
+          cp "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" clean-snap-input/among.snap
+          cp docs/plugins.md clean-snap-input/docs/plugins.md
+          printf 'v%s\n' "$SNAP_VERSION" > clean-snap-input/tag
+          cd clean-snap-input
+          sha256sum among.snap tag docs/plugins.md tools/among-tools tools/checker-record.json clipboard/among-tools clipboard/checker-record.json > SHA256SUMS
+      - name: Transfer internal runtime inputs separately
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: clean-snap-input-${{ matrix.arch }}
+          path: clean-snap-input/
+          retention-days: 5
+      - name: Retain private package and synthetic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: snap-checked-${{ matrix.arch }}
+          path: |
+            *.snap
+            /tmp/opencode/
+          retention-days: 5
+      - name: Publication boundary
+        if: ${{ always() }}
+        run: echo 'Build/install/runtime only; publication requires separate protected release gates' >> "$GITHUB_STEP_SUMMARY"
+
+  packaged-identity:
+    needs: snap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install verification prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools
+          mkdir -p /tmp/opencode
+      - name: Collect both built Snaps
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: snap-checked-*
+          merge-multiple: true
+          path: artifacts
+      - name: Both architectures must be present
+        run: |
+          set -- $(find artifacts -name '*.snap')
+          test "$#" -eq 2 || { echo "expected both architectures, found $#" >&2; exit 1; }
+          ls -l artifacts
+      # These tests are the only place the packaged identity gate actually
+      # runs: with AMONG_SNAP_ARTIFACTS set they must assert, and a missing
+      # Snap for either architecture fails rather than skips.
+      - name: Packaged identity gates
+        env:
+          AMONG_SNAP_ARTIFACTS: ${{ github.workspace }}/artifacts
+        run: cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test promoted_snap_identity
+
+  clean-runtime:
+    needs: snap
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: clean-snap-input-${{ matrix.arch }}
+          path: clean-snap-input
+      - name: Start a fresh compiler-free systemd runtime
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(dpkg --print-architecture)" = "$EXPECTED_ARCH"
+          docker build --file packaging/ci/snap-runtime/Dockerfile --tag among-clean-snap:ci packaging/ci/snap-runtime
+          chmod +x clean-snap-input/tools/among-tools clean-snap-input/clipboard/among-tools
+          mkdir runtime-evidence
+          chmod 1777 runtime-evidence
+          docker run --detach --name among-clean-runtime --privileged --cgroupns=private \
+            --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:rw,exec,mode=1777 \
+            --mount "type=bind,source=$PWD/clean-snap-input,target=/input,readonly" \
+            --mount "type=bind,source=$PWD/packaging/ci/snap-runtime/check-installed.sh,target=/check-installed.sh,readonly" \
+            --mount "type=bind,source=$PWD/runtime-evidence,target=/tmp/opencode" \
+            among-clean-snap:ci
+          docker exec among-clean-runtime mount -t securityfs securityfs /sys/kernel/security
+          docker exec among-clean-runtime sh -eu -c 'test -d /sys/kernel/security/apparmor; cat /proc/self/mountinfo > /tmp/opencode/runtime-mountinfo.txt'
+          docker exec among-clean-runtime systemctl restart apparmor snapd.apparmor
+          timeout 180 sh -c 'until docker exec among-clean-runtime snap version; do sleep 2; done'
+          docker exec among-clean-runtime timeout 180 snap wait system seed.loaded
+          docker exec among-clean-runtime snap install core24
+          docker exec among-clean-runtime sh -eu -c 'cd /input; sha256sum -c SHA256SUMS'
+          docker exec among-clean-runtime snap install --dangerous --classic /input/among.snap
+      - name: Execute bound native checkers without build tools or source checkout
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+        run: |
+          tag=$(cat clean-snap-input/tag)
+          docker exec among-clean-runtime runuser -u among-runtime -- env \
+            GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            EXPECTED_ARCH="$EXPECTED_ARCH" EXPECTED_SOURCE="$EXPECTED_SOURCE" EXPECTED_TAG="$tag" \
+            /bin/sh /check-installed.sh
+      - name: Capture runtime service diagnostics
+        if: ${{ always() }}
+        run: |
+          docker logs among-clean-runtime > runtime-evidence/container-init.log 2>&1 || true
+          docker exec among-clean-runtime journalctl --no-pager -u snapd -u snapd.apparmor -u apparmor > runtime-evidence/snapd-journal.log 2>&1 || true
+      - name: Retain clean runtime evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: clean-snap-runtime-${{ matrix.arch }}
+          path: runtime-evidence/
+          retention-days: 5
+      - name: Stop only the owned runtime container
+        if: ${{ always() }}
+        run: docker rm --force among-clean-runtime

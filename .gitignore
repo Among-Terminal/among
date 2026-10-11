@@ -1,0 +1,6 @@
+/target
+/tools/among-tools/target
+/examples/plugins/target
+*.pyc
+__pycache__/
+target/

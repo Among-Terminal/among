@@ -1,0 +1,163 @@
+name: Debian release candidates
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deb-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: debian13
+            architecture: amd64
+            runner: ubuntu-24.04
+            image: debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+            rust_host: x86_64-unknown-linux-gnu
+          - target: debian13
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            image: debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+            rust_host: aarch64-unknown-linux-gnu
+          - target: ubuntu24.04
+            architecture: amd64
+            runner: ubuntu-24.04
+            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+            rust_host: x86_64-unknown-linux-gnu
+          - target: ubuntu24.04
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+            rust_host: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CARGO_HOME: /opt/among-cargo
+      CARGO_BUILD_JOBS: '1'
+      RUSTUP_HOME: /opt/among-rustup
+      RUST_HOST: ${{ matrix.rust_host }}
+      BUILD_IMAGE: ${{ matrix.image }}
+      BUILD_TARGET: ${{ matrix.target }}
+      BUILD_ARCH: ${{ matrix.architecture }}
+    steps:
+      - name: Install isolated target build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates curl build-essential \
+            debhelper gpgv pkg-config libgtk-4-dev libadwaita-1-dev \
+            libvte-2.91-gtk4-dev desktop-file-utils appstream
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned Rust toolchain in the build container
+        run: |
+          base="https://static.rust-lang.org/rustup/archive/1.28.2/${RUST_HOST}"
+          curl --fail --silent --show-error --location "$base/rustup-init" -o /tmp/rustup-init
+          curl --fail --silent --show-error --location "$base/rustup-init.sha256" -o /tmp/rustup-init.sha256
+          cd /tmp
+          sha256sum --check rustup-init.sha256
+          chmod 755 rustup-init
+          ./rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.1
+          echo '/opt/among-cargo/bin' >> "$GITHUB_PATH"
+      - name: Build and inspect native candidate
+        run: |
+          mkdir -p /tmp/opencode
+          cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test deb --test source_snapshot --test deb_workflow --test native_checker
+          tools/among-tools/target/release/among-tools check-deb-workflow .
+          useradd --create-home --shell /bin/bash among-build
+          chown -R among-build:among-build /opt/among-cargo /opt/among-rustup
+          chown among-build:among-build /tmp/opencode
+          tools/among-tools/target/release/among-tools ci-deb-build . "$BUILD_TARGET" \
+            "$BUILD_ARCH" "$BUILD_IMAGE" release-candidate
+      # Internal build artifacts are not public release assets or installed-runtime receipts.
+      - name: Retain owned build command diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deb-build-failure-${{ matrix.target }}-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/among-deb-build-*/command-*.log
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deb-${{ matrix.target }}-${{ matrix.architecture }}
+          path: release-candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+  installed:
+    needs: build
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: debian13
+            architecture: amd64
+            runner: ubuntu-24.04
+            image: debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+          - target: debian13
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            image: debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+          - target: ubuntu24.04
+            architecture: amd64
+            runner: ubuntu-24.04
+            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+          - target: ubuntu24.04
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      BUILD_TARGET: ${{ matrix.target }}
+      BUILD_ARCH: ${{ matrix.architecture }}
+    steps:
+      - name: Runtime and display tools only, no compiler or development headers
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates \
+            desktop-file-utils appstream libglib2.0-bin xvfb xauth \
+            openbox dbus-x11 xdotool x11-utils procps imagemagick
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: deb-${{ matrix.target }}-${{ matrix.architecture }}
+          path: release-candidate
+      - name: Install and exercise exact candidate as an unprivileged desktop user
+        run: |
+          cd release-candidate
+          sha256sum --check native-checker.sha256
+          chmod 755 native-checker/among-tools
+          cd ..
+          release-candidate/native-checker/among-tools check-native-checker \
+            release-candidate/native-checker "$GITHUB_SHA" "${GITHUB_REF#refs/tags/}" "$BUILD_TARGET" "$BUILD_ARCH"
+          release-candidate/native-checker/among-tools ci-deb-install . "$BUILD_TARGET" \
+            "$BUILD_ARCH" release-candidate runtime-evidence
+      # Scoped diagnostics only: hosted evidence and remaining acceptance gates are required.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: deb-runtime-${{ matrix.target }}-${{ matrix.architecture }}
+          path: runtime-evidence/
+          if-no-files-found: warn
+          retention-days: 14
