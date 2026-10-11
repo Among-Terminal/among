@@ -64,6 +64,7 @@ Usage:
   among-tools check-rpm-spec <source-root>
   among-tools prepare-rpm-release <source-root> <output.spec>
   among-tools stage-appimage <source-root> <binaries-directory> <launcher> <architecture> <new-AppDir>
+  among-tools fetch-appimage-tools <architecture> <new-tools-directory>
   among-tools record-rpm-candidate <source-root> <target> <architecture> <candidate-directory>
   among-tools ci-rpm-install <source-root> <target> <architecture> <candidate-directory> <new-output>
   among-tools review-readme-action <source-root> <new-private-evidence-directory>
@@ -85,6 +86,9 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
+        [command, architecture, destination] if command == "fetch-appimage-tools" => {
+            among_tools::appimage_tools::fetch(architecture, Path::new(destination))?;
+        }
         [command, root, binaries, launcher, architecture, destination]
             if command == "stage-appimage" =>
         {

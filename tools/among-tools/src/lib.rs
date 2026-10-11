@@ -1,5 +1,6 @@
 pub mod action_review;
 pub mod appimage;
+pub mod appimage_tools;
 pub mod apt_collect;
 pub mod apt_provenance;
 pub mod binary_archive;

@@ -69,3 +69,26 @@ fn staging_preserves_attribution_selects_launcher_and_refuses_wrong_native_archi
     fs::remove_dir_all(scratch)?;
     Ok(())
 }
+#[test]
+fn helper_download_cli_refuses_unknown_architecture_before_creating_output(
+) -> among_tools::Result<()> {
+    let root = among_tools::storage::private_directory(
+        &std::env::temp_dir(),
+        "among-appimage-helper-cli",
+    )?;
+    let destination = root.join("must-not-exist");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
+        .env_clear()
+        .args([
+            "fetch-appimage-tools",
+            "universal",
+            destination.to_str().ok_or("fixture path is not UTF-8")?,
+        ])
+        .output()?;
+    let refused = !output.status.success()
+        && String::from_utf8(output.stderr)?.contains("unsupported AppImage helper architecture")
+        && !destination.exists();
+    std::fs::remove_dir_all(root)?;
+    assert!(refused);
+    Ok(())
+}
