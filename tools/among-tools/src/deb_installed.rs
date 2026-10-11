@@ -135,6 +135,12 @@ pub fn run(
                 .ok_or("candidate version absent")?,
         ),
         ("Architecture", architecture),
+        (
+            "Depends",
+            record["depends"]
+                .as_str()
+                .ok_or("candidate dependency record absent")?,
+        ),
     ] {
         if runner
             .command(
@@ -155,7 +161,7 @@ pub fn run(
     runner.runtime_only()?;
     fs::DirBuilder::new().mode(0o755).create(output)?;
     runner.base = output.canonicalize()?;
-    let mut evidence = json!({"schema":1,"target":target,"architecture":architecture,"tag":tag,"source_sha":source,"package_sha256":record["sha256"],"checker_sha256":storage::sha256(File::open(&checker)?)?,"display":"X11/Xvfb/Openbox","checks":[],"status":"failed","scope":"partial-installed-runtime-and-lifecycle","release_acceptance":false});
+    let mut evidence = json!({"schema":1,"target":target,"architecture":architecture,"tag":tag,"source_sha":source,"package_sha256":record["sha256"],"binary_archive":record["binary_archive"],"checker_sha256":storage::sha256(File::open(&checker)?)?,"display":"X11/Xvfb/Openbox","checks":[],"status":"failed","scope":"partial-installed-runtime-lifecycle-and-extracted-binary-runtime","release_acceptance":false});
     let result = (|| -> Result<()> {
         missing_dependency(&mut runner)?;
         add_check(&mut evidence, "unavailable-dependency-rejected")?;
@@ -277,8 +283,108 @@ pub fn run(
             runner.command("/usr/sbin/runuser", &argv, timeout)?;
             add_check(&mut evidence, name)?;
         }
+        let archive_home = Path::new("/home/among-archive-check");
+        runner.command(
+            "/usr/sbin/useradd",
+            &[
+                "--create-home",
+                "--shell",
+                "/bin/bash",
+                "among-archive-check",
+            ],
+            30,
+        )?;
+        crate::binary_archive::extract_checked(
+            &record,
+            &candidate,
+            &tag,
+            target,
+            architecture,
+            Path::new("/"),
+            &archive_home.join("bundle"),
+        )?;
+        add_check(&mut evidence, "archive-extracted-exact-package-payload")?;
         for check in crate::deb_lifecycle::run(&mut runner, &package, &record, home)? {
             add_check(&mut evidence, &check)?;
+        }
+        if Path::new("/usr/bin/among").symlink_metadata().is_ok()
+            || Path::new("/usr/share/among").symlink_metadata().is_ok()
+        {
+            return Err(
+                "archive launch acceptance requires the installed package payload to be absent"
+                    .into(),
+            );
+        }
+        for name in ["config", "data", "cache", "runtime"] {
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(archive_home.join(name))?;
+        }
+        runner.command(
+            "/usr/bin/chown",
+            &[
+                "-R",
+                "among-archive-check:among-archive-check",
+                "/home/among-archive-check",
+            ],
+            30,
+        )?;
+        runner.command(
+            "/usr/bin/chown",
+            &["among-archive-check:among-archive-check", "/tmp/opencode"],
+            30,
+        )?;
+        runner.runtime_only()?;
+        let archive_binary = "/home/among-archive-check/bundle/bin/among";
+        let linkage = runner.command("/usr/bin/ldd", &[archive_binary], 30)?;
+        fs::write(runner.base.join("archive-linkage.log"), &linkage)?;
+        if linkage.contains("not found") {
+            return Err("extracted binary has unresolved native libraries".into());
+        }
+        add_check(&mut evidence, "archive-linked-without-installed-among")?;
+        for (name, args, timeout) in [
+            (
+                "archive-live-focus",
+                vec!["check-live-focus", archive_binary],
+                180,
+            ),
+            (
+                "archive-live-status",
+                vec![
+                    "check-live-status",
+                    root.to_str().ok_or("root path is not UTF-8")?,
+                    archive_binary,
+                    "/home/among-archive-check/bundle/plugins",
+                ],
+                240,
+            ),
+            (
+                "archive-sessions",
+                vec!["check-sessions", archive_binary],
+                420,
+            ),
+        ] {
+            let mut argv = vec![
+                "-u",
+                "among-archive-check",
+                "--",
+                "/usr/bin/env",
+                "-i",
+                "PATH=/usr/bin:/bin",
+                "HOME=/home/among-archive-check",
+                "LANG=C.UTF-8",
+                "GITHUB_ACTIONS=true",
+                "XDG_CONFIG_HOME=/home/among-archive-check/config",
+                "XDG_DATA_HOME=/home/among-archive-check/data",
+                "XDG_CACHE_HOME=/home/among-archive-check/cache",
+                "XDG_RUNTIME_DIR=/home/among-archive-check/runtime",
+                tools,
+                "ci-x11",
+                tools,
+            ];
+            argv.extend(args);
+            runner.command("/usr/sbin/runuser", &argv, timeout)?;
+            add_check(&mut evidence, name)?;
         }
         evidence["status"] = "passed".into();
         Ok(())
@@ -289,6 +395,12 @@ pub fn run(
         Path::new("/home/among-check"),
         &runner.base.join("user-logs"),
     )
+    .and_then(|()| {
+        save_evidence(
+            Path::new("/home/among-archive-check"),
+            &runner.base.join("archive-user-logs"),
+        )
+    })
     .and_then(|()| {
         save_evidence(
             Path::new("/tmp/opencode"),
@@ -319,7 +431,13 @@ pub(crate) fn save_evidence(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir(destination)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
-        if entry.file_name() == "runtime" {
+        if (entry.file_name() == "runtime"
+            && matches!(
+                source.to_str(),
+                Some("/home/among-check" | "/home/among-archive-check")
+            ))
+            || (source == Path::new("/home/among-archive-check") && entry.file_name() == "bundle")
+        {
             continue;
         }
         let kind = entry.file_type()?;

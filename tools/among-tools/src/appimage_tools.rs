@@ -3,7 +3,7 @@ use serde_json::json;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -140,32 +140,7 @@ pub fn fetch(architecture: &str, destination: &Path) -> Result<()> {
         0o644,
     )?;
     fs::set_permissions(&payload, fs::Permissions::from_mode(0o755))?;
-    publish_directory(&payload, &parent.join(name))?;
-    Ok(())
-}
-
-fn publish_directory(source: &Path, destination: &Path) -> Result<()> {
-    let source_c = std::ffi::CString::new(source.as_os_str().as_bytes())?;
-    let destination_c = std::ffi::CString::new(destination.as_os_str().as_bytes())?;
-    // The destination must stay new even if another caller wins after preflight.
-    let result = unsafe {
-        nix::libc::renameat2(
-            nix::libc::AT_FDCWD,
-            source_c.as_ptr(),
-            nix::libc::AT_FDCWD,
-            destination_c.as_ptr(),
-            nix::libc::RENAME_NOREPLACE,
-        )
-    };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    File::open(
-        destination
-            .parent()
-            .ok_or("helper destination parent absent")?,
-    )?
-    .sync_all()?;
+    storage::publish_directory(&payload, &parent.join(name))?;
     Ok(())
 }
 
@@ -214,10 +189,10 @@ mod tests {
         let second = root.0.join("second");
         fs::create_dir(&first)?;
         fs::create_dir(&second)?;
-        assert!(publish_directory(&first, &second).is_err());
+        assert!(storage::publish_directory(&first, &second).is_err());
         assert!(first.is_dir() && second.is_dir());
         let new = root.0.join("published");
-        publish_directory(&first, &new)?;
+        storage::publish_directory(&first, &new)?;
         assert!(!first.exists() && new.is_dir());
         Ok(())
     }

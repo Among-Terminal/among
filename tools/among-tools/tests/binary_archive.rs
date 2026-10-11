@@ -41,7 +41,7 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
         digest,
         storage::sha256(fs::File::open(output.join(&name))?)?
     );
-    let record = serde_json::json!({"binary_archive":{"filename":name,"sha256":digest}});
+    let record = serde_json::json!({"depends":"libgtk-4-1, libvte-2.91-gtk4-0","binary_archive":{"filename":name,"sha256":digest}});
     binary_archive::validate(&record, &output, "v0.1.0-rc.7", "ubuntu24.04", "amd64")?;
     let repeated = root.join("repeated");
     fs::create_dir(&repeated)?;
@@ -81,6 +81,121 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
     .contains("Libraries are NOT bundled"));
     assert!(members.contains_key(Path::new("THIRD_PARTY/inventory.json")));
     assert_eq!(members.len(), 8);
+    let extracted = root.join("extracted");
+    binary_archive::extract_checked(
+        &record,
+        &output,
+        "v0.1.0-rc.7",
+        "ubuntu24.04",
+        "amd64",
+        &payload,
+        &extracted,
+    )?;
+    assert_eq!(fs::read(extracted.join("bin/among"))?, elf);
+    assert_eq!(
+        fs::read(extracted.join("THIRD_PARTY/inventory.json"))?,
+        b"synthetic attribution fixture"
+    );
+    assert!(binary_archive::extract_checked(
+        &record,
+        &output,
+        "v0.1.0-rc.7",
+        "ubuntu24.04",
+        "amd64",
+        &payload,
+        &extracted
+    )
+    .is_err());
+    assert_eq!(
+        fs::read_dir(&root)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("among-archive-extraction-"))
+            .count(),
+        0
+    );
+    for scenario in [
+        "changed-executable",
+        "missing-license",
+        "unexpected-file",
+        "duplicate-executable",
+        "symlink",
+        "misleading-instructions",
+    ] {
+        let raw = root.join("malicious.tar");
+        let mut builder = tar::Builder::new(fs::File::create(&raw)?);
+        for (path, bytes) in &members {
+            if scenario == "missing-license" && path == Path::new("LICENSE") {
+                continue;
+            }
+            let mut bytes = bytes.clone();
+            if scenario == "changed-executable" && path == Path::new("bin/among") {
+                bytes.push(0);
+            }
+            if scenario == "misleading-instructions" && path == Path::new("INSTALL.txt") {
+                bytes = b"No runtime libraries are required on any distribution".to_vec();
+            }
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(if path.starts_with("bin") || path.starts_with("plugins") {
+                0o755
+            } else {
+                0o644
+            });
+            header.set_cksum();
+            builder.append_data(&mut header, path, bytes.as_slice())?;
+        }
+        if matches!(
+            scenario,
+            "unexpected-file" | "duplicate-executable" | "symlink"
+        ) {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o644);
+            if scenario == "symlink" {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_link_name("/usr/bin/among")?;
+            }
+            header.set_cksum();
+            builder.append_data(
+                &mut header,
+                if scenario == "duplicate-executable" {
+                    "bin/among"
+                } else {
+                    "foreign"
+                },
+                std::io::empty(),
+            )?;
+        }
+        builder.finish()?;
+        drop(builder);
+        let compressed = std::process::Command::new("/usr/bin/gzip")
+            .args(["-n", "-c"])
+            .arg(&raw)
+            .output()?;
+        assert!(compressed.status.success());
+        fs::write(output.join(&name), &compressed.stdout)?;
+        let mut malicious_record = record.clone();
+        malicious_record["binary_archive"]["sha256"] =
+            storage::sha256(compressed.stdout.as_slice())?.into();
+        let refused = root.join(format!("refused-{scenario}"));
+        assert!(
+            binary_archive::extract_checked(
+                &malicious_record,
+                &output,
+                "v0.1.0-rc.7",
+                "ubuntu24.04",
+                "amd64",
+                &payload,
+                &refused
+            )
+            .is_err(),
+            "{scenario}"
+        );
+        assert!(!refused.exists(), "{scenario}");
+    }
     assert!(binary_archive::create(
         &payload,
         "v0.1.0-rc.7",

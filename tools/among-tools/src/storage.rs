@@ -5,12 +5,40 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::{
+    ffi::OsStrExt,
+    fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 static SERIAL: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn publish_directory(source: &Path, destination: &Path) -> Result<()> {
+    let source_c = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+    let destination_c = std::ffi::CString::new(destination.as_os_str().as_bytes())?;
+    // The destination must stay new even if another caller wins after preflight.
+    let result = unsafe {
+        nix::libc::renameat2(
+            nix::libc::AT_FDCWD,
+            source_c.as_ptr(),
+            nix::libc::AT_FDCWD,
+            destination_c.as_ptr(),
+            nix::libc::RENAME_NOREPLACE,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    File::open(
+        destination
+            .parent()
+            .ok_or("publication destination parent absent")?,
+    )?
+    .sync_all()?;
+    Ok(())
+}
 
 pub fn private_directory(root: &Path, prefix: &str) -> Result<PathBuf> {
     relative_path(Path::new(prefix))?;
