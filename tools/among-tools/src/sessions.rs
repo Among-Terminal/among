@@ -403,7 +403,7 @@ impl Harness {
         Ok(())
     }
     pub(crate) fn command(&self, command: &str) -> Result<()> {
-        self.xdo(&["type", "--clearmodifiers", "--delay", "30", command])?;
+        self.xdo(&["type", "--clearmodifiers", "--delay", "2", command])?;
         self.key("Return")
     }
     fn pwd(&mut self, id: u64, expected: &Path, phase: &str) -> Result<()> {

@@ -26,8 +26,8 @@ use vte::prelude::*;
 
 fn main() -> glib::ExitCode {
     if let Err(error) = packaged::initialize()
-        .and_then(|()| initialize_snap_schemas())
-        .and_then(|()| initialize_snap_images())
+        .and_then(|()| initialize_packaged_schemas())
+        .and_then(|()| initialize_packaged_images())
     {
         eprintln!("among: {error}");
         return glib::ExitCode::FAILURE;
@@ -54,7 +54,7 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
-fn initialize_snap_schemas() -> Result<(), String> {
+fn initialize_packaged_schemas() -> Result<(), String> {
     let Some(root) = packaged::root() else {
         return Ok(());
     };
@@ -76,18 +76,21 @@ fn initialize_snap_schemas() -> Result<(), String> {
         .and_then(|source| source.lookup("org.gnome.desktop.interface", true))
         .is_none()
     {
-        return Err("Snap GSettings schemas could not be initialized".to_string());
+        return Err("Packaged GSettings schemas could not be initialized".to_string());
     }
     Ok(())
 }
 
-fn snap_image_modules(root: &std::path::Path, arch: &str) -> Result<std::path::PathBuf, String> {
+fn packaged_image_modules(
+    root: &std::path::Path,
+    arch: &str,
+) -> Result<std::path::PathBuf, String> {
     let triplet = match arch {
         "x86_64" => "x86_64-linux-gnu",
         "aarch64" => "aarch64-linux-gnu",
         _ => {
             return Err(format!(
-                "Unsupported Snap image-loader architecture: {arch}"
+                "Unsupported packaged image-loader architecture: {arch}"
             ))
         }
     };
@@ -95,29 +98,31 @@ fn snap_image_modules(root: &std::path::Path, arch: &str) -> Result<std::path::P
 }
 
 #[test]
-fn snap_image_modules_follow_binary_architecture() {
+fn packaged_image_modules_follow_binary_architecture() {
     let root = std::path::Path::new("/snap/among/current");
     for (arch, triplet) in [
         ("x86_64", "x86_64-linux-gnu"),
         ("aarch64", "aarch64-linux-gnu"),
     ] {
         assert_eq!(
-            snap_image_modules(root, arch).unwrap(),
+            packaged_image_modules(root, arch).unwrap(),
             root.join(format!("usr/lib/{triplet}/gdk-pixbuf-2.0/2.10.0"))
         );
     }
-    assert!(snap_image_modules(root, "unsupported").is_err());
+    assert!(packaged_image_modules(root, "unsupported").is_err());
 }
 
-fn initialize_snap_images() -> Result<(), String> {
+fn initialize_packaged_images() -> Result<(), String> {
     let Some(root) = packaged::root() else {
         return Ok(());
     };
     let mime = root.join("usr/share/mime");
     if !mime.join("mime.cache").is_file() {
-        return Err("Snap payload is missing compiled MIME data".to_string());
+        return Err("Packaged payload is missing compiled MIME data".to_string());
     }
-    let mime = mime.to_str().ok_or("Snap MIME directory is not UTF-8")?;
+    let mime = mime
+        .to_str()
+        .ok_or("Packaged MIME directory is not UTF-8")?;
     let mut directories = gio::content_type_get_mime_dirs();
     directories.insert(0, mime.into());
     let references: Vec<&str> = directories.iter().map(|path| path.as_str()).collect();
@@ -125,7 +130,7 @@ fn initialize_snap_images() -> Result<(), String> {
     // GTK caches SVG support during initialization. Register before constructing
     // AdwApplication, not at window creation, and do not export loader/XDG paths
     // into the caller's host shells or external plugin processes.
-    let native_modules = snap_image_modules(root, std::env::consts::ARCH)?;
+    let native_modules = packaged_image_modules(root, std::env::consts::ARCH)?;
     let relocated_modules = root.join("usr/lib/gdk-pixbuf-2.0/2.10.0");
     let modules = if native_modules.join("loaders.cache").is_file() {
         native_modules

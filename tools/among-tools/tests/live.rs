@@ -2,8 +2,15 @@
 fn unsolicited_escape_consumes_the_next_command_character_in_real_bash_readline(
 ) -> among_tools::Result<()> {
     use std::{fs, process::Command};
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
     let base =
         among_tools::storage::private_directory(&std::env::temp_dir(), "among-readline-prefix")?;
+    let _cleanup = Scratch(base.clone());
     for escape in [false, true] {
         let input = base.join("input");
         fs::write(
@@ -34,9 +41,13 @@ fn unsolicited_escape_consumes_the_next_command_character_in_real_bash_readline(
         if escape {
             assert!(text.contains("bash: d: command not found"), "{text}");
             assert!(
-                text.contains(base.to_str().ok_or("fixture path not UTF-8")?),
+                text.contains(&format!(
+                    "\r\n{}\r\n",
+                    base.to_str().ok_or("fixture path not UTF-8")?
+                )),
                 "{text}"
             );
+            assert!(!text.contains("\r\n/tmp\r\n"), "{text}");
         } else {
             assert!(!text.contains("command not found"), "{text}");
             assert!(text.contains("\r\n/tmp\r\n"), "{text}");
@@ -44,6 +55,22 @@ fn unsolicited_escape_consumes_the_next_command_character_in_real_bash_readline(
     }
     fs::remove_dir_all(base)?;
     Ok(())
+}
+
+#[test]
+fn status_startup_does_not_inject_readline_meta_prefix() {
+    let source = include_str!("../src/live_status.rs");
+    let startup = source
+        .split_once("let pid = h.start(\"app\")?;")
+        .expect("status startup absent")
+        .1
+        .split_once("h.key(\"F11\")?")
+        .expect("fullscreen check absent")
+        .0;
+    assert!(
+        !startup.contains("h.key(\"Escape\")"),
+        "unsolicited Escape must not reach the fresh shell"
+    );
 }
 
 #[test]
