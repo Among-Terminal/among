@@ -143,16 +143,22 @@ pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result
             .contains("_NET_WM_STATE_MAXIMIZED_VERT"),
         "window not maximized",
     )?;
+    let offset = h.text()?.len();
     h.key("F11")?;
-    wait(&mut h, 0, 15, |text| text.contains("fullscreen=true"))?;
+    wait(&mut h, offset, 15, |text| text.contains("fullscreen=true"))?;
     require(
         h.probe("/usr/bin/xprop", &["-id", &h.window, "_NET_WM_STATE"])?
             .contains("_NET_WM_STATE_FULLSCREEN"),
         "native fullscreen state missing",
     )?;
-    h.key("F11")?;
     let offset = h.text()?.len();
+    h.key("F11")?;
     wait(&mut h, offset, 15, |text| text.contains("fullscreen=false"))?;
+    h.wait(15, |this| {
+        Ok(!this
+            .probe("/usr/bin/xprop", &["-id", &this.window, "_NET_WM_STATE"])?
+            .contains("_NET_WM_STATE_FULLSCREEN"))
+    })?;
     let offset = h.text()?.len();
     h.command("cd /tmp")?;
     wait(&mut h, offset, 15, |text| footer_directory(text, 4, "/tmp"))?;

@@ -19,6 +19,16 @@ fn require(condition: bool, message: &str) -> Result<()> {
     }
 }
 
+fn key_arguments(key: &str) -> [&str; 5] {
+    [
+        "key",
+        "--clearmodifiers",
+        "--delay",
+        "100",
+        if key == "F11" { "95" } else { key },
+    ]
+}
+
 fn find_application_pid(
     parent: u32,
     mut read: impl FnMut(u32) -> Result<(String, Vec<u32>)>,
@@ -78,6 +88,20 @@ fn owned_application_pid(parent: u32) -> Result<u32> {
 #[cfg(test)]
 mod launcher_tests {
     use super::*;
+
+    #[test]
+    fn only_unmodified_f11_bypasses_symbolic_modifier_lookup() {
+        assert_eq!(
+            key_arguments("F11"),
+            ["key", "--clearmodifiers", "--delay", "100", "95"]
+        );
+        for key in ["Return", "Escape", "alt+F4", "ctrl+F11"] {
+            assert_eq!(
+                key_arguments(key),
+                ["key", "--clearmodifiers", "--delay", "100", key]
+            );
+        }
+    }
 
     #[test]
     fn process_discovery_handles_nested_launchers_and_rejects_ambiguous_apps() -> Result<()> {
@@ -266,7 +290,13 @@ impl Harness {
         Ok(())
     }
     pub(crate) fn key(&self, key: &str) -> Result<()> {
-        self.xdo(&["key", "--clearmodifiers", "--delay", "100", key])?;
+        // Fedora's XKB CTRL+ALT function-key type repeats F11 at several
+        // levels. xdotool's symbolic lookup selects Alt+F11 even with
+        // --clearmodifiers. Numeric keycodes bypass that lookup with modmask=0.
+        // These harnesses use owned Xorg virtual PC displays; their FK11 is 95.
+        // The caller checks actual GTK/WM fullscreen state; this is not a
+        // general-purpose keymap-independent keyboard API.
+        self.xdo(&key_arguments(key))?;
         std::thread::sleep(Duration::from_millis(200));
         Ok(())
     }
