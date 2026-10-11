@@ -77,7 +77,7 @@ jobs:
             rpmdevtools \
             git \
              tar \
-              zstd curl ca-certificates cpio shadow-utils util-linux
+              zstd curl ca-certificates cpio shadow-utils util-linux util-linux-script
           rpm --version
 
       - name: Install pinned Rust and validate tag-bound packaging inputs
