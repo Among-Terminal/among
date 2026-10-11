@@ -17,16 +17,40 @@ use among_tools::{
 };
 use serde_json::json;
 use std::{
+    ffi::OsString,
     fs,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard},
 };
 
-struct Fixture(PathBuf);
+static CREDENTIAL_ENVIRONMENT: Mutex<()> = Mutex::new(());
+const FIXTURE_ENVIRONMENT: [&str; 5] = [
+    "GH_TOKEN",
+    "SNAPCRAFT_STORE_CREDENTIALS",
+    "STORE_DASHBOARD_URL",
+    "STORE_UPLOAD_URL",
+    "SNAPCRAFT_STORE_AUTH",
+];
+
+// These adapters read process credentials lazily. Each fixture must own that
+// environment until its last child exits, or parallel tests erase each other's
+// synthetic token and produce nondeterministic authentication failures.
+struct Fixture(PathBuf, MutexGuard<'static, ()>, [Option<OsString>; 5]);
 
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+        // The guard field stays owned until environment restoration finishes.
+        let Self(_, _guard, original) = self;
+        for (name, value) in FIXTURE_ENVIRONMENT.into_iter().zip(original) {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
     }
 }
 
@@ -36,12 +60,40 @@ impl Drop for Fixture {
 /// log, then emits a canned response. That is enough to assert what a real
 /// release job would send and would have authenticated with.
 fn fixture() -> Result<Fixture> {
+    let guard = CREDENTIAL_ENVIRONMENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let original = FIXTURE_ENVIRONMENT.map(std::env::var_os);
     let root = storage::private_directory(&std::env::temp_dir(), "among-adapter-proc")?;
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(root.join("bin"))?;
     fs::write(root.join("gh.out"), b"")?;
-    Ok(Fixture(root))
+    let fixture = Fixture(root, guard, original);
+    // Never let an inherited real credential reach one of the fake programs.
+    unsafe {
+        for name in FIXTURE_ENVIRONMENT {
+            std::env::remove_var(name);
+        }
+    }
+    Ok(fixture)
+}
+
+#[test]
+fn panicking_fixture_restores_environment_without_cascading_failures() -> Result<()> {
+    let fixture = fixture()?;
+    let original = fixture.2.clone();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _fixture = fixture;
+        for name in FIXTURE_ENVIRONMENT {
+            unsafe { std::env::set_var(name, "synthetic-panic-value") };
+        }
+        panic!("synthetic fixture unwind");
+    }));
+    assert!(unwound.is_err());
+    let restored = self::fixture()?;
+    assert_eq!(restored.2, original);
+    Ok(())
 }
 
 const GH: &str = r#"#!/bin/sh
@@ -105,7 +157,10 @@ fn github_reads_a_published_record_with_a_credential_and_no_wrong_arguments() ->
     unsafe { std::env::remove_var("GH_TOKEN") };
 
     let record = observed.ok_or("a published release was not observed")?;
-    assert_eq!(record["tag"], "v0.1.0", "the body must be unwrapped to the record");
+    assert_eq!(
+        record["tag"], "v0.1.0",
+        "the body must be unwrapped to the record"
+    );
     assert_eq!(record["source_sha"], source);
 
     let log = log_of(&fixture.0)?;
@@ -259,10 +314,7 @@ printf 'gh API error: could not authenticate (token ghp_EXAMPLE)\n' >&2
 exit 1
 "#,
     )?;
-    fs::set_permissions(
-        fixture.0.join("bin/gh"),
-        fs::Permissions::from_mode(0o755),
-    )?;
+    fs::set_permissions(fixture.0.join("bin/gh"), fs::Permissions::from_mode(0o755))?;
 
     unsafe { std::env::set_var("GH_TOKEN", "test-token") };
     let gh = fixture.0.join("bin/gh");
@@ -302,10 +354,7 @@ case "$*" in
 esac
 "#,
     )?;
-    fs::set_permissions(
-        fixture.0.join("bin/gh"),
-        fs::Permissions::from_mode(0o755),
-    )?;
+    fs::set_permissions(fixture.0.join("bin/gh"), fs::Permissions::from_mode(0o755))?;
 
     unsafe { std::env::set_var("GH_TOKEN", "test-token") };
     let gh = fixture.0.join("bin/gh");
