@@ -283,12 +283,7 @@ impl GitHubRelease {
     fn api(&self, arguments: &[&str]) -> Result<String> {
         let mut args = vec!["api".to_string()];
         args.extend(arguments.iter().map(|argument| argument.to_string()));
-        quiet_output(
-            &self.program,
-            &args,
-            &self.workdir,
-            &github_environment()?,
-        )
+        quiet_output(&self.program, &args, &self.workdir, &github_environment()?)
     }
 
     /// The immutable source commit the tag identifies, resolved through the ref.

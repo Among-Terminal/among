@@ -143,7 +143,9 @@ pub fn preflight(
         // unbound source bundle would ship just as visibly as an unbound stable
         // one.
         crate::source_delivery::check(
-            assets.get(&group.association).ok_or("missing source association")?,
+            assets
+                .get(&group.association)
+                .ok_or("missing source association")?,
             assets.get(&group.source).ok_or("missing source archive")?,
             snap,
         )?;

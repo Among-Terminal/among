@@ -108,7 +108,12 @@ fn offline_rehearsal_tools_are_not_invoked_by_any_workflow() -> Result<()> {
         let text = fs::read_to_string(&path)?;
         for line in text.lines() {
             if let Some(rest) = line.trim().strip_prefix("python3 scripts/") {
-                scripts.push(rest.split_whitespace().next().unwrap_or_default().to_string());
+                scripts.push(
+                    rest.split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string(),
+                );
             }
         }
     }

@@ -44,7 +44,10 @@ fn scenario(
         // checks, so these fixtures never need to be installable.
         fs::write(&snap, format!("synthetic snap {architecture}"))?;
         fs::write(&bundle, format!("synthetic sources {architecture}"))?;
-        fs::write(&association, format!("synthetic association {architecture}"))?;
+        fs::write(
+            &association,
+            format!("synthetic association {architecture}"),
+        )?;
         for path in [&snap, &bundle, &association] {
             let name = path
                 .file_name()
@@ -122,16 +125,10 @@ fn a_record_whose_digests_do_not_match_the_supplied_assets_is_refused() -> Resul
         .values_mut()
         .for_each(|digest| *digest = json!("f".repeat(64)));
 
-    let refusal = promotion_publication::preflight(
-        &record,
-        &gates,
-        &assets,
-        true,
-        &fixture.0,
-    )
-    .err()
-    .ok_or("altered digests were accepted")?
-    .to_string();
+    let refusal = promotion_publication::preflight(&record, &gates, &assets, true, &fixture.0)
+        .err()
+        .ok_or("altered digests were accepted")?
+        .to_string();
     assert!(!refusal.is_empty());
     Ok(())
 }

@@ -42,7 +42,10 @@ fn artifact(architecture: &str) -> Result<Option<PathBuf>> {
     let mut found = fs::read_dir(&directory)
         .map_err(|_| format!("artifact directory {} is unreadable", directory.display()))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|extension| extension == "snap"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "snap")
+        })
         .collect::<Vec<_>>();
     found.sort();
     for path in &found {
