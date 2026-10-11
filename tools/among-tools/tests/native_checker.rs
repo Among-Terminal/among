@@ -4,6 +4,27 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 struct Fixture(PathBuf);
+
+#[test]
+fn rc_checker_receipt_cannot_satisfy_stable_or_another_candidate() -> Result<()> {
+    let f = fixture()?;
+    let output = f.0.join("checker");
+    let source = "a".repeat(40);
+    let architecture = arch()?;
+    checker::package(
+        std::path::Path::new(env!("CARGO_BIN_EXE_among-tools")),
+        &source,
+        "v0.1.0-rc.1",
+        "debian13",
+        architecture,
+        &output,
+    )?;
+    checker::validate(&output, &source, "v0.1.0-rc.1", "debian13", architecture)?;
+    for tag in ["v0.1.0", "v0.1.0-rc.2"] {
+        assert!(checker::validate(&output, &source, tag, "debian13", architecture).is_err());
+    }
+    Ok(())
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);

@@ -17,7 +17,7 @@ pub struct Record {
 }
 
 fn identity(source: &str, tag: &str, target: &str, architecture: &str) -> Result<()> {
-    deb::stable_version(tag)?;
+    deb::release_version(tag)?;
     if source.len() != 40
         || !source
             .bytes()

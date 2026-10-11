@@ -16,6 +16,8 @@ concurrency:
 
 jobs:
   build:
+    # DEB previews use RC tags; RPM release identity remains stable-only.
+    if: ${{ !contains(github.ref, '-rc.') }}
     timeout-minutes: 120
     strategy:
       fail-fast: false

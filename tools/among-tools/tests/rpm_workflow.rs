@@ -8,6 +8,16 @@
 use among_tools::Result;
 use std::fs;
 
+#[test]
+fn deb_rc_tags_do_not_start_stable_rpm_builds() -> Result<()> {
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
+    assert_eq!(
+        document["jobs"]["build"]["if"].as_str(),
+        Some("${{ !contains(github.ref, '-rc.') }}")
+    );
+    Ok(())
+}
+
 fn workflow() -> Result<String> {
     // cargo runs integration tests with the package directory as the working
     // directory, so the repository root is two levels up.
@@ -20,8 +30,8 @@ fn workflow() -> Result<String> {
 #[test]
 fn the_rpm_workflow_is_valid_yaml_with_exactly_the_four_targets() -> Result<()> {
     let text = workflow()?;
-    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
-        .map_err(|error| format!("invalid YAML: {error}"))?;
+    let document: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&text).map_err(|error| format!("invalid YAML: {error}"))?;
     let jobs = document["jobs"].as_mapping().ok_or("no jobs")?;
     let build = jobs.get("build").ok_or("no build job")?;
     let include = build["strategy"]["matrix"]["include"]
@@ -32,7 +42,10 @@ fn the_rpm_workflow_is_valid_yaml_with_exactly_the_four_targets() -> Result<()> 
         .map(|entry| {
             (
                 entry["target"].as_str().unwrap_or_default().to_string(),
-                entry["architecture"].as_str().unwrap_or_default().to_string(),
+                entry["architecture"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
             )
         })
         .collect::<Vec<_>>();
@@ -86,7 +99,10 @@ fn every_action_is_pinned_to_a_full_commit() -> Result<()> {
     let text = workflow()?;
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)?;
     let mut checked = 0;
-    for step in document["jobs"]["build"]["steps"].as_sequence().ok_or("no steps")? {
+    for step in document["jobs"]["build"]["steps"]
+        .as_sequence()
+        .ok_or("no steps")?
+    {
         if let Some(uses) = step["uses"].as_str() {
             // A pin may carry a trailing comment naming the release.
             let reference = uses
@@ -260,17 +276,28 @@ fn the_rpm_workflow_runs_on_release_tags_only() -> Result<()> {
     // Any key that names an event would be a trigger. Enumerating the known
     // event names catches pull_request, workflow_dispatch and schedule.
     let events = [
-        "push", "pull_request", "pull_request_target", "schedule", "workflow_dispatch",
-        "workflow_run", "repository_dispatch", "release", "issue_comment",
+        "push",
+        "pull_request",
+        "pull_request_target",
+        "schedule",
+        "workflow_dispatch",
+        "workflow_run",
+        "repository_dispatch",
+        "release",
+        "issue_comment",
     ];
     for (key, _) in mapping.iter() {
-        let serde_yaml_ng::Value::String(name) = key else { continue };
+        let serde_yaml_ng::Value::String(name) = key else {
+            continue;
+        };
         assert!(
             !events.contains(&name.as_str()) || name == "push",
             "the workflow declares an additional {name} trigger; only a release tag may build candidates"
         );
     }
-    let tags = triggers["push"]["tags"].as_sequence().ok_or("no push tags")?;
+    let tags = triggers["push"]["tags"]
+        .as_sequence()
+        .ok_or("no push tags")?;
     assert_eq!(tags.len(), 1);
     assert_eq!(tags[0].as_str(), Some("v*"));
     assert!(triggers["push"].get("branches").is_none());

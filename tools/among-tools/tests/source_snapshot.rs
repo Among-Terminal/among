@@ -35,6 +35,11 @@ fn deterministic_archive_excludes_private_and_compiled_state_preserves_modes_and
     let f = Fixture::new()?;
     let root = f.root();
     fs::write(root.join(".env"), b"synthetic secret not public")?;
+    fs::create_dir_all(root.join("video/readme-promo"))?;
+    fs::write(
+        root.join("video/readme-promo/package.json"),
+        b"private capture project",
+    )?;
     fs::create_dir(root.join(".opencode"))?;
     fs::write(root.join(".opencode/private"), b"synthetic evidence")?;
     fs::create_dir_all(root.join("tools/among-tools/target"))?;
@@ -64,13 +69,13 @@ fn deterministic_archive_excludes_private_and_compiled_state_preserves_modes_and
         ".opencode/private",
         "tools/among-tools/target/private",
         "scripts/__pycache__/cache",
+        "video/readme-promo/package.json",
     ] {
         assert!(!hashes.contains_key(forbidden));
     }
     for required in [
         "tools/among-tools/Cargo.toml",
         "tools/among-tools/Cargo.lock",
-        "video/readme-promo/package.json",
         ".cargo/config.toml",
     ] {
         assert!(hashes.contains_key(required));

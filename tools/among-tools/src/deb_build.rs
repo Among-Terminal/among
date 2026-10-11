@@ -196,7 +196,7 @@ pub fn run(
     copy_tree(root, &tree)?;
     copy_recipe(&tree.join("packaging/debian"), &tree.join("debian"))?;
     fs::set_permissions(tree.join("debian/rules"), fs::Permissions::from_mode(0o755))?;
-    storage::atomic_write(&tree,Path::new("debian/changelog"),format!("among-terminal ({}) unstable; urgency=medium\n\n  * Stable {tag} native candidate from {source}.\n\n -- Among Terminal <hello+amongterminal@highload.zone>  {date}\n",identity.package_version).as_bytes(),0o644)?;
+    storage::atomic_write(&tree,Path::new("debian/changelog"),format!("among-terminal ({}) unstable; urgency=medium\n\n  * {tag} native candidate from {source}; publication requires installed checks.\n\n -- Among Terminal <hello+amongterminal@highload.zone>  {date}\n",identity.package_version).as_bytes(),0o644)?;
     if nix::unistd::getuid().is_root() {
         execute(
             "/usr/bin/chown",

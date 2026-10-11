@@ -6,6 +6,46 @@ use std::path::PathBuf;
 struct Fixture(PathBuf);
 
 #[test]
+fn rc_packages_sort_before_stable_without_relaxing_stable_policy() -> Result<()> {
+    let f = Fixture::new()?;
+    for target in ["debian13", "ubuntu24.04"] {
+        let first = deb::identity(&f.0, "v0.1.0-rc.1", target, "amd64")?;
+        let next = deb::identity(&f.0, "v0.1.0-rc.2", target, "amd64")?;
+        let tenth = deb::identity(&f.0, "v0.1.0-rc.10", target, "amd64")?;
+        let stable = deb::identity(&f.0, "v0.1.0", target, "amd64")?;
+        assert_eq!(first.upstream_version, "0.1.0");
+        assert_eq!(first.package_version, format!("0.1.0~rc.1-1~{target}"));
+        for (older, newer) in [(&first, &next), (&next, &tenth), (&tenth, &stable)] {
+            assert!(std::process::Command::new("/usr/bin/dpkg")
+                .args([
+                    "--compare-versions",
+                    &older.package_version,
+                    "lt",
+                    &newer.package_version
+                ])
+                .status()?
+                .success());
+        }
+    }
+    for tag in ["v0.1.0-rc.1", "v0.1.0-rc.2"] {
+        assert!(deb::stable_version(tag).is_err());
+    }
+    for tag in [
+        "v0.1.0-rc.0",
+        "v0.1.0-rc.01",
+        "v0.1.0-rc.",
+        "v0.1.0-rc.1+build",
+        "v0.1.0-rc.1;false",
+        "v0.1.0-rc.1\n",
+        "v0.1.0-rc.１",
+        "v0.2.0-rc.1",
+    ] {
+        assert!(deb::identity(&f.0, tag, "debian13", "amd64").is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() -> Result<()> {
     let f = Fixture::new()?;
     let root = &f.0;
@@ -348,6 +388,13 @@ fn real_tag_commit_and_main_ancestry_require_release_push_identity() -> Result<(
         deb::github_tag_source(&f.0, &environment)?,
         ("v0.1.0".into(), source.clone())
     );
+    git(&["tag", "v0.1.0-rc.1"])?;
+    environment.insert("GITHUB_REF".into(), "refs/tags/v0.1.0-rc.1".into());
+    assert_eq!(
+        deb::github_tag_source(&f.0, &environment)?,
+        ("v0.1.0-rc.1".into(), source.clone())
+    );
+    environment.insert("GITHUB_REF".into(), "refs/tags/v0.1.0".into());
     environment.insert("GITHUB_SHA".into(), "0".repeat(40));
     assert!(deb::github_tag_source(&f.0, &environment).is_err());
     environment.insert("GITHUB_SHA".into(), source.clone());

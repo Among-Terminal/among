@@ -25,6 +25,23 @@ pub fn stable_version(tag: &str) -> Result<&str> {
     Ok(version)
 }
 
+// RC tags build installable previews without granting stable promotion authority.
+pub fn release_version(tag: &str) -> Result<(&str, String)> {
+    if let Some((base, candidate)) = tag.split_once("-rc.") {
+        let version = stable_version(base)?;
+        if candidate.is_empty()
+            || candidate.starts_with('0')
+            || !candidate.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err("expected positive canonical rc.N suffix".into());
+        }
+        Ok((version, format!("{version}~rc.{candidate}")))
+    } else {
+        let version = stable_version(tag)?;
+        Ok((version, version.into()))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Identity {
     pub target: String,
@@ -34,7 +51,7 @@ pub struct Identity {
     pub filename: String,
 }
 pub fn identity(root: &Path, tag: &str, target: &str, architecture: &str) -> Result<Identity> {
-    let version = stable_version(tag)?;
+    let (version, debian_version) = release_version(tag)?;
     if !matches!(target, "debian13" | "ubuntu24.04") || !matches!(architecture, "amd64" | "arm64") {
         return Err("unsupported distribution or architecture".into());
     }
@@ -65,7 +82,7 @@ pub fn identity(root: &Path, tag: &str, target: &str, architecture: &str) -> Res
     if release.and_then(|node| node.attribute("version")) != Some(version) {
         return Err("AppStream release version differs from tag".into());
     }
-    let package_version = format!("{version}-1~{target}");
+    let package_version = format!("{debian_version}-1~{target}");
     Ok(Identity {
         target: target.into(),
         architecture: architecture.into(),
@@ -175,7 +192,7 @@ pub fn github_tag_source(
     let tag = reference
         .strip_prefix("refs/tags/")
         .ok_or("package construction requires a tag ref")?;
-    stable_version(tag)?;
+    release_version(tag)?;
     let repository = repository_directory(root)?;
     let safe_directory = format!(
         "safe.directory={}",
