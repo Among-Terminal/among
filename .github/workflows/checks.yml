@@ -83,6 +83,8 @@ jobs:
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-live-focus target/release/among
           tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-live-resize target/release/among
+          tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-live-status . target/release/among examples/plugins/target/release
           cargo build --release --locked --example install --manifest-path examples/plugins/Cargo.toml
           tools/among-tools/target/release/among-tools ci-x11 \

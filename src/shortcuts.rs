@@ -21,8 +21,8 @@ pub enum Action {
     NewWorkspace,
     /// Split the focused pane.
     SplitPane,
-    /// Grow or shrink the panes around the focused pane's divider.
-    ResizeDivider(Resize),
+    /// Move the divider bounding the focused pane one step in a direction.
+    ResizeDivider(Direction),
     /// Close the focused pane.
     ClosePane,
     /// Open the preferences window.
@@ -62,23 +62,6 @@ pub enum Cycle {
     Previous,
 }
 
-/// Which way a divider moves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Resize {
-    Grow,
-    Shrink,
-}
-
-impl Resize {
-    /// The change in the first child's share of the split.
-    pub fn delta(self) -> f64 {
-        match self {
-            Resize::Grow => RESIZE_STEP,
-            Resize::Shrink => -RESIZE_STEP,
-        }
-    }
-}
-
 /// How much of a divider moves per key press, as a fraction of the split.
 pub const RESIZE_STEP: f64 = 0.05;
 
@@ -89,8 +72,7 @@ impl Action {
             Self::ActivateWorkspace(index) => format!("workspace-{}", index + 1),
             Self::NewWorkspace => "new-workspace".into(),
             Self::SplitPane => "split-pane".into(),
-            Self::ResizeDivider(Resize::Grow) => "grow-pane".into(),
-            Self::ResizeDivider(Resize::Shrink) => "shrink-pane".into(),
+            Self::ResizeDivider(direction) => format!("resize-{}", direction_name(direction)),
             Self::ClosePane => "close-pane".into(),
             Self::OpenPreferences => "preferences".into(),
             Self::ToggleFullscreen => "fullscreen".into(),
@@ -104,6 +86,20 @@ impl Action {
         Bindings::default_actions()
             .into_iter()
             .find(|action| action.storage_id() == id)
+            .or_else(|| Self::from_legacy_storage_id(id))
+    }
+
+    /// Ids written by versions that had a two-valued grow/shrink action.
+    ///
+    /// Each is read as the arrow it was bound to by default (`Right` grew,
+    /// `Left` shrank), so a preferences file from such a version keeps the
+    /// user's chosen keys working.
+    fn from_legacy_storage_id(id: &str) -> Option<Self> {
+        match id {
+            "grow-pane" => Some(Self::ResizeDivider(Direction::Right)),
+            "shrink-pane" => Some(Self::ResizeDivider(Direction::Left)),
+            _ => None,
+        }
     }
 
     /// A stable, human-readable name.
@@ -116,12 +112,8 @@ impl Action {
             Action::ActivateWorkspace(index) => format!("Activate workspace {}", index + 1),
             Action::NewWorkspace => "New workspace".into(),
             Action::SplitPane => "Split pane".into(),
-            Action::ResizeDivider(resize) => {
-                let verb = match resize {
-                    Resize::Grow => "Grow",
-                    Resize::Shrink => "Shrink",
-                };
-                format!("{verb} pane")
+            Action::ResizeDivider(direction) => {
+                format!("Move divider {}", direction_name(direction))
             }
             Action::ClosePane => "Close pane".into(),
             Action::OpenPreferences => "Open preferences".into(),
@@ -176,11 +168,23 @@ impl Bindings {
     ) -> Vec<String> {
         let mut warnings = Vec::new();
         let mut accepted = Vec::new();
+        // A file can hold both a legacy id and the id that replaced it, for
+        // instance after an older version edited a file this version wrote.
+        // The current id is the newer decision, so the legacy one yields.
+        let current: std::collections::BTreeSet<Action> = overrides
+            .keys()
+            .filter_map(|id| {
+                Action::from_storage_id(id).filter(|action| action.storage_id() == *id)
+            })
+            .collect();
         for (id, value) in overrides {
             let Some(action) = Action::from_storage_id(id) else {
                 warnings.push(format!("Unknown shortcut action: {id}"));
                 continue;
             };
+            if action.storage_id() != *id && current.contains(&action) {
+                continue;
+            }
             if value.is_null() {
                 self.unbind(action);
             } else if let Some(accel) = value
@@ -246,20 +250,14 @@ impl Bindings {
         // Divider resizing needs its own modifier level from focus movement, so
         // the two cannot be confused by touch. Ctrl+Shift+Arrow is unclaimed by
         // GNOME and matches what Terminator uses for the same job.
-        for (direction, resize) in [
-            (Direction::Up, Resize::Shrink),
-            (Direction::Down, Resize::Grow),
-            (Direction::Left, Resize::Shrink),
-            (Direction::Right, Resize::Grow),
+        for (direction, key) in [
+            (Direction::Up, "Up"),
+            (Direction::Down, "Down"),
+            (Direction::Left, "Left"),
+            (Direction::Right, "Right"),
         ] {
-            let key = match direction {
-                Direction::Up => "Up",
-                Direction::Down => "Down",
-                Direction::Left => "Left",
-                Direction::Right => "Right",
-            };
             map.insert(
-                Action::ResizeDivider(resize),
+                Action::ResizeDivider(direction),
                 format!("<Control><Shift>{key}"),
             );
         }
@@ -337,8 +335,13 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "preferences" | "open_preferences" => Action::OpenPreferences,
         "fullscreen" | "toggle_fullscreen" => Action::ToggleFullscreen,
         "zoom" | "toggle_zoom" => Action::ToggleZoom,
-        "grow_pane" | "resize-grow" => Action::ResizeDivider(Resize::Grow),
-        "shrink_pane" | "resize-shrink" => Action::ResizeDivider(Resize::Shrink),
+        "resize_up" => Action::ResizeDivider(Direction::Up),
+        "resize_down" => Action::ResizeDivider(Direction::Down),
+        "resize_left" => Action::ResizeDivider(Direction::Left),
+        "resize_right" => Action::ResizeDivider(Direction::Right),
+        // Names from the grow/shrink era, read as the arrows they were bound to.
+        "grow_pane" | "resize_grow" => Action::ResizeDivider(Direction::Right),
+        "shrink_pane" | "resize_shrink" => Action::ResizeDivider(Direction::Left),
         "split_pane" | "split" => Action::SplitPane,
         "close_pane" | "close" => Action::ClosePane,
         "focus_up" => Action::FocusDirection(Direction::Up),
@@ -366,8 +369,7 @@ pub fn action_name(action: Action) -> String {
         Action::NewWorkspace => "new-workspace".into(),
         Action::SplitPane => "split-pane".into(),
         Action::ClosePane => "close-pane".into(),
-        Action::ResizeDivider(Resize::Grow) => "grow-pane".into(),
-        Action::ResizeDivider(Resize::Shrink) => "shrink-pane".into(),
+        Action::ResizeDivider(direction) => format!("resize-{}", direction_name(direction)),
         Action::CycleWorkspace(Cycle::Next) => "next-workspace".into(),
         Action::CycleWorkspace(Cycle::Previous) => "previous-workspace".into(),
         Action::OpenPreferences => "preferences".into(),
@@ -611,14 +613,32 @@ mod tests {
     #[test]
     fn keyboard_resize_is_bound_to_a_distinct_modifier_level() {
         let bindings = Bindings::defaults();
-        let grow = bindings
-            .accel_for(Action::ResizeDivider(Resize::Grow))
+        let resize = bindings
+            .accel_for(Action::ResizeDivider(Direction::Right))
             .unwrap();
         let focus = bindings
             .accel_for(Action::FocusDirection(Direction::Right))
             .unwrap();
-        assert_eq!(grow, "<Control><Shift>Right");
-        assert_ne!(grow, focus, "resize and focus must not share a sequence");
+        assert_eq!(resize, "<Control><Shift>Right");
+        assert_ne!(resize, focus, "resize and focus must not share a sequence");
+    }
+
+    #[test]
+    fn every_ctrl_shift_arrow_is_bound_to_its_own_resize_action() {
+        // The defaults once keyed all four arrows by a two-valued grow/shrink
+        // action, so Left/Right overwrote Up/Down and those two keys did
+        // nothing at all.
+        let bindings = Bindings::defaults();
+        let actions: Vec<Option<Action>> = ["Up", "Down", "Left", "Right"]
+            .iter()
+            .map(|key| bindings.action_for(&format!("<Control><Shift>{key}")))
+            .collect();
+        assert!(
+            actions.iter().all(Option::is_some),
+            "an arrow is unbound: {actions:?}"
+        );
+        let distinct: std::collections::BTreeSet<_> = actions.iter().flatten().collect();
+        assert_eq!(distinct.len(), 4, "arrows share an action: {actions:?}");
     }
 
     #[test]
@@ -647,21 +667,57 @@ mod tests {
     }
 
     #[test]
-    fn grow_and_shrink_move_the_divider_in_opposite_directions() {
-        assert!(Resize::Grow.delta() > 0.0);
-        assert!(Resize::Shrink.delta() < 0.0);
-        assert_eq!(RESIZE_STEP, 0.05);
+    fn resize_actions_parse_from_their_names() {
+        for (name, direction) in [
+            ("resize-up", Direction::Up),
+            ("resize-down", Direction::Down),
+            ("resize-left", Direction::Left),
+            ("resize-right", Direction::Right),
+            // Earlier names keep working as the arrows they were bound to.
+            ("grow-pane", Direction::Right),
+            ("shrink-pane", Direction::Left),
+        ] {
+            assert_eq!(
+                parse_action(name),
+                Some(Action::ResizeDivider(direction)),
+                "{name}"
+            );
+        }
     }
 
     #[test]
-    fn resize_actions_parse_from_their_names() {
+    fn a_stored_grow_or_shrink_override_still_applies() {
+        // A preferences file written before the four-direction actions keyed
+        // these overrides by grow/shrink; dropping them would silently lose
+        // the user's chosen keys.
+        let mut bindings = Bindings::defaults();
+        let overrides = serde_json::json!({
+            "grow-pane": "<Control><Alt>l",
+            "shrink-pane": "<Control><Alt>h",
+        });
+        let warnings = bindings.restore_overrides(overrides.as_object().unwrap(), |_| true);
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
-            parse_action("grow-pane"),
-            Some(Action::ResizeDivider(Resize::Grow))
+            bindings.accel_for(Action::ResizeDivider(Direction::Right)),
+            Some("<Control><Alt>l")
         );
         assert_eq!(
-            parse_action("shrink-pane"),
-            Some(Action::ResizeDivider(Resize::Shrink))
+            bindings.accel_for(Action::ResizeDivider(Direction::Left)),
+            Some("<Control><Alt>h")
+        );
+    }
+
+    #[test]
+    fn a_current_resize_id_wins_over_its_legacy_id() {
+        let mut bindings = Bindings::defaults();
+        let overrides = serde_json::json!({
+            "grow-pane": "<Control><Alt>l",
+            "resize-right": "<Control><Alt>r",
+        });
+        bindings.restore_overrides(overrides.as_object().unwrap(), |_| true);
+        assert_eq!(
+            bindings.accel_for(Action::ResizeDivider(Direction::Right)),
+            Some("<Control><Alt>r")
         );
     }
 

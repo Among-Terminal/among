@@ -22,6 +22,7 @@ pub mod ignored_tests;
 pub mod installation;
 pub mod inventory;
 pub mod live_focus;
+pub mod live_resize;
 pub mod live_status;
 pub mod menu_check;
 pub mod menu_geometry;

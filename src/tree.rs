@@ -346,6 +346,19 @@ impl Node {
     }
 
     /// Read the ratio of the split at a path.
+    /// The orientation of the split at `path`, or `None` when the path does not
+    /// name a split.
+    pub fn orientation_at(&self, path: &[usize]) -> Option<Orientation> {
+        match (self, path.first()) {
+            (Node::Split { orientation, .. }, None) => Some(*orientation),
+            (Node::Split { first, second, .. }, Some(&index)) => {
+                let child = if index == 0 { first } else { second };
+                child.orientation_at(&path[1..])
+            }
+            (Node::Pane { .. }, _) => None,
+        }
+    }
+
     pub fn ratio_at(&self, path: &[usize]) -> Option<f64> {
         match path.first() {
             None => match self {

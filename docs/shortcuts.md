@@ -31,8 +31,10 @@ inspectable and changeable without touching the code that uses them.
 | Activate workspace 9 | `Alt+9` |  |
 | New workspace | `Ctrl+Shift+t` | becomes the active workspace |
 | Split pane | `Ctrl+Shift+n` | orientation chosen from the pane's shape |
-| Grow pane | `Ctrl+Shift+Right` | one step; only that split moves |
-| Shrink pane | `Ctrl+Shift+Left` | one step; only that split moves |
+| Move divider up | `Ctrl+Shift+Up` | nearest stacked divider above the pane; one step |
+| Move divider down | `Ctrl+Shift+Down` | nearest stacked divider above the pane; one step |
+| Move divider left | `Ctrl+Shift+Left` | nearest side-by-side divider above the pane; one step |
+| Move divider right | `Ctrl+Shift+Right` | nearest side-by-side divider above the pane; one step |
 | Close pane | `Ctrl+Shift+w` | cascades to the workspace, then to exit |
 | Open preferences | `Ctrl+,` | shortcuts and plugins |
 | Toggle fullscreen | `F11` | returns to the previous size |
