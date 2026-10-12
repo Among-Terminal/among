@@ -313,9 +313,11 @@ pub fn run(github_hosted: bool, scratch: &Path) -> Result<PathBuf> {
         fresh_state(&mut h, "ctrl+shift+n", |text| {
             text.contains("visible=2 panes=2")
         })?;
-        let before = width(&h.text()?, 2);
+        let before = width(&h.text()?, 1);
         require(before > 0.0, "split pane width absent")?;
-        fresh_state(&mut h, "ctrl+shift+Right", |text| width(text, 2) > before)?;
+        // Focus is on the new right-hand pane. The arrow names where the
+        // divider goes, so Right widens the left pane from either side.
+        fresh_state(&mut h, "ctrl+shift+Right", |text| width(text, 1) > before)?;
         fresh_state(&mut h, "ctrl+shift+x", |text| {
             text.contains("visible=1 panes=2")
         })?;
