@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 fn package_name(name: &str) -> bool {
     name.bytes()
@@ -189,12 +189,7 @@ pub fn inventory(prime: &Path, debs: &Path, output: &Path, scratch: &Path) -> Re
         );
     }
     fs::create_dir(output)?;
-    let base = scratch.join(format!(
-        "among-native-inventory-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::create_dir(&base)?;
+    let base = storage::private_directory(scratch, "among-native-inventory")?;
     let env = BTreeMap::from([
         ("PATH".into(), "/usr/bin:/bin".into()),
         ("LC_ALL".into(), "C.UTF-8".into()),

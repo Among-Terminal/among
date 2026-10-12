@@ -88,7 +88,10 @@ fn panicking_fixture_restores_environment_without_cascading_failures() -> Result
         for name in FIXTURE_ENVIRONMENT {
             unsafe { std::env::set_var(name, "synthetic-panic-value") };
         }
-        panic!("synthetic fixture unwind");
+        // An unwind is the event under test. `resume_unwind` starts one
+        // without the panic hook, so the lint that keeps `panic!` out of
+        // this crate still guards every place a panic would be a defect.
+        std::panic::resume_unwind(Box::new("synthetic fixture unwind"));
     }));
     assert!(unwound.is_err());
     let restored = self::fixture()?;

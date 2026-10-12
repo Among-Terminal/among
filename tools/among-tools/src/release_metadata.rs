@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 fn require(value: bool, message: &str) -> Result<()> {
     if value {
@@ -182,12 +182,7 @@ pub fn run(root: &Path, scratch: &Path) -> Result<()> {
         &read("data/com.github.among-terminal.metainfo.xml")?,
         &read("data/com.github.among-terminal.desktop")?,
     )?;
-    let base = scratch.join(format!(
-        "among-release-metadata-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::create_dir(&base)?;
+    let base = storage::private_directory(scratch, "among-release-metadata")?;
     let env = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
     for (index, script) in scripts.iter().enumerate() {
         let log = File::create(base.join(format!("shell-{index}.log")))?;

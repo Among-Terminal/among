@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 fn require(value: bool, message: &str) -> Result<()> {
     if value {
@@ -163,12 +163,7 @@ pub fn read(text: &str) -> Result<Value> {
 pub fn run(root: &Path, scratch: &Path) -> Result<()> {
     let path = storage::safe_path(root, Path::new(".github/workflows/deb-release.yml"))?;
     let scripts = validate(&read(&fs::read_to_string(path)?)?)?;
-    let base = scratch.join(format!(
-        "among-deb-workflow-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::create_dir(&base)?;
+    let base = storage::private_directory(scratch, "among-deb-workflow")?;
     let env = [("PATH", "/usr/bin:/bin")]
         .into_iter()
         .map(|(key, value)| (key.into(), value.into()))

@@ -58,19 +58,20 @@ fn unsolicited_escape_consumes_the_next_command_character_in_real_bash_readline(
 }
 
 #[test]
-fn status_startup_does_not_inject_readline_meta_prefix() {
+fn status_startup_does_not_inject_readline_meta_prefix() -> among_tools::Result<()> {
     let source = include_str!("../src/live_status.rs");
     let startup = source
         .split_once("let pid = h.start(\"app\")?;")
-        .expect("status startup absent")
+        .ok_or("status startup absent")?
         .1
         .split_once("h.key(\"F11\")?")
-        .expect("fullscreen check absent")
+        .ok_or("fullscreen check absent")?
         .0;
     assert!(
         !startup.contains("h.key(\"Escape\")"),
         "unsolicited Escape must not reach the fresh shell"
     );
+    Ok(())
 }
 
 #[test]

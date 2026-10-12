@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub const PHASES: [&str; 10] = [
     "edit",
@@ -47,12 +47,7 @@ pub(crate) fn owned_display_for(home: &Path) -> Result<()> {
 pub fn from_cargo(records: &Path, plugins: &Path, scratch: &Path) -> Result<PathBuf> {
     owned_display()?;
     let executables = crate::ignored_tests::executables(&fs::read_to_string(records)?)?;
-    let listing_root = scratch.join(format!(
-        "among-preferences-list-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::DirBuilder::new().mode(0o700).create(&listing_root)?;
+    let listing_root = storage::private_directory(scratch, "among-preferences-list")?;
     let env = allowed_environment(&std::env::vars_os().collect(), &["PATH", "LANG"]);
     let mut selected = None;
     for (index, executable) in executables.into_iter().enumerate() {
@@ -138,12 +133,7 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
     let executable = executable.canonicalize()?;
     let plugins_source = plugins_source.canonicalize()?;
     fs::create_dir_all(scratch)?;
-    let base = scratch.join(format!(
-        "among-preferences-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::DirBuilder::new().mode(0o700).create(&base)?;
+    let base = storage::private_directory(scratch, "among-preferences")?;
     for directory in [
         "home",
         "config",

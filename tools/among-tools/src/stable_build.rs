@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn recipe_change(before: &str, after: &str) -> Result<()> {
     let original = deb_workflow::read(before)?;
@@ -140,12 +139,7 @@ pub fn prepare(root: &Path, output: &Path, tag: &str) -> Result<Value> {
         .iter()
         .map(|(name, file)| Ok((name.clone(), storage::sha256(file.bytes.as_slice())?)))
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let stage = Stage(parent.join(format!(
-        "among-stable-stage-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    )));
-    fs::DirBuilder::new().mode(0o700).create(&stage.0)?;
+    let stage = Stage(storage::private_directory(&parent, "among-stable-stage")?);
     for (name, file) in &inputs {
         let path = storage::safe_path(&stage.0, Path::new(name))?;
         fs::create_dir_all(path.parent().ok_or("stable input parent absent")?)?;

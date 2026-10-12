@@ -12,12 +12,7 @@ fn text<'a>(row: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or_else(|| format!("missing provenance field: {key}").into())
 }
 fn timestamp(date: &str) -> Result<i64> {
-    let base = std::env::temp_dir().join(format!(
-        "among-apt-date-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::create_dir(&base)?;
+    let base = storage::private_directory(&std::env::temp_dir(), "among-apt-date")?;
     let result = (|| -> Result<i64> {
         let stdout = File::create(base.join("stdout"))?;
         let stderr = File::create(base.join("stderr"))?;
@@ -218,12 +213,7 @@ pub fn authenticate_with(
 
 pub fn authenticate(root: &Path, native: &Value, sources: &Path, scratch: &Path) -> Result<Value> {
     let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())?;
-    let base = scratch.join(format!(
-        "among-apt-signature-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::create_dir(&base)?;
+    let base = storage::private_directory(scratch, "among-apt-signature")?;
     let mut counter = 0;
     authenticate_with(root, native, sources, now, |release, keyring| {
         counter += 1;

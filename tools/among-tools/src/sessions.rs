@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 fn require(condition: bool, message: &str) -> Result<()> {
     if condition {
@@ -83,56 +83,6 @@ fn owned_application_pid(parent: u32) -> Result<u32> {
                 .collect::<std::result::Result<Vec<u32>, _>>()?,
         ))
     })
-}
-
-#[cfg(test)]
-mod launcher_tests {
-    use super::*;
-
-    #[test]
-    fn only_unmodified_f11_bypasses_symbolic_modifier_lookup() {
-        assert_eq!(
-            key_arguments("F11"),
-            ["key", "--clearmodifiers", "--delay", "100", "95"]
-        );
-        for key in ["Return", "Escape", "alt+F4", "ctrl+F11"] {
-            assert_eq!(
-                key_arguments(key),
-                ["key", "--clearmodifiers", "--delay", "100", key]
-            );
-        }
-    }
-
-    #[test]
-    fn process_discovery_handles_nested_launchers_and_rejects_ambiguous_apps() -> Result<()> {
-        for nested in [false, true] {
-            let tree = BTreeMap::from([
-                (1, ("dbus-run-session".into(), vec![2])),
-                (
-                    2,
-                    (
-                        if nested { "AppImage" } else { "among" }.into(),
-                        if nested { vec![3] } else { vec![] },
-                    ),
-                ),
-                (3, ("among".into(), vec![])),
-            ]);
-            assert_eq!(
-                find_application_pid(1, |pid| tree
-                    .get(&pid)
-                    .cloned()
-                    .ok_or("unknown fixture PID".into()))?,
-                if nested { 3 } else { 2 }
-            );
-        }
-        assert!(find_application_pid(1, |_| Ok(("dbus-run-session".into(), vec![]))).is_err());
-        assert!(find_application_pid(1, |pid| Ok((
-            "among".into(),
-            if pid == 1 { vec![2, 3] } else { vec![] }
-        )))
-        .is_err());
-        Ok(())
-    }
 }
 
 pub fn rectangles(text: &str, name: &str) -> Vec<[f64; 4]> {
@@ -469,12 +419,7 @@ pub(crate) fn fresh(binary: &Path, scratch: &Path, prefix: &str) -> Result<Harne
         return Err("permission scenarios require non-root execution".into());
     }
     fs::create_dir_all(scratch)?;
-    let base = scratch.join(format!(
-        "{prefix}-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::DirBuilder::new().mode(0o700).create(&base)?;
+    let base = crate::storage::private_directory(scratch, prefix)?;
     for name in [
         "home",
         "data",
@@ -990,4 +935,54 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
     }
     println!("Evidence: {}", base.display());
     Ok(base)
+}
+
+#[cfg(test)]
+mod launcher_tests {
+    use super::*;
+
+    #[test]
+    fn only_unmodified_f11_bypasses_symbolic_modifier_lookup() {
+        assert_eq!(
+            key_arguments("F11"),
+            ["key", "--clearmodifiers", "--delay", "100", "95"]
+        );
+        for key in ["Return", "Escape", "alt+F4", "ctrl+F11"] {
+            assert_eq!(
+                key_arguments(key),
+                ["key", "--clearmodifiers", "--delay", "100", key]
+            );
+        }
+    }
+
+    #[test]
+    fn process_discovery_handles_nested_launchers_and_rejects_ambiguous_apps() -> Result<()> {
+        for nested in [false, true] {
+            let tree = BTreeMap::from([
+                (1, ("dbus-run-session".into(), vec![2])),
+                (
+                    2,
+                    (
+                        if nested { "AppImage" } else { "among" }.into(),
+                        if nested { vec![3] } else { vec![] },
+                    ),
+                ),
+                (3, ("among".into(), vec![])),
+            ]);
+            assert_eq!(
+                find_application_pid(1, |pid| tree
+                    .get(&pid)
+                    .cloned()
+                    .ok_or("unknown fixture PID".into()))?,
+                if nested { 3 } else { 2 }
+            );
+        }
+        assert!(find_application_pid(1, |_| Ok(("dbus-run-session".into(), vec![]))).is_err());
+        assert!(find_application_pid(1, |pid| Ok((
+            "among".into(),
+            if pid == 1 { vec![2, 3] } else { vec![] }
+        )))
+        .is_err());
+        Ok(())
+    }
 }

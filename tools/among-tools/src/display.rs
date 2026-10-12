@@ -7,7 +7,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 pub enum Mode {
     Ci,
@@ -86,12 +86,7 @@ pub fn openbox_configuration(original: &str) -> Result<String> {
 
 fn private_directory(parent: &Path) -> Result<PathBuf> {
     fs::create_dir_all(parent)?;
-    let path = parent.join(format!(
-        "among-rust-display-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::DirBuilder::new().mode(0o700).create(&path)?;
+    let path = crate::storage::private_directory(parent, "among-rust-display")?;
     for name in ["home", "runtime", "config", "data", "cache"] {
         fs::DirBuilder::new().mode(0o700).create(path.join(name))?;
     }

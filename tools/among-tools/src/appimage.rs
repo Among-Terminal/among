@@ -29,33 +29,6 @@ fn launcher_desktop(contents: &str) -> Result<String> {
         .collect())
 }
 
-#[cfg(test)]
-mod desktop_tests {
-    use super::*;
-    #[test]
-    fn launcher_rewrite_preserves_newlines_and_unrelated_values() -> Result<()> {
-        for newline in ["\n", "\r\n"] {
-            for terminated in [false, true] {
-                let ending = if terminated { newline } else { "" };
-                let prefix =
-                    format!("[Desktop Entry]{newline}Comment=Exec=/usr/bin/among{newline}");
-                assert_eq!(
-                    launcher_desktop(&format!("{prefix}Exec=/usr/bin/among{ending}"))?,
-                    format!("{prefix}Exec=AppRun{ending}")
-                );
-            }
-        }
-        for invalid in [
-            "Comment=Exec=/usr/bin/among\n",
-            "Exec=/usr/bin/among\nExec=/usr/bin/among\n",
-            "Exec=/usr/bin/among --argument\n",
-        ] {
-            assert!(launcher_desktop(invalid).is_err());
-        }
-        Ok(())
-    }
-}
-
 /// Stage project-owned payload only. Native library/source auditing must run
 /// after deployment, against the final image, not this pre-bundling directory.
 pub fn stage(
@@ -106,4 +79,31 @@ pub fn stage(
         &serde_json::to_vec_pretty(&document)?,
         0o644,
     )
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+    #[test]
+    fn launcher_rewrite_preserves_newlines_and_unrelated_values() -> Result<()> {
+        for newline in ["\n", "\r\n"] {
+            for terminated in [false, true] {
+                let ending = if terminated { newline } else { "" };
+                let prefix =
+                    format!("[Desktop Entry]{newline}Comment=Exec=/usr/bin/among{newline}");
+                assert_eq!(
+                    launcher_desktop(&format!("{prefix}Exec=/usr/bin/among{ending}"))?,
+                    format!("{prefix}Exec=AppRun{ending}")
+                );
+            }
+        }
+        for invalid in [
+            "Comment=Exec=/usr/bin/among\n",
+            "Exec=/usr/bin/among\nExec=/usr/bin/among\n",
+            "Exec=/usr/bin/among --argument\n",
+        ] {
+            assert!(launcher_desktop(invalid).is_err());
+        }
+        Ok(())
+    }
 }

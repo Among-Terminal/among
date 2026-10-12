@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub const MANIFESTS: [&str; 3] = [
     "Cargo.toml",
@@ -122,12 +122,7 @@ pub fn inventory(graphs: &[(&str, Value)]) -> Result<(BTreeMap<String, Vec<u8>>,
 }
 
 pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Result<()> {
-    let base = scratch.join(format!(
-        "among-notices-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::create_dir(&base)?;
+    let base = storage::private_directory(scratch, "among-notices")?;
     let input = std::env::vars_os().collect();
     let env = crate::process::allowed_environment(
         &input,

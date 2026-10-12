@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 pub fn run(
     root: &Path,
@@ -46,12 +46,7 @@ pub fn run(
         return Err("shipped plugin source inventory differs from approved three plugins".into());
     }
     fs::create_dir_all(scratch)?;
-    let base = scratch.join(format!(
-        "among-install-check-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::DirBuilder::new().mode(0o700).create(&base)?;
+    let base = storage::private_directory(scratch, "among-install-check")?;
     for name in ["home", "config", "data", "cache", "state"] {
         fs::DirBuilder::new().mode(0o700).create(base.join(name))?;
     }

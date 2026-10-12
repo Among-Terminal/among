@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 fn inventory(
     root: &Path,
@@ -70,12 +70,7 @@ fn copy_recipe(root: &Path, relative: &Path, destination: &Path) -> Result<()> {
 }
 
 pub fn run(root: &Path, binaries: &Path, scratch: &Path) -> Result<PathBuf> {
-    let base = scratch.join(format!(
-        "among-dh-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::DirBuilder::new().mode(0o700).create(&base)?;
+    let base = storage::private_directory(scratch, "among-dh")?;
     let recipe = storage::safe_path(root, Path::new("packaging/debian"))?;
     fs::create_dir(base.join("debian"))?;
     copy_recipe(&recipe, Path::new(""), &base.join("debian"))?;

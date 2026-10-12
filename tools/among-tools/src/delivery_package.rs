@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub struct Inputs<'a> {
     pub snap: &'a Path,
@@ -216,12 +216,7 @@ pub fn package(inputs: &Inputs<'_>, output: &Path, scratch: &Path) -> Result<Val
     )?)?)?;
     let trust = apt_provenance::authenticate(inputs.metadata, &native, inputs.sources, scratch)?;
     native_notices::check(&native, inputs.prime)?;
-    let base = scratch.join(format!(
-        "among-delivery-prime-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::create_dir(&base)?;
+    let base = storage::private_directory(scratch, "among-delivery-prime")?;
     let env = BTreeMap::from([
         ("PATH".into(), "/usr/bin:/bin".into()),
         ("LC_ALL".into(), "C.UTF-8".into()),

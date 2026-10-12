@@ -563,14 +563,7 @@ pub fn install(root: &Path, args: &[String]) -> Result<()> {
                 &layout.state.join("native-dependency.log"),
             )?;
         }
-        let stage = layout.state.join(format!(
-            "among-build-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        fs::DirBuilder::new().mode(0o700).create(&stage)?;
+        let stage = crate::storage::private_directory(&layout.state, "among-build")?;
         let root = root.canonicalize()?;
         let target = stage.join("target");
         let result = external(

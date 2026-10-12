@@ -4,9 +4,8 @@ use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use serde_json::{json, Value};
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 pub fn cpu_counters(text: &str) -> Result<Vec<u64>> {
     let row = text
@@ -166,12 +165,7 @@ fn request(stdin: &mut impl Write, stdout: &mut impl Read, id: u64) -> Result<Ve
 pub fn run(binary: &Path, scratch: &Path) -> Result<Value> {
     let binary = binary.canonicalize()?;
     fs::create_dir_all(scratch)?;
-    let base = scratch.join(format!(
-        "among-resource-check-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::DirBuilder::new().mode(0o700).create(&base)?;
+    let base = storage::private_directory(scratch, "among-resource-check")?;
     let log = File::create(base.join("plugin.log"))?;
     let mut env = allowed_environment(&std::env::vars_os().collect(), &["PATH"]);
     env.insert("HOME".into(), base.clone().into_os_string());

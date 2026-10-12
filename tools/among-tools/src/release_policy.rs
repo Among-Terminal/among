@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 fn hex(value: &str, length: usize) -> bool {
     value.len() == length
@@ -166,12 +166,7 @@ pub fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     );
     let mut argv = vec!["-c", safe.as_str()];
     argv.extend_from_slice(args);
-    let base = std::env::temp_dir().join(format!(
-        "among-policy-git-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    fs::create_dir(&base)?;
+    let base = storage::private_directory(&std::env::temp_dir(), "among-policy-git")?;
     let result = (|| -> Result<Vec<u8>> {
         let file = File::create(base.join("git.log"))?;
         let errors = File::create(base.join("git.stderr"))?;

@@ -141,12 +141,15 @@ fn unrelated_commit_and_self_consistent_untagged_sources_are_rejected() -> Resul
     overlay["original_inputs"]["LICENSE"] = storage::sha256(b"different source".as_slice())?.into();
     fs::write(path, serde_json::to_vec(&overlay)?)?;
     f.snapshot()?;
-    assert!(f
+    let refusal = f
         .check()
         .err()
         .ok_or("untagged source accepted")?
-        .to_string()
-        .contains("tagged commit"));
+        .to_string();
+    assert!(
+        refusal.contains("tagged commit"),
+        "refused for another reason: {refusal}"
+    );
     Ok(())
 }
 
