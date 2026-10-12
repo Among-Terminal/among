@@ -11,6 +11,38 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Bound on the helper output quoted in a probe failure, so a chatty helper
+/// cannot flood the CI log while its last lines, where errors land, survive.
+const PROBE_OUTPUT_LIMIT: usize = 2000;
+
+/// Describe a helper that exited unsuccessfully: which program, with which
+/// arguments, how it ended and the end of what it printed. CI keeps only the
+/// job log, so without this a failed xdotool, import or clipboard call is
+/// indistinguishable from any other. A helper that hangs never gets here:
+/// `OwnedProcess::wait` reports the timeout itself.
+fn probe_failure(
+    program: &str,
+    args: &[&str],
+    status: std::process::ExitStatus,
+    output: &[u8],
+) -> String {
+    let mut start = output.len().saturating_sub(PROBE_OUTPUT_LIMIT);
+    // Skip UTF-8 continuation bytes so the cut does not split a character.
+    while output.get(start).is_some_and(|byte| byte & 0xC0 == 0x80) {
+        start += 1;
+    }
+    let text = String::from_utf8_lossy(&output[start..]);
+    let omitted = if start > 0 {
+        format!(" (first {start} bytes omitted)")
+    } else {
+        String::new()
+    };
+    format!(
+        "session probe failed: {program} {args:?} ended with {status}; output{omitted}:\n{}",
+        text.trim_end()
+    )
+}
+
 fn require(condition: bool, message: &str) -> Result<()> {
     if condition {
         Ok(())
@@ -182,10 +214,11 @@ impl Harness {
         let file = File::create(&path)?;
         let mut process =
             OwnedProcess::spawn(Path::new(program), args, &self.env, &self.base, &file)?;
-        require(
-            process.wait(Duration::from_secs(5))?.success(),
-            "session probe failed",
-        )?;
+        let status = process.wait(Duration::from_secs(5))?;
+        if !status.success() {
+            let output = fs::read(&path)?;
+            return Err(probe_failure(program, args, status, &output).into());
+        }
         Ok(fs::read_to_string(path)?)
     }
     pub(crate) fn wait(
@@ -953,6 +986,63 @@ mod launcher_tests {
                 ["key", "--clearmodifiers", "--delay", "100", key]
             );
         }
+    }
+
+    #[test]
+    fn a_failed_probe_names_the_helper_its_exit_and_the_end_of_its_output() {
+        use std::os::unix::process::ExitStatusExt;
+        // The CI log is the only record of a failed helper; the message must
+        // say which call failed and keep the last lines, where errors are.
+        let mut output = "early line\n".repeat(400).into_bytes();
+        output.extend_from_slice("ошибка: cannot open display\n".as_bytes());
+        let message = probe_failure(
+            "/usr/bin/xdotool",
+            &["key", "shift+F10"],
+            std::process::ExitStatus::from_raw(1 << 8),
+            &output,
+        );
+        assert!(message.starts_with("session probe failed: /usr/bin/xdotool [\"key\", \"shift+F10\"] ended with exit status: 1;"), "{message}");
+        assert!(
+            message.ends_with("ошибка: cannot open display"),
+            "{message}"
+        );
+        assert!(message.contains("bytes omitted"), "{message}");
+        assert!(
+            message.len() < PROBE_OUTPUT_LIMIT + 200,
+            "{}",
+            message.len()
+        );
+    }
+
+    #[test]
+    fn a_probe_cut_inside_a_character_keeps_the_text_valid() {
+        use std::os::unix::process::ExitStatusExt;
+        // Three-byte characters and a limit that is not a multiple of three
+        // put the cut inside a character.
+        assert_ne!(PROBE_OUTPUT_LIMIT % 3, 0);
+        let output = "€".repeat(PROBE_OUTPUT_LIMIT);
+        let message = probe_failure(
+            "/usr/bin/import",
+            &[],
+            std::process::ExitStatus::from_raw(1 << 8),
+            output.as_bytes(),
+        );
+        assert!(!message.contains('\u{FFFD}'), "{message}");
+        assert!(message.ends_with('€'));
+    }
+
+    #[test]
+    fn a_short_probe_output_is_quoted_whole() {
+        use std::os::unix::process::ExitStatusExt;
+        let message = probe_failure(
+            "/usr/bin/import",
+            &["-window", "root"],
+            std::process::ExitStatus::from_raw(9),
+            b"import: unable to grab\n",
+        );
+        assert!(!message.contains("omitted"), "{message}");
+        assert!(message.contains("signal: 9"), "{message}");
+        assert!(message.ends_with("import: unable to grab"), "{message}");
     }
 
     #[test]

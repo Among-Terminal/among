@@ -70,6 +70,13 @@ among-tools ci-x11 among-tools check-context-menu-snap /absolute/check-clipboard
 among-tools ci-x11 among-tools check-context-menu-snap /absolute/check-clipboard dark --github-hosted
 ```
 
+When a helper the checks drive (`xdotool`, `import`, the clipboard helper)
+exits unsuccessfully, the error names it, its arguments, its exit status and
+the end of its output. If an installed display check fails in
+`snap-build.yml`, the job uploads its evidence directories (application logs,
+helper output, screenshots) as the `snap-display-evidence-<arch>` artifact,
+kept for five days.
+
 The hosted flag requires both original GitHub-hosted markers. In a freshly created
 KVM/QEMU guest omit it; the virtualization guard still applies. The clipboard
 helper is the prebuilt application example, not Python GI or a shipped checker.
