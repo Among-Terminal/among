@@ -17,7 +17,7 @@ use crate::pane::{Pane, PaneSignals};
 use crate::plugin::host::{PluginHost, PluginSpec};
 use crate::plugin::{Context, EventKind, TerminalInfo};
 use crate::prefs;
-use crate::shortcuts::{self, Action, Bindings, Cycle, Direction};
+use crate::shortcuts::{self, Action, Bindings, Cycle, Direction, RESIZE_STEP};
 use crate::slots::{self, Scope, SlotStore};
 use crate::tree::{Node, Orientation, PaneId};
 use crate::workspace::{PaneAllocator, Workspace, WorkspaceSet};
@@ -2489,7 +2489,7 @@ fn reinstall_shortcuts(ctx: &Window) {
 /// Only the two panes on that divider change; everything outside the split is
 /// untouched, which is the point of adjusting the divider rather than resizing
 /// the window.
-fn resize_focused_divider(ctx: &Window, resize: crate::shortcuts::Resize) {
+fn resize_focused_divider(ctx: &Window, direction: Direction) {
     let mut resized = false;
     {
         let mut state = ctx.state.borrow_mut();
@@ -2499,7 +2499,7 @@ fn resize_focused_divider(ctx: &Window, resize: crate::shortcuts::Resize) {
         };
         let focused = workspace.focused;
         let mut nodes = workspace.nodes.clone();
-        if shift_ratio_for_pane(&mut nodes, focused, resize.delta()) {
+        if move_divider_for_pane(&mut nodes, focused, direction) {
             workspace.nodes = nodes;
             resized = true;
         }
@@ -2512,25 +2512,36 @@ fn resize_focused_divider(ctx: &Window, resize: crate::shortcuts::Resize) {
     }
 }
 
-/// Adjust the split ratio that contains `pane`, in the given direction.
+/// Move the divider bounding `pane` one keyboard step towards `direction`.
 ///
-/// `delta` applies to the first child of the split. A pane sitting in the second
-/// child owns the remainder, so the direction is inverted for it.
-fn shift_ratio_for_pane(nodes: &mut Node, pane: PaneId, delta: f64) -> bool {
+/// Left and Right act on the nearest side-by-side split above the pane, Up and
+/// Down on the nearest stacked split: that is the divider which bounds the pane
+/// on the arrow's axis, even when a split of the other orientation sits
+/// between them. The divider moves the way the arrow points whichever side of
+/// it the pane is on. Returns false when no such divider exists.
+fn move_divider_for_pane(nodes: &mut Node, pane: PaneId, direction: Direction) -> bool {
     let Some(path) = find_pane_path(nodes, pane) else {
         return false;
     };
-    // The last step of the path selects the pane's own child; the ratio belongs
-    // to the split above it. A pane that is the whole tree has no divider.
-    let Some(&child_index) = path.last() else {
-        return false;
+    let (axis, step) = match direction {
+        Direction::Left => (Orientation::Vertical, -RESIZE_STEP),
+        Direction::Right => (Orientation::Vertical, RESIZE_STEP),
+        Direction::Up => (Orientation::Horizontal, -RESIZE_STEP),
+        Direction::Down => (Orientation::Horizontal, RESIZE_STEP),
     };
-    let parent = &path[..path.len() - 1];
-    let Some(current) = nodes.ratio_at(parent) else {
-        return false;
-    };
-    let step = if child_index == 0 { delta } else { -delta };
-    nodes.set_ratio_at(parent, current + step)
+    // Every prefix of the path names a split above the pane; the longest one
+    // is the nearest. The ratio is the first child's share, so a positive step
+    // moves the divider right or down.
+    for depth in (0..path.len()).rev() {
+        let split = &path[..depth];
+        if nodes.orientation_at(split) == Some(axis) {
+            let Some(current) = nodes.ratio_at(split) else {
+                return false;
+            };
+            return nodes.set_ratio_at(split, current + step);
+        }
+    }
+    false
 }
 
 /// The path from the root to the split holding `pane`.
@@ -4433,68 +4444,106 @@ mod tests {
         assert_eq!(find_pane_path(&tree, PaneId(99)), None);
     }
 
-    #[test]
-    fn growing_a_divider_widens_the_focused_side() {
-        let mut tree = Node::single_pane(PaneId(1))
-            .split_pane(PaneId(1), Orientation::Vertical, PaneId(2))
-            .unwrap();
-        let before = tree.ratio_at(&[]).unwrap();
-        assert!(shift_ratio_for_pane(&mut tree, PaneId(1), 0.05));
-        assert!(tree.ratio_at(&[]).unwrap() > before);
-    }
-
-    #[test]
-    fn growing_a_divider_for_a_pane_in_the_second_child_moves_the_other_way() {
-        let mut tree = Node::single_pane(PaneId(1))
-            .split_pane(PaneId(1), Orientation::Vertical, PaneId(2))
-            .unwrap();
-        let before = tree.ratio_at(&[]).unwrap();
-        // Pane 2 owns the remainder, so widening it narrows pane 1.
-        assert!(shift_ratio_for_pane(&mut tree, PaneId(2), 0.05));
-        assert!(tree.ratio_at(&[]).unwrap() < before);
-    }
-
-    #[test]
-    fn resizing_nested_splits_leaves_outer_ones_alone() {
-        let mut tree = Node::single_pane(PaneId(1))
+    fn side_by_side() -> Node {
+        Node::single_pane(PaneId(1))
             .split_pane(PaneId(1), Orientation::Vertical, PaneId(2))
             .unwrap()
+    }
+
+    #[test]
+    fn right_moves_a_vertical_divider_right_from_either_side() {
+        // The keys name where the divider goes, not which pane grows: the
+        // right-hand pane once moved the divider left on Ctrl+Shift+Right.
+        for pane in [PaneId(1), PaneId(2)] {
+            let mut tree = side_by_side();
+            let before = tree.ratio_at(&[]).unwrap();
+            assert!(move_divider_for_pane(&mut tree, pane, Direction::Right));
+            assert!(tree.ratio_at(&[]).unwrap() > before, "{pane:?}");
+            let mut tree = side_by_side();
+            assert!(move_divider_for_pane(&mut tree, pane, Direction::Left));
+            assert!(tree.ratio_at(&[]).unwrap() < before, "{pane:?}");
+        }
+    }
+
+    #[test]
+    fn up_and_down_leave_a_side_by_side_split_alone() {
+        let mut tree = side_by_side();
+        let before = tree.ratio_at(&[]).unwrap();
+        assert!(!move_divider_for_pane(&mut tree, PaneId(1), Direction::Up));
+        assert!(!move_divider_for_pane(
+            &mut tree,
+            PaneId(2),
+            Direction::Down
+        ));
+        assert_eq!(tree.ratio_at(&[]).unwrap(), before);
+    }
+
+    #[test]
+    fn each_axis_moves_the_nearest_divider_of_its_own_orientation() {
+        // Pane 2 sits in a stacked split that is itself the right side of a
+        // side-by-side split: Down moves the inner divider, Left the outer one.
+        let tree = side_by_side()
             .split_pane(PaneId(2), Orientation::Horizontal, PaneId(3))
             .unwrap();
         let outer = tree.ratio_at(&[]).unwrap();
         let inner = tree.ratio_at(&[1]).unwrap();
-        assert!(shift_ratio_for_pane(&mut tree, PaneId(2), 0.05));
+
+        let mut moved = tree.clone();
+        assert!(move_divider_for_pane(
+            &mut moved,
+            PaneId(2),
+            Direction::Down
+        ));
         assert!(
-            (tree.ratio_at(&[]).unwrap() - outer).abs() < 1e-9,
-            "outer split moved"
+            moved.ratio_at(&[1]).unwrap() > inner,
+            "inner divider did not go down"
         );
         assert!(
-            (tree.ratio_at(&[1]).unwrap() - inner).abs() > 1e-9,
-            "inner split did not move"
+            (moved.ratio_at(&[]).unwrap() - outer).abs() < 1e-9,
+            "outer moved"
+        );
+
+        let mut moved = tree.clone();
+        assert!(move_divider_for_pane(
+            &mut moved,
+            PaneId(3),
+            Direction::Left
+        ));
+        assert!(
+            moved.ratio_at(&[]).unwrap() < outer,
+            "outer divider did not go left"
+        );
+        assert!(
+            (moved.ratio_at(&[1]).unwrap() - inner).abs() < 1e-9,
+            "inner moved"
         );
     }
 
     #[test]
     fn a_pane_with_no_divider_cannot_be_resized() {
         let mut tree = Node::single_pane(PaneId(1));
-        assert!(!shift_ratio_for_pane(&mut tree, PaneId(1), 0.05));
+        assert!(!move_divider_for_pane(
+            &mut tree,
+            PaneId(1),
+            Direction::Right
+        ));
     }
 
     #[test]
     fn resizing_a_missing_pane_is_refused() {
-        let mut tree = Node::single_pane(PaneId(1))
-            .split_pane(PaneId(1), Orientation::Vertical, PaneId(2))
-            .unwrap();
-        assert!(!shift_ratio_for_pane(&mut tree, PaneId(42), 0.05));
+        let mut tree = side_by_side();
+        assert!(!move_divider_for_pane(
+            &mut tree,
+            PaneId(42),
+            Direction::Right
+        ));
     }
 
     #[test]
     fn resizing_stays_inside_sane_bounds() {
-        let mut tree = Node::single_pane(PaneId(1))
-            .split_pane(PaneId(1), Orientation::Vertical, PaneId(2))
-            .unwrap();
+        let mut tree = side_by_side();
         for _ in 0..60 {
-            shift_ratio_for_pane(&mut tree, PaneId(1), 0.05);
+            move_divider_for_pane(&mut tree, PaneId(1), Direction::Right);
         }
         let ratio = tree.ratio_at(&[]).unwrap();
         assert!((0.05..=0.95).contains(&ratio), "ratio escaped: {ratio}");

@@ -25,6 +25,7 @@ Usage:
   among-tools check-plugin-install <source-root> <among-binary> <prebuilt-plugins> <prebuilt-plugin-installer>
   among-tools check-sessions <among-binary>
   among-tools check-live-focus <among-binary>
+  among-tools check-live-resize <among-binary>
   among-tools check-live-status <source-root> <among-binary> <prebuilt-plugins>
   among-tools check-desktop <source-root> <among-binary>
   among-tools check-context-menu-launch <among-binary>
@@ -689,6 +690,9 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, binary] if command == "check-live-focus" => {
             among_tools::live_focus::run(Path::new(binary), Path::new("/tmp/opencode"))?;
+        }
+        [command, binary] if command == "check-live-resize" => {
+            among_tools::live_resize::run(Path::new(binary), &std::env::temp_dir())?;
         }
         [command, binary] if command == "check-sessions" => {
             among_tools::sessions::run(Path::new(binary), Path::new("/tmp/opencode"))?;

@@ -14,8 +14,9 @@ Press **Ctrl+Shift+N** to split the focused pane. A wide pane splits side by sid
 a tall pane splits top to bottom. Repeat to build a nested layout with separate
 shells, for example a project listing, file manager and process monitor.
 
-Drag a divider to allocate more space, or use **Ctrl+Shift+Right** to grow the
-focused pane and **Ctrl+Shift+Left** to shrink it. Resizing keeps the terminals
+Drag a divider to allocate more space, or press **Ctrl+Shift** with an arrow to
+move the divider next to the focused pane in that direction: Left/Right move a
+side-by-side divider, Up/Down a stacked one. Resizing keeps the terminals
 running rather than starting replacement shells.
 
 [![Separate live terminals running ll, mc and htop](media/features/02-split-resize.png)](media/features/02-split-resize.mp4)

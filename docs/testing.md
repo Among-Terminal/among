@@ -15,7 +15,8 @@ Use an isolated test session: input automation must never target personal termin
 | `AMONG_LIST_BINDINGS` | Prints bindings and exits without opening a window. |
 
 Script actions include `split_pane`, `close_pane`, `new_workspace`, `focus_left`,
-`resize_grow`, `zoom`, `fullscreen`, `preferences` and `next_workspace`.
+`resize_right` (also `resize_left`, `resize_up`, `resize_down`), `zoom`, `fullscreen`,
+`preferences` and `next_workspace`.
 `workspace_N` activates workspace N, counting from 1. `type:<command>` sends text
 to the focused terminal; `feed:<pane>:<command>` targets a numbered pane.
 In these commands, `~` represents a space.
