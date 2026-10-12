@@ -85,6 +85,16 @@ jobs:
           tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-live-status "$PWD" /snap/bin/among /snap/among/current/usr/share/among/plugins || status=1
           tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-sessions /snap/bin/among || status=1
           exit "$status"
+      - name: Retain display check evidence after a failure
+        # The job log names the failed check; its application log, helper
+        # output and screenshots live only in these owned evidence directories.
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: snap-display-evidence-${{ matrix.arch }}
+          path: /tmp/opencode/
+          if-no-files-found: ignore
+          retention-days: 5
       - name: Bind internal checkers for a separate clean runtime
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
