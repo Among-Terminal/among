@@ -58,11 +58,11 @@ pub fn validate_record(record: &Value) -> Result<()> {
         // The suffix is what makes a published edge build traceable back to the
         // source it claims, so it is required rather than merely formatted.
         let version = record["version"].as_str().unwrap_or_default();
-        let dated = version
+        version
             .strip_prefix('n')
             .filter(|rest| {
                 rest.len() == 8 + 1 + 12
-                    && rest.as_bytes()[..8].iter().all(u8::is_ascii_digit)
+                    && calendar_date(&rest.as_bytes()[..8])
                     && rest.as_bytes()[8] == b'-'
                     && rest.as_bytes()[9..].iter().all(|byte| {
                         byte.is_ascii_digit()
@@ -78,7 +78,6 @@ pub fn validate_record(record: &Value) -> Result<()> {
         if !version.ends_with(&source[..12]) {
             return Err("nightly version is not source-traceable".into());
         }
-        let _ = dated;
     }
     if schema == 1 && record["architecture"] != "amd64" {
         return Err("initial provenance supports only amd64".into());
@@ -194,6 +193,31 @@ pub fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     })();
     fs::remove_dir_all(&base)?;
     result
+}
+
+/// Whether eight ASCII bytes `YYYYMMDD` name a day of the Gregorian calendar.
+///
+/// The date is how a reader places a nightly in time; eight digits that name
+/// no day (month 13, 31 April, 29 February of a common year) are refused.
+fn calendar_date(digits: &[u8]) -> bool {
+    if digits.len() != 8 || !digits.iter().all(u8::is_ascii_digit) {
+        return false;
+    }
+    let number = |range: std::ops::Range<usize>| {
+        digits[range]
+            .iter()
+            .fold(0u32, |value, digit| value * 10 + u32::from(digit - b'0'))
+    };
+    let (year, month, day) = (number(0..4), number(4..6), number(6..8));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
 }
 
 fn order(tag: &str) -> Result<Vec<(usize, String)>> {

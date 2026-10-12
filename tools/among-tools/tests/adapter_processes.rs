@@ -252,6 +252,7 @@ for arg in "$@"; do
   case "$arg" in *GH_TOKEN*) printf 'curl LEAKED_GITHUB\n' >> "$log" ;; esac
 done
 [ -n "${GH_TOKEN:-}" ] && printf 'curl HAS_GITHUB_TOKEN\n' >> "$log"
+[ -f "$(dirname "$0")/../store-authorization.header" ] && printf 'curl HEADER_FILE_PRESENT\n' >> "$log"
 cat "$(dirname "$0")/../channel-map.json"
 "#,
     )?;
@@ -294,6 +295,16 @@ cat "$(dirname "$0")/../channel-map.json"
     assert!(
         !log.contains("discharge-token"),
         "the credential appeared in the child's arguments: {log}"
+    );
+    // The header file must exist while curl reads it and be gone afterwards:
+    // a credential left in the work directory outlives the publication run.
+    assert!(
+        log.contains("curl HEADER_FILE_PRESENT"),
+        "curl ran without the private header file: {log}"
+    );
+    assert!(
+        !fixture.0.join("store-authorization.header").exists(),
+        "the Store credential file was left behind after the request"
     );
     Ok(())
 }

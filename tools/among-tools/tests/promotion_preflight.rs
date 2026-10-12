@@ -168,3 +168,93 @@ fn a_nightly_whose_source_cannot_be_verified_on_main_is_refused() -> Result<()> 
     );
     Ok(())
 }
+
+/// Run git in `repo` with no user or system configuration, so the fixture
+/// behaves the same on a developer machine and on a clean runner.
+fn git(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("/usr/bin/git")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string().into());
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().into())
+}
+
+/// A repository whose protected main carries `v0.1.0` with both manifests at
+/// 0.1.0: the exact state a genuine stable release is derived from.
+fn released_repository(root: &Path) -> Result<String> {
+    git(root, &["init", "-q", "-b", "main"])?;
+    git(root, &["config", "user.name", "Synthetic Fixture"])?;
+    git(root, &["config", "user.email", "fixture@example.invalid"])?;
+    for name in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
+        let path = root.join(name);
+        fs::create_dir_all(path.parent().ok_or("fixture parent absent")?)?;
+        fs::write(path, "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\n")?;
+    }
+    git(root, &["add", "Cargo.toml", "examples/plugins/Cargo.toml"])?;
+    git(
+        root,
+        &["-c", "commit.gpgSign=false", "commit", "-qm", "release"],
+    )?;
+    git(root, &["-c", "tag.gpgSign=false", "tag", "v0.1.0"])?;
+    git(root, &["update-ref", "refs/remotes/origin/main", "HEAD"])?;
+    git(root, &["rev-parse", "HEAD"])
+}
+
+/// A stable record is the record `release_policy::stable` derives, which has
+/// no `mode` field. Preflight once compared it with a copy into which it had
+/// inserted `"mode":"stable"`, so no stable release could ever pass. The
+/// synthetic Snap stops preflight at the packaged-identity check; reaching that
+/// check is what proves the provenance comparison accepted a genuine record.
+#[test]
+fn a_genuine_stable_record_passes_the_provenance_comparison() -> Result<()> {
+    let fixture = workspace()?;
+    let repository = fixture.0.join("repository");
+    fs::create_dir_all(&repository)?;
+    let source = released_repository(&repository)?;
+    let artifacts = fixture.0.join("artifacts");
+    fs::create_dir_all(&artifacts)?;
+    let (record, gates, assets) = scenario(&artifacts, "stable", &source)?;
+    assert!(
+        record.get("mode").is_none(),
+        "a stable record carries no mode"
+    );
+    let refusal = promotion_publication::preflight(&record, &gates, &assets, true, &repository)
+        .err()
+        .ok_or("a synthetic Snap was accepted as a packaged artifact")?
+        .to_string();
+    assert!(
+        !refusal.contains("provenance"),
+        "a genuine stable record was refused by the provenance comparison: {refusal}"
+    );
+    Ok(())
+}
+
+/// The other side of the same comparison: a record that claims a source other
+/// than the commit the protected tag names is not the released state.
+#[test]
+fn a_stable_record_claiming_another_source_is_refused_by_provenance() -> Result<()> {
+    let fixture = workspace()?;
+    let repository = fixture.0.join("repository");
+    fs::create_dir_all(&repository)?;
+    released_repository(&repository)?;
+    let artifacts = fixture.0.join("artifacts");
+    fs::create_dir_all(&artifacts)?;
+    let (record, gates, assets) = scenario(&artifacts, "stable", &"e".repeat(40))?;
+    let refusal = promotion_publication::preflight(&record, &gates, &assets, true, &repository)
+        .err()
+        .ok_or("a record with a foreign source passed preflight")?
+        .to_string();
+    assert!(
+        refusal.contains("stable provenance differs"),
+        "the refusal did not name the provenance mismatch: {refusal}"
+    );
+    Ok(())
+}

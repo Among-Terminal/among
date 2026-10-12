@@ -16,7 +16,7 @@ use crate::{
     promotion_destinations::{GitHubRelease, SnapStore},
     Result,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -94,7 +94,7 @@ pub fn preflight(
 ) -> Result<()> {
     promotion::validate(record, gates, assets, approved)?;
     let groups = promotion::artifact_groups(record)?;
-    let nightly = record["mode"] == "nightly";
+    let nightly = promotion::is_nightly(record);
     let tag = record["tag"]
         .as_str()
         .ok_or("promotion record has no tag")?;
@@ -113,7 +113,9 @@ pub fn preflight(
         // protected checkout: the tag must resolve to a full commit, that
         // commit must be on main, and the manifests at that commit must carry
         // the released version. `stable` re-derives the record from those
-        // facts, so a record that merely claims them is refused.
+        // facts, so a record that merely claims them is refused. The derived
+        // record has no `mode`, exactly like a genuine stable record, so the
+        // two are compared as they are.
         let derived = crate::release_policy::stable(
             source_root,
             tag,
@@ -122,12 +124,7 @@ pub fn preflight(
             None,
             record.get("architectures"),
         )?;
-        let mut claimed = record.clone();
-        claimed
-            .as_object_mut()
-            .ok_or("promotion record must be an object")?
-            .insert("mode".into(), json!("stable"));
-        if derived != claimed {
+        if &derived != record {
             return Err("stable provenance differs from protected Git source".into());
         }
     }
