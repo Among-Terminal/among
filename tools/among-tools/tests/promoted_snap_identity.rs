@@ -23,8 +23,17 @@ fn artifacts_directory() -> Option<PathBuf> {
         .filter(|path| path.is_dir())
 }
 
-fn record(version: &str, mode: &str) -> serde_json::Value {
-    json!({"version":version,"mode":mode})
+/// A stable record as `release_policy` defines it: no `mode` field at all.
+/// Fixtures once invented `"mode":"stable"`, which no real record carries, and
+/// so hid that the grade check never ran for a genuine stable promotion.
+fn stable(version: &str) -> serde_json::Value {
+    json!({"version":version})
+}
+
+/// A nightly record, the only kind that declares a `mode`. A devel-grade
+/// artifact is acceptable here, which makes it the control case.
+fn nightly(version: &str) -> serde_json::Value {
+    json!({"version":version,"mode":"nightly"})
 }
 
 /// The single built Snap for `architecture` in the mounted artifact directory.
@@ -91,7 +100,7 @@ fn each_architecture_is_accepted_only_for_its_own_packaged_metadata() -> Result<
             continue;
         }
         let snap = snap.ok_or("unreachable after report_skip")?;
-        let devel = record(&packaged_version(&snap)?, "devel");
+        let devel = nightly(&packaged_version(&snap)?);
         promotion::check_snap_identity(&snap, &devel, architecture)?;
         // The real artifact, offered as the other architecture, must be
         // refused: the name says otherwise, the packaged metadata does not.
@@ -112,14 +121,14 @@ fn a_devel_candidate_cannot_satisfy_a_stable_promotion() -> Result<()> {
     let snap = snap.ok_or("unreachable after report_skip")?;
     let version = packaged_version(&snap)?;
     // The candidate CI builds is a devel build. The stable promotion must fail,
-    // and the same artifact under a devel record must pass; that second
+    // and the same artifact under a nightly record must pass; that second
     // assertion is the control proving the failure is about the grade alone
     // rather than about name/version/architecture not matching.
     assert!(
-        promotion::check_snap_identity(&snap, &record(&version, "stable"), "amd64").is_err(),
+        promotion::check_snap_identity(&snap, &stable(&version), "amd64").is_err(),
         "a devel artifact satisfied a stable promotion"
     );
-    promotion::check_snap_identity(&snap, &record(&version, "devel"), "amd64")?;
+    promotion::check_snap_identity(&snap, &nightly(&version), "amd64")?;
     Ok(())
 }
 
@@ -132,7 +141,7 @@ fn a_version_mismatch_is_refused_even_for_the_right_architecture() -> Result<()>
     let snap = snap.ok_or("unreachable after report_skip")?;
     let wrong = format!("{}.99", packaged_version(&snap)?);
     assert!(
-        promotion::check_snap_identity(&snap, &record(&wrong, "devel"), "amd64").is_err(),
+        promotion::check_snap_identity(&snap, &nightly(&wrong), "amd64").is_err(),
         "a version that is not the packaged one was accepted"
     );
     Ok(())
@@ -151,7 +160,7 @@ fn renaming_the_artifact_does_not_change_the_verdict() -> Result<()> {
     let disguised = base.join("among_definitely_arm64.snap");
     fs::copy(&snap, &disguised)?;
 
-    let devel = record(&packaged_version(&snap)?, "devel");
+    let devel = nightly(&packaged_version(&snap)?);
     // Named arm64, still amd64 inside.
     assert!(
         promotion::check_snap_identity(&disguised, &devel, "arm64").is_err(),
@@ -170,16 +179,14 @@ fn something_that_is_not_a_snap_is_refused() -> Result<()> {
     let base = storage::private_directory(&std::env::temp_dir(), "among-snap-not-a-snap")?;
     let path = base.join("not-really.snap");
     fs::write(&path, b"this is not a squashfs image")?;
-    assert!(promotion::check_snap_identity(&path, &record("0.1.0", "devel"), "amd64").is_err());
+    assert!(promotion::check_snap_identity(&path, &nightly("0.1.0"), "amd64").is_err());
     // A directory is not an artifact either.
-    assert!(promotion::check_snap_identity(&base, &record("0.1.0", "devel"), "amd64").is_err());
+    assert!(promotion::check_snap_identity(&base, &nightly("0.1.0"), "amd64").is_err());
     // A path that does not exist at all.
-    assert!(promotion::check_snap_identity(
-        &base.join("absent.snap"),
-        &record("0.1.0", "devel"),
-        "amd64"
-    )
-    .is_err());
+    assert!(
+        promotion::check_snap_identity(&base.join("absent.snap"), &nightly("0.1.0"), "amd64")
+            .is_err()
+    );
     fs::remove_dir_all(base)?;
     Ok(())
 }

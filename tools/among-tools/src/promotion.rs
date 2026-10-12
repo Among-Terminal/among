@@ -119,6 +119,17 @@ pub fn artifact_groups(record: &Value) -> Result<BTreeMap<String, Group>> {
     Ok(groups)
 }
 
+/// Whether `record` is a nightly publication.
+///
+/// `release_policy::validate_record` admits exactly two shapes: a nightly
+/// declares `"mode":"nightly"`, and a stable release carries no `mode` at all.
+/// Every caller decides stable-versus-nightly through this one predicate; a
+/// comparison against an invented `"stable"` value is never true for a real
+/// record and silently turns stable-only checks off.
+pub fn is_nightly(record: &Value) -> bool {
+    record["mode"] == "nightly"
+}
+
 /// Read the packaged identity from the Snap itself rather than trusting a
 /// filename or the record. A devel candidate can never satisfy a stable
 /// promotion.
@@ -131,7 +142,7 @@ pub fn check_snap_identity(path: &Path, record: &Value, architecture: &str) -> R
     {
         return Err("packaged identity/version/confinement/architecture mismatch".into());
     }
-    if record["mode"] == "stable" && metadata["grade"] != "stable" {
+    if !is_nightly(record) && metadata["grade"] != "stable" {
         return Err("a devel candidate cannot be promoted to stable".into());
     }
     Ok(())
@@ -181,13 +192,7 @@ pub fn validate(
     if !approved {
         return Err("protected publication approval is required".into());
     }
-    let mut provenance = record.clone();
-    // The field set differs by mode: `mode` is allowed only on a record that
-    // declares it, so it is dropped only when absent.
-    provenance
-        .as_object_mut()
-        .ok_or("promotion record must be an object")?;
-    release_policy::validate_record(&provenance)?;
+    release_policy::validate_record(record)?;
     if gates["source_sha"] != record["source_sha"] || gates["assets"] != record["assets"] {
         return Err("gates are not bound to these exact source/artifact digests".into());
     }
@@ -265,11 +270,11 @@ pub fn promote(
         PUBLICATION_LOCK_WAIT,
     )?;
 
-    let mode = record["mode"].as_str().unwrap_or_default();
+    let nightly = is_nightly(record);
     let tag = record["tag"]
         .as_str()
         .ok_or("promotion record has no tag")?;
-    if mode == "nightly" {
+    if nightly {
         // The rolling marker's state file is this record and nothing else. A
         // repeat of an already successful nightly must write nothing at all:
         // re-uploading would push the edge channel to an identical revision and
@@ -311,7 +316,7 @@ pub fn promote(
     let version = record["version"]
         .as_str()
         .ok_or("promotion record has no version")?;
-    let channel = if mode == "nightly" {
+    let channel = if nightly {
         "latest/edge"
     } else {
         "latest/stable"
@@ -319,7 +324,7 @@ pub fn promote(
     for (architecture, group) in &groups {
         destinations.ensure(&assets[&group.snap], version, channel, architecture)?;
     }
-    if mode == "nightly" {
+    if nightly {
         // Only after both destinations succeeded. A partial failure must leave
         // the marker unset so a retry re-reconciles rather than declaring a
         // nightly complete that never reached users.

@@ -215,3 +215,25 @@ fn two_architectures_require_exact_distinct_checked_role_artifacts() -> Result<(
     assert!(policy::validate_record(&json!({"schema":1,"tag":"v1.2.3","version":"1.2.3","source_sha":"a".repeat(40),"architecture":"amd64","assets":{"../escape":"b".repeat(64)}})).is_err());
     Ok(())
 }
+
+/// The date in a nightly version is what a reader uses to place an edge build
+/// in time, so eight digits that name no day are not an identity. A leap day
+/// is a real date and must stay accepted.
+#[test]
+fn a_nightly_version_must_carry_a_calendar_date() -> Result<()> {
+    let source = "c".repeat(40);
+    let nightly = |date: &str| {
+        json!({"schema":1,"mode":"nightly","tag":format!("nightly-{source}"),
+               "version":format!("n{date}-{}", &source[..12]),"source_sha":source,
+               "architecture":"amd64","assets":{"among_amd64.snap":"d".repeat(64)}})
+    };
+    policy::validate_record(&nightly("20280229"))?;
+    policy::validate_record(&nightly("20261011"))?;
+    for impossible in ["20261399", "20261000", "20270229", "20260431", "20261100"] {
+        assert!(
+            policy::validate_record(&nightly(impossible)).is_err(),
+            "{impossible} is not a calendar date but was accepted"
+        );
+    }
+    Ok(())
+}

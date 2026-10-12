@@ -636,6 +636,17 @@ pub struct SnapStore {
 /// The Store name being promoted.
 const SNAP: &str = "among";
 
+/// A credential file that exists only as long as this value does.
+struct CredentialFile(PathBuf);
+
+impl Drop for CredentialFile {
+    fn drop(&mut self) {
+        // Nothing to report from a destructor; a file already gone is the
+        // state this guard exists to reach.
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 /// Revisions that carry this version and this architecture.
 pub fn matching_revisions(metadata: &Value, version: &str, architecture: &str) -> Vec<Value> {
     metadata["revisions"]
@@ -708,6 +719,7 @@ impl SnapStore {
     /// unauthenticated read would report whatever the endpoint chose to return
     /// publicly, which is not evidence about a revision about to take a channel.
     pub fn metadata(&self) -> Result<Value> {
+        let header = self.header_file()?;
         let body = quiet_output(
             &self.curl,
             &[
@@ -718,7 +730,7 @@ impl SnapStore {
                 "Accept: application/json".to_string(),
                 // The macaroon is passed through a private header file, never as
                 // an argument: a process command line is readable through /proc.
-                format!("--header@{}", self.header_file()?.display()),
+                format!("--header@{}", header.0.display()),
                 // The channel-map document carries BOTH the revision list and the
                 // channel map; the revisions-only endpoint has no channel rows,
                 // so reading it would make a channel confirmation impossible.
@@ -739,8 +751,11 @@ impl SnapStore {
     /// A private file holding the `Authorization` header for `curl`.
     ///
     /// Writing the credential to a mode-0600 file keeps it out of the process
-    /// argument list, where any local reader could see it through `/proc`.
-    fn header_file(&self) -> Result<PathBuf> {
+    /// argument list, where any local reader could see it through `/proc`. The
+    /// file is removed when the returned value is dropped, on success and on
+    /// error alike, so the credential does not outlive the request in the
+    /// work directory.
+    fn header_file(&self) -> Result<CredentialFile> {
         let path = self.workdir.join("store-authorization.header");
         storage::atomic_write(
             &self.workdir,
@@ -748,7 +763,7 @@ impl SnapStore {
             format!("Authorization: {}\n", self.authorization()?).as_bytes(),
             0o600,
         )?;
-        Ok(path)
+        Ok(CredentialFile(path))
     }
 
     /// The value used for the API's `Authorization` header.
@@ -838,7 +853,7 @@ impl Destinations for SnapStore {
                 &self.snapcraft,
                 &[
                     "release".into(),
-                    "among".into(),
+                    SNAP.into(),
                     revision.to_string(),
                     channel.into(),
                 ],
