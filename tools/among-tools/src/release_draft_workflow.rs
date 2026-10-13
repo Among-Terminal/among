@@ -193,6 +193,7 @@ pub fn validate(document: &Value) -> Result<()> {
     let publish = draft_script(document)?;
     for required in [
         "set -euo pipefail",
+        "is required on the runner",
         "-F draft=true -F prerelease=\"$prerelease\"",
         "*-rc.*) prerelease=true ;;",
         "repos/$repo/commits/refs/tags/$tag",

@@ -139,6 +139,11 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "release draft: $*" >&2; exit 1; }
+          # A missing tool must stop the step with its name, not surface later
+          # as a mismatch that looks like a release problem.
+          for tool in gh jq sha256sum cmp find mktemp; do
+            command -v "$tool" > /dev/null || fail "$tool is required on the runner"
+          done
           repo="$GITHUB_REPOSITORY"
           tag="$GITHUB_REF_NAME"
           assets="$PWD/release-assets"
@@ -148,7 +153,8 @@ jobs:
             *) prerelease=false ;;
           esac
 
-          (cd "$assets" && sha256sum --check --strict --quiet SHA256SUMS)
+          (cd "$assets" && sha256sum --check --strict --quiet SHA256SUMS) \
+            || fail 'staged files do not match SHA256SUMS'
           { cut -c67- "$assets/SHA256SUMS"; echo SHA256SUMS; } | LC_ALL=C sort > "$work/expected"
           find "$assets" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | cmp -s - "$work/expected" \
             || fail 'staged files differ from SHA256SUMS'

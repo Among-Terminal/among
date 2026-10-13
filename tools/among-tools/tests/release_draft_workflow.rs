@@ -306,16 +306,23 @@ impl Draft {
         Ok(fs::read(self.root.join("work/release-assets").join(name))?)
     }
 
-    fn run(&self, tag: &str, tag_commit: &str) -> Result<bool> {
+    /// Runs the draft step with the substitute `gh` first on PATH, then the
+    /// system tools a GitHub-hosted runner provides.
+    fn run(&self, tag: &str, tag_commit: &str) -> Result<Outcome> {
+        let path = format!("{}:/usr/bin:/bin", self.root.join("bin").display());
+        self.run_with_path(tag, tag_commit, &path)
+    }
+
+    /// The whole environment is replaced, so variables of the job that runs
+    /// the tests (a real tag's GITHUB_SHA, GITHUB_REF_NAME, HOME) never reach
+    /// the step under test.
+    fn run_with_path(&self, tag: &str, tag_commit: &str, path: &str) -> Result<Outcome> {
         let script = release_draft_workflow::draft_script(&actual()?)?;
-        let status = Command::new("/bin/bash")
+        let output = Command::new("/bin/bash")
             .args(["--noprofile", "--norc", "-c", &script])
             .current_dir(self.root.join("work"))
             .env_clear()
-            .env(
-                "PATH",
-                format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
-            )
+            .env("PATH", path)
             .env("HOME", &self.root)
             .env("RUNNER_TEMP", &self.state)
             .env("GH_TOKEN", "not-a-token")
@@ -325,8 +332,11 @@ impl Draft {
             .env("RUN_URL", "https://github.invalid/run/1")
             .env("FAKE_GH_STATE", &self.state)
             .env("FAKE_TAG_COMMIT", tag_commit)
-            .status()?;
-        Ok(status.success())
+            .output()?;
+        Ok(Outcome {
+            success: output.status.success(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
 
     fn read(&self, name: &str) -> String {
@@ -343,6 +353,34 @@ impl Draft {
         names
     }
 }
+
+struct Outcome {
+    success: bool,
+    stderr: String,
+}
+
+impl Outcome {
+    /// Success must be real success: a step that stops early, for example
+    /// on a missing tool, must not count as a pass.
+    fn succeeded(&self) -> bool {
+        if !self.success {
+            eprintln!("draft step failed:\n{}", self.stderr);
+        }
+        self.success
+    }
+
+    /// A refusal only counts when the step stopped for the expected reason;
+    /// otherwise any unrelated failure would make every refusal test pass.
+    fn refused_because(&self, reason: &str) -> bool {
+        !self.success && self.stderr.contains(&format!("release draft: {reason}"))
+    }
+}
+
+// The draft step runs on a GitHub-hosted runner, which provides jq. Package
+// builds (debian/rules, the RPM spec) run this suite in minimal containers
+// without jq, so the tests that execute the step through jq are ignored there
+// and run by the Checks workflow's ignored-test runner, which also runs them
+// on both architectures.
 
 impl Drop for Draft {
     fn drop(&mut self) {
@@ -361,9 +399,10 @@ fn all_names() -> Vec<String> {
 }
 
 #[test]
+#[ignore = "runs the draft step, which needs jq as on the GitHub-hosted runner; package-build containers lack jq, the Checks ignored-test runner runs it"]
 fn new_release_candidate_draft_is_a_prerelease_with_every_file() -> Result<()> {
     let draft = Draft::new(json!([]))?;
-    assert!(draft.run("v0.1.0-rc.11", COMMIT)?);
+    assert!(draft.run("v0.1.0-rc.11", COMMIT)?.succeeded());
     let created = draft.read("created");
     assert!(created.contains("draft=true"));
     assert!(created.contains("prerelease=true"));
@@ -373,20 +412,22 @@ fn new_release_candidate_draft_is_a_prerelease_with_every_file() -> Result<()> {
 }
 
 #[test]
+#[ignore = "runs the draft step, which needs jq as on the GitHub-hosted runner; package-build containers lack jq, the Checks ignored-test runner runs it"]
 fn stable_tag_draft_is_not_a_prerelease() -> Result<()> {
     let draft = Draft::new(json!([]))?;
-    assert!(draft.run("v0.1.0", COMMIT)?);
+    assert!(draft.run("v0.1.0", COMMIT)?.succeeded());
     assert!(draft.read("created").contains("prerelease=false"));
     Ok(())
 }
 
 #[test]
+#[ignore = "runs the draft step, which needs jq as on the GitHub-hosted runner; package-build containers lack jq, the Checks ignored-test runner runs it"]
 fn retry_keeps_matching_assets_and_uploads_only_the_missing_ones() -> Result<()> {
     let draft = Draft::new(rc_draft())?;
     let (first, _) = FILES[0];
     draft.existing(1, first, &draft.staged(first)?)?;
     draft.existing(2, "SHA256SUMS", &draft.staged("SHA256SUMS")?)?;
-    assert!(draft.run("v0.1.0-rc.11", COMMIT)?);
+    assert!(draft.run("v0.1.0-rc.11", COMMIT)?.succeeded());
     assert!(
         draft.read("created").is_empty(),
         "a second draft was created"
@@ -404,12 +445,13 @@ fn rc_draft() -> Value {
 
 /// Re-running only the draft job after a complete upload changes nothing.
 #[test]
+#[ignore = "runs the draft step, which needs jq as on the GitHub-hosted runner; package-build containers lack jq, the Checks ignored-test runner runs it"]
 fn complete_matching_draft_is_verified_without_writes() -> Result<()> {
     let draft = Draft::new(rc_draft())?;
     for (index, name) in all_names().iter().enumerate() {
         draft.existing(index as u32 + 1, name, &draft.staged(name)?)?;
     }
-    assert!(draft.run("v0.1.0-rc.11", COMMIT)?);
+    assert!(draft.run("v0.1.0-rc.11", COMMIT)?.succeeded());
     assert!(draft.read("created").is_empty());
     assert!(draft.uploaded().is_empty());
     Ok(())
@@ -418,8 +460,10 @@ fn complete_matching_draft_is_verified_without_writes() -> Result<()> {
 /// A draft asset left by an earlier run: its name and bytes.
 type Leftover<'a> = Option<(&'a str, &'a [u8])>;
 
-/// Each case must fail before any release is created or any asset uploaded.
+/// Each case must fail for its own reason before any release is created or
+/// any asset uploaded.
 #[test]
+#[ignore = "runs the draft step, which needs jq as on the GitHub-hosted runner; package-build containers lack jq, the Checks ignored-test runner runs it"]
 fn foreign_published_moved_or_conflicting_releases_are_left_untouched() -> Result<()> {
     let published = json!([{"id":7,"tag_name":"v0.1.0-rc.11","draft":false}]);
     let existing = rc_draft();
@@ -429,54 +473,104 @@ fn foreign_published_moved_or_conflicting_releases_are_left_untouched() -> Resul
     ]);
     let not_prerelease =
         json!([{"id":7,"tag_name":"v0.1.0-rc.11","draft":true,"prerelease":false}]);
-    let cases: [(&str, Value, Leftover, &str); 6] = [
-        ("published release", published, None, COMMIT),
+    let cases: [(Value, Leftover, &str, &str); 6] = [
         (
-            "release candidate draft not marked as a prerelease",
+            published,
+            None,
+            COMMIT,
+            "v0.1.0-rc.11 already has a published release",
+        ),
+        (
             not_prerelease,
             None,
             COMMIT,
+            "existing draft for v0.1.0-rc.11 must have prerelease=true",
         ),
-        ("two releases for the tag", duplicate, None, COMMIT),
         (
-            "draft asset with other bytes",
+            duplicate,
+            None,
+            COMMIT,
+            "v0.1.0-rc.11 has more than one release",
+        ),
+        (
             existing.clone(),
             Some((FILES[1].0, b"rebuilt")),
             COMMIT,
+            "draft asset among-0.1.0.rc.11-1.fc43.src.rpm differs from this build",
         ),
         (
-            "unexpected draft asset",
             existing,
             Some(("notes.txt", b"x")),
             COMMIT,
+            "draft holds unexpected asset notes.txt",
         ),
         (
-            "tag moved after the build",
             json!([]),
             None,
             "fedcba9876543210fedcba9876543210fedcba98",
+            "v0.1.0-rc.11 points at fedcba9876543210fedcba9876543210fedcba98",
         ),
     ];
-    for (name, releases, asset, tag_commit) in cases {
+    for (releases, asset, tag_commit, reason) in cases {
         let draft = Draft::new(releases)?;
         if let Some((asset, bytes)) = asset {
             draft.existing(1, asset, bytes)?;
         }
-        assert!(!draft.run("v0.1.0-rc.11", tag_commit)?, "{name} succeeded");
-        assert!(draft.read("created").is_empty(), "{name} created a release");
-        assert!(draft.uploaded().is_empty(), "{name} uploaded assets");
+        let outcome = draft.run("v0.1.0-rc.11", tag_commit)?;
+        assert!(
+            outcome.refused_because(reason),
+            "expected refusal {reason:?}, got:\n{}",
+            outcome.stderr
+        );
+        assert!(
+            draft.read("created").is_empty(),
+            "{reason}: release created"
+        );
+        assert!(draft.uploaded().is_empty(), "{reason}: assets uploaded");
     }
     Ok(())
 }
 
 #[test]
+#[ignore = "runs the draft step, which needs jq as on the GitHub-hosted runner; package-build containers lack jq, the Checks ignored-test runner runs it"]
 fn staged_files_that_do_not_match_their_sums_are_never_uploaded() -> Result<()> {
     let draft = Draft::new(json!([]))?;
     fs::write(
         draft.root.join("work/release-assets").join(FILES[0].0),
         "changed",
     )?;
-    assert!(!draft.run("v0.1.0-rc.11", COMMIT)?);
+    let outcome = draft.run("v0.1.0-rc.11", COMMIT)?;
+    assert!(
+        outcome.refused_because("staged files do not match SHA256SUMS"),
+        "{}",
+        outcome.stderr
+    );
+    assert!(draft.read("created").is_empty());
+    assert!(draft.uploaded().is_empty());
+    Ok(())
+}
+
+/// Reproduces the v0.1.0-rc.11 package-build failure: without jq the step
+/// used to run on and fail inside unrelated commands, so refusal tests
+/// "passed" and success tests failed with no clear cause. The step must stop
+/// first, name the missing tool, and make no GitHub call. Runs everywhere,
+/// because it needs only bash and the substitute gh.
+#[test]
+fn a_missing_runner_tool_stops_the_step_before_any_github_call() -> Result<()> {
+    let draft = Draft::new(json!([]))?;
+    // Only the substitute gh is reachable; jq and coreutils are not.
+    let only_gh = draft.root.join("bin");
+    let outcome = draft.run_with_path(
+        "v0.1.0-rc.11",
+        COMMIT,
+        only_gh.to_str().ok_or("path is not UTF-8")?,
+    )?;
+    assert!(
+        outcome.refused_because("jq is required on the runner"),
+        "{}",
+        outcome.stderr
+    );
+    assert_eq!(draft.read("calls.log"), "", "gh was called");
     assert!(draft.read("created").is_empty());
     assert!(draft.uploaded().is_empty());
     Ok(())

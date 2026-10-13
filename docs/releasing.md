@@ -308,7 +308,12 @@ after five days, after which a re-run must rebuild from the start.
 The draft is not a publication. Download every asset into an empty directory,
 run `sha256sum -c SHA256SUMS`, review the notes, then publish the draft in the
 GitHub interface. That click is the owner's approval. Offline checks:
-`cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test release_assets --test release_draft_workflow`.
+`cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test release_assets --test release_draft_workflow -- --include-ignored`.
+The tests that execute the draft step need `jq`, as the GitHub-hosted runner
+provides; they are `#[ignore]`d so that package builds, whose containers have
+no `jq`, skip them, and the Checks workflow runs them with its ignored-test
+runner. Without `jq` the draft step stops with `jq is required on the runner`
+before any GitHub call.
 
 ## 6. Publication, verification and rollback
 
