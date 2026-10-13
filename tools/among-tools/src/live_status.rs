@@ -32,7 +32,8 @@ fn wait(h: &mut Harness, offset: usize, seconds: u64, test: impl Fn(&str) -> boo
 }
 
 fn footer_directory(text: &str, pane: u64, directory: &str) -> bool {
-    // /tmp/opencode is not evidence that `cd /tmp` actually reached the shell.
+    // A footer showing a directory below /tmp, such as the scratch root the
+    // check starts in, is not evidence that `cd /tmp` actually reached the shell.
     text.replace("\\\"", "\"")
         .contains(&format!("{pane}:[\"{directory}|"))
 }
@@ -42,8 +43,9 @@ mod directory_tests {
     use super::*;
     #[test]
     fn a_shared_directory_prefix_is_not_shell_command_evidence() {
+        let scratch = crate::SCRATCH_ROOT;
         assert!(!footer_directory(
-            "rendered_footers=[\"4:[\\\"/tmp/opencode/test|/tmp/opencode/test|10x10\\\"]\"]",
+            &format!("rendered_footers=[\"4:[\\\"{scratch}/test|{scratch}/test|10x10\\\"]\"]"),
             4,
             "/tmp"
         ));

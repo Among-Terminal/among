@@ -84,7 +84,7 @@ pub fn host_probe(output: &Path) -> Result<()> {
     let root = output.parent().ok_or("host probe parent absent")?;
     let root = root.canonicalize()?;
     require(
-        root.starts_with("/tmp/opencode")
+        root.starts_with(crate::SCRATCH_ROOT)
             && root.metadata()?.uid() == nix::unistd::geteuid().as_raw(),
         "host probe requires an owned private evidence directory",
     )?;

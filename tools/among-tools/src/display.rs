@@ -128,7 +128,7 @@ fn environment(base: &Path, cairo: bool) -> Result<BTreeMap<OsString, OsString>>
     }
     if let Some(home) = std::env::var_os("CARGO_HOME") {
         let home = PathBuf::from(home).canonicalize()?;
-        if home.starts_with(Path::new("/tmp/opencode").canonicalize()?) {
+        if home.starts_with(crate::scratch_root().canonicalize()?) {
             env.insert("CARGO_HOME".into(), home.into_os_string());
         }
     }
@@ -419,7 +419,7 @@ mod tests {
     #[ignore = "requires disposable X11 container"]
     fn readiness_failures_stop_owned_children_only() -> Result<()> {
         let mut unrelated = Unrelated(std::process::Command::new("/bin/sleep").arg("30").spawn()?);
-        let base = private_directory(Path::new("/tmp/opencode"))?;
+        let base = private_directory(crate::scratch_root())?;
         let mut env = environment(&base, true)?;
         assert!(start_server(Path::new("/bin/false"), false, &env, &base, "failed").is_err());
         assert!(start_server(
@@ -468,7 +468,7 @@ mod tests {
     #[ignore = "requires disposable X11 container"]
     fn command_timeout_preserves_unrelated_child_and_retains_failure_logs() -> Result<()> {
         let mut unrelated = Unrelated(std::process::Command::new("/bin/sleep").arg("30").spawn()?);
-        let scratch = private_directory(Path::new("/tmp/opencode"))?;
+        let scratch = private_directory(crate::scratch_root())?;
         let error = run(
             Mode::Ci,
             &["/bin/sleep".into(), "30".into()],
