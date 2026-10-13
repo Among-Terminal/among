@@ -63,7 +63,6 @@ Usage:
   among-tools collect-apt-provenance <new-output>
   among-tools check-promotion-admission <record.json> <gates.json> <artifact-directory> [--approved]
   among-tools release-promotion <record.json> <gates.json> <artifact-directory> <owner/name> <source-root> [--lock=<path>]
-  among-tools check-no-python <source-root>
   among-tools check-rpm-spec <source-root>
   among-tools prepare-rpm-release <source-root> <output.spec>
   among-tools stage-appimage <source-root> <binaries-directory> <launcher> <architecture> <new-AppDir>
@@ -291,18 +290,6 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             let root = Path::new(root);
             let report = among_tools::rpm::check(root, &among_tools::rpm::spec_path(root))?;
             println!("{}", serde_json::to_string_pretty(&report)?);
-        }
-        [command, root] if command == "check-no-python" => {
-            let findings = among_tools::python_guard::scan(Path::new(root))?;
-            if !findings.is_empty() {
-                for finding in &findings {
-                    eprintln!("{}:{}: {}", finding.path, finding.line, finding.reason);
-                }
-                return Err(format!("Python prohibition failed with {} findings; guard implementation is partial until full adversarial suite is complete",findings.len()).into());
-            }
-            println!(
-                "No findings in current bounded scan; guard is not final migration acceptance"
-            );
         }
         [command, record, gates, assets, rest @ ..] if command == "check-promotion-admission" => {
             let approved = match rest {

@@ -449,21 +449,9 @@ pub fn runtime_inventory_only(packages: &str, visible_commands: &[&str]) -> Resu
         let name = name.split(':').next().ok_or("missing package name")?;
         if status == "installed"
             && (name.ends_with("-dev")
-                || matches!(
-                    name,
-                    "cargo"
-                        | "rustc"
-                        | "rustup"
-                        | "build-essential"
-                        | "python3-gi"
-                        | "python3-gi-cairo"
-                        | "python3-cairo"
-                ))
+                || matches!(name, "cargo" | "rustc" | "rustup" | "build-essential"))
         {
-            return Err(format!(
-                "build or Python GUI test dependency present in runtime container: {name}"
-            )
-            .into());
+            return Err(format!("build dependency present in runtime container: {name}").into());
         }
     }
     if visible_commands

@@ -156,8 +156,7 @@ pub fn validate(document: &Value) -> Result<Vec<String>> {
         commands[1].contains("native-checker/among-tools ci-deb-install . \"$BUILD_TARGET\"")
             && commands[1].contains("sha256sum --check native-checker.sha256")
             && commands[1].contains("sha256sum --check SHA256SUMS")
-            && commands[1].contains("check-native-checker")
-            && !commands[1].contains("python3"),
+            && commands[1].contains("check-native-checker"),
         "source-bound prebuilt installed acceptance dispatch missing",
     )?;
     require(

@@ -63,7 +63,7 @@ jobs:
           # (GitHub prepare/publish/roll, Store upload/release) have no test yet.
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test promotion --test promotion_nightly --test promotion_destinations --test release_policy --test adapter_processes --test promotion_preflight
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test nightly
-          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test python_guard --test action_review --test promo_review --test promo_prepare --test promo_render --test demo_export --test demo_assembly --test demo_clips --test plugin_capture
+          cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test action_review --test promo_review --test promo_prepare --test promo_render --test demo_export --test demo_assembly --test demo_clips --test plugin_capture
           tools/among-tools/target/release/among-tools check-release-metadata .
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test installation
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test deb

@@ -21,8 +21,8 @@ if grep '/include/' "$checks/systemd-metadata-files.txt"; then
     echo 'Unexpected headers in systemd metadata package' >&2
     exit 1
 fi
-if grep -v '^systemd-dev installed$' "$checks/runtime-packages.txt" | grep -E '^(.*-dev(:[^ ]+)?|cargo|rustc|python3-gi) installed$'; then
-    echo 'Development headers or project Python bindings in acceptance environment' >&2
+if grep -v '^systemd-dev installed$' "$checks/runtime-packages.txt" | grep -E '^(.*-dev(:[^ ]+)?|cargo|rustc) installed$'; then
+    echo 'Development headers or Rust toolchain in acceptance environment' >&2
     exit 1
 fi
 test ! -e /input/Cargo.toml

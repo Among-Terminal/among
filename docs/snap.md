@@ -50,7 +50,7 @@ Separate clean-runtime hosted checks also passed on amd64 and arm64 for the
 devel recipe. Native Rust drivers and the clipboard helper are transferred as
 internal artifacts, bound to source, version, target, architecture and SHA-256.
 They are not included in the user-facing Snap. The runtime has no Cargo, Rust,
-C/C++ compiler, development headers or project Python GI/YAML bindings; it
+C/C++ compiler or development headers; it
 validates transferred hashes before installing the exact Snap, validates checker
 records before running acceptance, and rejects wrong source and altered bytes.
 These digests protect the trusted CI transfer; they are not independent signatures.

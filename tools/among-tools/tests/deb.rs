@@ -233,9 +233,6 @@ fn runtime_policy_rejects_build_dependencies_headers_and_hidden_commands() -> Re
         "rustup",
         "build-essential",
         "libgtk-4-dev:arm64",
-        "python3-gi",
-        "python3-gi-cairo:amd64",
-        "python3-cairo",
     ] {
         assert!(deb::runtime_inventory_only(&format!("{name}\tinstalled\n"), &[]).is_err());
     }

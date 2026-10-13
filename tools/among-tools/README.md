@@ -38,17 +38,6 @@ complete.
 
 ## Migration traceability
 
-`check-no-python ROOT` is an initial, read-only prohibition scan, not the final
-mandatory CI guard. It reports owned Python sources, executable shebangs, direct
-commands/dependencies and AST-parsed Rust Command/arg/args delegation forms using path/line diagnostics
-without echoing file contents. It never runs scanned files. Generated/external
-trees and frozen historical inputs have bounded exclusions; active callers into
-excluded caches still fail. Oversized text and owned symlinks fail rather than
-silently disappearing from the scan. The complete adversarial suite, additional
-dynamic Rust/shell forms and a reviewed inert-fixture policy remain pending. No-findings
-output explicitly does not certify final migration acceptance. Current product
-sources are expected to fail until remaining tools and callers are migrated.
-
 `among-tools inventory freeze ROOT NEW_JSON` exclusively creates a deterministic
 baseline. `among-tools inventory check ROOT JSON` rejects added/removed/changed
 owned Python sources, assertions and caller references. Neither command executes
