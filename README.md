@@ -13,6 +13,10 @@ Download the current ready-made packages from
 Choose a file matching your distribution and architecture, and follow the
 installation instructions in its release notes. No Rust toolchain or source
 compilation is needed. Releases marked **Pre-release** are preview builds.
+Release assets can include DEB packages, distribution-specific
+[binary archives](docs/install.md#binary-archive) and an
+[AppImage](docs/install.md#appimage) for amd64 and arm64; each release lists
+the files it carries.
 
 See the [installation guide](https://among-terminal.github.io/install/) for
 installation, updates and removal.

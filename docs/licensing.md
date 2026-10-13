@@ -137,3 +137,25 @@ Snap. `among-tools check-source-delivery` independently checks that association,
 safety and every regular member hash without executing archive content. The
 publisher must attach and retain the actual bundle, not just run the generator.
 Local source packaging is not evidence that a public download already exists.
+
+## AppImage bundled libraries
+
+Each AppImage carries GTK, libadwaita, VTE and their dependencies from the
+Ubuntu 24.04 build image. `among-tools build-appimage` attributes every bundled
+shared library to the package that installed it in that image (`dpkg-query`),
+records package, version and source package in
+`among-<version>-<arch>.audit.json`, copies each package's
+`/usr/share/doc/<package>/copyright` and the Debian common licence texts into
+the image under `usr/share/doc/` and `usr/share/common-licenses/`, and fails on
+any library no package owns. The same applies to the bundled icon theme, MIME
+database and desktop schema packages. linuxdeploy rewrites library RUNPATHs,
+so bundled bytes are attributed by path, not compared with the package bytes.
+
+`among-tools collect-appimage-sources` downloads the Debian source package
+(descriptor, upstream archives and packaging changes) of every recorded source
+version through APT from the signed Ubuntu archive and checks every file
+against its descriptor. The AppImage workflow keeps the result as the
+`appimage-sources-<arch>` artifact; a release that attaches an AppImage must
+attach these sources with it. Libraries the AppImage takes from the host
+(listed in the audit record as `host_libraries`) are not bundled and need no
+source delivery from this project.
