@@ -272,16 +272,25 @@ run only when called this way.
 `assemble` reads exactly these workflow artifacts and nothing else:
 `deb-{debian13,ubuntu24.04}-{amd64,arm64}` (the `.deb` and the binary archive),
 `rpm-{fedora43,fedora44}-{amd64,arm64}` (the binary RPM),
-`rpm-checked-{fedora43,fedora44}-amd64` (the SRPM) and
-`appimage-{amd64,arm64}` (one `*.AppImage` listed in that artifact's
-`SHA256SUMS`). Every DEB, archive and RPM must match the tag, the commit and the
-digest recorded by its build; the SRPM must come from the build of the attached
-amd64 RPM (both architectures produce an SRPM with the same name and different
-bytes); each AppImage must be an ELF executable for its architecture. Checker
-binaries, build records and the AppImage audit record are not attached.
+`rpm-checked-{fedora43,fedora44}-amd64` (the SRPM),
+`appimage-{amd64,arm64}` (`among-<version>-<arch>.AppImage` and its audit
+record) and `appimage-sources-{amd64,arm64}` (the Debian source packages of the
+libraries each AppImage bundles, with `sources.json`). Every DEB, archive and
+RPM must match the tag, the commit and the digest recorded by its build; the
+SRPM must come from the build of the attached amd64 RPM (both architectures
+produce an SRPM with the same name and different bytes); the RPM workflow's
+older upgrade-test package in `ci-lifecycle-fixture-not-for-release/` is never
+selected. Each AppImage must be an ELF executable for its architecture and match
+its audit record. Its sources must name exactly the source packages the audit
+lists, every descriptor and file must verify, and nothing else may be present;
+they are attached as one tar per architecture,
+`among-<version>-<arch>-appimage-sources.tar`, because the LGPL libraries in the
+AppImage must be accompanied by their corresponding source. Checker binaries,
+build records, audit records and runtime evidence are not attached.
 
-The draft holds seventeen assets: four DEB, four binary archives, four RPM, two
-SRPM, two AppImages and `SHA256SUMS`. GitHub renames asset names with special
+The draft holds nineteen assets: four DEB, four binary archives, four RPM, two
+SRPM, two AppImages, two AppImage source archives and `SHA256SUMS`. GitHub
+limits a release to 1000 assets, each under 2 GiB. GitHub renames asset names with special
 characters, so `~` in package versions becomes `.` (for example
 `among-terminal_0.1.0.rc.11-1.debian13_amd64.deb`) before `SHA256SUMS` is
 written; any other unusual character fails the run. After uploading, the run
