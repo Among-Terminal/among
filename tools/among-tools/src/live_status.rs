@@ -65,6 +65,37 @@ fn quoted_values<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
         .filter_map(|(index, _)| text[index + prefix.len()..].split('"').next())
         .collect()
 }
+/// Clock opacities from probes in which the clock was laid out. The app logs
+/// `footer_fonts` and then `footer_rects` for the same probe. A probe taken
+/// right after the footer is rebuilt or the window is resized can see the
+/// clock label before allocation (`0x0`); a snapshot of an unallocated label
+/// has no opacity node and reads 1, although the drawn clock is dimmed. Such
+/// samples say nothing about the rendered style and are skipped.
+fn allocated_clock_opacities(text: &str) -> Vec<f64> {
+    let mut pending = None;
+    let mut opacities = Vec::new();
+    for line in text.lines() {
+        if let Some(value) = quoted_values(line, "footer_fonts=[\"").first() {
+            pending = value
+                .split_once("|opacity=")
+                .and_then(|(_, tail)| tail.parse::<f64>().ok());
+        } else if let Some(rect) = quoted_values(line, "footer_rects=[\"").first() {
+            let allocated = rect
+                .rsplit('+')
+                .next()
+                .and_then(|size| size.split_once('x'))
+                .and_then(|(width, height)| {
+                    Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
+                })
+                .is_some_and(|(width, height)| width > 0 && height > 0);
+            if let Some(opacity) = pending.take().filter(|_| allocated) {
+                opacities.push(opacity);
+            }
+        }
+    }
+    opacities
+}
+
 fn clock(value: &str) -> bool {
     value.len() == 8
         && value.bytes().enumerate().all(|(i, b)| {
@@ -326,14 +357,7 @@ pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result
             }),
         "clock font changed",
     )?;
-    let opacities = quoted_values(&text, "footer_fonts=[\"")
-        .into_iter()
-        .filter_map(|value| {
-            value
-                .split_once("|opacity=")
-                .and_then(|(_, tail)| tail.parse::<f64>().ok())
-        })
-        .collect::<Vec<_>>();
+    let opacities = allocated_clock_opacities(&text);
     require(
         opacities.len() >= 3
             && opacities
@@ -369,6 +393,27 @@ pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Taken from a failed arm64 run: the probe right after the narrow resize
+    /// saw the clock unallocated and read opacity 1 while it was drawn dimmed.
+    #[test]
+    fn unallocated_clock_probes_do_not_count_as_a_style_change() {
+        let log = r#"among[tick16]: app_footer=["07:02:19"] footer_fonts=["07:02:19|monospace Bold 12px|opacity=0.7"]
+among[tick16]: footer_rects=["07:02:19:1845+1161+56x26"] window_width=1910
+among[tick17]: app_footer=["07:02:20"] footer_fonts=["07:02:20|monospace Bold 12px|opacity=1"]
+among[tick17]: footer_rects=["07:02:20:9+561+0x0"] window_width=890
+among[tick18]: app_footer=["07:02:20"] footer_fonts=["07:02:20|monospace Bold 12px|opacity=0.7"]
+among[tick18]: footer_rects=["07:02:20:825+561+56x26"] window_width=890
+among[tick19]: app_footer=["07:02:22"] footer_fonts=["07:02:22|monospace Bold 12px|opacity=0.7"]
+among[tick19]: footer_rects=["07:02:22:825+561+56x26"] window_width=890"#;
+        assert_eq!(allocated_clock_opacities(log), vec![0.7, 0.7, 0.7]);
+        // A laid-out clock drawn at full opacity is still a style change.
+        let changed = log.replace(
+            "07:02:22|monospace Bold 12px|opacity=0.7",
+            "07:02:22|monospace Bold 12px|opacity=1",
+        );
+        assert_eq!(allocated_clock_opacities(&changed), vec![0.7, 0.7, 1.0]);
+    }
+
     #[test]
     fn escaped_unicode_tooltips_do_not_hide_measured_footer_width() {
         let text = r#"rendered_footers=["2:[\"/project-名前…|/project-名前/src-名前|320x22\"]", "1:[\"/home|/home|319x22\"]"]"#;
