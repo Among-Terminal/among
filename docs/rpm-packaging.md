@@ -11,7 +11,11 @@ the workflow builds, not a file you can fetch.
 `.github/workflows/rpm-release.yml` builds candidates exclusively for `v*` tag
 pushes. The tag's base version must equal the Cargo version; preview tags
 `vX.Y.Z-rc.N` become RPM version `X.Y.Z~rc.N`, which RPM orders before the
-stable `X.Y.Z`. There is no branch, pull-request, schedule or manual trigger.
+stable `X.Y.Z`. Its only trigger is `workflow_call`: `release-draft.yml`
+starts it for the tag push, the called run sees that push event, and the checked
+RPMs and SRPMs go into an unpublished release draft
+([releasing guide, section 5](releasing.md#5-release-drafts-from-a-tag)). There
+is no branch, pull-request, schedule or manual trigger.
 Each target builds on a native GitHub runner (`ubuntu-24.04` for amd64,
 `ubuntu-24.04-arm` for arm64) inside a Fedora container pinned by digest, with
 Rust 1.98.1 installed by a checksum-verified rustup. `rpmbuild -ba` runs as an

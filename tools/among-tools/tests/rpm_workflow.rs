@@ -410,7 +410,7 @@ fn the_workflow_builds_the_repository_spec() -> Result<()> {
     Ok(())
 }
 #[test]
-fn the_rpm_workflow_runs_on_release_tags_only() -> Result<()> {
+fn the_rpm_workflow_runs_only_when_the_release_draft_workflow_calls_it() -> Result<()> {
     let text = workflow()?;
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)?;
     // YAML 1.1 resolves a bare `on` to the boolean true, so the mapping is
@@ -423,35 +423,35 @@ fn the_rpm_workflow_runs_on_release_tags_only() -> Result<()> {
         })
         .map(|(_, value)| value)
         .ok_or("no triggers")?;
-    // EVERY top-level trigger must be the tag push, not just `push`.
-    // Any key that names an event would be a trigger. Enumerating the known
-    // event names catches pull_request, workflow_dispatch and schedule.
-    let events = [
-        "push",
-        "pull_request",
-        "pull_request_target",
-        "schedule",
-        "workflow_dispatch",
-        "workflow_run",
-        "repository_dispatch",
-        "release",
-        "issue_comment",
-    ];
-    for (key, _) in mapping.iter() {
-        let serde_yaml_ng::Value::String(name) = key else {
-            continue;
-        };
-        assert!(
-            !events.contains(&name.as_str()) || name == "push",
-            "the workflow declares an additional {name} trigger; only a release tag may build candidates"
-        );
+    // release-draft.yml is the single entry point for a release tag: its push
+    // event reaches this called workflow, so the package checks still see a
+    // tag push. Any own trigger (a tag push would build every RPM twice; a
+    // branch, schedule or manual event would build without a release tag) and
+    // any call input (which would let a caller change what a tag builds) are
+    // refused.
+    let names = triggers
+        .as_mapping()
+        .ok_or("triggers are not a mapping")?
+        .keys()
+        .map(|key| {
+            key.as_str()
+                .ok_or_else(|| "trigger name is not text".into())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(
+        names,
+        ["workflow_call"],
+        "only the release draft workflow may start RPM candidates"
+    );
+    assert!(
+        triggers["workflow_call"].is_null(),
+        "the release draft workflow must not pass inputs or secrets"
+    );
+    // Events must not hide at the top level either, where a misindented
+    // trigger would end up.
+    for event in ["push", "pull_request", "schedule", "workflow_dispatch"] {
+        assert!(mapping.get(event).is_none(), "stray top-level {event}");
     }
-    let tags = triggers["push"]["tags"]
-        .as_sequence()
-        .ok_or("no push tags")?;
-    assert_eq!(tags.len(), 1);
-    assert_eq!(tags[0].as_str(), Some("v*"));
-    assert!(triggers["push"].get("branches").is_none());
     Ok(())
 }
 
