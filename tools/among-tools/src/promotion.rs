@@ -5,7 +5,7 @@
 //! no network and no publication. The concrete GitHub and Snap Store adapters
 //! live in `promotion_destinations`; this module never performs I/O itself.
 
-use crate::{deb, release_policy, storage, Result};
+use crate::{release_policy, storage, Result};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -294,7 +294,7 @@ pub fn promote(
                 .ok_or("published stable release has no tag")?;
             // A published release newer than this candidate would be replaced by
             // an older tag, so a stable release may only move forward.
-            if deb::stable_version(tag)? < deb::stable_version(previous_tag)? {
+            if release_policy::order(tag)? < release_policy::order(previous_tag)? {
                 return Err("stable version must increase".into());
             }
             if previous_tag == tag && &previous != record {

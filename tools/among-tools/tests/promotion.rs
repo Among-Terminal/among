@@ -368,6 +368,42 @@ fn immutable_conflicts_and_changed_bytes_refuse_before_any_write() -> Result<()>
     Ok(())
 }
 
+/// Version components are numbers, so 0.10.0 follows 0.9.0. Comparing the
+/// version text instead would refuse the genuine next release and accept a
+/// rollback from 0.10.0 to 0.2.0.
+#[test]
+fn stable_versions_are_ordered_numerically_not_as_text() -> Result<()> {
+    let (root, record, gates, assets) = fixture()?;
+    let release = |tag: &str| {
+        let mut release = record.clone();
+        release["tag"] = json!(tag);
+        release["version"] = json!(tag.trim_start_matches('v'));
+        release
+    };
+
+    let mut forward = Fake::new();
+    forward.published = Some(release("v0.9.0"));
+    assert_eq!(
+        run(&root, &release("v0.10.0"), &gates, &assets, &mut forward)?,
+        "published"
+    );
+
+    let mut rollback = Fake::new();
+    rollback.published = Some(release("v0.10.0"));
+    let refused = run(&root, &release("v0.2.0"), &gates, &assets, &mut rollback);
+    assert_eq!(
+        refused.map_err(|error| error.to_string()),
+        Err("stable version must increase".to_string()),
+        "an older stable tag must not replace a newer published one"
+    );
+    assert!(!rollback
+        .calls
+        .iter()
+        .any(|call| call.starts_with("upload:")));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 #[test]
 fn a_single_architecture_historical_record_cannot_authorize_publication() -> Result<()> {
     let (root, record, _gates, _assets) = fixture()?;
