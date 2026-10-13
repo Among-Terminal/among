@@ -99,6 +99,7 @@ fn appimage_workflow_is_callable_read_only_and_keeps_the_artifact_contract() -> 
         "build-appimage",
         "collect-appimage-sources",
         "ci-appimage-install",
+        "appimage-version . \"$REF_TYPE\" \"$REF_NAME\"",
     ] {
         assert!(
             scripts.contains(required),

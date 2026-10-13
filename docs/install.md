@@ -46,7 +46,8 @@ sha256sum --check --ignore-missing SHA256SUMS
 
 The line for the archive must end in `OK`. Install the runtime libraries.
 `INSTALL.txt` inside the archive lists the exact packages and minimum versions
-the DEB of the same build depends on; on both distributions this installs them:
+the DEB of the same build depends on; on Debian 13 and Ubuntu 24.04 this
+installs them:
 
 ```sh
 sudo apt-get install --no-install-recommends libgtk-4-1 libadwaita-1-0 libvte-2.91-gtk4-0 librsvg2-common
@@ -78,11 +79,20 @@ libadwaita, VTE and the libraries they need. It installs nothing.
 
 Supported hosts: Debian 13, Ubuntu 24.04 and Fedora 43 on both architectures;
 these are the hosts its release checks start it on. It needs GNU C library
-2.39 or newer, because it is built on Ubuntu 24.04. A few libraries are always
-taken from the host, as with every AppImage: the C and C++ runtime, X11 and
-XCB, Wayland client, fontconfig, FreeType, HarfBuzz, FriBidi, Expat, GMP,
-libgpg-error, com_err and zlib. Desktop installations of the supported hosts
-have them.
+2.39 or newer, because it is built on Ubuntu 24.04. Some libraries are not
+bundled and must come from the host: the C and C++ runtime, X11 and XCB,
+Wayland client, fontconfig, FreeType, HarfBuzz, FriBidi, Expat, GMP,
+libgpg-error, com_err and zlib. The release checks install them on otherwise
+clean hosts with:
+
+```sh
+sudo apt-get install libwayland-client0 libx11-6 libxcb1 libfontconfig1 libfreetype6 libharfbuzz0b \
+  libfribidi0 libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core
+sudo dnf install libwayland-client libX11 libxcb fontconfig freetype harfbuzz fribidi expat gmp \
+  libgpg-error libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts
+```
+
+The first line is for Debian and Ubuntu, the second for Fedora.
 
 Download the AppImage and the release's `SHA256SUMS` into one directory, verify
 it, make it executable and start it:
@@ -109,10 +119,11 @@ which extracts to a temporary directory on every start
 ([AppImage documentation](https://docs.appimage.org/user-guide/troubleshooting/fuse.html));
 Among's checks cover the extraction above, not that option.
 
-Among started from the AppImage does not change the environment of the shells
-it opens: library, GSettings and XDG data paths stay as you set them. The
-AppImage runtime itself sets `APPIMAGE`, `APPDIR`, `ARGV0` and, when mounted,
-`OWD` for its process, so those are visible in the shells.
+The AppImage's launcher exports no library, GSettings or XDG data search
+path; Among sets up its bundled schemas, MIME data and image loaders inside
+its own process. The AppImage runtime sets `APPIMAGE`, `APPDIR`, `ARGV0` and,
+when mounted, `OWD` before starting Among, and Among does not remove them, so
+programs started in its shells inherit them.
 
 The AppImage does not add itself to the applications menu. Its desktop entry
 uses the ID `com.github.among-terminal`. To add a menu entry for the file at
