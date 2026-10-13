@@ -620,72 +620,40 @@ mod tests {
     use super::*;
     use crate::slots::Scope;
 
+    /// Command line of the `fake-plugin` example in the given behaviour.
+    ///
+    /// `cargo test` builds examples into `<profile>/examples`, next to the
+    /// `<profile>/deps` directory holding this test executable, so the plugin
+    /// is found relative to the running test rather than through PATH.
+    fn fake_plugin(behaviour: &str) -> Vec<String> {
+        let test_executable = std::env::current_exe().expect("test executable path");
+        let profile = test_executable
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("test executable lives in <profile>/deps");
+        let plugin = profile.join("examples").join("fake-plugin");
+        assert!(
+            plugin.is_file(),
+            "{} is missing: a plain `cargo test` builds it from examples/fake-plugin.rs, \
+             a filtered run may not, so build it with `cargo build --example fake-plugin`",
+            plugin.display()
+        );
+        vec![plugin.to_string_lossy().into_owned(), behaviour.into()]
+    }
+
     /// A plugin that answers every status request with a fixed body.
     fn echo_plugin() -> Vec<String> {
-        vec![
-            "python3".into(),
-            "-c".into(),
-            r#"
-import json, sys
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        msg = json.loads(line)
-    except Exception:
-        continue
-    t = msg.get("type")
-    if t == "hello":
-        out = {"type": "hello", "major": 1, "minor": 0}
-    elif t == "status":
-        out = {"type": "status", "request_id": msg["request_id"],
-               "fragments": [{"text": "ok", "style": "success", "priority": 10}]}
-    else:
-        continue
-    sys.stdout.write(json.dumps(out) + "\n")
-    sys.stdout.flush()
-"#
-            .into(),
-        ]
+        fake_plugin("echo")
     }
 
-    /// A plugin that answers nothing at all.
+    /// A plugin that completes the handshake and never answers a status request.
     fn hanging_plugin() -> Vec<String> {
-        vec![
-            "python3".into(),
-            "-c".into(),
-            r#"
-import json, sys, time
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        msg = json.loads(line)
-    except Exception:
-        continue
-    if msg.get("type") == "hello":
-        sys.stdout.write(json.dumps({"type":"hello","major":1,"minor":0}) + "\n")
-        sys.stdout.flush()
-    # Deliberately never answer a status request.
-"#
-            .into(),
-        ]
+        fake_plugin("hanging")
     }
 
-    /// A plugin that dies immediately.
+    /// A plugin that greets and dies immediately.
     fn crashing_plugin() -> Vec<String> {
-        vec![
-            "python3".into(),
-            "-c".into(),
-            r#"
-import json, sys
-print(json.dumps({"type":"hello","major":1,"minor":0}), flush=True)
-sys.exit(1)
-"#
-            .into(),
-        ]
+        fake_plugin("crashing")
     }
 
     fn wait_for(host: &mut PluginHost, predicate: impl Fn(&PluginHost) -> bool) -> bool {
@@ -829,20 +797,8 @@ sys.exit(1)
     #[test]
     fn malformed_output_is_rejected_without_killing_the_plugin() {
         let mut host = PluginHost::new();
-        host.register(spec(vec![
-            "python3".into(),
-            "-c".into(),
-            r#"
-import json, sys
-print(json.dumps({"type":"hello","major":1,"minor":0}), flush=True)
-sys.stdout.write("this is not json\n")
-sys.stdout.flush()
-# Stay alive so the bad line is the only fault, not the process exit.
-for line in sys.stdin:
-    pass
-"#
-            .into(),
-        ]));
+        // The plugin stays alive after the bad line, so it is the only fault.
+        host.register(spec(fake_plugin("malformed")));
         assert!(wait_for(&mut host, |h| h.listing()[0].1.is_healthy()));
 
         for _ in 0..40 {
