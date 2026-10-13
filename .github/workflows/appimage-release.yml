@@ -191,6 +191,8 @@ jobs:
       # FUSE is the normal way an AppImage starts; the no-FUSE method is
       # checked in the same job with fusermount made unreachable.
       options: --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined
+    env:
+      AMONG_CHECK_ROOT: /var/lib/among-checks
     steps:
       - name: Install display tools, FUSE and the host libraries AppImages expect
         run: |
@@ -225,7 +227,17 @@ jobs:
           (cd appimage-checker && sha256sum --check SHA256SUMS)
           chmod 755 appimage-checker/among-tools
           appimage-checker/among-tools ci-appimage-install . "$HOST" "$BUILD_ARCH" \
-            appimage-candidate "$RUNNER_TEMP/among-checks" appimage-runtime-evidence
+            appimage-candidate appimage-runtime-evidence
+      - name: Retain display check evidence after a failure
+        # The job log names the failed check; its application log, helper
+        # output and screenshots live only under the check root.
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-display-evidence-${{ matrix.host }}-${{ matrix.architecture }}
+          path: ${{ env.AMONG_CHECK_ROOT }}/
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
