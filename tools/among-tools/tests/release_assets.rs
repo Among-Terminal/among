@@ -261,6 +261,57 @@ fn run_identity_and_existing_output_are_refused() -> Result<()> {
     Ok(())
 }
 
+/// The RPM workflow ships an older package in a subdirectory so the installed
+/// job can test upgrades. It is lifecycle test input, never a release file.
+fn add_lifecycle_fixtures(inputs: &Path) -> Result<()> {
+    for target in ["fedora43", "fedora44"] {
+        let release = target.trim_start_matches("fedora");
+        for (arch, machine) in [("amd64", "x86_64"), ("arm64", "aarch64")] {
+            let directory = inputs.join(format!("rpm-{target}-{arch}"));
+            let fixture = format!("among-0.1.0~rc.3-1.fc{release}.{machine}.rpm");
+            let relative = format!("ci-lifecycle-fixture-not-for-release/{fixture}");
+            fs::create_dir(directory.join("ci-lifecycle-fixture-not-for-release"))?;
+            fs::write(directory.join(&relative), "older package")?;
+            let package = format!("among-{VERSION}-1.fc{release}.{machine}.rpm");
+            write_sums(&directory, &["among-tools", &package, &relative])?;
+            let path = directory.join("build-record.json");
+            let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+            record["older_fixture"] = json!({"filename":fixture,
+                "sha256":sha(b"older package")?,"release_asset":false});
+            fs::write(path, serde_json::to_vec(&record)?)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn rpm_lifecycle_fixtures_are_never_attached() -> Result<()> {
+    let root = scratch("among-release-assets-fixture")?;
+    let inputs = fixture(&root)?;
+    add_lifecycle_fixtures(&inputs)?;
+    let output = root.join("release-assets");
+    let names = release_assets::stage(&inputs, TAG, &commit(), &output)?;
+    assert_eq!(names.len(), release_assets::FILE_COUNT);
+    assert!(names.iter().all(|name| !name.contains("rc.3")));
+    assert!(!fs::read_to_string(output.join("SHA256SUMS"))?.contains("rc.3"));
+    fs::remove_dir_all(&root)?;
+
+    // A record that names the fixture as its package is refused, because the
+    // package name is derived from the tag, not taken from the record.
+    let root = scratch("among-release-assets-fixture-record")?;
+    let inputs = fixture(&root)?;
+    add_lifecycle_fixtures(&inputs)?;
+    let path = inputs.join("rpm-fedora43-amd64/build-record.json");
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    record["filename"] = record["older_fixture"]["filename"].clone();
+    fs::write(&path, serde_json::to_vec(&record)?)?;
+    let output = root.join("release-assets");
+    assert!(release_assets::stage(&inputs, TAG, &commit(), &output).is_err());
+    assert!(!output.exists());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 #[test]
 fn asset_names_map_tilde_and_refuse_characters_github_would_rename() -> Result<()> {
     assert_eq!(

@@ -301,6 +301,8 @@ fn fedora(inputs: &Path, tag: &str, commit: &str) -> Result<Vec<Selected>> {
                 )
                 .into());
             }
+            // Only top-level files are candidates: the older package in
+            // `ci-lifecycle-fixture-not-for-release/` is upgrade-test input.
             only(&directory, ".rpm", &package)?;
             let file = select(&directory, &package, &record["sha256"], Some(&sums))?;
             checked.insert((target, architecture), (package, file.sha256.clone()));

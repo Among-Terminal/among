@@ -10,10 +10,11 @@ installation is documented on the [installation page](https://among-terminal.git
 
 `.github/workflows/deb-release.yml` builds candidates exclusively for `v*` tag
 pushes, accepting stable `vX.Y.Z` and preview `vX.Y.Z-rc.N` tags (positive `N`).
-The base version must match Cargo/AppStream versions, checked
-before package construction. It has no branch, pull-request, schedule or manual
-dispatch build trigger; GitHub reruns retain the original tag event. It is also
-called by `release-draft.yml`, which runs for the same tag push. Native
+Its only trigger is `workflow_call`: `release-draft.yml` starts it for the tag
+push, and the called run sees that push event. The base version must match
+Cargo/AppStream versions, checked before package construction. It has no
+branch, pull-request, schedule or manual dispatch build trigger; GitHub reruns
+retain the original tag event. Native
 `ubuntu-24.04` and `ubuntu-24.04-arm` runners use digest-pinned Debian 13 or Ubuntu
 24.04 containers, a pinned Rust 1.98.1 toolchain and debhelper dependency detection.
 Container identities, installed build-package versions, source commit, package
