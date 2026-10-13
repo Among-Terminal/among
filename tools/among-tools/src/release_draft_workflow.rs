@@ -241,6 +241,12 @@ pub fn validate(document: &Value) -> Result<()> {
                 !script(job)?.contains("python"),
                 "release automation must not run Python",
             )?;
+            // Hosted runners provide a per-job temporary directory; a fixed
+            // path under /tmp would be shared with anything else on the host.
+            require(
+                !job.to_string().contains("/tmp/"),
+                "release jobs must keep scratch files under the runner's temporary directory",
+            )?;
         }
     }
     Ok(())

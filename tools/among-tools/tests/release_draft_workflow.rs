@@ -35,7 +35,7 @@ fn actual_workflow_satisfies_the_release_draft_policy() -> Result<()> {
 fn policy_refuses_publication_scope_order_and_input_drift() -> Result<()> {
     let valid = actual()?;
     type Mutation = fn(&mut Value) -> Result<()>;
-    let mutations: [(&str, Mutation); 16] = [
+    let mutations: [(&str, Mutation); 17] = [
         ("manual trigger", |w| {
             w["on"]["workflow_dispatch"] = json!(null);
             Ok(())
@@ -73,6 +73,10 @@ fn policy_refuses_publication_scope_order_and_input_drift() -> Result<()> {
         }),
         ("artifact pattern instead of exact name", |w| {
             w["jobs"]["assemble"]["steps"][1]["with"]["name"] = json!("deb-*");
+            Ok(())
+        }),
+        ("fixed scratch path under /tmp", |w| {
+            w["jobs"]["assemble"]["env"] = json!({"CARGO_TARGET_DIR":"/tmp/release-target"});
             Ok(())
         }),
         ("unpinned action", |w| {
@@ -313,7 +317,7 @@ impl Draft {
                 format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
             )
             .env("HOME", &self.root)
-            .env("TMPDIR", &self.state)
+            .env("RUNNER_TEMP", &self.state)
             .env("GH_TOKEN", "not-a-token")
             .env("GITHUB_REPOSITORY", "owner/among")
             .env("GITHUB_REF_NAME", tag)
