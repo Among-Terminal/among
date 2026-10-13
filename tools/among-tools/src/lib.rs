@@ -64,16 +64,3 @@ pub mod stable_source;
 pub mod storage;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-/// Scratch root shared by the tools, the CI workflows, the container recipes
-/// and the packaging checks. Private displays, evidence directories, locks and
-/// the unprivileged package-test users' writable area all live below it, and
-/// the workflows create and chown this exact directory before the tools run.
-/// The tools therefore must name the same directory as those files: moving it
-/// is a coordinated change to all of them, not an edit of this value alone.
-pub const SCRATCH_ROOT: &str = "/tmp/opencode";
-
-/// [`SCRATCH_ROOT`] as a path, for callers that join or compare paths.
-pub fn scratch_root() -> &'static std::path::Path {
-    std::path::Path::new(SCRATCH_ROOT)
-}

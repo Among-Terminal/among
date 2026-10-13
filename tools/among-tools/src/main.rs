@@ -1,6 +1,4 @@
-use among_tools::{
-    display, ignored_tests, inventory, platform, preferences, resources, scratch_root, Result,
-};
+use among_tools::{display, ignored_tests, inventory, platform, preferences, resources, Result};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -263,7 +261,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             if command == "release-promotion" =>
         {
             let lock = match rest {
-                [] => scratch_root().join("among-publication.lock"),
+                [] => PathBuf::from("/tmp/opencode/among-publication.lock"),
                 [flag] if flag.starts_with("--lock=") => PathBuf::from(&flag[7..]),
                 _ => return Err("release-promotion takes only --lock=<path>".into()),
             };
@@ -295,7 +293,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 approved,
                 &source_root,
             )?;
-            let workdir = lock.parent().unwrap_or(scratch_root());
+            let workdir = lock.parent().unwrap_or(Path::new("/tmp/opencode"));
             std::fs::create_dir_all(workdir)?;
             let mut destinations =
                 among_tools::promotion_publication::Publication::new(repository, workdir)?;
@@ -330,7 +328,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             let status = display::run(
                 mode,
                 rest,
-                scratch_root(),
+                Path::new("/tmp/opencode"),
                 std::time::Duration::from_secs(300),
             )?;
             let code = status
@@ -353,7 +351,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                         .into(),
                 ),
             };
-            among_tools::snap_runtime::run(approved, scratch_root())?;
+            among_tools::snap_runtime::run(approved, Path::new("/tmp/opencode"))?;
         }
         [command, output] if command == "snap-host-probe" => {
             among_tools::snap_runtime::host_probe(Path::new(output))?;
@@ -379,7 +377,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 serde_json::to_string_pretty(&among_tools::delivery_package::package(
                     &inputs,
                     Path::new(output),
-                    scratch_root()
+                    Path::new("/tmp/opencode")
                 )?)?
             );
         }
@@ -388,7 +386,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(prime),
                 Path::new(debs),
                 Path::new(output),
-                scratch_root(),
+                Path::new("/tmp/opencode"),
             )?;
         }
         [command, metadata, native, sources] if command == "check-apt-provenance" => {
@@ -399,7 +397,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                     Path::new(metadata),
                     &native,
                     Path::new(sources),
-                    scratch_root()
+                    Path::new("/tmp/opencode")
                 )?)?
             );
         }
@@ -425,7 +423,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 repository,
                 Path::new(output),
                 None,
-                scratch_root(),
+                Path::new("/tmp/opencode"),
             )?;
         }
         [command, repo, repository, output, option, now]
@@ -436,7 +434,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 repository,
                 Path::new(output),
                 Some(now),
-                scratch_root(),
+                Path::new("/tmp/opencode"),
             )?;
         }
         [command, native, prime] if command == "check-snap-notices" => {
@@ -463,7 +461,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(root),
                 Path::new(destination),
                 check,
-                scratch_root(),
+                Path::new("/tmp/opencode"),
             )?;
         }
         [command, repo, record, bundle] if command == "check-stable-source" => {
@@ -478,7 +476,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             );
         }
         [command, root] if command == "check-release-metadata" => {
-            among_tools::release_metadata::run(Path::new(root), scratch_root())?;
+            among_tools::release_metadata::run(Path::new(root), Path::new("/tmp/opencode"))?;
         }
         [command, root, output, tag] if command == "prepare-stable-build" => {
             println!(
@@ -579,10 +577,10 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             println!("PASS source/target/digest-bound native checker");
         }
         [command] if command == "check-deb-desktop" => {
-            among_tools::desktop::installed(scratch_root())?;
+            among_tools::desktop::installed(Path::new("/tmp/opencode"))?;
         }
         [command, root] if command == "check-deb-workflow" => {
-            among_tools::deb_workflow::run(Path::new(root), scratch_root())?;
+            among_tools::deb_workflow::run(Path::new(root), Path::new("/tmp/opencode"))?;
         }
         [command, root, target, architecture, image, output] if command == "ci-deb-build" => {
             among_tools::deb_build::run(
@@ -609,7 +607,11 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             println!("PASS locked Debian build inputs and Cargo installation guide identity");
         }
         [command, root, binaries] if command == "check-deb-selection" => {
-            among_tools::deb_selection::run(Path::new(root), Path::new(binaries), scratch_root())?;
+            among_tools::deb_selection::run(
+                Path::new(root),
+                Path::new(binaries),
+                Path::new("/tmp/opencode"),
+            )?;
         }
         [command, root] if command == "deb-tag-source" => {
             let (tag, source) =
@@ -647,7 +649,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             among_tools::menu_check::run_snap(
                 Path::new(clipboard),
                 theme,
-                scratch_root(),
+                Path::new("/tmp/opencode"),
                 approved,
             )?;
         }
@@ -656,14 +658,14 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(binary),
                 Path::new(clipboard),
                 theme,
-                scratch_root(),
+                Path::new("/tmp/opencode"),
             )?;
         }
         [command, output, mode] if command == "raw-menu-pty" => {
             among_tools::raw_pty::run(Path::new(output), mode)?;
         }
         [command, binary] if command == "check-context-menu-launch" => {
-            among_tools::menu_launch::run(Path::new(binary), scratch_root())?;
+            among_tools::menu_launch::run(Path::new(binary), Path::new("/tmp/opencode"))?;
         }
         [command, output, arguments @ ..] if command == "record-menu-uri" => {
             among_tools::menu_launch::record(Path::new(output), arguments)?;
@@ -672,24 +674,28 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             among_tools::desktop::session(Path::new(runner_home), Path::new(entry))?;
         }
         [command, root, binary] if command == "check-desktop" => {
-            among_tools::desktop::run(Path::new(root), Path::new(binary), scratch_root())?;
+            among_tools::desktop::run(
+                Path::new(root),
+                Path::new(binary),
+                Path::new("/tmp/opencode"),
+            )?;
         }
         [command, root, binary, plugins] if command == "check-live-status" => {
             among_tools::live_status::run(
                 Path::new(root),
                 Path::new(binary),
                 Path::new(plugins),
-                scratch_root(),
+                Path::new("/tmp/opencode"),
             )?;
         }
         [command, binary] if command == "check-live-focus" => {
-            among_tools::live_focus::run(Path::new(binary), scratch_root())?;
+            among_tools::live_focus::run(Path::new(binary), Path::new("/tmp/opencode"))?;
         }
         [command, binary] if command == "check-live-resize" => {
             among_tools::live_resize::run(Path::new(binary), &std::env::temp_dir())?;
         }
         [command, binary] if command == "check-sessions" => {
-            among_tools::sessions::run(Path::new(binary), scratch_root())?;
+            among_tools::sessions::run(Path::new(binary), Path::new("/tmp/opencode"))?;
         }
         [command, root, app, built, installer] if command == "check-plugin-install" => {
             among_tools::plugin_install::run(
@@ -697,7 +703,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(app),
                 Path::new(built),
                 Path::new(installer),
-                scratch_root(),
+                Path::new("/tmp/opencode"),
             )?;
         }
         [command, root, rest @ ..] if command == "install" => {
@@ -721,16 +727,24 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             );
         }
         [command, records, plugins] if command == "check-preferences-from-cargo" => {
-            preferences::from_cargo(Path::new(records), Path::new(plugins), scratch_root())?;
+            preferences::from_cargo(
+                Path::new(records),
+                Path::new(plugins),
+                Path::new("/tmp/opencode"),
+            )?;
         }
         [command, executable, plugins] if command == "check-preferences" => {
-            preferences::run(Path::new(executable), Path::new(plugins), scratch_root())?;
+            preferences::run(
+                Path::new(executable),
+                Path::new(plugins),
+                Path::new("/tmp/opencode"),
+            )?;
         }
         [command, binary] if command == "check-resource-measurements" => {
-            resources::run(Path::new(binary), scratch_root())?;
+            resources::run(Path::new(binary), Path::new("/tmp/opencode"))?;
         }
         [command, records] if command == "run-ignored-tests" => {
-            let count = ignored_tests::run(Path::new(records), scratch_root())?;
+            let count = ignored_tests::run(Path::new(records), Path::new("/tmp/opencode"))?;
             println!("Executed {count} ignored tests, one owned display per test");
         }
         [family, operation] if family == "platform" && operation == "discover" => {
