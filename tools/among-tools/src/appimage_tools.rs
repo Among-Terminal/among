@@ -144,6 +144,31 @@ pub fn fetch(architecture: &str, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Copies every pinned helper from a fetched directory into a private
+/// directory and checks the copies, not the originals. Execution authority is
+/// granted only to the bytes that were hashed, so a fetched directory that is
+/// modified after the check cannot swap in a different program.
+pub fn verified_copy(
+    architecture: &str,
+    fetched: &Path,
+    destination: &Path,
+) -> Result<Vec<serde_json::Value>> {
+    let tools = tools(architecture)?;
+    let mut records = Vec::new();
+    for tool in tools {
+        let source = storage::safe_path(fetched, Path::new(tool.filename))?;
+        if !source.symlink_metadata()?.is_file() {
+            return Err(format!("AppImage helper {} is not a regular file", tool.filename).into());
+        }
+        let copy = storage::safe_path(destination, Path::new(tool.filename))?;
+        fs::copy(&source, &copy)?;
+        let digest = validate(&copy, &tool, architecture)?;
+        fs::set_permissions(&copy, fs::Permissions::from_mode(0o755))?;
+        records.push(json!({"filename":tool.filename,"url":tool.url,"sha256":digest}));
+    }
+    Ok(records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,8 @@
 pub mod action_review;
 pub mod appimage;
+pub mod appimage_build;
+pub mod appimage_installed;
+pub mod appimage_sources;
 pub mod appimage_tools;
 pub mod apt_collect;
 pub mod apt_provenance;

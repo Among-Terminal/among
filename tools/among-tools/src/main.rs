@@ -66,6 +66,9 @@ Usage:
   among-tools prepare-rpm-release <source-root> <output.spec>
   among-tools stage-appimage <source-root> <binaries-directory> <launcher> <architecture> <new-AppDir>
   among-tools fetch-appimage-tools <architecture> <new-tools-directory>
+  among-tools build-appimage <staged-AppDir> <tools-directory> <amd64|arm64> <version> <new-output>
+  among-tools collect-appimage-sources <audit.json> <new-output>
+  among-tools ci-appimage-install <source-root> <debian13|ubuntu24.04|fedora43> <amd64|arm64> <candidate-directory> <new-output>
   among-tools record-rpm-candidate <source-root> <target> <architecture> <candidate-directory>
   among-tools ci-rpm-install <source-root> <target> <architecture> <candidate-directory> <new-output>
   among-tools check-rpm-notices <source-root> <extracted-payload> <requires.txt>
@@ -92,6 +95,30 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
         [command, architecture, destination] if command == "fetch-appimage-tools" => {
             among_tools::appimage_tools::fetch(architecture, Path::new(destination))?;
+        }
+        [command, staged, tools, architecture, version, output] if command == "build-appimage" => {
+            among_tools::appimage_build::build(
+                Path::new(staged),
+                Path::new(tools),
+                architecture,
+                version,
+                Path::new(output),
+            )?;
+        }
+        [command, audit, output] if command == "collect-appimage-sources" => {
+            among_tools::appimage_sources::collect(Path::new(audit), Path::new(output))?;
+        }
+        [command, root, host, architecture, candidate, output]
+            if command == "ci-appimage-install" =>
+        {
+            among_tools::appimage_installed::run(
+                Path::new(root),
+                host,
+                architecture,
+                Path::new(candidate),
+                Path::new(output),
+                &std::env::vars().collect(),
+            )?;
         }
         [command, root, binaries, launcher, architecture, destination]
             if command == "stage-appimage" =>

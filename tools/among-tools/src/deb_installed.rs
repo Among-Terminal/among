@@ -13,6 +13,13 @@ pub(crate) struct Runner {
     counter: usize,
 }
 impl Runner {
+    pub(crate) fn new(env: BTreeMap<OsString, OsString>, base: PathBuf) -> Self {
+        Self {
+            env,
+            base,
+            counter: 0,
+        }
+    }
     pub(crate) fn execute(
         &mut self,
         program: &str,
