@@ -43,6 +43,11 @@ fn probe_failure(
     )
 }
 
+/// An X error raised because a window vanished while a tree walk queried it.
+fn transient_window_race(message: &str) -> bool {
+    message.contains("BadWindow (invalid Window parameter)") && message.contains("X_QueryTree")
+}
+
 fn require(condition: bool, message: &str) -> Result<()> {
     if condition {
         Ok(())
@@ -340,10 +345,25 @@ impl Harness {
         self.wait(15, |this| Ok(this.text()?.contains("among[tick1]")))?;
         let parent = self.process.as_ref().ok_or("app process missing")?.id();
         let pid = owned_application_pid(parent)?;
-        let windows = self.probe(
-            "/usr/bin/xdotool",
-            &["search", "--onlyvisible", "--pid", &pid.to_string()],
-        )?;
+        // `xdotool search` walks the whole window tree. A window destroyed
+        // between listing and querying it (GTK creates and drops helper
+        // windows while starting) makes the walk fail with BadWindow; that
+        // says nothing about our window, so the search is repeated.
+        let pid_text = pid.to_string();
+        let mut windows = String::new();
+        self.wait(15, |this| {
+            match this.probe(
+                "/usr/bin/xdotool",
+                &["search", "--onlyvisible", "--pid", &pid_text],
+            ) {
+                Ok(found) => {
+                    windows = found;
+                    Ok(true)
+                }
+                Err(error) if transient_window_race(&error.to_string()) => Ok(false),
+                Err(error) => Err(error),
+            }
+        })?;
         self.window = windows
             .split_whitespace()
             .last()
@@ -973,6 +993,20 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod launcher_tests {
     use super::*;
+
+    /// The message is the one a failed Snap run printed while the app was
+    /// starting; only that race is retried, a search that finds nothing is not.
+    #[test]
+    fn only_a_window_vanishing_during_the_tree_walk_is_retried() {
+        let race = "session probe failed: /usr/bin/xdotool [\"search\", \"--onlyvisible\", \"--pid\", \"18464\"] ended with exit status: 1; output:\nX Error of failed request:  BadWindow (invalid Window parameter)\n  Major opcode of failed request:  15 (X_QueryTree)";
+        assert!(transient_window_race(race));
+        assert!(!transient_window_race(
+            "session probe failed: /usr/bin/xdotool [\"search\", \"--onlyvisible\", \"--pid\", \"18464\"] ended with exit status: 1; output:"
+        ));
+        assert!(!transient_window_race(
+            "X Error of failed request:  BadWindow (invalid Window parameter)\n  Major opcode of failed request:  20 (X_GetProperty)"
+        ));
+    }
 
     #[test]
     fn only_unmodified_f11_bypasses_symbolic_modifier_lookup() {
