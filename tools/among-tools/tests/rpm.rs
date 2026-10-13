@@ -31,14 +31,17 @@ fn fixture() -> Result<std::path::PathBuf> {
     fs::create_dir_all(root.join("packaging/rpm"))?;
     fs::create_dir_all(root.join("data"))?;
     fs::create_dir_all(root.join("examples/plugins"))?;
-    fs::write(
-        root.join("Cargo.toml"),
-        "[package]\nname = \"among\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    )?;
+    // The real root manifest: its binding features are what the spec floors are
+    // checked against, so a synthetic copy could drift from the real levels.
+    fs::write(root.join("Cargo.toml"), include_str!("../../../Cargo.toml"))?;
     fs::write(
         root.join("examples/plugins/Cargo.toml"),
         "[package]\nname = \"plugins\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     )?;
+    fs::create_dir_all(root.join("THIRD_PARTY"))?;
+    fs::write(root.join("LICENSE"), "synthetic license\n")?;
+    fs::write(root.join("NOTICE"), "synthetic notice\n")?;
+    fs::write(root.join("THIRD_PARTY/inventory.json"), "{}\n")?;
     fs::write(
         root.join("data/com.github.among-terminal.desktop"),
         "[Desktop Entry]\nIcon=com.github.among-terminal\n",
@@ -184,5 +187,190 @@ fn a_spec_outside_the_project_or_named_with_a_version_is_refused() -> Result<()>
 
     fs::remove_dir_all(root)?;
     fs::remove_dir_all(elsewhere)?;
+    Ok(())
+}
+
+#[test]
+fn duplicated_headers_payload_paths_licenses_and_plugins_are_refused() -> Result<()> {
+    let root = fixture()?;
+    let original = spec_of(&root);
+    let check = |root: &std::path::Path| rpm::check(root, &rpm::spec_path(root));
+
+    // rpmbuild lets a later single-valued header override the first one, so the
+    // value this checker validated would not be the value that gets built.
+    for (line, duplicate) in [
+        ("Version:        0.1.0\n", "Version:        0.2.0\n"),
+        (
+            "Name:           among\n",
+            "Name:           among-terminal\n",
+        ),
+        ("Release:        1%{?dist}\n", "Release:        2%{?dist}\n"),
+    ] {
+        write_spec(
+            &root,
+            &original.replacen(line, &format!("{line}{duplicate}"), 1),
+        )?;
+        assert!(check(&root).is_err(), "second {duplicate:?} was accepted");
+    }
+
+    // The same packaged path twice: the second entry's attributes would win.
+    write_spec(
+        &root,
+        &original.replace("%{_bindir}/among\n", "%{_bindir}/among\n%{_bindir}/among\n"),
+    )?;
+    assert!(check(&root).is_err());
+
+    write_spec(
+        &root,
+        &original.replace("%license NOTICE\n", "%license NOTICE\n%license NOTICE\n"),
+    )?;
+    assert!(check(&root).is_err());
+
+    // A repeated plugin name still forms the expected set, so only a length
+    // check notices that a different plugin was meant.
+    write_spec(
+        &root,
+        &original.replace(
+            "for plugin in clock system-status pane-pwd; do",
+            "for plugin in clock clock system-status pane-pwd; do",
+        ),
+    )?;
+    assert!(check(&root).is_err());
+
+    write_spec(&root, &original)?;
+    check(&root)?;
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn license_materials_must_exist_and_survive_nodocs_installs() -> Result<()> {
+    let root = fixture()?;
+    let original = spec_of(&root);
+    let check = |root: &std::path::Path| rpm::check(root, &rpm::spec_path(root));
+
+    // %doc files are skipped by tsflags=nodocs, the default in Fedora images.
+    write_spec(
+        &root,
+        &original.replace("%license NOTICE\n", "%doc NOTICE\n"),
+    )?;
+    assert!(check(&root).is_err());
+    write_spec(
+        &root,
+        &original.replace("%license THIRD_PARTY\n", "%doc THIRD_PARTY\n"),
+    )?;
+    assert!(check(&root).is_err());
+    write_spec(&root, &original.replace("%license NOTICE\n", ""))?;
+    assert!(check(&root).is_err());
+    write_spec(&root, &original)?;
+
+    // Declared but absent from the source tree: rpmbuild would fail late.
+    for (path, restore) in [
+        ("LICENSE", "synthetic license\n"),
+        ("NOTICE", "synthetic notice\n"),
+        ("THIRD_PARTY/inventory.json", "{}\n"),
+    ] {
+        fs::remove_file(root.join(path))?;
+        assert!(check(&root).is_err(), "missing {path} was accepted");
+        fs::write(root.join(path), restore)?;
+    }
+    check(&root)?;
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn the_spec_cannot_choose_or_restrict_the_package_architecture() -> Result<()> {
+    let root = fixture()?;
+    let original = spec_of(&root);
+    // The native builder decides the architecture; a tag in the spec could
+    // label an x86_64 executable as noarch or keep a target from building.
+    for tag in [
+        "BuildArch:      noarch",
+        "BuildArch:      aarch64",
+        "ExclusiveArch:  x86_64",
+        "ExcludeArch:    aarch64",
+    ] {
+        write_spec(
+            &root,
+            &original.replacen(
+                "Release:        1%{?dist}\n",
+                &format!("Release:        1%{{?dist}}\n{tag}\n"),
+                1,
+            ),
+        )?;
+        assert!(
+            rpm::check(&root, &rpm::spec_path(&root)).is_err(),
+            "{tag} was accepted"
+        );
+    }
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn library_floors_follow_the_binding_api_level_and_cannot_be_understated() -> Result<()> {
+    let root = fixture()?;
+    let original = spec_of(&root);
+    let check = |root: &std::path::Path| rpm::check(root, &rpm::spec_path(root));
+
+    let minimums = rpm::binding_minimums(&root)?;
+    assert_eq!(
+        minimums,
+        vec![
+            ("pkgconfig(gtk4)".to_string(), (4, 12)),
+            ("pkgconfig(libadwaita-1)".to_string(), (1, 5)),
+            ("pkgconfig(vte-2.91-gtk4)".to_string(), (0, 76)),
+        ]
+    );
+
+    // Each understated floor would admit a library missing symbols the
+    // binding calls; a floor without a version admits any library at all.
+    for (line, understated) in [
+        ("pkgconfig(gtk4) >= 4.12", "pkgconfig(gtk4) >= 4.10"),
+        (
+            "pkgconfig(libadwaita-1) >= 1.5",
+            "pkgconfig(libadwaita-1) >= 1.4",
+        ),
+        (
+            "pkgconfig(vte-2.91-gtk4) >= 0.76",
+            "pkgconfig(vte-2.91-gtk4) >= 0.70",
+        ),
+        ("pkgconfig(gtk4) >= 4.12", "pkgconfig(gtk4)"),
+        ("pkgconfig(gtk4) >= 4.12", "pkgconfig(gtk4) > 4.12"),
+    ] {
+        write_spec(&root, &original.replace(line, understated))?;
+        assert!(check(&root).is_err(), "{understated} was accepted");
+    }
+
+    // Raising the binding level without raising the floor is the drift this
+    // check exists for: the spec would still claim GTK 4.12 is enough.
+    write_spec(&root, &original)?;
+    let manifest = fs::read_to_string(root.join("Cargo.toml"))?;
+    fs::write(
+        root.join("Cargo.toml"),
+        manifest.replace(
+            "features = [\"v4_10\", \"v4_12\"]",
+            "features = [\"v4_10\", \"v4_14\"]",
+        ),
+    )?;
+    assert!(check(&root).is_err());
+    fs::write(root.join("Cargo.toml"), &manifest)?;
+
+    let report = check(&root)?;
+    assert_eq!(report["library_minimums"][0]["declared"], "4.12");
+    assert_eq!(report["library_minimums"][0]["binding_api_level"], "4.12");
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn the_package_owns_its_application_data_directory() -> Result<()> {
+    let root = fixture()?;
+    let original = spec_of(&root);
+    // An unowned /usr/share/among would survive erase as an orphan directory.
+    write_spec(&root, &original.replace("%dir %{_datadir}/among\n", ""))?;
+    assert!(rpm::check(&root, &rpm::spec_path(&root)).is_err());
+    fs::remove_dir_all(root)?;
     Ok(())
 }

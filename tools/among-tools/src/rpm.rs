@@ -20,6 +20,115 @@ pub const PKGCONFIG: [&str; 3] = [
     "pkgconfig(vte-2.91-gtk4)",
 ];
 
+/// The Rust binding crate that selects the C API level of each pkgconfig
+/// capability. The linked executable carries no usable minimum of its own: GTK 4
+/// and VTE export unversioned symbols and libadwaita exports one `LIBADWAITA_1_0`
+/// node for every 1.x release. The highest `vX_Y` feature enabled on the
+/// binding is therefore the oldest library the code can call into.
+const BINDINGS: [(&str, &str); 3] = [
+    ("gtk4", "pkgconfig(gtk4)"),
+    ("libadwaita", "pkgconfig(libadwaita-1)"),
+    ("vte4", "pkgconfig(vte-2.91-gtk4)"),
+];
+
+/// Single-valued preamble fields. A second occurrence is either ignored by this
+/// checker or overrides the first in rpmbuild, so the checked value and the
+/// built value could differ.
+const SINGLE: [&str; 8] = [
+    "Name", "Version", "Release", "License", "Summary", "URL", "Source0", "Epoch",
+];
+
+/// The architecture of a binary RPM is the native builder's. Any of these tags
+/// would let the spec claim, restrict or override it independently of the ELF
+/// files it packages.
+const ARCHITECTURE_TAGS: [&str; 4] = [
+    "BuildArch",
+    "BuildArchitectures",
+    "ExclusiveArch",
+    "ExcludeArch",
+];
+
+/// License materials the package ships from the source tree. They are declared
+/// with `%license` because Fedora container images and many installations set
+/// `tsflags=nodocs`, which silently drops every `%doc` file at install time.
+pub const LICENSE_MATERIALS: [&str; 3] = ["LICENSE", "NOTICE", "THIRD_PARTY"];
+
+/// Minimum C library versions derived from the binding features in the root
+/// manifest, keyed by pkgconfig capability.
+pub fn binding_minimums(root: &Path) -> Result<Vec<(String, (u32, u32))>> {
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(storage::safe_path(
+        root,
+        Path::new("Cargo.toml"),
+    )?)?)?;
+    let dependencies = manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .ok_or("root manifest has no dependency table")?;
+    let mut minimums = Vec::new();
+    for (crate_name, capability) in BINDINGS {
+        let mut found = None;
+        for (key, value) in dependencies {
+            let package = value
+                .get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(key);
+            if package != crate_name {
+                continue;
+            }
+            if found.is_some() {
+                return Err(format!("binding {crate_name} is declared twice").into());
+            }
+            let mut highest = None;
+            for feature in value
+                .get("features")
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(level) = feature
+                    .as_str()
+                    .and_then(|feature| feature.strip_prefix('v'))
+                    .and_then(|level| level.split_once('_'))
+                else {
+                    continue;
+                };
+                let level = (level.0.parse::<u32>()?, level.1.parse::<u32>()?);
+                highest = highest.max(Some(level));
+            }
+            found = Some(
+                highest
+                    .ok_or_else(|| format!("binding {crate_name} selects no API level feature"))?,
+            );
+        }
+        let level =
+            found.ok_or_else(|| format!("root manifest does not depend on {crate_name}"))?;
+        minimums.push((capability.to_string(), level));
+    }
+    Ok(minimums)
+}
+
+/// `pkgconfig(name) >= X.Y` from one BuildRequires value.
+fn declared_minimum(build_requires: &[&str], capability: &str) -> Result<(u32, u32)> {
+    let mut declared = None;
+    for value in build_requires {
+        let mut words = value.split_whitespace();
+        if words.next() != Some(capability) {
+            continue;
+        }
+        if declared.is_some() {
+            return Err(format!("RPM BuildRequires names {capability} twice").into());
+        }
+        let (Some(">="), Some(version), None) = (words.next(), words.next(), words.next()) else {
+            return Err(format!("RPM BuildRequires must state {capability} >= a minimum").into());
+        };
+        let (major, minor) = version
+            .split_once('.')
+            .ok_or("RPM pkgconfig minimum must be MAJOR.MINOR")?;
+        declared = Some((major.parse::<u32>()?, minor.parse::<u32>()?));
+    }
+    declared.ok_or_else(|| format!("RPM BuildRequires is missing {capability}").into())
+}
+
 /// Payload paths the Snap, Debian and RPM packages must agree on, so the three
 /// distributions cannot silently diverge.
 const PAYLOAD: [&str; 4] = [
@@ -96,6 +205,19 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
             return Err(format!("RPM spec field {name} is empty").into());
         }
     }
+    for name in SINGLE {
+        if fields.iter().filter(|(field, _)| field == name).count() > 1 {
+            return Err(format!("RPM spec declares {name} more than once").into());
+        }
+    }
+    for name in ARCHITECTURE_TAGS {
+        if fields.iter().any(|(field, _)| field == name) {
+            return Err(format!(
+                "RPM spec must not set {name}: the native builder decides the package architecture"
+            )
+            .into());
+        }
+    }
 
     // Fedora naming rules: no version in the file name, no leading 'v' on
     // Version, and a distribution-tagged Release.
@@ -126,11 +248,24 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
         .filter(|(name, _)| name == "BuildRequires")
         .map(|(_, value)| value.as_str())
         .collect::<Vec<_>>();
-    let joined = build_requires.join(" ");
-    for capability in PKGCONFIG {
-        if !joined.contains(capability) {
-            return Err(format!("RPM BuildRequires is missing {capability}").into());
+    // A floor below the binding API level would let the spec build against a
+    // library that lacks symbols the code calls, failing only at link or run
+    // time on that older system.
+    let mut minimums = Vec::new();
+    for (capability, required) in binding_minimums(root)? {
+        let declared = declared_minimum(&build_requires, &capability)?;
+        if declared < required {
+            return Err(format!(
+                "RPM BuildRequires understates {capability}: declares {}.{}, the binding needs {}.{}",
+                declared.0, declared.1, required.0, required.1
+            )
+            .into());
         }
+        minimums.push(json!({
+            "capability": capability,
+            "declared": format!("{}.{}", declared.0, declared.1),
+            "binding_api_level": format!("{}.{}", required.0, required.1),
+        }));
     }
 
     // Section body: from `%<name>` at column zero until the next line that
@@ -172,11 +307,18 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
     let files = section("files")?;
     // A packaged path may itself start with a macro such as `%{_bindir}`, so
     // only the `%license`/`%doc`/`%dir` metadata directives are skipped.
-    let listed = files
+    let mut listed = BTreeSet::new();
+    for line in files
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !is_metadata_directive(line))
-        .collect::<BTreeSet<_>>();
+    {
+        // rpmbuild warns and continues on a path listed twice; the second
+        // entry usually carries different attributes that silently win.
+        if !listed.insert(line) {
+            return Err(format!("RPM %files lists {line} more than once").into());
+        }
+    }
     for path in PAYLOAD {
         if !listed.contains(path) {
             return Err(format!("RPM %files is missing {path}").into());
@@ -185,8 +327,49 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
     if !listed.contains("%{_datadir}/among/plugins") {
         return Err("RPM %files must ship the example plugin directory".into());
     }
-    if !files.contains("%license LICENSE") {
-        return Err("RPM %files must ship the original license".into());
+    // Without ownership of the parent, erasing the package leaves an empty
+    // /usr/share/among behind that no package will ever remove.
+    if !files
+        .lines()
+        .any(|line| line.trim() == "%dir %{_datadir}/among")
+    {
+        return Err("RPM %files must own the %{_datadir}/among directory".into());
+    }
+    let mut licensed = BTreeSet::new();
+    for line in files.lines().map(str::trim) {
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("%license") => {
+                for name in words {
+                    if !licensed.insert(name) {
+                        return Err(format!("RPM %license lists {name} more than once").into());
+                    }
+                }
+            }
+            Some("%doc") if words.any(|name| LICENSE_MATERIALS.contains(&name)) => {
+                return Err(
+                    "RPM license materials must be %license, never %doc, or nodocs installs drop them"
+                        .into(),
+                );
+            }
+            _ => {}
+        }
+    }
+    for name in LICENSE_MATERIALS {
+        if !licensed.contains(name) {
+            return Err(format!("RPM %files must ship {name} as %license").into());
+        }
+        // rpmbuild copies these from the unpacked source; a declaration whose
+        // file is absent from the tree fails only at package build time.
+        let path = storage::safe_path(root, Path::new(name))?;
+        let present = if name == "THIRD_PARTY" {
+            path.join("inventory.json").is_file()
+        } else {
+            path.is_file()
+        };
+        if !present {
+            return Err(format!("license material {name} is missing from the source tree").into());
+        }
     }
 
     // The packaged example set must match the three shipped examples exactly.
@@ -198,12 +381,18 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
         .map(str::trim)
         .find(|line| line.starts_with("for plugin in") && line.ends_with("; do"))
         .ok_or("RPM install must name the shipped example plugins explicitly")?;
-    let listed_plugins = loop_line
+    let looped = loop_line
         .trim_start_matches("for plugin in ")
         .trim_end_matches("; do")
         .split_whitespace()
         .map(str::to_string)
-        .collect::<BTreeSet<_>>();
+        .collect::<Vec<_>>();
+    let listed_plugins = looped.iter().cloned().collect::<BTreeSet<_>>();
+    // A repeated name collapses in the set comparison below, yet installs the
+    // same file twice and hides a typo that was meant to be another plugin.
+    if listed_plugins.len() != looped.len() {
+        return Err("RPM install loop names an example plugin more than once".into());
+    }
     let expected = PLUGINS
         .iter()
         .map(|name| name.to_string())
@@ -240,6 +429,8 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
         "version": version,
         "release": release,
         "build_requires": build_requires,
+        "library_minimums": minimums,
+        "license_materials": LICENSE_MATERIALS,
         "payload": listed.into_iter().collect::<Vec<_>>(),
         "scope": "RPM spec and packaging input validation only; no package is built, installed or published",
     }))

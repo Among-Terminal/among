@@ -7,9 +7,11 @@ License:        Apache-2.0
 URL:            https://github.com/Among-Terminal/among
 Source0:        %{name}-%{version}.tar.gz
 
-# BuildRequires mirrors the Debian package's declared minimum versions. The
-# pkgconfig capabilities are the Fedora way to express the same requirement and
-# let RPM resolve the linked shared objects automatically at install time.
+# Each floor is the API level the Rust binding is compiled for (the highest
+# vX_Y feature of gtk4, libadwaita and vte4 in Cargo.toml); the linked
+# executable carries no version of its own for these libraries. check-rpm-spec
+# refuses a floor below that level. Runtime requirements are the soname
+# dependencies rpmbuild generates from the linked executables.
 BuildRequires:  pkgconfig(gtk4) >= 4.12
 BuildRequires:  pkgconfig(libadwaita-1) >= 1.5
 BuildRequires:  pkgconfig(vte-2.91-gtk4) >= 0.76
@@ -83,12 +85,13 @@ appstream-util validate-relax \
 
 %files
 %license LICENSE
-%doc NOTICE
-%doc THIRD_PARTY
+%license NOTICE
+%license THIRD_PARTY
 %{_bindir}/among
 %{_datadir}/applications/com.github.among-terminal.desktop
 %{_datadir}/icons/hicolor/scalable/apps/com.github.among-terminal.svg
 %{_datadir}/metainfo/com.github.among-terminal.metainfo.xml
+%dir %{_datadir}/among
 %{_datadir}/among/plugins
 
 %changelog
