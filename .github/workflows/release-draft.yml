@@ -1,0 +1,200 @@
+name: Release draft
+
+# A release tag builds every package in this one run, through the package
+# workflows' installed checks, and only then fills a GitHub Release draft.
+# Publishing the draft is the owner's manual decision; nothing here publishes.
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-draft-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deb:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deb-release.yml
+
+  rpm:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rpm-release.yml
+
+  appimage:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/appimage-release.yml
+
+  # Compiles the project tool, so it must not hold a write token.
+  assemble:
+    needs: [deb, rpm, appimage]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      CARGO_HOME: /tmp/opencode/cargo
+      CARGO_TARGET_DIR: /tmp/opencode/target
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: deb-debian13-amd64
+          path: release-inputs/deb-debian13-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: deb-debian13-arm64
+          path: release-inputs/deb-debian13-arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: deb-ubuntu24.04-amd64
+          path: release-inputs/deb-ubuntu24.04-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: deb-ubuntu24.04-arm64
+          path: release-inputs/deb-ubuntu24.04-arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rpm-fedora43-amd64
+          path: release-inputs/rpm-fedora43-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rpm-fedora43-arm64
+          path: release-inputs/rpm-fedora43-arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rpm-fedora44-amd64
+          path: release-inputs/rpm-fedora44-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rpm-fedora44-arm64
+          path: release-inputs/rpm-fedora44-arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rpm-checked-fedora43-amd64
+          path: release-inputs/rpm-checked-fedora43-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rpm-checked-fedora44-amd64
+          path: release-inputs/rpm-checked-fedora44-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-amd64
+          path: release-inputs/appimage-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-arm64
+          path: release-inputs/appimage-arm64
+      - name: Pinned Rust toolchain
+        run: |
+          mkdir -p /tmp/opencode
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+          dirname "$(rustup which cargo)" >> "$GITHUB_PATH"
+      - name: Select, bind and checksum the release files
+        run: |
+          cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --bin among-tools
+          /tmp/opencode/target/release/among-tools stage-release-assets \
+            release-inputs "$GITHUB_REF_NAME" "$GITHUB_SHA" release-assets
+          (cd release-assets && sha256sum --check --strict SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  # The only job with write access. It checks out nothing and executes no
+  # downloaded file: it moves bytes with gh and verifies them with sha256sum.
+  draft:
+    needs: [assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Create or reconcile the draft and verify its downloaded assets
+        id: draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          fail() { echo "release draft: $*" >&2; exit 1; }
+          repo="$GITHUB_REPOSITORY"
+          tag="$GITHUB_REF_NAME"
+          assets="$PWD/release-assets"
+          work=$(mktemp -d)
+          case "$tag" in
+            *-rc.*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+
+          (cd "$assets" && sha256sum --check --strict --quiet SHA256SUMS)
+          { cut -c67- "$assets/SHA256SUMS"; echo SHA256SUMS; } | LC_ALL=C sort > "$work/expected"
+          find "$assets" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | cmp -s - "$work/expected" \
+            || fail 'staged files differ from SHA256SUMS'
+
+          # A tag moved after the build would get bytes from another commit.
+          commit=$(gh api "repos/$repo/commits/refs/tags/$tag" | jq -r .sha)
+          [ "$commit" = "$GITHUB_SHA" ] || fail "$tag points at $commit, the run built $GITHUB_SHA"
+
+          # The by-tag endpoint does not return drafts, so releases are listed.
+          gh api --paginate "repos/$repo/releases?per_page=100" \
+            | jq -c --arg tag "$tag" '.[] | select(.tag_name == $tag) | {id, draft}' > "$work/matches"
+          case "$(wc -l < "$work/matches")" in
+            0)
+              notes="Draft built by $RUN_URL from commit $GITHUB_SHA. Verify downloads with: sha256sum -c SHA256SUMS"
+              id=$(gh api --method POST "repos/$repo/releases" \
+                -f tag_name="$tag" -f name="Among ${tag#v}" -f body="$notes" \
+                -F draft=true -F prerelease="$prerelease" | jq -r .id)
+              ;;
+            1)
+              [ "$(jq -r .draft "$work/matches")" = true ] || fail "$tag already has a published release"
+              id=$(jq -r .id "$work/matches")
+              ;;
+            *) fail "$tag has more than one release" ;;
+          esac
+          case "$id" in ''|*[!0-9]*) fail 'release id missing' ;; esac
+
+          # Existing assets must be expected and byte-identical; nothing is replaced.
+          mkdir "$work/present"
+          gh api --paginate "repos/$repo/releases/$id/assets?per_page=100" \
+            | jq -r '.[] | "\(.id) \(.name)"' > "$work/existing"
+          while read -r asset name; do
+            grep -qxF -- "$name" "$work/expected" || fail "draft holds unexpected asset $name"
+            gh api -H 'Accept: application/octet-stream' "repos/$repo/releases/assets/$asset" > "$work/present/$name"
+            cmp -s "$work/present/$name" "$assets/$name" || fail "draft asset $name differs from this build"
+          done < "$work/existing"
+          missing=()
+          while read -r name; do
+            [ -e "$work/present/$name" ] || missing+=("$assets/$name")
+          done < "$work/expected"
+          if [ "${#missing[@]}" -gt 0 ]; then
+            gh release upload "$tag" --repo "$repo" "${missing[@]}"
+          fi
+
+          # What a user downloads must verify against SHA256SUMS.
+          mkdir "$work/downloaded"
+          gh api --paginate "repos/$repo/releases/$id/assets?per_page=100" \
+            | jq -r '.[] | "\(.id) \(.name)"' > "$work/final"
+          cut -d' ' -f2- "$work/final" | LC_ALL=C sort | cmp -s - "$work/expected" \
+            || fail 'draft asset names differ from SHA256SUMS'
+          while read -r asset name; do
+            gh api -H 'Accept: application/octet-stream' "repos/$repo/releases/assets/$asset" > "$work/downloaded/$name"
+          done < "$work/final"
+          (cd "$work/downloaded" && sha256sum --check --strict SHA256SUMS)
+          cmp -s "$work/downloaded/SHA256SUMS" "$assets/SHA256SUMS" || fail 'draft SHA256SUMS differs'
+          echo "Draft for $tag (prerelease=$prerelease) holds $(wc -l < "$work/final") verified assets" \
+            | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

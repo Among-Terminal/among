@@ -54,6 +54,15 @@ fn instructions(tag: &str, target: &str, architecture: &str, dependencies: &str)
     format!("Among Terminal {tag}\nTarget: {target}, {architecture}; not a universal or self-contained Linux binary.\nRequired distribution packages: {dependencies}\n\nExtract this archive and run ./bin/among. No compiler or Rust toolchain is needed.\nLibraries are NOT bundled: install the distribution runtime dependencies above.\nPrefer the DEB if you want APT to install dependencies and a desktop launcher.\nOptional plugin executables are in plugins/ and remain disabled by default.\nMatching source and licence information accompanies the GitHub release.\n")
 }
 
+/// The archive name a tag, distribution and architecture produce. Release
+/// assembly derives the expected name from here instead of trusting a record.
+pub fn filename(tag: &str, target: &str, architecture: &str) -> Result<String> {
+    Ok(format!(
+        "among-{}-{target}-{architecture}.tar.gz",
+        tag.strip_prefix('v').ok_or("archive tag lacks prefix")?
+    ))
+}
+
 /// Archives retain the exact inspected package executables, not a second build.
 /// They deliberately do not pretend to bundle distribution runtime libraries.
 pub fn create(
@@ -83,10 +92,7 @@ pub fn create(
             architecture,
         )?;
     }
-    let filename = format!(
-        "among-{}-{target}-{architecture}.tar.gz",
-        tag.strip_prefix('v').ok_or("archive tag lacks prefix")?
-    );
+    let filename = filename(tag, target, architecture)?;
     if output.join(&filename).symlink_metadata().is_ok() {
         return Err("binary archive output must be new".into());
     }

@@ -51,7 +51,7 @@ pub struct Identity {
     pub filename: String,
 }
 pub fn identity(root: &Path, tag: &str, target: &str, architecture: &str) -> Result<Identity> {
-    let (version, debian_version) = release_version(tag)?;
+    let (version, _) = release_version(tag)?;
     if !matches!(target, "debian13" | "ubuntu24.04") || !matches!(architecture, "amd64" | "arm64") {
         return Err("unsupported distribution or architecture".into());
     }
@@ -82,15 +82,26 @@ pub fn identity(root: &Path, tag: &str, target: &str, architecture: &str) -> Res
     if release.and_then(|node| node.attribute("version")) != Some(version) {
         return Err("AppStream release version differs from tag".into());
     }
-    let package_version = format!("{debian_version}-1~{target}");
+    let package_version = package_version(tag, target)?;
     Ok(Identity {
         target: target.into(),
         architecture: architecture.into(),
         upstream_version: version.into(),
-        filename: format!("among-terminal_{package_version}_{architecture}.deb"),
+        filename: package_filename(&package_version, architecture),
         package_version,
     })
 }
+/// The Debian package version a tag and distribution produce, such as
+/// `0.1.0~rc.11-1~debian13`.
+pub fn package_version(tag: &str, target: &str) -> Result<String> {
+    let (_, debian_version) = release_version(tag)?;
+    Ok(format!("{debian_version}-1~{target}"))
+}
+
+pub fn package_filename(package_version: &str, architecture: &str) -> String {
+    format!("among-terminal_{package_version}_{architecture}.deb")
+}
+
 pub fn unique_inventory(records: &[Identity]) -> Result<()> {
     let mut filenames = BTreeSet::new();
     let mut targets = BTreeSet::new();

@@ -202,8 +202,9 @@ credentials and error handling against stand-in `gh` and `curl` programs. The
 adapters' write paths (GitHub prepare, publish and roll; Store upload and
 release) are not driven by any test yet. None of this is proof of
 authenticated hosted execution.
-Tag/daily workflows are still absent; no automated publisher should be
-considered operational yet.
+No daily workflow exists. The only tag workflow that writes to GitHub creates a
+release draft (section 5); it publishes nothing, and no automated publisher
+should be considered operational yet.
 
 The migrated Rust selector is retained as deferred functionality. Its offline
 tests use disposable Git objects and mocked read-only `gh api` responses. It
@@ -247,10 +248,58 @@ the success marker only after both destinations succeed. A partial failure is no
 success and must remain retryable. Caches are not success markers. Document a
 manual rerun against the original commit, not today's new branch head.
 
-Actions must be explicitly enabled after review. No scheduled/publication workflow
-is currently present, so enabling Checks alone does not publish nightlies.
-Once those workflows exist, disable the specific scheduled workflow in GitHub
-Actions when pausing nightlies; preserve stable controls and prior provenance.
+Actions must be explicitly enabled after review. No scheduled or publishing
+workflow is currently present, so enabling Checks alone does not publish
+nightlies; a release tag only fills a draft (section 5). Once scheduled
+workflows exist, disable the specific scheduled workflow in GitHub Actions when
+pausing nightlies; preserve stable controls and prior provenance.
+
+## 5. Release drafts from a tag
+
+Pushing a `v*` tag starts `.github/workflows/release-draft.yml`. In one run it
+calls `deb-release.yml`, `rpm-release.yml` and `appimage-release.yml`, which
+build and install-check every package for amd64 and arm64. Only if all of their
+jobs pass does it fill the tag's GitHub Release draft; any failure leaves
+releases untouched. The DEB and RPM workflows also still run on their own for
+the same tag.
+
+| Job | Token | Does |
+|---|---|---|
+| `deb`, `rpm`, `appimage` | `contents: read` | build and installed checks |
+| `assemble` | `contents: read` | `among-tools stage-release-assets`: selects, binds and checksums the files |
+| `draft` | `contents: write` | creates or reconciles the draft, uploads, verifies; runs nothing it downloaded |
+
+`assemble` reads exactly these workflow artifacts and nothing else:
+`deb-{debian13,ubuntu24.04}-{amd64,arm64}` (the `.deb` and the binary archive),
+`rpm-{fedora43,fedora44}-{amd64,arm64}` (the binary RPM),
+`rpm-checked-{fedora43,fedora44}-amd64` (the SRPM) and
+`appimage-{amd64,arm64}` (one `*.AppImage` listed in that artifact's
+`SHA256SUMS`). Every DEB, archive and RPM must match the tag, the commit and the
+digest recorded by its build; the SRPM must come from the build of the attached
+amd64 RPM (both architectures produce an SRPM with the same name and different
+bytes); each AppImage must be an ELF executable for its architecture. Checker
+binaries, build records and the AppImage audit record are not attached.
+
+The draft holds seventeen assets: four DEB, four binary archives, four RPM, two
+SRPM, two AppImages and `SHA256SUMS`. GitHub renames asset names with special
+characters, so `~` in package versions becomes `.` (for example
+`among-terminal_0.1.0.rc.11-1.debian13_amd64.deb`) before `SHA256SUMS` is
+written; any other unusual character fails the run. After uploading, the run
+downloads every asset of the draft and requires `sha256sum --check SHA256SUMS`
+to pass. Tags with `-rc.N` produce a prerelease draft.
+
+Repeated runs never replace bytes. A published release for the tag, more than
+one release for it, a draft asset outside the expected set or with other bytes,
+or a tag that no longer points at the built commit fails the run without
+changes. A draft with a matching subset gets only the missing assets, so
+"Re-run failed jobs" after an interrupted upload is safe. A rebuild produces new
+bytes; to rebuild, delete the draft first. The `rpm-checked-*` artifacts expire
+after five days, after which a re-run must rebuild from the start.
+
+The draft is not a publication. Download every asset into an empty directory,
+run `sha256sum -c SHA256SUMS`, review the notes, then publish the draft in the
+GitHub interface. That click is the owner's approval. Offline checks:
+`cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test release_assets --test release_draft_workflow`.
 
 ## 6. Publication, verification and rollback
 
