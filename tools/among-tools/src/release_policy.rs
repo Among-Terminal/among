@@ -199,7 +199,7 @@ pub fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
 ///
 /// The date is how a reader places a nightly in time; eight digits that name
 /// no day (month 13, 31 April, 29 February of a common year) are refused.
-fn calendar_date(digits: &[u8]) -> bool {
+pub(crate) fn calendar_date(digits: &[u8]) -> bool {
     if digits.len() != 8 || !digits.iter().all(u8::is_ascii_digit) {
         return false;
     }

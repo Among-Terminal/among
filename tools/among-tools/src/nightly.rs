@@ -26,6 +26,97 @@ fn source_identity(source: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Days since 1970-01-01 of a proleptic Gregorian date, and back. These are
+/// Howard Hinnant's `days_from_civil`/`civil_from_days`, exact for every year
+/// a timestamp here can carry.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = of_era * 365 + of_era / 4 - of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let days = days + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days - era * 146_097;
+    let of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * of_era + of_era / 4 - of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
+/// The UTC calendar date, as `YYYYMMDD`, of an ISO 8601 timestamp
+/// `YYYY-MM-DDTHH:MM[:SS[.fraction]]` followed by `Z` or `±HH:MM`.
+///
+/// A timestamp without a timezone names no instant, so it is refused rather
+/// than assumed to be UTC: near midnight that assumption picks the wrong day.
+fn utc_date(now: &str) -> Result<String> {
+    const INVALID: &str = "nightly timestamp must be ISO 8601 with an explicit timezone";
+    let number = |text: &str| -> Result<i64> {
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(INVALID.into());
+        }
+        Ok(text.parse()?)
+    };
+    let (date, rest) = now.split_once('T').ok_or(INVALID)?;
+    let [year, month, day] =
+        <[&str; 3]>::try_from(date.split('-').collect::<Vec<_>>()).map_err(|_| INVALID)?;
+    if year.len() != 4 || month.len() != 2 || day.len() != 2 {
+        return Err(INVALID.into());
+    }
+    let digits = format!("{year}{month}{day}");
+    if !release_policy::calendar_date(digits.as_bytes()) {
+        return Err(INVALID.into());
+    }
+    let (clock, offset_minutes) = if let Some(clock) = rest.strip_suffix('Z') {
+        (clock, 0)
+    } else {
+        let sign_at = rest.rfind(['+', '-']).ok_or(INVALID)?;
+        let (clock, offset) = rest.split_at(sign_at);
+        let sign = if offset.starts_with('-') { -1 } else { 1 };
+        let (hours, minutes) = offset[1..].split_once(':').ok_or(INVALID)?;
+        if hours.len() != 2 || minutes.len() != 2 {
+            return Err(INVALID.into());
+        }
+        let (hours, minutes) = (number(hours)?, number(minutes)?);
+        if hours > 23 || minutes > 59 {
+            return Err(INVALID.into());
+        }
+        (clock, sign * (hours * 60 + minutes))
+    };
+    let mut parts = clock.splitn(3, ':');
+    let hour = parts.next().ok_or(INVALID)?;
+    let minute = parts.next().ok_or(INVALID)?;
+    if hour.len() != 2 || minute.len() != 2 {
+        return Err(INVALID.into());
+    }
+    let (hour, minute) = (number(hour)?, number(minute)?);
+    if hour > 23 || minute > 59 {
+        return Err(INVALID.into());
+    }
+    if let Some(seconds) = parts.next() {
+        let (whole, fraction) = seconds.split_once('.').unwrap_or((seconds, "0"));
+        if whole.len() != 2 || number(whole)? > 59 {
+            return Err(INVALID.into());
+        }
+        number(fraction)?;
+    }
+    let local =
+        days_from_civil(number(year)?, number(month)?, number(day)?) * 1440 + hour * 60 + minute;
+    let (year, month, day) = civil_from_days((local - offset_minutes).div_euclid(1440));
+    Ok(format!("{year:04}{month:02}{day:02}"))
+}
+
 pub fn selection(
     source: &str,
     marker: Option<&Value>,
@@ -59,19 +150,7 @@ pub fn selection(
         selected["resume"] = true.into();
         return Ok(selected);
     }
-    let date = now
-        .get(..10)
-        .ok_or("nightly timestamp must begin with ISO date")?;
-    if date.as_bytes()[4] != b'-'
-        || date.as_bytes()[7] != b'-'
-        || !date
-            .bytes()
-            .enumerate()
-            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
-    {
-        return Err("nightly timestamp must begin with ISO date".into());
-    }
-    selected["version"] = format!("n{}-{}", date.replace('-', ""), &source[..12]).into();
+    selected["version"] = format!("n{}-{}", utc_date(now)?, &source[..12]).into();
     selected["tag"] = tag.into();
     selected["resume"] = false.into();
     Ok(selected)

@@ -368,7 +368,8 @@ until real library replacement and breakpoint evidence exist in Rust.
 
 ## Deferred nightly selection
 
-`select-nightly REPOSITORY_DIR OWNER/REPO NEW_JSON [--now ISO]` resolves main once,
+`select-nightly REPOSITORY_DIR OWNER/REPO NEW_JSON [--now ISO]` resolves main once
+(`--now` must carry `Z` or a `±HH:MM` offset; the version uses its UTC date),
 reads GitHub release records through gh, skips only a matching complete marker
 and preserves prepared retry versions. It refuses endpoint errors and never
 uploads, publishes or changes Store channels. The CLI uses exclusive output and

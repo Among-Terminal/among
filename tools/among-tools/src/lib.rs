@@ -69,5 +69,6 @@ pub mod source_snapshot;
 pub mod stable_build;
 pub mod stable_source;
 pub mod storage;
+pub mod store_credentials;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
