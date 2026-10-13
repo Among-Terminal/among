@@ -260,8 +260,8 @@ Pushing a `v*` tag starts `.github/workflows/release-draft.yml`. In one run it
 calls `deb-release.yml`, `rpm-release.yml` and `appimage-release.yml`, which
 build and install-check every package for amd64 and arm64. Only if all of their
 jobs pass does it fill the tag's GitHub Release draft; any failure leaves
-releases untouched. The DEB workflow runs only when called this way; the RPM
-workflow still also runs on its own for the same tag.
+releases untouched. The DEB and RPM workflows have no trigger of their own; they
+run only when called this way.
 
 | Job | Token | Does |
 |---|---|---|
