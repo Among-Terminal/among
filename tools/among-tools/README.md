@@ -29,8 +29,12 @@ never renders, remuxes, adds audio or changes the approved delivery/cache.
 Run it only in an isolated media container with ffprobe/ffmpeg, fontconfig and
 fonts; no packages are installed on the owner machine. Review subprocesses use
 one permitted CPU, low priority, bounded timeouts, owned process groups and a
-credential-free environment. Rendering, preparation, capture and general promo
-review remain separate unported operations, so media migration is not complete.
+credential-free environment. Preparation, rendering, plugin capture and the
+general promo review are separate commands (`prepare-readme-promo`,
+`render-readme-promo`, `render-readme-action`, `capture-readme-plugins`,
+`review-readme-promo`). Recording the demonstration clips and the storyboard
+film on a private desktop has no Rust command, so media migration is not
+complete.
 
 ## Migration traceability
 
@@ -160,8 +164,9 @@ XDG_STATE_HOME and validates fixed HOME/XDG_DATA_HOME destinations plus safe
 THIRD_PARTY paths. It refuses altered hashes, unknown destinations, symlinks,
 unsupported versions and a concurrent operation before removing files. It needs
 neither the source checkout, Cargo nor an interpreter, and preserves preferences,
-sessions, external plugins and shell startup files. Do not install it manually
-over a Python-owned launcher: the hash-checked installer upgrade is still pending.
+sessions, external plugins and shell startup files. Do not copy it manually over
+a launcher written by the former installer: let the installer below replace it,
+because only the installer checks that launcher's recorded hash first.
 `install-prebuilt SOURCE_ROOT AMONG_BINARY NATIVE_UNINSTALLER` now installs the
 explicit prebuilt payload, including desktop/icon/metadata/license files and the
 complete regular-file THIRD_PARTY tree. It upgrades only verified owned files,
@@ -346,11 +351,12 @@ scope and prerequisites; no command here establishes legal sign-off or publicati
 checks exact source/artifact binding, all six gates for both architecture receipts,
 stable version/roles, and actual local artifact hashes. Missing approval refuses
 before input reads; malformed or extra assets and symlinks fail. Output explicitly
-states `published: false`: this command does not reconcile GitHub/Store, inspect
-Snap identity or prove that protected environment rules are configured. Offline
-tests use clearly synthetic assets and gates, not real approval or compliance
-evidence. Endpoint adapters and full promotion remain unported; nightly publication
-is rejected and remains deferred.
+states `published: false`: this command does not reconcile GitHub/Store or
+prove that protected environment rules are configured. Offline tests use clearly
+synthetic assets and gates, not real approval or compliance evidence. The
+publishing command is `release-promotion`; see
+[releasing](../../docs/releasing.md) for what it does and which of its paths are
+tested. No workflow schedules nightly publication.
 
 ## Installed Snap host workflow (partial runtime port)
 

@@ -54,10 +54,8 @@ jobs:
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test native_sources --test apt_provenance --test apt_collect --test native_notices --test native_unpack
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test source_delivery --test source_snapshot --test delivery_package --test notices
           # Promotion admission, the publication state machine (stable and nightly)
-          # and the GitHub/Store destination rules are ported. The former Python
-          # promotion suites stay in the tree as a to-be-rewritten reference but
-          # no longer gate CI; see the openspec audit for the adapter coverage
-          # this leaves open.
+          # and the GitHub/Store destination rules. The adapters' write paths
+          # (GitHub prepare/publish/roll, Store upload/release) have no test yet.
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test promotion --test promotion_nightly --test promotion_destinations --test release_policy --test adapter_processes --test promotion_preflight
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test nightly
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test python_guard --test action_review --test promo_review --test promo_prepare --test promo_render --test demo_export --test demo_assembly --test demo_clips --test plugin_capture

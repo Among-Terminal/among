@@ -5,10 +5,11 @@
 //! the process, so the argument vectors, the environment and the exit codes
 //! under test are the ones a release job would produce.
 //!
-//! This is the coverage that the retained Python `test-release-adapters.py`
-//! used to provide and that no Rust test did: the adapters were previously
-//! exercised only through hand-written fakes of the `Destinations` trait, which
-//! cannot catch a wrong argument, a missing credential or a swallowed error.
+//! Fakes of the `Destinations` trait alone cannot catch a wrong argument, a
+//! missing credential or a swallowed error; these tests can. They cover the
+//! adapters' read paths and the Store architecture refusal; the write paths
+//! (GitHub prepare, publish and roll, Store upload and release) are not driven
+//! here.
 
 use among_tools::{
     promotion::Destinations,

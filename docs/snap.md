@@ -115,7 +115,8 @@ After installing the exact SHA-256-checked candidate in a dedicated KVM/QEMU
 Ubuntu 24.04 test guest, install Xvfb, Openbox, xdotool, dbus-x11 and x11-utils
 there, not on a personal host. Ensure the checker's temporary workspace is writable
 by the test user.
-Copy the project check scripts into the guest, then run:
+Copy a native `among-tools` binary built for the guest's architecture into the
+guest, then run:
 
 ```sh
 among-tools vm-x11 among-tools check-snap-runtime
@@ -139,13 +140,14 @@ fixtures only. This is native X11/software-display evidence, not Wayland or GPU
 coverage. A VM preflight check is an accidental-use guard, not proof that an
 arbitrary user's VM contains no personal data: use a freshly created guest.
 
-The replacement variant modifies a private copy of native VTE by adding a
-user-built probe dependency. It uses the core24 loader's per-invocation
-`--library-path`, observes the modified library/probe in the live application's
-maps and verifies that the spawned host tool did not load those libraries. It
-then requests a real GDB breakpoint in the probe. The mounted Snap itself is
-never modified. These scripts describe the checks; recorded executed evidence,
-not their existence, determines whether a candidate passes.
+The replacement variant, which is not ported, modified a private copy of native
+VTE by adding a user-built probe dependency, used the core24 loader's
+per-invocation `--library-path`, observed the modified library/probe in the live
+application's maps, verified that the spawned host tool did not load those
+libraries and requested a real GDB breakpoint in the probe, without modifying
+the mounted Snap. Until it is ported, no command performs that acceptance.
+Recorded executed evidence, not the existence of a check, determines whether a
+candidate passes.
 
 Snap stage-packages do not run Debian postinst scripts. The recipe compiles
 GSettings XML during staging, leaving Snapcraft's automatic prime/ELF patching
