@@ -220,7 +220,9 @@ fn calendar_date(digits: &[u8]) -> bool {
     (1..=days).contains(&day)
 }
 
-fn order(tag: &str) -> Result<Vec<(usize, String)>> {
+/// Sort key of a stable tag: each component compared as a number of any
+/// length (shorter digit strings are smaller, equal lengths compare as text).
+pub fn order(tag: &str) -> Result<Vec<(usize, String)>> {
     // Strict decimal components permit arbitrary length, like the legacy
     // policy; numeric ordering must not silently overflow machine integers.
     Ok(deb::stable_version(tag)?
