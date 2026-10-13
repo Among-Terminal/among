@@ -636,8 +636,9 @@ mod tests {
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {
-            let path = PathBuf::from(format!(
-                "/tmp/opencode/among-session-unit-{}-{}",
+            // Disposable and removed on drop; nothing here is evidence.
+            let path = std::env::temp_dir().join(format!(
+                "among-session-unit-{}-{}",
                 std::process::id(),
                 NEXT_FILE.fetch_add(1, Ordering::Relaxed)
             ));

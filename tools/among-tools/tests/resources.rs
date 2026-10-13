@@ -67,12 +67,20 @@ fn malformed_or_invalid_observations_are_not_success() -> among_tools::Result<()
 #[test]
 fn actual_cli_refuses_failed_and_missing_plugins_without_a_pass_receipt() -> among_tools::Result<()>
 {
+    // A test-owned check root keeps the evidence of these refusals out of the
+    // developer's own check directory and independent of the caller's HOME.
+    let checks = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("among-resources-refusal-{}", std::process::id()));
     for binary in ["/bin/false", "/missing-resource-plugin"] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
+            .env("AMONG_CHECK_ROOT", &checks)
             .args(["check-resource-measurements", binary])
             .output()?;
         assert!(!output.status.success());
         assert!(!String::from_utf8(output.stdout)?.contains("PASS"));
+    }
+    if checks.exists() {
+        std::fs::remove_dir_all(&checks)?;
     }
     Ok(())
 }

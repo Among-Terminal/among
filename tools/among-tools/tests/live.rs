@@ -151,13 +151,22 @@ fn native_live_commands_refuse_unowned_display() -> among_tools::Result<()> {
             "/unread-entry",
         ],
     ] {
+        let checks = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("among-live-refusal-{}", std::process::id()));
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
             .env_clear()
             .env("HOME", "/synthetic-personal-home")
-            .args(args)
+            .env("AMONG_CHECK_ROOT", &checks)
+            .args(&args)
             .output()?;
         assert!(!output.status.success());
         assert!(String::from_utf8(output.stderr)?.contains("owned display runner"));
+        // Refusal precedes every fixture; a command that resolves the check
+        // root may create it, but never anything inside it.
+        if checks.exists() {
+            assert_eq!(std::fs::read_dir(&checks)?.count(), 0, "{args:?}");
+            std::fs::remove_dir(&checks)?;
+        }
     }
     Ok(())
 }

@@ -140,6 +140,7 @@ fn actual_cli_refuses_missing_authentication_before_output_creation() -> Result<
     fs::write(&snapshot, b"fixture")?;
     let result = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
         .env_clear()
+        .env("AMONG_CHECK_ROOT", base.0.join("checks"))
         .arg("package-source-delivery")
         .arg(snap)
         .arg(snapshot)

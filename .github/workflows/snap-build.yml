@@ -37,7 +37,10 @@ jobs:
           timeout 180 sudo snap wait system seed.loaded
           sudo snap install core24
           sudo snap install snapcraft --classic --channel=8.x/stable
-          mkdir -p /tmp/opencode
+          # Job-level env cannot read the runner context; later steps and the
+          # failure-evidence upload below take the root from here.
+          echo "AMONG_CHECK_ROOT=$RUNNER_TEMP/among-checks" >> "$GITHUB_ENV"
+          mkdir -m 700 "$RUNNER_TEMP/among-checks"
       - name: Build actual native core24 recipe
         id: build
         env:
@@ -92,7 +95,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: snap-display-evidence-${{ matrix.arch }}
-          path: /tmp/opencode/
+          path: ${{ env.AMONG_CHECK_ROOT }}/
           if-no-files-found: ignore
           retention-days: 5
       - name: Bind internal checkers for a separate clean runtime
@@ -142,7 +145,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y squashfs-tools
-          mkdir -p /tmp/opencode
       - name: Collect both built Snaps
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -195,10 +197,10 @@ jobs:
             --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:rw,exec,mode=1777 \
             --mount "type=bind,source=$PWD/clean-snap-input,target=/input,readonly" \
             --mount "type=bind,source=$PWD/packaging/ci/snap-runtime/check-installed.sh,target=/check-installed.sh,readonly" \
-            --mount "type=bind,source=$PWD/runtime-evidence,target=/tmp/opencode" \
+            --mount "type=bind,source=$PWD/runtime-evidence,target=/var/lib/among-checks" \
             among-clean-snap:ci
           docker exec among-clean-runtime mount -t securityfs securityfs /sys/kernel/security
-          docker exec among-clean-runtime sh -eu -c 'test -d /sys/kernel/security/apparmor; cat /proc/self/mountinfo > /tmp/opencode/runtime-mountinfo.txt'
+          docker exec among-clean-runtime sh -eu -c 'test -d /sys/kernel/security/apparmor; cat /proc/self/mountinfo > /var/lib/among-checks/runtime-mountinfo.txt'
           docker exec among-clean-runtime systemctl restart apparmor snapd.apparmor
           timeout 180 sh -c 'until docker exec among-clean-runtime snap version; do sleep 2; done'
           docker exec among-clean-runtime timeout 180 snap wait system seed.loaded
@@ -213,6 +215,7 @@ jobs:
           tag=$(cat clean-snap-input/tag)
           docker exec among-clean-runtime runuser -u among-runtime -- env \
             GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            AMONG_CHECK_ROOT=/var/lib/among-checks \
             EXPECTED_ARCH="$EXPECTED_ARCH" EXPECTED_SOURCE="$EXPECTED_SOURCE" EXPECTED_TAG="$tag" \
             /bin/sh /check-installed.sh
       - name: Capture runtime service diagnostics

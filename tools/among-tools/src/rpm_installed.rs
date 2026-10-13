@@ -180,6 +180,11 @@ pub fn run(
     let mut evidence = json!({"schema":1,"tag":tag,"source_sha":source,"target":target_name,"architecture":architecture,
         "package_sha256":record["sha256"],"checker_sha256":record["checker_sha256"],"status":"in-progress","checks":[],
         "release_acceptance":false,"scope":"native clean RPM installation, X11 desktop/focus/status/Sessions, remove/reinstall leaves synthetic user-home files untouched; no application-state migration, historical upgrade or GNOME/Wayland certification"});
+    // Resolved once here as root; the unprivileged check user receives it
+    // explicitly, because its own HOME would yield a different default.
+    let checks = crate::scratch::root()?;
+    let checks_text = checks.to_str().ok_or("check root is not UTF-8")?;
+    let check_root = format!("{}={checks_text}", crate::scratch::VARIABLE);
     let result = (|| -> Result<()> {
         runner.runtime_only()?;
         let package = package.to_str().ok_or("RPM path is not UTF-8")?;
@@ -206,10 +211,9 @@ pub fn run(
             &["--create-home", "--shell", "/bin/bash", "among-check"],
             30,
         )?;
-        fs::create_dir_all("/tmp/opencode")?;
         runner.command(
             "/usr/bin/chown",
-            &["among-check:among-check", "/tmp/opencode"],
+            &["among-check:among-check", checks_text],
             30,
         )?;
         fs::set_permissions(&checker, fs::Permissions::from_mode(0o755))?;
@@ -237,7 +241,16 @@ pub fn run(
                 vec!["check-sessions", "/usr/bin/among"],
             ),
         ] {
-            let mut command = vec!["--user", "among-check", "--", checker, "ci-x11", checker];
+            let mut command = vec![
+                "--user",
+                "among-check",
+                "--",
+                "/usr/bin/env",
+                &check_root,
+                checker,
+                "ci-x11",
+                checker,
+            ];
             command.extend(args);
             runner.command("/usr/sbin/runuser", &command, 300)?;
             evidence["checks"]
@@ -294,12 +307,7 @@ pub fn run(
         Path::new("/home/among-check"),
         &output.join("user-logs"),
     )
-    .and_then(|()| {
-        crate::deb_installed::save_evidence(
-            Path::new("/tmp/opencode"),
-            &output.join("display-logs"),
-        )
-    });
+    .and_then(|()| crate::deb_installed::save_evidence(&checks, &output.join("display-logs")));
     evidence["status"] = json!(if result.is_ok() && saved.is_ok() {
         "passed"
     } else {

@@ -5,8 +5,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     xvfb openbox dbus-x11 xdotool x11-utils imagemagick procps \
     libgtk-4-1 libadwaita-1-0 libvte-2.91-gtk4-0 librsvg2-common \
     && useradd --create-home among-runtime \
-    && mkdir -p /tmp/opencode \
-    && chmod 1777 /tmp/opencode \
+    && mkdir -p /var/lib/among-checks \
+    && chmod 1777 /var/lib/among-checks \
     && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

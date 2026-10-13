@@ -32,7 +32,8 @@ fn wait(h: &mut Harness, offset: usize, seconds: u64, test: impl Fn(&str) -> boo
 }
 
 fn footer_directory(text: &str, pane: u64, directory: &str) -> bool {
-    // /tmp/opencode is not evidence that `cd /tmp` actually reached the shell.
+    // A directory below /tmp is not evidence that `cd /tmp` actually reached
+    // the shell; only the exact directory followed by the separator is.
     text.replace("\\\"", "\"")
         .contains(&format!("{pane}:[\"{directory}|"))
 }
@@ -43,7 +44,7 @@ mod directory_tests {
     #[test]
     fn a_shared_directory_prefix_is_not_shell_command_evidence() {
         assert!(!footer_directory(
-            "rendered_footers=[\"4:[\\\"/tmp/opencode/test|/tmp/opencode/test|10x10\\\"]\"]",
+            "rendered_footers=[\"4:[\\\"/tmp/project/test|/tmp/project/test|10x10\\\"]\"]",
             4,
             "/tmp"
         ));

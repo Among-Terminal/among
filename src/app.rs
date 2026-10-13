@@ -3494,8 +3494,8 @@ mod tests {
             assert!(button.grab_focus());
             key("Return");
         }
-        let config = std::env::var("XDG_CONFIG_HOME").unwrap();
-        assert!(config.starts_with("/tmp/opencode/"));
+        let config = std::env::var_os("XDG_CONFIG_HOME").unwrap();
+        crate::test_isolation::assert_below_check_root(std::path::Path::new(&config));
         let app = adw::Application::builder()
             .application_id("com.github.among-terminal.menu-rebind-test")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
@@ -3583,10 +3583,10 @@ mod tests {
             }
             assert!(predicate());
         }
-        let base = PathBuf::from(format!(
-            "/tmp/opencode/among-session-slow-{}",
-            std::process::id()
-        ));
+        // This test replaces XDG_CONFIG_HOME itself, so its private
+        // configuration must also live below the harness check root.
+        let base = crate::test_isolation::check_root()
+            .join(format!("among-session-slow-{}", std::process::id()));
         std::fs::create_dir_all(base.join("data/among")).unwrap();
         std::fs::create_dir_all(base.join("config/among")).unwrap();
         std::env::set_var("XDG_DATA_HOME", base.join("data"));
@@ -3720,10 +3720,7 @@ mod tests {
         }
         let phase = std::env::var("AMONG_PREFERENCES_TEST_PHASE").unwrap();
         let path = plugin_config_path().unwrap();
-        assert!(
-            path.starts_with("/tmp/opencode/"),
-            "never test against personal configuration"
-        );
+        crate::test_isolation::assert_below_check_root(&path);
         glib::set_prgname(Some("among-settings-test"));
         let app = adw::Application::builder()
             .application_id("com.github.among-terminal.settings-test")

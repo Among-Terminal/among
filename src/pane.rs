@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn an_absolute_path_is_not_made_relative_by_a_host_prefix() {
-        let path = file_uri_to_path("file://bastion/tmp/opencode/repo")
+        let path = file_uri_to_path("file://bastion/srv/projects/repo")
             .expect("a local directory must resolve");
         assert!(path.starts_with('/'), "path came out relative: {path}");
     }

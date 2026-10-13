@@ -201,6 +201,11 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
         env.insert(key.into(), value.into());
     }
     env.insert("SHELL".into(), base.join("shell").into_os_string());
+    // The application test refuses to touch configuration outside this root.
+    env.insert(
+        crate::scratch::VARIABLE.into(),
+        scratch.canonicalize()?.into_os_string(),
+    );
     for (index, phase) in PHASES.iter().enumerate() {
         let session = base.join("data/among/session.json");
         match fs::remove_file(&session) {

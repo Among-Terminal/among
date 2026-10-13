@@ -35,12 +35,17 @@ fn all_ten_original_phases_and_file_preservation_assertions_remain() -> among_to
 
 #[test]
 fn actual_cli_refuses_unowned_display_before_touching_configuration() -> among_tools::Result<()> {
+    let checks = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("among-preferences-refusal-{}", std::process::id()));
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
         .env_clear()
         .env("HOME", "/synthetic-personal-home")
+        .env("AMONG_CHECK_ROOT", &checks)
         .args(["check-preferences", "/bin/true", "/no-plugins"])
         .output()?;
     assert!(!output.status.success());
     assert!(String::from_utf8(output.stderr)?.contains("owned display runner"));
+    assert_eq!(std::fs::read_dir(&checks)?.count(), 0);
+    std::fs::remove_dir(&checks)?;
     Ok(())
 }

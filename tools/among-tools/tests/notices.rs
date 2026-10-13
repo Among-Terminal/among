@@ -108,6 +108,7 @@ fn actual_cli_uses_three_locked_metadata_calls_separates_stderr_and_detects_stal
         std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
             .env_clear()
             .env("PATH", f.0.join("bin"))
+            .env("AMONG_CHECK_ROOT", f.0.join("checks"))
             .arg("third-party-notices")
             .arg(&f.0)
             .arg(f.0.join("output"))

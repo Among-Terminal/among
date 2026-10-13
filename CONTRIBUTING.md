@@ -108,7 +108,10 @@ $tool ci-x11 $tool check-sessions target/release/among
 $tool ci-x11 $tool check-desktop . target/release/among
 ```
 
-These use private test data and only stop test-owned processes. Do not run raw
+These use private test data and only stop test-owned processes. Their
+evidence stays in your cache directory (`~/.cache/among/checks` by default,
+`AMONG_CHECK_ROOT` overrides it); see [where checks keep their evidence](docs/testing.md#where-checks-keep-their-evidence).
+Do not run raw
 input automation against your personal application. Native-X11 evidence does
 not establish Snap/Wayland support.
 

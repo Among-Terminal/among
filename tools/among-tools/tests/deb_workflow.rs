@@ -8,14 +8,14 @@ fn fixture() -> Value {
             rows.push(json!({"target":target,"architecture":arch,"runner":if arch=="amd64" {"ubuntu-24.04"} else {"ubuntu-24.04-arm"},"rust_host":if arch=="amd64" {"x86_64-unknown-linux-gnu"} else {"aarch64-unknown-linux-gnu"},"image":format!("{}@sha256:{}",if target=="debian13" {"debian"} else {"ubuntu"},"a".repeat(64))}));
         }
     }
-    json!({"on":{"push":{"tags":["v*"]}},"permissions":{"contents":"read"},"concurrency":{"cancel-in-progress":false},"jobs":{"build":{"container":{"image":"${{ matrix.image }}"},"strategy":{"matrix":{"include":rows}},"steps":[{"uses":format!("actions/checkout@{}","a".repeat(40))},{"run":"rustup-init --default-toolchain 1.98.1\ncargo test --test binary_archive\nuseradd --create-home --shell /bin/bash among-build\nchown among-build:among-build /tmp/opencode\namong-tools ci-deb-build . \"$BUILD_TARGET\" \"$BUILD_ARCH\" \"$BUILD_IMAGE\" output"}]},"installed":{"needs":"build","container":{"image":"${{ matrix.image }}"},"strategy":{"matrix":{"include":rows}},"steps":[{"uses":format!("actions/checkout@{}","b".repeat(40))},{"run":"sha256sum --check native-checker.sha256\nnative-checker/among-tools check-native-checker\nnative-checker/among-tools ci-deb-install . \"$BUILD_TARGET\""}]}}})
+    json!({"on":{"push":{"tags":["v*"]}},"permissions":{"contents":"read"},"concurrency":{"cancel-in-progress":false},"jobs":{"build":{"container":{"image":"${{ matrix.image }}"},"env":{"AMONG_CHECK_ROOT":"/var/lib/among-checks"},"strategy":{"matrix":{"include":rows}},"steps":[{"uses":format!("actions/checkout@{}","a".repeat(40))},{"run":"rustup-init --default-toolchain 1.98.1\ncargo test --test binary_archive\nuseradd --create-home --shell /bin/bash among-build\namong-tools ci-deb-build . \"$BUILD_TARGET\" \"$BUILD_ARCH\" \"$BUILD_IMAGE\" output"}]},"installed":{"needs":"build","container":{"image":"${{ matrix.image }}"},"env":{"AMONG_CHECK_ROOT":"/var/lib/among-checks"},"strategy":{"matrix":{"include":rows}},"steps":[{"uses":format!("actions/checkout@{}","b".repeat(40))},{"run":"sha256sum --check native-checker.sha256\nnative-checker/among-tools check-native-checker\nnative-checker/among-tools ci-deb-install . \"$BUILD_TARGET\""}]}}})
 }
 
 #[test]
 fn release_only_exact_native_matrices_permissions_actions_and_installed_isolation() -> Result<()> {
     let valid = fixture();
     assert_eq!(deb_workflow::validate(&valid)?.len(), 2);
-    for mutation in 0..10 {
+    for mutation in 0..13 {
         let mut changed = valid.clone();
         match mutation {
             0 => changed["on"]["pull_request"] = json!({}),
@@ -48,6 +48,11 @@ fn release_only_exact_native_matrices_permissions_actions_and_installed_isolatio
                 )
                 .into()
             }
+            // The installed checks hand the root from the root user to the
+            // check user; without an explicit root each derives its own.
+            10 => changed["jobs"]["installed"]["env"] = json!({}),
+            11 => changed["jobs"]["build"]["env"]["AMONG_CHECK_ROOT"] = "/tmp/among-checks".into(),
+            12 => changed["jobs"]["build"]["env"]["AMONG_CHECK_ROOT"] = "among-checks".into(),
             _ => return Err("unknown mutation".into()),
         }
         assert!(
@@ -122,11 +127,17 @@ fn actual_installed_runner_refuses_local_operations_before_creating_evidence() -
     assert!(!result.status.success());
     assert!(String::from_utf8(result.stderr)?.contains("restricted to GitHub release-tag push CI"));
     assert!(!output.exists());
+    let checks = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("among-deb-desktop-refusal-{}", std::process::id()));
     let desktop = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
         .env_clear()
+        .env("AMONG_CHECK_ROOT", &checks)
         .arg("check-deb-desktop")
         .output()?;
     assert!(!desktop.status.success());
     assert!(String::from_utf8(desktop.stderr)?.contains("only in release CI"));
+    // The refusal happens before any check directory is created.
+    assert_eq!(std::fs::read_dir(&checks)?.count(), 0);
+    std::fs::remove_dir(&checks)?;
     Ok(())
 }

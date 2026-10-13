@@ -84,7 +84,7 @@ pub fn host_probe(output: &Path) -> Result<()> {
     let root = output.parent().ok_or("host probe parent absent")?;
     let root = root.canonicalize()?;
     require(
-        root.starts_with("/tmp/opencode")
+        root.starts_with(crate::scratch::root()?)
             && root.metadata()?.uid() == nix::unistd::geteuid().as_raw(),
         "host probe requires an owned private evidence directory",
     )?;
@@ -212,6 +212,13 @@ pub fn run(github_hosted: bool, scratch: &Path) -> Result<PathBuf> {
     h.env.insert("SHELL".into(), "/bin/bash".into());
     h.env
         .insert("AMONG_HOST_MARKER".into(), "vm-fixture".into());
+    // The host probe runs from the application's shell with this fixture's
+    // HOME and refuses output outside the check root; it must learn the same
+    // root the way it learns the marker.
+    h.env.insert(
+        crate::scratch::VARIABLE.into(),
+        scratch.canonicalize()?.into_os_string(),
+    );
     h.env.insert(
         "GSETTINGS_SCHEMA_DIR".into(),
         h.base.join("host-schemas").into_os_string(),

@@ -186,6 +186,7 @@ fn actual_cli_uses_real_gpgv_and_refuses_unsigned_fixture_without_trusting_mocke
     fs::write(&native, serde_json::to_vec(&f.native)?)?;
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
         .env_clear()
+        .env("AMONG_CHECK_ROOT", f.root.join("checks"))
         .arg("check-apt-provenance")
         .arg(f.root.join("apt"))
         .arg(native)
