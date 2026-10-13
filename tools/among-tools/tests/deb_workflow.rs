@@ -37,7 +37,7 @@ fn release_only_exact_native_matrices_permissions_actions_and_installed_isolatio
             7 => changed["jobs"]["installed"]["needs"] = "nothing".into(),
             8 => {
                 changed["jobs"]["installed"]["steps"][1]["run"] =
-                    "rustup-init; python3 scripts/ci-deb-install.py".into()
+                    "rustup-init --default-toolchain 1.98.1".into()
             }
             9 => {
                 changed["jobs"]["build"]["steps"][1]["run"] = format!(

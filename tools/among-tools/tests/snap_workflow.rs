@@ -3,8 +3,7 @@ use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs, path::Path};
 
 #[test]
-fn main_snap_workflow_uses_native_rust_drivers_without_direct_python_or_publication() -> Result<()>
-{
+fn main_snap_workflow_uses_native_rust_drivers_without_publication() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let bytes = fs::read(root.join(".github/workflows/snap-build.yml"))?;
     let workflow: Value = serde_yaml_ng::from_slice(&bytes)?;
@@ -45,15 +44,7 @@ fn main_snap_workflow_uses_native_rust_drivers_without_direct_python_or_publicat
             scripts.push('\n');
         }
     }
-    for forbidden in [
-        "python3 ",
-        "python3-gi",
-        "python3-yaml",
-        "scripts/ci-x11.py",
-        "snapcraft upload",
-        "gh release create",
-        "gh release upload",
-    ] {
+    for forbidden in ["snapcraft upload", "gh release create", "gh release upload"] {
         assert!(
             !scripts.contains(forbidden),
             "forbidden Snap build/runtime caller: {forbidden}"

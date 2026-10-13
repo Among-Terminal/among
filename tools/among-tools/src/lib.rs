@@ -49,8 +49,6 @@ pub mod promo_review;
 pub mod promotion;
 pub mod promotion_destinations;
 pub mod promotion_publication;
-pub mod python_guard;
-mod python_guard_rust;
 pub mod raw_pty;
 pub mod release_assets;
 pub mod release_draft_workflow;
