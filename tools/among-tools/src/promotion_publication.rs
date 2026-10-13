@@ -82,9 +82,9 @@ impl Destinations for Publication {
 /// Everything a publication needs before any endpoint is contacted.
 ///
 /// This runs the checks that do not require credentials, so a run that cannot
-/// possibly succeed is refused before a release is created. Mirroring the
-/// Python `main`, which validates provenance, source delivery, packaged
-/// identity and the checkout identity before calling `promote`.
+/// possibly succeed is refused before a release is created: provenance, source
+/// delivery, packaged identity and the checkout identity are all validated
+/// before `promote` is called.
 pub fn preflight(
     record: &Value,
     gates: &Value,

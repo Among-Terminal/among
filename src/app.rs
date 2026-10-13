@@ -3663,7 +3663,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires isolated XDG directories, display and xdotool; driven by scripts/check-preferences.py"]
+    #[ignore = "requires isolated XDG directories, display and xdotool; driven by among-tools check-preferences"]
     fn preferences_persist_across_fresh_processes() {
         fn pump() {
             let end = std::time::Instant::now() + Duration::from_millis(450);

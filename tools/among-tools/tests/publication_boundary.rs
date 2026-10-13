@@ -99,33 +99,26 @@ fn no_stable_promotion_path_mentions_the_edge_channel() -> Result<()> {
 #[test]
 fn offline_rehearsal_tools_are_not_invoked_by_any_workflow() -> Result<()> {
     let directory = root().join(".github/workflows");
-    let mut scripts = Vec::new();
+    let mut invocations = Vec::new();
     for entry in fs::read_dir(&directory)? {
         let path = entry?.path();
         if path.extension().is_none_or(|extension| extension != "yml") {
             continue;
         }
         let text = fs::read_to_string(&path)?;
-        for line in text.lines() {
-            if let Some(rest) = line.trim().strip_prefix("python3 scripts/") {
-                scripts.push(
-                    rest.split_whitespace()
-                        .next()
-                        .unwrap_or_default()
-                        .to_string(),
-                );
+        for (index, line) in text.lines().enumerate() {
+            // `release-promotion` publishes to GitHub and the Store; a
+            // rehearsal driver of it must never return. The read-only
+            // `check-promotion-admission` and the offline `cargo test` suites
+            // do not name either command and stay allowed.
+            if line.contains("release-promotion") || line.contains("rehearse-stable-promotion") {
+                invocations.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
             }
         }
     }
-    // The Python promotion suites are retained as a to-be-rewritten reference
-    // and deliberately no longer gate CI; a rehearsal driver must never return.
-    for invoked in &scripts {
-        assert!(
-            !invoked.contains("release-promotion")
-                && !invoked.contains("test-release-")
-                && !invoked.contains("rehearse-stable-promotion"),
-            "a workflow invokes {invoked}, which is publication or its rehearsal"
-        );
-    }
+    assert!(
+        invocations.is_empty(),
+        "a workflow invokes publication or its rehearsal: {invocations:?}"
+    );
     Ok(())
 }

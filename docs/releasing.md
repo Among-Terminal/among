@@ -21,13 +21,15 @@ returns `published: false` and performs no endpoint operation. Schema-1 records
 remain readable for historical offline fixtures but cannot authorize the first
 public release's two-architecture payload.
 
-The remaining publication work is still unported: the GitHub release adapter,
-the Store adapter and the partial-failure retry state machine. Snapcraft 8.14.0
-exposes `snapcraft upload`, `release`, `revisions` and `status`, but none of them
-print machine-readable `sha3-384` digests, so exact Store digest reconciliation
-cannot yet be reproduced through supported CLI operations. Do not substitute
-human-readable table parsing for that check, and do not treat a successful
-`check-promotion-admission` as evidence that anything was published.
+The publishing half is `among-tools release-promotion` (below). Its GitHub
+adapter drives `/usr/bin/gh`; its Store adapter uploads and releases with
+`/usr/bin/snapcraft` and reads each revision's `sha3-384`, version and
+architectures from the Store HTTPS API with `/usr/bin/curl`, because no
+Snapcraft CLI command prints that digest machine-readably. Those adapters are
+tested only against stand-in programs; they have not run against the real
+GitHub or Store services. Do not substitute human-readable table parsing for
+the digest check, and do not treat a successful `check-promotion-admission` as
+evidence that anything was published.
 
 Sources for both architectures become public before any Store channel advances.
 A partial Store failure leaves the immutable release available and does not
@@ -158,9 +160,13 @@ release acceptance. `among-tools check-release-metadata .` checks the candidate
 recipe, both versions/licenses, AppStream/desktop identity and override shell
 syntax; it does not build or test a Snap. Execute project tools in containers.
 
-A credential-free promotion is run with the Rust entry point. It re-derives
-stable provenance from the protected checkout, verifies the packaged Snap
-identity per architecture, and only then contacts GitHub and the Store:
+Promotion is run with the Rust entry point. It re-derives stable provenance
+from the protected checkout, verifies the packaged Snap identity per
+architecture, and only then contacts GitHub and the Store. It publishes: it
+creates and publishes the GitHub release, uploads and releases each
+architecture's Snap, and for a nightly rolls the success marker. It therefore
+needs `GH_TOKEN` and `SNAPCRAFT_STORE_CREDENTIALS` and belongs only in a
+protected release job:
 
 ```sh
 AMONG_PROTECTED_APPROVAL=yes \
@@ -170,8 +176,7 @@ among-tools release-promotion \
 ```
 
 Without `AMONG_PROTECTED_APPROVAL=yes` the command refuses before it reads a
-record, a gate or an artifact. It publishes nothing on its own: attach the
-resulting assets through the protected release workflow.
+record, a gate or an artifact. No workflow invokes it yet.
 
 The portable policy, staging and identity checks remain:
 
@@ -186,13 +191,17 @@ tools/among-tools/target/release/among-tools check-release-metadata .
 exact source/artifact gate binding, all six gates and both architecture
 receipts, and real artifact bytes. It is read-only and returns
 `published: false`; it does not perform any endpoint reconciliation or upload.
-It also explicitly refuses nightly mode, because nightly publication remains
-deferred.
+It accepts a nightly record as well as a stable one; nightly publication itself
+remains deferred because no workflow schedules it.
 
-The Python suites test approval/gate refusal, immutable asset/source conflicts,
-zero-write unchanged runs, concurrent local promotions, partial failure
-recovery, and actual adapter command generation/reconciliation against local
-mocked responses. They are not proof of authenticated hosted execution.
+The Rust suites above test approval/gate refusal, immutable asset/source
+conflicts, numeric stable version order, zero-write unchanged runs, partial
+failure recovery against an in-process stand-in for both destinations, and the
+adapters' read paths (release and marker lookup, Store revision metadata),
+credentials and error handling against stand-in `gh` and `curl` programs. The
+adapters' write paths (GitHub prepare, publish and roll; Store upload and
+release) are not driven by any test yet. None of this is proof of
+authenticated hosted execution.
 Tag/daily workflows are still absent; no automated publisher should be
 considered operational yet.
 
