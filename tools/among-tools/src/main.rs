@@ -69,7 +69,7 @@ Usage:
   among-tools build-appimage <staged-AppDir> <tools-directory> <amd64|arm64> <version> <new-output>
   among-tools appimage-version <source-root> <ref-type> <ref-name>
   among-tools collect-appimage-sources <audit.json> <new-output>
-  among-tools ci-appimage-install <source-root> <debian13|ubuntu24.04|fedora43> <amd64|arm64> <candidate-directory> <absolute-check-root> <new-output>
+  among-tools ci-appimage-install <source-root> <debian13|ubuntu24.04|fedora43> <amd64|arm64> <candidate-directory> <new-output>
   among-tools record-rpm-candidate <source-root> <target> <architecture> <candidate-directory>
   among-tools ci-rpm-install <source-root> <target> <architecture> <candidate-directory> <new-output>
   among-tools check-rpm-notices <source-root> <extracted-payload> <requires.txt>
@@ -119,7 +119,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         [command, audit, output] if command == "collect-appimage-sources" => {
             among_tools::appimage_sources::collect(Path::new(audit), Path::new(output))?;
         }
-        [command, root, host, architecture, candidate, check_root, output]
+        [command, root, host, architecture, candidate, output]
             if command == "ci-appimage-install" =>
         {
             among_tools::appimage_installed::run(
@@ -127,7 +127,6 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 host,
                 architecture,
                 Path::new(candidate),
-                Path::new(check_root),
                 Path::new(output),
                 &std::env::vars().collect(),
             )?;
