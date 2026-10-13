@@ -112,7 +112,7 @@ fn duplicate_traversal_absolute_and_symlink_archives_are_refused() -> Result<()>
         ],
         json!({"schema":1,"files":{"original-source.tar":digest}}),
     )?;
-    assert!(check(&f).is_err());
+    assert_eq!(refusal(&f), "duplicate source archive member");
     for name in ["../outside", "/absolute"] {
         // Raw header avoids tar::Builder rejecting the unsafe fixture itself.
         let mut header = tar::Header::new_gnu();
@@ -125,7 +125,11 @@ fn duplicate_traversal_absolute_and_symlink_archives_are_refused() -> Result<()>
         archive.append(&header, b"x".as_slice())?;
         fs::write(f.0.join("source.tar"), archive.into_inner()?)?;
         associate(&f)?;
-        assert!(check(&f).is_err());
+        assert_eq!(
+            refusal(&f),
+            "path must contain only relative normal components",
+            "{name}"
+        );
     }
     let mut header = tar::Header::new_gnu();
     header.set_entry_type(tar::EntryType::Symlink);
@@ -137,15 +141,79 @@ fn duplicate_traversal_absolute_and_symlink_archives_are_refused() -> Result<()>
     archive.append_data(&mut header, "linked", b"".as_slice())?;
     fs::write(f.0.join("source.tar"), archive.into_inner()?)?;
     associate(&f)?;
-    assert!(check(&f).is_err());
+    assert_eq!(refusal(&f), "source archive members must be regular files");
     fs::rename(f.0.join("source.tar"), f.0.join("saved.tar"))?;
     std::os::unix::fs::symlink(f.0.join("saved.tar"), f.0.join("source.tar"))?;
-    assert!(check(&f).is_err());
+    assert_eq!(
+        refusal(&f),
+        "associated artifact must be a regular non-symlink file"
+    );
     let files = BTreeMap::from([("ordinary".into(), b"x".to_vec())]);
     assert!(source_delivery::inventory(
         storage::deterministic_tar(&files)?.as_slice(),
         "delivery-inventory.json"
     )
     .is_err());
+    Ok(())
+}
+
+/// Each refusal names its own cause, so a test can tell that the intended
+/// check fired rather than an earlier, unrelated one.
+fn refusal(f: &Fixture) -> String {
+    check(f)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default()
+}
+
+#[test]
+fn association_schema_filenames_and_a_missing_original_are_refused_by_their_own_checks(
+) -> Result<()> {
+    let f = fixture()?;
+    let digest = storage::sha256(b"original".as_slice())?;
+    bundle(
+        &f,
+        &[("original-source.tar", b"original")],
+        json!({"schema":1,"files":{"original-source.tar":digest}}),
+    )?;
+    check(&f)?;
+
+    let original = storage::parse_json(&fs::read(f.0.join("association.json"))?)?;
+    for (field, value, expected) in [
+        ("schema", json!(2), "unsupported source association"),
+        (
+            "snap",
+            json!({"filename":"other.snap","sha256":original["snap"]["sha256"]}),
+            "wrong associated artifact filename",
+        ),
+        (
+            "source_bundle",
+            json!({"filename":"other.tar","sha256":original["source_bundle"]["sha256"]}),
+            "wrong associated artifact filename",
+        ),
+    ] {
+        let mut record = original.clone();
+        record[field] = value;
+        fs::write(f.0.join("association.json"), serde_json::to_vec(&record)?)?;
+        assert_eq!(refusal(&f), expected, "{field}");
+    }
+
+    let other = storage::sha256(b"other".as_slice())?;
+    bundle(
+        &f,
+        &[("other-member", b"other")],
+        json!({"schema":1,"files":{"other-member":other}}),
+    )?;
+    assert_eq!(refusal(&f), "original source snapshot absent from delivery");
+
+    bundle(
+        &f,
+        &[("original-source.tar", b"original")],
+        json!({"schema":2,"files":{"original-source.tar":digest}}),
+    )?;
+    assert_eq!(
+        refusal(&f),
+        "source delivery inventory is incomplete or a delivered member changed"
+    );
     Ok(())
 }

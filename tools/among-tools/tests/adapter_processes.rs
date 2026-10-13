@@ -18,7 +18,7 @@ use among_tools::{
     store_credentials::base64_urlsafe_encode,
     Result,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{
     ffi::OsString,
     fs,
@@ -535,5 +535,201 @@ fn a_stable_release_without_its_tag_is_refused_before_upload() -> Result<()> {
         Err("remote immutable release tag/source conflict".to_string())
     );
     assert!(!log_of(&fixture.0)?.contains("gh upload"));
+    Ok(())
+}
+
+/// Store stand-ins with state. `curl` serves `store.json`; `snapcraft upload`
+/// replaces it with `after-upload.json` and `snapcraft release` with
+/// `after-release.json`, so each test decides what the Store shows after
+/// each write and every call is logged.
+const STATEFUL_CURL: &str = r#"#!/bin/sh
+root="$(dirname "$0")/.."
+printf 'curl read\n' >> "$root/gh.out"
+cat "$root/store.json"
+"#;
+const STATEFUL_SNAPCRAFT: &str = r#"#!/bin/sh
+root="$(dirname "$0")/.."
+printf 'snapcraft %s\n' "$*" >> "$root/gh.out"
+case "$1" in
+  upload) cp "$root/after-upload.json" "$root/store.json" ;;
+  release) cp "$root/after-release.json" "$root/store.json" ;;
+esac
+"#;
+
+struct Store {
+    fixture: Fixture,
+    snap: PathBuf,
+    digest: String,
+}
+
+impl Store {
+    fn new() -> Result<Self> {
+        let fixture = fixture()?;
+        install(&fixture.0, "curl", STATEFUL_CURL)?;
+        install(&fixture.0, "snapcraft", STATEFUL_SNAPCRAFT)?;
+        let snap = fixture.0.join("among.snap");
+        fs::write(&snap, b"synthetic snap bytes")?;
+        let digest = among_tools::sha3::hex(fs::File::open(&snap)?)?;
+        Ok(Self {
+            fixture,
+            snap,
+            digest,
+        })
+    }
+
+    fn state(&self, name: &str, revisions: Value, channels: Value) -> Result<()> {
+        fs::write(
+            self.fixture.0.join(name),
+            json!({"revisions": revisions, "channel-map": channels}).to_string(),
+        )?;
+        Ok(())
+    }
+
+    fn revision(&self, number: u64, architecture: &str, digest: &str) -> Value {
+        json!({"revision": number, "version": "0.1.13", "architectures": [architecture], "sha3-384": digest})
+    }
+
+    fn ensure(&self, architecture: &str) -> Result<String> {
+        // Every Store command reads the credential from the environment, so it
+        // stays set for the whole operation; the fixture restores it on drop.
+        unsafe { std::env::set_var("SNAPCRAFT_STORE_CREDENTIALS", exported_login()) };
+        let outcome = SnapStore::new(&self.fixture.0).and_then(|store| {
+            store
+                .using_programs(
+                    &self.fixture.0.join("bin/curl"),
+                    &self.fixture.0.join("bin/snapcraft"),
+                )
+                .ensure(&self.snap, "0.1.13", "latest/stable", architecture)
+        });
+        unsafe { std::env::remove_var("SNAPCRAFT_STORE_CREDENTIALS") };
+        let log = log_of(&self.fixture.0)?;
+        outcome
+            .map(|()| log.clone())
+            .map_err(|error| format!("{error}; calls: {log}").into())
+    }
+
+    fn calls(&self) -> Result<String> {
+        log_of(&self.fixture.0)
+    }
+}
+
+fn channel(revision: u64, architecture: &str) -> Value {
+    json!([{"channel": "latest/stable", "architecture": architecture, "revision": revision}])
+}
+
+/// A revision with these exact bytes already serving the channel is the end
+/// state; a retry must neither upload a duplicate nor release again.
+#[test]
+fn an_already_released_matching_revision_is_reconciled_without_any_write() -> Result<()> {
+    let store = Store::new()?;
+    let revisions = json!([store.revision(41, "amd64", &store.digest)]);
+    store.state("store.json", revisions, channel(41, "amd64"))?;
+    let calls = store.ensure("amd64")?;
+    assert!(!calls.contains("snapcraft"), "{calls}");
+    Ok(())
+}
+
+/// The upload of an earlier attempt already landed: release that revision
+/// rather than upload the same bytes again.
+#[test]
+fn an_uploaded_but_unreleased_revision_is_released_without_reupload() -> Result<()> {
+    let store = Store::new()?;
+    let revisions = json!([store.revision(41, "amd64", &store.digest)]);
+    store.state("store.json", revisions.clone(), json!([]))?;
+    store.state("after-release.json", revisions, channel(41, "amd64"))?;
+    let calls = store.ensure("amd64")?;
+    assert!(!calls.contains("snapcraft upload"), "{calls}");
+    assert!(
+        calls.contains("snapcraft release among 41 latest/stable"),
+        "{calls}"
+    );
+    Ok(())
+}
+
+/// With nothing in the Store, upload, read the new revision's digest and only
+/// then release exactly that revision.
+#[test]
+fn a_new_upload_is_released_only_after_its_digest_is_confirmed() -> Result<()> {
+    let store = Store::new()?;
+    store.state("store.json", json!([]), json!([]))?;
+    let uploaded = json!([store.revision(42, "amd64", &store.digest)]);
+    store.state("after-upload.json", uploaded.clone(), json!([]))?;
+    store.state("after-release.json", uploaded, channel(42, "amd64"))?;
+    let calls = store.ensure("amd64")?;
+    let upload = calls.find("snapcraft upload").ok_or("no upload")?;
+    let release = calls
+        .find("snapcraft release among 42 latest/stable")
+        .ok_or("no release")?;
+    assert!(upload < release, "{calls}");
+    Ok(())
+}
+
+/// A revision of this version and architecture with other bytes means the
+/// Store holds something this run did not check: no channel may change.
+#[test]
+fn a_conflicting_store_digest_never_reaches_a_release() -> Result<()> {
+    let store = Store::new()?;
+    let revisions = json!([store.revision(41, "amd64", &"0".repeat(96))]);
+    store.state("store.json", revisions, json!([]))?;
+    let refusal = store
+        .ensure("amd64")
+        .err()
+        .ok_or("a conflicting digest was accepted")?
+        .to_string();
+    assert!(refusal.contains("conflicting"), "{refusal}");
+    assert!(!store.calls()?.contains("snapcraft"));
+    Ok(())
+}
+
+/// An upload whose digest does not come back as the uploaded bytes' digest
+/// is not released either.
+#[test]
+fn an_upload_with_an_unconfirmed_digest_is_not_released() -> Result<()> {
+    let store = Store::new()?;
+    store.state("store.json", json!([]), json!([]))?;
+    store.state(
+        "after-upload.json",
+        json!([{"revision": 42, "version": "0.1.13", "architectures": ["amd64"]}]),
+        json!([]),
+    )?;
+    assert!(store.ensure("amd64").is_err());
+    let calls = store.calls()?;
+    assert!(calls.contains("snapcraft upload") && !calls.contains("snapcraft release"));
+    Ok(())
+}
+
+/// The arm64 channel must get an arm64 revision even when an amd64 revision
+/// of the same version carries the same digest.
+#[test]
+fn arm64_never_reuses_an_amd64_revision() -> Result<()> {
+    let store = Store::new()?;
+    let amd64 = store.revision(41, "amd64", &store.digest);
+    store.state("store.json", json!([amd64]), channel(41, "amd64"))?;
+    let both = json!([amd64, store.revision(43, "arm64", &store.digest)]);
+    store.state("after-upload.json", both.clone(), channel(41, "amd64"))?;
+    store.state("after-release.json", both, channel(43, "arm64"))?;
+    let calls = store.ensure("arm64")?;
+    assert!(calls.contains("snapcraft upload"), "{calls}");
+    assert!(
+        calls.contains("snapcraft release among 43 latest/stable"),
+        "{calls}"
+    );
+    Ok(())
+}
+
+/// A release command that exits successfully is not evidence: the channel
+/// map must show the revision afterwards.
+#[test]
+fn a_release_the_channel_map_does_not_show_is_a_failure() -> Result<()> {
+    let store = Store::new()?;
+    let revisions = json!([store.revision(41, "amd64", &store.digest)]);
+    store.state("store.json", revisions.clone(), json!([]))?;
+    store.state("after-release.json", revisions, json!([]))?;
+    let refusal = store
+        .ensure("amd64")
+        .err()
+        .ok_or("an unobserved release was accepted")?
+        .to_string();
+    assert!(refusal.contains("not observed"), "{refusal}");
     Ok(())
 }
