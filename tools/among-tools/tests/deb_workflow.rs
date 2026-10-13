@@ -8,14 +8,14 @@ fn fixture() -> Value {
             rows.push(json!({"target":target,"architecture":arch,"runner":if arch=="amd64" {"ubuntu-24.04"} else {"ubuntu-24.04-arm"},"rust_host":if arch=="amd64" {"x86_64-unknown-linux-gnu"} else {"aarch64-unknown-linux-gnu"},"image":format!("{}@sha256:{}",if target=="debian13" {"debian"} else {"ubuntu"},"a".repeat(64))}));
         }
     }
-    json!({"on":{"push":{"tags":["v*"]}},"permissions":{"contents":"read"},"concurrency":{"cancel-in-progress":false},"jobs":{"build":{"container":{"image":"${{ matrix.image }}"},"env":{"AMONG_CHECK_ROOT":"/var/lib/among-checks"},"strategy":{"matrix":{"include":rows}},"steps":[{"uses":format!("actions/checkout@{}","a".repeat(40))},{"run":"rustup-init --default-toolchain 1.98.1\ncargo test --test binary_archive\nuseradd --create-home --shell /bin/bash among-build\namong-tools ci-deb-build . \"$BUILD_TARGET\" \"$BUILD_ARCH\" \"$BUILD_IMAGE\" output"}]},"installed":{"needs":"build","container":{"image":"${{ matrix.image }}"},"env":{"AMONG_CHECK_ROOT":"/var/lib/among-checks"},"strategy":{"matrix":{"include":rows}},"steps":[{"uses":format!("actions/checkout@{}","b".repeat(40))},{"run":"sha256sum --check native-checker.sha256\nsha256sum --check SHA256SUMS\nnative-checker/among-tools check-native-checker\nnative-checker/among-tools ci-deb-install . \"$BUILD_TARGET\""}]}}})
+    json!({"on":{"push":{"tags":["v*"]},"workflow_call":null},"permissions":{"contents":"read"},"concurrency":{"cancel-in-progress":false},"jobs":{"build":{"container":{"image":"${{ matrix.image }}"},"env":{"AMONG_CHECK_ROOT":"/var/lib/among-checks"},"strategy":{"matrix":{"include":rows}},"steps":[{"uses":format!("actions/checkout@{}","a".repeat(40))},{"run":"rustup-init --default-toolchain 1.98.1\ncargo test --test binary_archive\nuseradd --create-home --shell /bin/bash among-build\namong-tools ci-deb-build . \"$BUILD_TARGET\" \"$BUILD_ARCH\" \"$BUILD_IMAGE\" output"}]},"installed":{"needs":"build","container":{"image":"${{ matrix.image }}"},"env":{"AMONG_CHECK_ROOT":"/var/lib/among-checks"},"strategy":{"matrix":{"include":rows}},"steps":[{"uses":format!("actions/checkout@{}","b".repeat(40))},{"run":"sha256sum --check native-checker.sha256\nsha256sum --check SHA256SUMS\nnative-checker/among-tools check-native-checker\nnative-checker/among-tools ci-deb-install . \"$BUILD_TARGET\""}]}}})
 }
 
 #[test]
 fn release_only_exact_native_matrices_permissions_actions_and_installed_isolation() -> Result<()> {
     let valid = fixture();
     assert_eq!(deb_workflow::validate(&valid)?.len(), 2);
-    for mutation in 0..14 {
+    for mutation in 0..16 {
         let mut changed = valid.clone();
         match mutation {
             0 => changed["on"]["pull_request"] = json!({}),
@@ -58,6 +58,15 @@ fn release_only_exact_native_matrices_permissions_actions_and_installed_isolatio
                 changed["jobs"]["installed"]["steps"][1]["run"] =
                     "sha256sum --check native-checker.sha256\nnative-checker/among-tools check-native-checker\nnative-checker/among-tools ci-deb-install . \"$BUILD_TARGET\"".into()
             }
+            // Without the call trigger the release draft workflow cannot run it.
+            14 => {
+                changed["on"]
+                    .as_object_mut()
+                    .ok_or("fixture triggers are not a mapping")?
+                    .remove("workflow_call");
+            }
+            // Inputs would let a caller change what the release tag builds.
+            15 => changed["on"]["workflow_call"] = json!({"inputs":{"target":{"type":"string"}}}),
             _ => return Err("unknown mutation".into()),
         }
         assert!(

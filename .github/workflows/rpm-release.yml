@@ -1,11 +1,13 @@
 name: RPM release candidates
 
 # Release-tag-only. A candidate is built and inspected here; nothing is
-# published. Attaching artifacts to a release requires the separate protected
-# promotion gate, because building a package and shipping it are different acts.
+# published. release-draft.yml calls this workflow and attaches the checked
+# candidates to a release draft that only the owner publishes, because building
+# a package and shipping it are different acts.
 on:
   push:
     tags: ['v*']
+  workflow_call:
 
 permissions:
   contents: read

@@ -3,6 +3,7 @@ name: Debian release candidates
 on:
   push:
     tags: ['v*']
+  workflow_call:
 
 permissions:
   contents: read

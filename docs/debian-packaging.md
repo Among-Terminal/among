@@ -12,7 +12,8 @@ installation is documented on the [installation page](https://among-terminal.git
 pushes, accepting stable `vX.Y.Z` and preview `vX.Y.Z-rc.N` tags (positive `N`).
 The base version must match Cargo/AppStream versions, checked
 before package construction. It has no branch, pull-request, schedule or manual
-dispatch build trigger; GitHub reruns retain the original tag event. Native
+dispatch build trigger; GitHub reruns retain the original tag event. It is also
+called by `release-draft.yml`, which runs for the same tag push. Native
 `ubuntu-24.04` and `ubuntu-24.04-arm` runners use digest-pinned Debian 13 or Ubuntu
 24.04 containers, a pinned Rust 1.98.1 toolchain and debhelper dependency detection.
 Container identities, installed build-package versions, source commit, package
@@ -27,7 +28,9 @@ allowlist of four DEBs, source materials and checksums. Anonymous downloads were
 checked against the retained package digests. GitHub normalizes `~` in asset
 filenames to `.`; the version inside each DEB retains the Debian `~rc.N` ordering.
 The protected automated stable publisher remains outstanding; this build workflow
-has no publication permission and does not itself publish.
+has no publication permission and does not itself publish. `release-draft.yml`
+attaches the checked DEBs and binary archives to an unpublished release draft
+([releasing guide, section 5](releasing.md#5-release-drafts-from-a-tag)).
 
 ## Installed checks in release CI
 

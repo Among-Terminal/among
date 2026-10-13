@@ -40,6 +40,7 @@ Usage:
   among-tools source-snapshot <source-root> <vendor-directory> <new-output.tar>
   among-tools ci-deb-build <source-root> <target> <architecture> <digest-pinned-image> <new-output>
   among-tools check-deb-workflow <source-root>
+  among-tools stage-release-assets <artifacts> <tag> <commit> <new-output>
   among-tools check-deb-desktop
   among-tools check-native-checker <directory> <source-sha> <tag> <target> <architecture>
   among-tools package-native-checker <binary> <source-sha> <tag> <target> <architecture> <new-directory>
@@ -648,6 +649,17 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command] if command == "check-deb-desktop" => {
             among_tools::desktop::installed(&among_tools::scratch::root()?)?;
+        }
+        [command, inputs, tag, commit, output] if command == "stage-release-assets" => {
+            for name in among_tools::release_assets::stage(
+                Path::new(inputs),
+                tag,
+                commit,
+                Path::new(output),
+            )? {
+                println!("{name}");
+            }
+            println!("PASS release files and SHA256SUMS staged; nothing was uploaded");
         }
         [command, root] if command == "check-deb-workflow" => {
             among_tools::deb_workflow::run(Path::new(root), &among_tools::scratch::root()?)?;
