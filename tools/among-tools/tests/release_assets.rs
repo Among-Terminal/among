@@ -94,7 +94,7 @@ fn fixture(root: &Path) -> Result<PathBuf> {
         fs::write(
             directory.join("rpm-digests.txt"),
             format!(
-                "{}  /tmp/opencode/rpmbuild/RPMS/x86_64/{package}\n{}  /tmp/opencode/rpmbuild/SRPMS/{source}\n",
+                "{}  /work/rpmbuild/RPMS/x86_64/{package}\n{}  /work/rpmbuild/SRPMS/{source}\n",
                 sha(format!("rpm {target} amd64").as_bytes())?,
                 sha(format!("srpm {target}").as_bytes())?
             ),
