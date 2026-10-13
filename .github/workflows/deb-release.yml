@@ -1,8 +1,8 @@
 name: Debian release candidates
 
+# Started only by release-draft.yml for a v* tag push; a called workflow sees
+# the caller's push event, which the package builder requires.
 on:
-  push:
-    tags: ['v*']
   workflow_call:
 
 permissions:

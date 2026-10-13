@@ -71,11 +71,12 @@ fn matrix(job: &Value, build: bool) -> Result<BTreeSet<(String, String, String, 
 }
 
 pub fn validate(document: &Value) -> Result<Vec<String>> {
-    // A called workflow inherits the caller's event, so the release draft
-    // workflow can only start it for the same release-tag push.
+    // The release draft workflow is the single entry point for a tag. A called
+    // workflow runs with the caller's push event, which the builder requires;
+    // its own tag trigger would build every package a second time.
     require(
-        document["on"] == json!({"push":{"tags":["v*"]},"workflow_call":null}),
-        "Debian workflow must run only for release tags, directly or called by the release draft workflow",
+        document["on"] == json!({"workflow_call":null}),
+        "Debian workflow must be started only by the release draft workflow, without inputs",
     )?;
     require(
         document["permissions"] == json!({"contents":"read"}),
