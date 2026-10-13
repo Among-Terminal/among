@@ -129,7 +129,12 @@ fn wrong_versions_symlinks_duplicate_identities_and_missing_coverage_are_rejecte
     f.save()?;
     fs::remove_file(f.0.join("fixture/fixture.tar.xz"))?;
     std::os::unix::fs::symlink(&dsc, f.0.join("fixture/fixture.tar.xz"))?;
-    assert!(f.check().is_err());
+    // The symlink itself must be the reason, not the digest mismatch that a
+    // link to other bytes would also cause.
+    assert_eq!(
+        f.check().err().map(|error| error.to_string()).as_deref(),
+        Some("owned path contains a symlink")
+    );
     Ok(())
 }
 

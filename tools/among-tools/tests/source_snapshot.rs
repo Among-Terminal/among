@@ -207,3 +207,81 @@ fn actual_snapshot_cli_records_real_archive_digest_without_overwriting_output() 
     assert_eq!(fs::read(archive)?, before);
     Ok(())
 }
+
+/// Delivered sources must rebuild and retest the tools, so every allowlisted
+/// directory, including the tools' sources, tests and container recipes,
+/// reaches the archive.
+#[test]
+fn every_allowlisted_directory_including_the_tool_sources_reaches_the_archive() -> Result<()> {
+    let f = Fixture::new()?;
+    let root = f.root();
+    for directory in snapshot::DIRECTORIES {
+        fs::create_dir_all(root.join(directory))?;
+        fs::write(root.join(directory).join("member"), directory.as_bytes())?;
+    }
+    let output = f.0.join("snapshot.tar");
+    snapshot::snapshot(&root, &f.0.join("vendor"), &output)?;
+    let hashes = storage::inspect_tar(&fs::read(&output)?)?;
+    for directory in snapshot::DIRECTORIES {
+        assert!(
+            hashes.contains_key(&format!("{directory}/member")),
+            "{directory} missing from the snapshot"
+        );
+    }
+    for required in [
+        "tools/among-tools/src/member",
+        "tools/among-tools/tests/member",
+        "tools/among-tools/containers/member",
+        "examples/fake-plugin.rs",
+    ] {
+        assert!(hashes.contains_key(required), "{required}");
+    }
+    Ok(())
+}
+
+/// The snapshot check refuses an archive that lacks a mandatory input, the
+/// vendored-source configuration or every vendored crate checksum.
+#[test]
+fn the_snapshot_check_refuses_archives_without_mandatory_inputs() -> Result<()> {
+    let f = Fixture::new()?;
+    let output = f.0.join("snapshot.tar");
+    snapshot::snapshot(&f.root(), &f.0.join("vendor"), &output)?;
+    let complete = storage::inspect_tar(&fs::read(&output)?)?;
+    // The count covers every member except the inventory that lists them.
+    assert_eq!(snapshot::check(&output)?, complete.len() - 1);
+    let without = |prefix: &str| -> Result<Vec<u8>> {
+        let mut archive = tar::Archive::new(fs::File::open(&output)?);
+        let mut files = std::collections::BTreeMap::new();
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let name = entry.path()?.to_string_lossy().into_owned();
+            if name != "source-inventory.json" && !name.starts_with(prefix) {
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes)?;
+                files.insert(name, bytes);
+            }
+        }
+        let mut inventory = std::collections::BTreeMap::new();
+        for (name, bytes) in &files {
+            inventory.insert(name.clone(), storage::sha256(bytes.as_slice())?);
+        }
+        files.insert(
+            "source-inventory.json".into(),
+            serde_json::to_vec(&serde_json::json!({"schema":1,"files":inventory}))?,
+        );
+        storage::deterministic_tar(&files)
+    };
+    for missing in ["Cargo.lock", ".cargo/config.toml", "vendor/"] {
+        let path = f.0.join("incomplete.tar");
+        fs::write(&path, without(missing)?)?;
+        assert_eq!(
+            snapshot::check(&path)
+                .err()
+                .map(|error| error.to_string())
+                .as_deref(),
+            Some("source snapshot is missing mandatory build/vendor inputs"),
+            "{missing}"
+        );
+    }
+    Ok(())
+}
