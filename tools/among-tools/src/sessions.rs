@@ -43,9 +43,12 @@ fn probe_failure(
     )
 }
 
-/// An X error raised because a window vanished while a tree walk queried it.
+/// An X error raised because a window vanished while `xdotool search` walked
+/// the tree (`X_QueryTree`) or, for `--onlyvisible`, read the map state of a
+/// window it had just listed (`X_GetWindowAttributes`).
 fn transient_window_race(message: &str) -> bool {
-    message.contains("BadWindow (invalid Window parameter)") && message.contains("X_QueryTree")
+    message.contains("BadWindow (invalid Window parameter)")
+        && (message.contains("X_QueryTree") || message.contains("X_GetWindowAttributes"))
 }
 
 fn require(condition: bool, message: &str) -> Result<()> {
@@ -997,9 +1000,13 @@ mod launcher_tests {
     /// The message is the one a failed Snap run printed while the app was
     /// starting; only that race is retried, a search that finds nothing is not.
     #[test]
-    fn only_a_window_vanishing_during_the_tree_walk_is_retried() {
+    fn only_a_window_vanishing_during_the_search_is_retried() {
         let race = "session probe failed: /usr/bin/xdotool [\"search\", \"--onlyvisible\", \"--pid\", \"18464\"] ended with exit status: 1; output:\nX Error of failed request:  BadWindow (invalid Window parameter)\n  Major opcode of failed request:  15 (X_QueryTree)";
         assert!(transient_window_race(race));
+        // Observed on the native arm64 Checks runner: the window vanished
+        // between listing and the visibility query.
+        let visibility = "session probe failed: /usr/bin/xdotool [\"search\", \"--onlyvisible\", \"--pid\", \"21834\"] ended with exit status: 1; output:\nX Error of failed request:  BadWindow (invalid Window parameter)\n  Major opcode of failed request:  3 (X_GetWindowAttributes)";
+        assert!(transient_window_race(visibility));
         assert!(!transient_window_race(
             "session probe failed: /usr/bin/xdotool [\"search\", \"--onlyvisible\", \"--pid\", \"18464\"] ended with exit status: 1; output:"
         ));
