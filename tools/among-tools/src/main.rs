@@ -68,6 +68,9 @@ Usage:
   among-tools fetch-appimage-tools <architecture> <new-tools-directory>
   among-tools record-rpm-candidate <source-root> <target> <architecture> <candidate-directory>
   among-tools ci-rpm-install <source-root> <target> <architecture> <candidate-directory> <new-output>
+  among-tools check-rpm-notices <source-root> <extracted-payload> <requires.txt>
+  among-tools check-rpm-source-archive <source-root> <tar-listing.txt> <top-directory>
+  among-tools make-rpm-older-fixture <candidate.rpm> <empty-work-directory> <candidate-directory>
   among-tools review-readme-action <source-root> <new-private-evidence-directory>
   among-tools review-readme-promo <source-root> <video-basename.mp4> <new-private-evidence-directory>
   among-tools prepare-readme-promo <source-root> <new-private-workspace>
@@ -117,6 +120,31 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(directory),
                 Path::new(output),
             )?;
+        }
+        [command, root, payload, requires] if command == "check-rpm-notices" => {
+            let report = among_tools::rpm_payload::check_notices(
+                Path::new(root),
+                Path::new(payload),
+                &std::fs::read_to_string(requires)?,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        [command, root, listing, top] if command == "check-rpm-source-archive" => {
+            let tracked = among_tools::rpm_payload::tracked_files(Path::new(root))?;
+            let count = among_tools::rpm_payload::check_source_listing(
+                &tracked,
+                &std::fs::read_to_string(listing)?,
+                top,
+            )?;
+            println!("PASS Source0 carries exactly the {count} files of the tagged commit");
+        }
+        [command, candidate, work, output] if command == "make-rpm-older-fixture" => {
+            let fixture = among_tools::rpm_lifecycle::make_older_fixture(
+                Path::new(candidate),
+                Path::new(work),
+                Path::new(output),
+            )?;
+            println!("{}", fixture.display());
         }
         [command, root, output] if command == "prepare-rpm-release" => {
             println!(

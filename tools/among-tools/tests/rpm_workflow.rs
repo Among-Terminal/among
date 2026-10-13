@@ -454,3 +454,46 @@ fn the_rpm_workflow_runs_on_release_tags_only() -> Result<()> {
     assert!(triggers["push"].get("branches").is_none());
     Ok(())
 }
+
+/// Each check below inspects bytes the release actually ships; dropping one
+/// from the workflow would leave its Rust implementation tested but never run.
+#[test]
+fn the_build_job_checks_source_notices_and_makes_the_bound_lifecycle_fixture() -> Result<()> {
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
+    let build = document["jobs"]["build"]["steps"]
+        .as_sequence()
+        .ok_or("build steps absent")?
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for required in [
+        "check-rpm-source-archive . \\\n  \"$AMONG_CHECK_ROOT\"/srpm-contents.txt \"$staging\"",
+        "third-party-notices . \\\n  \"$payload/usr/share/licenses/among/THIRD_PARTY\" check",
+        "check-rpm-notices . \"$payload\"",
+        "pkg-config --modversion \"$module\"",
+        "/usr/sbin/runuser --user among-builder -- \"$AMONG_CHECK_ROOT\"/target/release/among-tools \\\n  make-rpm-older-fixture",
+        "sha256sum among-tools *.rpm ci-lifecycle-fixture-not-for-release/*.rpm > SHA256SUMS",
+    ] {
+        assert!(build.contains(required), "build job lacks {required:?}");
+    }
+    // The fixture must exist before the receipt that binds its digest.
+    assert!(
+        build
+            .find("make-rpm-older-fixture")
+            .ok_or("fixture step absent")?
+            < build
+                .find("record-rpm-candidate")
+                .ok_or("receipt step absent")?
+    );
+    // The clean installed worker must not gain the package builder.
+    let installed = document["jobs"]["installed"]["steps"]
+        .as_sequence()
+        .ok_or("installed steps absent")?
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!installed.contains("rpm-build"));
+    Ok(())
+}
