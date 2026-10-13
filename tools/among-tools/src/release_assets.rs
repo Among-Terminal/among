@@ -6,7 +6,7 @@
 //! from that record, and it is renamed to a form GitHub keeps unchanged so the
 //! written `SHA256SUMS` still verifies the downloaded assets.
 
-use crate::{binary_archive, deb, storage, Result};
+use crate::{appimage_build, appimage_sources, binary_archive, deb, storage, Result};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -22,8 +22,9 @@ pub const RPM_TARGETS: [&str; 2] = ["fedora43", "fedora44"];
 /// and a release cannot hold two assets with one name; the amd64 build's SRPM
 /// is the one attached.
 pub const SRPM_ARCHITECTURE: &str = "amd64";
-/// Sixteen release files; `SHA256SUMS` is written next to them.
-pub const FILE_COUNT: usize = 16;
+/// Four DEB, four binary archives, four RPM, two SRPM, two AppImages and the
+/// two AppImage source archives; `SHA256SUMS` is written next to them.
+pub const FILE_COUNT: usize = 18;
 
 /// Exact names of the workflow artifacts the assembly reads. Name patterns are
 /// not used because `deb-*` would also match runtime evidence and failure logs.
@@ -37,6 +38,7 @@ pub fn input_artifacts() -> BTreeSet<String> {
             names.insert(format!("rpm-{target}-{architecture}"));
         }
         names.insert(format!("appimage-{architecture}"));
+        names.insert(format!("appimage-sources-{architecture}"));
     }
     for target in RPM_TARGETS {
         names.insert(format!("rpm-checked-{target}-{SRPM_ARCHITECTURE}"));
@@ -341,31 +343,167 @@ fn fedora(inputs: &Path, tag: &str, commit: &str) -> Result<Vec<Selected>> {
     Ok(selected)
 }
 
-fn appimages(inputs: &Path) -> Result<Vec<Selected>> {
+/// The corresponding source of one AppImage's bundled libraries, verified file
+/// by file and attached as one archive. GitHub would accept every file as its
+/// own asset (up to 1000 per release, each under 2 GiB), but Debian source file
+/// names carry characters such as `+` that GitHub renames on upload, and one
+/// archive per AppImage keeps the association between image and source plain.
+struct SourceBundle {
+    directory: PathBuf,
+    files: Vec<String>,
+    prefix: String,
+    name: String,
+}
+
+pub fn source_archive_name(tag: &str, architecture: &str) -> Result<String> {
+    Ok(format!(
+        "among-{}-{architecture}-appimage-sources.tar",
+        tag.strip_prefix('v')
+            .ok_or("release tag lacks its v prefix")?
+    ))
+}
+
+fn appimages(inputs: &Path, tag: &str) -> Result<(Vec<Selected>, Vec<SourceBundle>)> {
+    let version = tag
+        .strip_prefix('v')
+        .ok_or("release tag lacks its v prefix")?;
     let mut selected = Vec::new();
+    let mut bundles = Vec::new();
     for architecture in ARCHITECTURES {
         let directory = storage::safe_path(inputs, Path::new(&format!("appimage-{architecture}")))?;
         let sums = checked_sums(&directory)?;
-        let found = files_with_suffix(&directory, ".AppImage")?;
-        let [name] = found.as_slice() else {
-            return Err(format!(
-                "{}: expected exactly one AppImage, found {found:?}",
-                directory.display()
-            )
-            .into());
-        };
-        let recorded = Value::from(sums.get(name).cloned());
-        let file = select(&directory, name, &recorded, None)?;
-        // The name is the producer's choice; the bytes decide the architecture.
+        let name = appimage_build::file_name(version, architecture)?;
+        only(&directory, ".AppImage", &name)?;
+        let recorded = Value::from(sums.get(&name).cloned());
+        let file = select(&directory, &name, &recorded, None)?;
         deb::elf_architecture(&file.source, architecture).map_err(|error| {
             format!(
                 "{}: {name} is not an {architecture} executable: {error}",
                 directory.display()
             )
         })?;
+        let audit = storage::parse_json(&fs::read(storage::safe_path(
+            &directory,
+            Path::new(&format!("among-{version}-{architecture}.audit.json")),
+        )?)?)?;
+        if audit["appimage"]["filename"] != name.as_str()
+            || audit["appimage"]["sha256"] != file.sha256.as_str()
+            || audit["architecture"] != architecture
+        {
+            return Err(format!(
+                "{}: the audit record describes another AppImage",
+                directory.display()
+            )
+            .into());
+        }
+        bundles.push(appimage_sources_bundle(inputs, tag, architecture, &audit)?);
         selected.push(file);
     }
-    Ok(selected)
+    Ok((selected, bundles))
+}
+
+/// Accepts the source directory only if `sources.json` belongs to the attached
+/// AppImage, names exactly the source packages its audit says are bundled,
+/// every descriptor and listed file verifies, and nothing else is present.
+fn appimage_sources_bundle(
+    inputs: &Path,
+    tag: &str,
+    architecture: &str,
+    audit: &Value,
+) -> Result<SourceBundle> {
+    let directory = storage::safe_path(
+        inputs,
+        Path::new(&format!("appimage-sources-{architecture}")),
+    )?;
+    let fail = |what: &str| -> crate::Result<()> {
+        Err(format!("{}: {what}", directory.display()).into())
+    };
+    let index = storage::parse_json(&fs::read(storage::safe_path(
+        &directory,
+        Path::new("sources.json"),
+    )?)?)?;
+    if index["appimage"] != audit["appimage"] || index["architecture"] != architecture {
+        fail("sources.json belongs to another AppImage")?;
+    }
+    let records = index["sources"]
+        .as_array()
+        .ok_or("sources.json lists no sources")?;
+    let mut named = BTreeSet::new();
+    let mut files = BTreeSet::from(["sources.json".to_string()]);
+    for record in records {
+        let source = record["source_package"]
+            .as_str()
+            .ok_or("source record lacks its package")?;
+        let version = record["source_version"]
+            .as_str()
+            .ok_or("source record lacks its version")?;
+        let verified = appimage_sources::verify_descriptor(&directory, source, version)?;
+        if verified["files"] != record["files"] {
+            fail(&format!("{source} {version} differs from its descriptor"))?;
+        }
+        named.insert((source.to_string(), version.to_string()));
+        for file in verified["files"].as_array().ok_or("descriptor files")? {
+            files.insert(
+                file["name"]
+                    .as_str()
+                    .ok_or("descriptor file name")?
+                    .to_string(),
+            );
+        }
+    }
+    if named != appimage_sources::source_set(audit)? || named.len() != records.len() {
+        fail("sources.json does not name exactly the bundled source packages")?;
+    }
+    let mut present = BTreeSet::new();
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            fail("holds something other than regular files")?;
+        }
+        present.insert(
+            entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "source file name is not UTF-8")?,
+        );
+    }
+    if present != files {
+        fail("holds files its descriptors do not list")?;
+    }
+    let name = source_archive_name(tag, architecture)?;
+    Ok(SourceBundle {
+        directory,
+        files: files.into_iter().collect(),
+        prefix: name.trim_end_matches(".tar").to_string(),
+        name,
+    })
+}
+
+/// A reproducible tar: sorted members, fixed owner, mode and time.
+fn write_bundle(bundle: &SourceBundle, destination: &Path) -> Result<()> {
+    let file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    let mut builder = tar::Builder::new(file);
+    for name in &bundle.files {
+        let path = storage::safe_path(&bundle.directory, Path::new(name))?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(path.metadata()?.len());
+        header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        builder.append_data(
+            &mut header,
+            format!("{}/{name}", bundle.prefix),
+            File::open(&path)?,
+        )?;
+    }
+    builder.into_inner()?.sync_all()?;
+    Ok(())
 }
 
 /// Verifies the inputs, then writes the release files and `SHA256SUMS` into
@@ -384,31 +522,44 @@ pub fn stage(inputs: &Path, tag: &str, commit: &str, output: &Path) -> Result<Ve
     }
     let mut selected = debian(inputs, tag, commit)?;
     selected.extend(fedora(inputs, tag, commit)?);
-    selected.extend(appimages(inputs)?);
+    let (images, bundles) = appimages(inputs, tag)?;
+    selected.extend(images);
     let mut names = BTreeSet::new();
-    for file in &selected {
-        if file.name == "SHA256SUMS" || !names.insert(file.name.clone()) {
-            return Err(format!("release asset name {} is not unique", file.name).into());
+    for name in selected
+        .iter()
+        .map(|file| &file.name)
+        .chain(bundles.iter().map(|bundle| &bundle.name))
+    {
+        if name == "SHA256SUMS" || !names.insert(asset_name(name)?) {
+            return Err(format!("release asset name {name} is not unique").into());
         }
     }
-    if selected.len() != FILE_COUNT {
+    if names.len() != FILE_COUNT {
         return Err(format!(
             "expected {FILE_COUNT} release files, selected {}",
-            selected.len()
+            names.len()
         )
         .into());
     }
-    selected.sort_by(|left, right| left.name.cmp(&right.name));
     fs::DirBuilder::new().mode(0o755).create(output)?;
-    let mut sums = String::new();
+    let mut digests = BTreeMap::new();
     for file in &selected {
         let destination = output.join(&file.name);
         fs::copy(&file.source, &destination)?;
         if digest(&destination)? != file.sha256 {
             return Err(format!("{} changed while it was copied", file.name).into());
         }
-        sums.push_str(&format!("{}  {}\n", file.sha256, file.name));
+        digests.insert(file.name.clone(), file.sha256.clone());
     }
+    for bundle in &bundles {
+        let destination = output.join(&bundle.name);
+        write_bundle(bundle, &destination)?;
+        digests.insert(bundle.name.clone(), digest(&destination)?);
+    }
+    let sums = digests
+        .iter()
+        .map(|(name, sha256)| format!("{sha256}  {name}\n"))
+        .collect::<String>();
     storage::atomic_write(output, Path::new("SHA256SUMS"), sums.as_bytes(), 0o644)?;
-    Ok(selected.into_iter().map(|file| file.name).collect())
+    Ok(digests.into_keys().collect())
 }

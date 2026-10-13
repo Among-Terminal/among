@@ -103,12 +103,61 @@ fn fixture(root: &Path) -> Result<PathBuf> {
     for (arch, machine) in [("amd64", 62u16), ("arm64", 183u16)] {
         let directory = inputs.join(format!("appimage-{arch}"));
         fs::create_dir(&directory)?;
-        let name = format!("Among-0.1.0-rc.11-{arch}.AppImage");
+        let name = format!("among-0.1.0-rc.11-{arch}.AppImage");
         fs::write(directory.join(&name), elf(machine))?;
-        fs::write(directory.join("appimage-audit.json"), "{}")?;
-        write_sums(&directory, &[&name, "appimage-audit.json"])?;
+        let image = json!({"filename":name,"sha256":sha(&elf(machine))?,"bytes":64});
+        let audit = json!({"appimage":image,"architecture":arch,
+            "bundled_libraries":[{"source_package":"gtk4","source_version":"4.14.5+ds-0ubuntu0.1"}],
+            "bundled_data_packages":[{"source_package":"adwaita-icon-theme","source_version":"1:46.0-1"}]});
+        fs::write(
+            directory.join(format!("among-0.1.0-rc.11-{arch}.audit.json")),
+            serde_json::to_vec(&audit)?,
+        )?;
+        // The producer's SHA256SUMS lists only the AppImage.
+        write_sums(&directory, &[&name])?;
+        sources(
+            &inputs.join(format!("appimage-sources-{arch}")),
+            &image,
+            arch,
+        )?;
     }
     Ok(inputs)
+}
+
+/// Debian source packages as `collect-appimage-sources` writes them: each
+/// descriptor, the files it lists, and `sources.json` naming the AppImage.
+fn sources(directory: &Path, image: &serde_json::Value, arch: &str) -> Result<()> {
+    fs::create_dir(directory)?;
+    let mut records = Vec::new();
+    for (source, version, file) in [
+        ("gtk4", "4.14.5+ds-0ubuntu0.1", "gtk4_4.14.5+ds.orig.tar.xz"),
+        (
+            "adwaita-icon-theme",
+            "1:46.0-1",
+            "adwaita-icon-theme_46.0.orig.tar.xz",
+        ),
+    ] {
+        let bytes = format!("upstream {source}");
+        fs::write(directory.join(file), &bytes)?;
+        let digest = sha(bytes.as_bytes())?;
+        let descriptor = format!(
+            "{source}_{}.dsc",
+            version.split_once(':').map_or(version, |(_, rest)| rest)
+        );
+        let text = format!(
+            "Format: 3.0 (quilt)\nSource: {source}\nVersion: {version}\nChecksums-Sha256:\n {digest} {} {file}\n",
+            bytes.len()
+        );
+        fs::write(directory.join(&descriptor), &text)?;
+        records.push(
+            json!({"source_package":source,"source_version":version,"files":[
+            {"name":descriptor,"sha256":sha(text.as_bytes())?},{"name":file,"sha256":digest}]}),
+        );
+    }
+    let index =
+        json!({"schema":1,"appimage":image,"architecture":arch,"scope":"test","sources":records});
+    fs::write(directory.join("sources.json"), serde_json::to_vec(&index)?)?;
+    Ok(())
 }
 
 fn scratch(prefix: &str) -> Result<PathBuf> {
@@ -125,7 +174,31 @@ fn complete_inventory_is_staged_with_github_safe_names_and_verifiable_sums() -> 
     assert!(names.contains(&"among-terminal_0.1.0.rc.11-1.debian13_arm64.deb".to_string()));
     assert!(names.contains(&"among-0.1.0.rc.11-1.fc44.src.rpm".to_string()));
     assert!(names.contains(&"among-0.1.0-rc.11-ubuntu24.04-amd64.tar.gz".to_string()));
-    assert!(names.contains(&"Among-0.1.0-rc.11-arm64.AppImage".to_string()));
+    assert!(names.contains(&"among-0.1.0-rc.11-arm64.AppImage".to_string()));
+    assert!(names.contains(&"among-0.1.0-rc.11-amd64-appimage-sources.tar".to_string()));
+    // The source archive carries every verified file under one directory.
+    let listing = std::process::Command::new("tar")
+        .args(["-tf", "among-0.1.0-rc.11-amd64-appimage-sources.tar"])
+        .current_dir(&output)
+        .output()?;
+    assert!(listing.status.success());
+    let mut members = String::from_utf8(listing.stdout)?
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    members.sort();
+    let prefix = "among-0.1.0-rc.11-amd64-appimage-sources/";
+    assert_eq!(
+        members,
+        [
+            "adwaita-icon-theme_46.0-1.dsc",
+            "adwaita-icon-theme_46.0.orig.tar.xz",
+            "gtk4_4.14.5+ds-0ubuntu0.1.dsc",
+            "gtk4_4.14.5+ds.orig.tar.xz",
+            "sources.json"
+        ]
+        .map(|name| format!("{prefix}{name}"))
+    );
     assert!(names.iter().all(|name| !name.contains('~')));
     // Internal checkers, build records and audit records are never attached.
     let mut present = fs::read_dir(&output)?
@@ -157,10 +230,10 @@ fn complete_inventory_is_staged_with_github_safe_names_and_verifiable_sums() -> 
 #[test]
 fn damaged_or_foreign_inputs_are_refused_before_output() -> Result<()> {
     type Damage = fn(&Path) -> Result<()>;
-    let cases: [(&str, Damage); 11] = [
+    let cases: [(&str, Damage); 17] = [
         ("missing AppImage", |inputs| {
             Ok(fs::remove_file(
-                inputs.join("appimage-arm64/Among-0.1.0-rc.11-arm64.AppImage"),
+                inputs.join("appimage-arm64/among-0.1.0-rc.11-arm64.AppImage"),
             )?)
         }),
         ("second DEB candidate", |inputs| {
@@ -204,9 +277,9 @@ fn damaged_or_foreign_inputs_are_refused_before_output() -> Result<()> {
         }),
         ("AppImage for the wrong architecture", |inputs| {
             let directory = inputs.join("appimage-arm64");
-            let name = "Among-0.1.0-rc.11-arm64.AppImage";
+            let name = "among-0.1.0-rc.11-arm64.AppImage";
             fs::write(directory.join(name), elf(62))?;
-            write_sums(&directory, &[name, "appimage-audit.json"])
+            write_sums(&directory, &[name])
         }),
         (
             "SRPM from a build whose binary RPM was not checked",
@@ -227,7 +300,48 @@ fn damaged_or_foreign_inputs_are_refused_before_output() -> Result<()> {
         }),
         ("AppImage absent from its checksum list", |inputs| {
             let directory = inputs.join("appimage-amd64");
-            write_sums(&directory, &["appimage-audit.json"])
+            write_sums(&directory, &["among-0.1.0-rc.11-amd64.audit.json"])
+        }),
+        ("AppImage source file changed", |inputs| {
+            Ok(fs::write(
+                inputs.join("appimage-sources-arm64/gtk4_4.14.5+ds.orig.tar.xz"),
+                "patched upstream",
+            )?)
+        }),
+        ("undeclared file among the AppImage sources", |inputs| {
+            Ok(fs::write(
+                inputs.join("appimage-sources-amd64/notes.txt"),
+                "x",
+            )?)
+        }),
+        ("bundled library without collected source", |inputs| {
+            let path = inputs.join("appimage-amd64/among-0.1.0-rc.11-amd64.audit.json");
+            let mut audit: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+            audit["bundled_libraries"]
+                .as_array_mut()
+                .ok_or("fixture audit")?
+                .push(json!({"source_package":"glib2.0","source_version":"2.80.0-6ubuntu3.4"}));
+            Ok(fs::write(path, serde_json::to_vec(&audit)?)?)
+        }),
+        ("sources collected for another AppImage", |inputs| {
+            let path = inputs.join("appimage-sources-arm64/sources.json");
+            let mut index: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+            index["appimage"]["sha256"] = "f".repeat(64).into();
+            Ok(fs::write(path, serde_json::to_vec(&index)?)?)
+        }),
+        ("audit record of another AppImage", |inputs| {
+            let path = inputs.join("appimage-arm64/among-0.1.0-rc.11-arm64.audit.json");
+            let mut audit: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+            audit["appimage"]["sha256"] = "f".repeat(64).into();
+            Ok(fs::write(path, serde_json::to_vec(&audit)?)?)
+        }),
+        ("AppImage named for another version", |inputs| {
+            let directory = inputs.join("appimage-amd64");
+            fs::rename(
+                directory.join("among-0.1.0-rc.11-amd64.AppImage"),
+                directory.join("among-0.1.0-amd64.AppImage"),
+            )?;
+            write_sums(&directory, &["among-0.1.0-amd64.AppImage"])
         }),
     ];
     for (name, damage) in cases {
@@ -337,9 +451,16 @@ fn asset_names_map_tilde_and_refuse_characters_github_would_rename() -> Result<(
 #[test]
 fn inputs_are_named_exactly_without_runtime_evidence_or_failure_logs() {
     let names = release_assets::input_artifacts();
-    // Four DEB, four RPM and two AppImage artifacts, plus the two amd64
-    // RPM build artifacts that carry the SRPMs.
-    assert_eq!(names.len(), 12);
+    // Four DEB, four RPM, two AppImage and two AppImage source artifacts,
+    // plus the two amd64 RPM build artifacts that carry the SRPMs.
+    assert_eq!(names.len(), 14);
+    for internal in [
+        "appimage-SHA256SUMS",
+        "appimage-checker-amd64",
+        "appimage-build-failure-arm64",
+    ] {
+        assert!(!names.contains(internal), "{internal}");
+    }
     assert!(names.contains("rpm-checked-fedora43-amd64"));
     assert!(!names.contains("rpm-checked-fedora43-arm64"));
     assert!(names
