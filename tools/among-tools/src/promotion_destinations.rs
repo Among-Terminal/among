@@ -138,8 +138,9 @@ fn github_environment() -> Result<BTreeMap<String, String>> {
 
 /// The environment a Store call runs with.
 ///
-/// The credential is passed by file path, which is how `snapcraft` itself
-/// consumes it; the contents never become an argument or an error message.
+/// The exported credential is passed unchanged in `SNAPCRAFT_STORE_CREDENTIALS`,
+/// which is how `snapcraft` reads it; it never becomes an argument or an error
+/// message.
 fn store_environment() -> Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([(
         "SNAPCRAFT_STORE_CREDENTIALS".to_string(),
@@ -286,9 +287,16 @@ impl GitHubRelease {
         quiet_output(&self.program, &args, &self.workdir, &github_environment()?)
     }
 
-    /// The immutable source commit the tag identifies, resolved through the ref.
+    /// The immutable source commit the tag identifies, resolved through the ref,
+    /// or `None` when the tag does not exist. Only "not found" means absent;
+    /// any other failure propagates.
     fn tag_source(&self, tag: &str) -> Result<Option<String>> {
-        let reference = self.api(&[&format!("repos/{}/git/ref/tags/{tag}", self.repository)])?;
+        let reference = match self.api(&[&format!("repos/{}/git/ref/tags/{tag}", self.repository)])
+        {
+            Ok(reference) => reference,
+            Err(error) if is_not_found(error.as_ref()) => return Ok(None),
+            Err(error) => return Err(error),
+        };
         let mut object = storage::parse_json(reference.as_bytes())?["object"].clone();
         // Annotated tags point at another tag object; walk at most a bounded
         // chain so a maliciously deep reference cannot spin here.
@@ -398,8 +406,14 @@ impl Destinations for GitHubRelease {
         {
             return Err("GitHub release provenance conflict".into());
         }
-        if self.tag_source(tag)?.as_deref() != Some(expected_source) {
-            return Err("remote immutable release tag/source conflict".into());
+        let draft = release["draft"].as_bool().unwrap_or(false);
+        match self.tag_source(tag)? {
+            Some(source) if source == expected_source => {}
+            // GitHub creates a nightly's tag only when its draft release is
+            // published, so a first nightly legitimately has no tag yet. A
+            // stable release is cut from an existing tag and must have one.
+            None if nightly && draft => {}
+            _ => return Err("remote immutable release tag/source conflict".into()),
         }
 
         let existing = release["assets"]
@@ -417,12 +431,12 @@ impl Destinations for GitHubRelease {
         if existing.keys().any(|name| !assets.contains_key(*name)) {
             return Err("unexpected immutable release assets".into());
         }
-        let draft = release["draft"].as_bool().unwrap_or(false);
         for (name, path) in assets {
             match existing.get(name.as_str()) {
-                // A recorded digest is authoritative; an older API record may
-                // omit it, in which case the bytes must be downloaded and
-                // hashed rather than assumed from the name and size.
+                // The recorded digest is the only evidence accepted for an
+                // attached asset. An API record without one is refused rather
+                // than reconciled by downloading and hashing the asset: that
+                // needs no download path here and fails safe.
                 Some(asset) => {
                     let remote = asset["digest"].as_str().unwrap_or_default();
                     let expected = format!("sha256:{}", storage::sha256(fs::File::open(path)?)?);
@@ -687,17 +701,16 @@ impl SnapStore {
     pub fn new(workdir: &Path) -> Result<Self> {
         credential("SNAPCRAFT_STORE_CREDENTIALS")?;
         reject_overrides()?;
-        let path = std::env::var("SNAPCRAFT_STORE_CREDENTIALS")
+        // The variable holds the exported credential itself, as `snapcraft`
+        // reads it, not a path to it. Its contents never appear in an
+        // argument, an error or a log.
+        let credentials = std::env::var("SNAPCRAFT_STORE_CREDENTIALS")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .ok_or("scoped expiring Store credential is unavailable")?;
-        // The credential is only read into memory; its contents never appear in
-        // an argument, an error or a log.
-        let credentials = fs::read_to_string(&path)
-            .map_err(|_| "Store credential file is unreadable".to_string())?;
-        if credentials.trim().is_empty() {
-            return Err("Store credential file is empty".into());
-        }
+        // A credential the API reads cannot use must be refused here, before
+        // any destination is written, not after GitHub already published.
+        crate::store_credentials::authorization(&credentials)?;
         Ok(Self {
             workdir: workdir.to_path_buf(),
             credentials,
@@ -766,16 +779,10 @@ impl SnapStore {
         Ok(CredentialFile(path))
     }
 
-    /// The value used for the API's `Authorization` header.
-    ///
-    /// snapcraft stores a JSON credential document. Only the macaroon
-    /// discharge token is sent, and it is never logged or placed in an error.
+    /// The value used for the API's `Authorization` header: the root macaroon
+    /// and the discharge bound to it. It is never logged or placed in an error.
     fn authorization(&self) -> Result<String> {
-        let document = storage::parse_json(self.credentials.as_bytes())?;
-        document["macaroon"]
-            .as_str()
-            .map(|value| format!("Macaroon {value}"))
-            .ok_or_else(|| "Store credential document has no macaroon".into())
+        crate::store_credentials::authorization(&self.credentials)
     }
 }
 

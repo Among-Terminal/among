@@ -14,7 +14,9 @@
 use among_tools::{
     promotion::Destinations,
     promotion_destinations::{GitHubRelease, SnapStore},
-    storage, Result,
+    storage,
+    store_credentials::base64_urlsafe_encode,
+    Result,
 };
 use serde_json::json;
 use std::{
@@ -124,6 +126,29 @@ log="$(dirname "$0")/../gh.out"
 for arg in "$@"; do printf 'curl %s\n' "$arg" >> "$log"; done
 cat "$(dirname "$0")/../channel-map.json"
 "#;
+
+/// What `snapcraft export-login` writes and the release job puts in
+/// `SNAPCRAFT_STORE_CREDENTIALS`: base64 of an Ubuntu One credential document
+/// holding a root and a discharge macaroon, here minimal version 1 macaroons
+/// with synthetic signatures.
+fn exported_login() -> String {
+    let macaroon = |identifier: &str, signature: u8| {
+        let mut bytes = Vec::new();
+        for (key, value) in [
+            (&b"location"[..], &b"login.ubuntu.com"[..]),
+            (b"identifier", identifier.as_bytes()),
+            (b"signature", &[signature; 32]),
+        ] {
+            let body = [key, b" ", value, b"\n"].concat();
+            bytes.extend(format!("{:04x}", body.len() + 4).into_bytes());
+            bytes.extend(body);
+        }
+        base64_urlsafe_encode(&bytes)
+    };
+    let document =
+        json!({"t":"u1-macaroon","v":{"r":macaroon("root",1),"d":macaroon("discharge",2)}});
+    base64_urlsafe_encode(document.to_string().as_bytes())
+}
 
 fn install(root: &Path, name: &str, body: &str) -> Result<()> {
     let path = root.join("bin").join(name);
@@ -253,7 +278,8 @@ for arg in "$@"; do
   case "$arg" in *GH_TOKEN*) printf 'curl LEAKED_GITHUB\n' >> "$log" ;; esac
 done
 [ -n "${GH_TOKEN:-}" ] && printf 'curl HAS_GITHUB_TOKEN\n' >> "$log"
-[ -f "$(dirname "$0")/../store-authorization.header" ] && printf 'curl HEADER_FILE_PRESENT\n' >> "$log"
+header="$(dirname "$0")/../store-authorization.header"
+[ -f "$header" ] && printf 'curl HEADER_FILE_PRESENT\n' >> "$log" && cp "$header" "$(dirname "$0")/../header.seen"
 cat "$(dirname "$0")/../channel-map.json"
 "#,
     )?;
@@ -261,8 +287,7 @@ cat "$(dirname "$0")/../channel-map.json"
         fixture.0.join("bin/curl"),
         fs::Permissions::from_mode(0o755),
     )?;
-    let credentials = fixture.0.join("credentials.json");
-    fs::write(&credentials, r#"{"macaroon":"discharge-token"}"#)?;
+    let credentials = exported_login();
     fs::write(
         fixture.0.join("channel-map.json"),
         json!({
@@ -294,8 +319,17 @@ cat "$(dirname "$0")/../channel-map.json"
         "the Store call was given a GitHub token: {log}"
     );
     assert!(
-        !log.contains("discharge-token"),
+        !log.contains(&credentials) && !log.contains("Macaroon"),
         "the credential appeared in the child's arguments: {log}"
+    );
+    // curl received exactly the header the documented Store API expects:
+    // the exported root and the discharge bound to it.
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("header.seen"))?,
+        format!(
+            "Authorization: {}\n",
+            among_tools::store_credentials::authorization(&credentials)?
+        )
     );
     // The header file must exist while curl reads it and be gone afterwards:
     // a credential left in the work directory outlives the publication run.
@@ -398,8 +432,7 @@ fn an_unsupported_architecture_never_reaches_the_store_command() -> Result<()> {
     let fixture = fixture()?;
     install(&fixture.0, "curl", CURL)?;
     install(&fixture.0, "snapcraft", SNAPCRAFT)?;
-    let credentials = fixture.0.join("credentials.json");
-    fs::write(&credentials, r#"{"macaroon":"discharge-token"}"#)?;
+    let credentials = exported_login();
     fs::write(
         fixture.0.join("channel-map.json"),
         json!({"revisions": [], "channel-map": []}).to_string(),
@@ -424,5 +457,83 @@ fn an_unsupported_architecture_never_reaches_the_store_command() -> Result<()> {
         !log_of(&fixture.0)?.contains("snapcraft upload"),
         "an upload ran despite the architecture refusal"
     );
+    Ok(())
+}
+
+/// A `gh` stand-in for a repository where the release and its tag do not
+/// exist yet. `release create` records the draft release from the notes file
+/// the adapter wrote; the tag stays absent, as it does for a draft until the
+/// release is published.
+const FIRST_RELEASE_GH: &str = r#"#!/bin/sh
+root="$(dirname "$0")/.."
+for arg in "$@"; do printf 'gh %s\n' "$arg" >> "$root/gh.out"; done
+case "$*" in
+  "release create"*)
+    notes=""; previous=""
+    for arg in "$@"; do
+      [ "$previous" = "--notes-file" ] && notes="$arg"
+      previous="$arg"
+    done
+    body="$(sed 's/\\/\\\\/g; s/"/\\"/g' "$notes")"
+    printf '{"draft":true,"assets":[],"body":"%s"}' "$body" > "$root/release.json" ;;
+  *"git/ref/tags/"*) printf 'HTTP 404: Not Found\n' >&2; exit 1 ;;
+  *"releases/tags/"*) if [ -f "$root/release.json" ]; then cat "$root/release.json"; else printf 'HTTP 404: Not Found\n' >&2; exit 1; fi ;;
+  *) printf '{}' ;;
+esac
+"#;
+
+fn first_release(mode: Option<&str>) -> Result<(Fixture, Result<()>)> {
+    let fixture = fixture()?;
+    install(&fixture.0, "gh", FIRST_RELEASE_GH)?;
+    let artifact = fixture.0.join("among-amd64.snap");
+    fs::write(&artifact, b"synthetic nightly snap")?;
+    let mut record = json!({
+        "tag": "nightly-20261013",
+        "source_sha": "f".repeat(40),
+        "assets": {"among-amd64.snap": storage::sha256(fs::File::open(&artifact)?)?},
+    });
+    if let Some(mode) = mode {
+        record["mode"] = json!(mode);
+    }
+    let assets = std::collections::BTreeMap::from([("among-amd64.snap".to_string(), artifact)]);
+    unsafe { std::env::set_var("GH_TOKEN", "test-token") };
+    let gh = fixture.0.join("bin/gh");
+    let outcome = GitHubRelease::new("fixture/among", &fixture.0)?
+        .using_program(&gh)
+        .prepare(&record, &assets);
+    unsafe { std::env::remove_var("GH_TOKEN") };
+    Ok((fixture, outcome))
+}
+
+/// The first nightly creates its tag only when the draft release is
+/// published, so preparing it must accept a tag that does not exist yet and
+/// go on to attach the checked artifact.
+#[test]
+fn the_first_nightly_is_prepared_before_its_tag_exists() -> Result<()> {
+    let (fixture, outcome) = first_release(Some("nightly"))?;
+    outcome?;
+    let log = log_of(&fixture.0)?;
+    assert!(
+        log.contains("gh create"),
+        "no draft release was created: {log}"
+    );
+    assert!(
+        log.contains("gh upload"),
+        "the checked artifact was not attached: {log}"
+    );
+    Ok(())
+}
+
+/// A stable release is cut from an existing tag. If that tag is missing the
+/// release cannot be bound to its source, so preparation must stop before any
+/// artifact is attached.
+#[test]
+fn a_stable_release_without_its_tag_is_refused_before_upload() -> Result<()> {
+    let (fixture, outcome) = first_release(None)?;
+    assert_eq!(
+        outcome.map_err(|error| error.to_string()),
+        Err("remote immutable release tag/source conflict".to_string())
+    );
+    assert!(!log_of(&fixture.0)?.contains("gh upload"));
     Ok(())
 }

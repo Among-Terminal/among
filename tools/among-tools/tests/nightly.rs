@@ -170,3 +170,41 @@ fn actual_cli_resolves_git_once_reads_only_and_preserves_existing_output() -> Re
     assert_eq!(fs::read(output)?, bytes);
     Ok(())
 }
+
+/// The nightly version carries the UTC date of the run. A timestamp without a
+/// timezone names no instant, so it is refused rather than read as UTC; one
+/// with an offset is converted, which can move the date across a day, a month
+/// or a year.
+#[test]
+fn nightly_date_is_the_utc_date_of_a_timestamp_with_an_explicit_timezone() -> Result<()> {
+    let source = "a".repeat(40);
+    for (now, date) in [
+        ("2026-10-08T03:17:00Z", "20261008"),
+        ("2026-10-08T03:17:00+00:00", "20261008"),
+        ("2026-10-08T23:30:00-02:00", "20261009"),
+        ("2026-12-31T23:30:00.250-01:00", "20270101"),
+        ("2026-03-01T00:30+02:00", "20260228"),
+        ("2028-03-01T01:00:00+05:30", "20280229"),
+    ] {
+        let selected = nightly::selection(&source, None, now, None)?;
+        assert_eq!(
+            selected["version"],
+            format!("n{date}-{}", &source[..12]),
+            "{now}"
+        );
+    }
+    for now in [
+        "2026-10-08",
+        "2026-10-08T03:17:00",
+        "2026-02-30T00:00:00Z",
+        "2026-10-08T24:00:00Z",
+        "2026-10-08T03:17:00+25:00",
+        "2026-10-08T03:17:00 UTC",
+    ] {
+        assert!(
+            nightly::selection(&source, None, now, None).is_err(),
+            "accepted {now}"
+        );
+    }
+    Ok(())
+}

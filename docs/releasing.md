@@ -131,7 +131,12 @@ snapcraft export-login --snaps=among --channels=stable \
 ```
 
 Replace placeholders locally. Check current CLI help/Store ACL support before
-exporting; never use stdout as the destination in a recorded terminal. Put values
+exporting; never use stdout as the destination in a recorded terminal.
+`SNAPCRAFT_STORE_CREDENTIALS` must hold the exported file's contents, not its
+path, as Snapcraft's
+[Authenticate](https://ubuntu.com/docs/snapcraft/8/how-to/publishing/authenticate/)
+guide requires; `release-promotion` refuses a value that is not an exported
+Ubuntu One login before contacting any destination. Put values
 only in the protected environment's secret manager when the publication workflows
 are implemented, then remove the local files securely according to your system's
 storage policy. Rotate before expiry or immediately on suspected compromise.

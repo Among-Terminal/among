@@ -87,39 +87,35 @@ fn an_endpoint_override_is_a_refusal_and_only_an_unset_environment_passes() -> R
 /// path where credentials are genuinely absent.
 #[test]
 fn adapter_construction_requires_a_usable_name_and_credential() -> Result<()> {
-    let root = workspace()?;
-    let credentials = root.join("credentials.json");
-    fs::write(&credentials, r#"{"macaroon":"discharge-token"}"#)?;
-
     // A name that could be read as an option is refused before anything else.
     assert!(destinations::valid_repository("-owner/name").is_err());
     assert!(destinations::valid_repository("owner/name").is_ok());
-
-    // A credential document that is present but structurally wrong cannot
-    // produce an Authorization header, so it must not yield a usable adapter.
-    fs::write(&credentials, r#"{"not-a-macaroon":true}"#)?;
-    let document: serde_json::Value = serde_json::from_str(&fs::read_to_string(&credentials)?)?;
-    assert!(document["macaroon"].as_str().is_none());
-
-    fs::remove_dir_all(root)?;
     Ok(())
 }
 
+/// The variable must hold the exported credential itself. A path to the file,
+/// blank text or a document without macaroons cannot authenticate a Store
+/// read, so the adapter is refused before any destination is touched.
 #[test]
-fn a_blank_store_credential_file_is_refused_rather_than_uploaded_against() -> Result<()> {
+fn a_store_credential_that_is_not_an_exported_login_is_refused() -> Result<()> {
     if std::env::var_os("SNAPCRAFT_STORE_CREDENTIALS").is_some() {
         return Ok(());
     }
     let root = workspace()?;
-    let path = root.join("credentials.json");
-    fs::write(&path, "   \n")?;
-    unsafe { std::env::set_var("SNAPCRAFT_STORE_CREDENTIALS", &path) };
-    let built = destinations::SnapStore::new(&root);
-    unsafe { std::env::remove_var("SNAPCRAFT_STORE_CREDENTIALS") };
-    assert!(
-        built.is_err(),
-        "an empty Store credential file was accepted"
-    );
+    let path = root.join("credentials");
+    fs::write(&path, "exported credential bytes")?;
+    let no_macaroons =
+        among_tools::store_credentials::base64_urlsafe_encode(br#"{"t":"u1-macaroon","v":{}}"#);
+    for value in [
+        path.to_string_lossy().into_owned(),
+        "   \n".into(),
+        no_macaroons,
+    ] {
+        unsafe { std::env::set_var("SNAPCRAFT_STORE_CREDENTIALS", &value) };
+        let built = destinations::SnapStore::new(&root);
+        unsafe { std::env::remove_var("SNAPCRAFT_STORE_CREDENTIALS") };
+        assert!(built.is_err(), "accepted {value:?}");
+    }
     fs::remove_dir_all(root)?;
     Ok(())
 }
