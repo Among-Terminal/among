@@ -25,13 +25,21 @@ fn target(target: &str, architecture: &str) -> Result<()> {
     Ok(())
 }
 
-struct Runner {
-    base: PathBuf,
-    environment: BTreeMap<OsString, OsString>,
+pub(crate) struct Runner {
+    pub(crate) base: PathBuf,
+    pub(crate) environment: BTreeMap<OsString, OsString>,
     counter: usize,
 }
 impl Runner {
-    fn command(&mut self, program: &str, args: &[&str], seconds: u64) -> Result<String> {
+    /// Run a command with its combined output in a numbered evidence log and
+    /// report success alongside the trimmed output, for checks that expect a
+    /// failure.
+    pub(crate) fn execute(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        seconds: u64,
+    ) -> Result<(bool, String)> {
         self.counter += 1;
         let log = self.base.join(format!("command-{}.log", self.counter));
         let mut process = OwnedProcess::spawn(
@@ -41,10 +49,21 @@ impl Runner {
             &self.base,
             &File::create(&log)?,
         )?;
-        if !process.wait(Duration::from_secs(seconds))?.success() {
-            return Err(format!("RPM check failed; evidence: {}", log.display()).into());
+        let success = process.wait(Duration::from_secs(seconds))?.success();
+        Ok((success, fs::read_to_string(log)?.trim().into()))
+    }
+    pub(crate) fn command(&mut self, program: &str, args: &[&str], seconds: u64) -> Result<String> {
+        let (success, text) = self.execute(program, args, seconds)?;
+        if !success {
+            return Err(format!(
+                "RPM check failed; evidence: {}",
+                self.base
+                    .join(format!("command-{}.log", self.counter))
+                    .display()
+            )
+            .into());
         }
-        Ok(fs::read_to_string(log)?.trim().into())
+        Ok(text)
     }
     fn runtime_only(&mut self) -> Result<()> {
         let packages = self.command("/usr/bin/rpm", &["-qa", "--qf", "%{NAME}\n"], 30)?;
@@ -72,6 +91,17 @@ fn runner(base: &Path) -> Runner {
     }
 }
 
+/// The `dist.arch` tail of every RPM file name built for a supported target.
+fn filename_suffix(target: &str, architecture: &str) -> Result<&'static str> {
+    Ok(match (target, architecture) {
+        ("fedora43", "amd64") => "fc43.x86_64",
+        ("fedora43", "arm64") => "fc43.aarch64",
+        ("fedora44", "amd64") => "fc44.x86_64",
+        ("fedora44", "arm64") => "fc44.aarch64",
+        _ => return Err("unsupported RPM identity".into()),
+    })
+}
+
 pub fn validate_record(
     record: &Value,
     tag: &str,
@@ -81,13 +111,7 @@ pub fn validate_record(
     package: &Path,
 ) -> Result<()> {
     let (_, version) = deb::release_version(tag)?;
-    let suffix = match (target, architecture) {
-        ("fedora43", "amd64") => "fc43.x86_64",
-        ("fedora43", "arm64") => "fc43.aarch64",
-        ("fedora44", "amd64") => "fc44.x86_64",
-        ("fedora44", "arm64") => "fc44.aarch64",
-        _ => return Err("unsupported RPM identity".into()),
-    };
+    let suffix = filename_suffix(target, architecture)?;
     let filename = format!("among-{version}-1.{suffix}.rpm");
     if record["schema"] != 1
         || record["tag"] != tag
@@ -104,15 +128,58 @@ pub fn validate_record(
     Ok(())
 }
 
-pub fn record(root: &Path, target_name: &str, architecture: &str, directory: &Path) -> Result<()> {
-    let (tag, source) = deb::github_tag_source(root, &std::env::vars().collect())?;
-    target(target_name, architecture)?;
-    let packages = fs::read_dir(directory)?
+/// The lifecycle fixture named and hashed in the receipt, at its fixed place
+/// beside the candidate. Its bytes are bound like the candidate's, so the
+/// installed job cannot be handed a different "older" package.
+pub fn validate_fixture(
+    record: &Value,
+    tag: &str,
+    target: &str,
+    architecture: &str,
+    directory: &Path,
+) -> Result<PathBuf> {
+    let (_, version) = deb::release_version(tag)?;
+    let suffix = filename_suffix(target, architecture)?;
+    let filename = format!(
+        "among-{version}{}-1.{suffix}.rpm",
+        crate::rpm_lifecycle::OLDER_SUFFIX
+    );
+    let fixture = directory
+        .join(crate::rpm_lifecycle::FIXTURE_DIRECTORY)
+        .join(&filename);
+    if record["older_fixture"]["filename"] != filename
+        || !fixture.symlink_metadata()?.is_file()
+        || record["older_fixture"]["sha256"] != storage::sha256(File::open(&fixture)?)?
+    {
+        return Err("RPM lifecycle fixture name/bytes differ from receipt".into());
+    }
+    Ok(fixture)
+}
+
+fn rpm_files(directory: &Path) -> Result<Vec<PathBuf>> {
+    Ok(fs::read_dir(directory)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<std::io::Result<Vec<_>>>()?
         .into_iter()
         .filter(|path| path.extension().is_some_and(|extension| extension == "rpm"))
-        .collect::<Vec<_>>();
+        .collect())
+}
+
+fn observed_identity(package: &Path) -> Result<String> {
+    let observed = std::process::Command::new("/usr/bin/rpm")
+        .args(["-qp", "--qf", "%{NAME}|%{VERSION}|%{RELEASE}|%{ARCH}"])
+        .arg(package)
+        .output()?;
+    if !observed.status.success() {
+        return Err("rpm could not read package metadata".into());
+    }
+    Ok(String::from_utf8(observed.stdout)?)
+}
+
+pub fn record(root: &Path, target_name: &str, architecture: &str, directory: &Path) -> Result<()> {
+    let (tag, source) = deb::github_tag_source(root, &std::env::vars().collect())?;
+    target(target_name, architecture)?;
+    let packages = rpm_files(directory)?;
     if packages.len() != 1 {
         return Err("expected exactly one binary RPM".into());
     }
@@ -126,19 +193,28 @@ pub fn record(root: &Path, target_name: &str, architecture: &str, directory: &Pa
         "arm64" => "aarch64",
         _ => return Err("RPM architecture unsupported".into()),
     };
-    let observed = std::process::Command::new("/usr/bin/rpm")
-        .args(["-qp", "--qf", "%{NAME}|%{VERSION}|%{RELEASE}|%{ARCH}"])
-        .arg(package)
-        .output()?;
-    if !observed.status.success()
-        || String::from_utf8(observed.stdout)? != format!("among|{version}|1.fc{dist}|{machine}")
-    {
+    if observed_identity(package)? != format!("among|{version}|1.fc{dist}|{machine}") {
         return Err("actual RPM metadata differs from release tag/target".into());
+    }
+    let fixtures = rpm_files(&directory.join(crate::rpm_lifecycle::FIXTURE_DIRECTORY))?;
+    let [fixture] = fixtures.as_slice() else {
+        return Err("expected exactly one lifecycle fixture RPM".into());
+    };
+    if observed_identity(fixture)?
+        != format!(
+            "among|{version}{}|1.fc{dist}|{machine}",
+            crate::rpm_lifecycle::OLDER_SUFFIX
+        )
+    {
+        return Err("lifecycle fixture metadata differs from the candidate identity".into());
     }
     let document = json!({"schema":1,"tag":tag,"source_sha":source,"target":target_name,"architecture":architecture,
         "filename":package.file_name().and_then(|name|name.to_str()).ok_or("non UTF-8 RPM")?,
-        "sha256":storage::sha256(File::open(package)?)?,"checker_sha256":storage::sha256(File::open(directory.join("among-tools"))?)?});
+        "sha256":storage::sha256(File::open(package)?)?,"checker_sha256":storage::sha256(File::open(directory.join("among-tools"))?)?,
+        "older_fixture":{"filename":fixture.file_name().and_then(|name|name.to_str()).ok_or("non UTF-8 fixture")?,
+            "sha256":storage::sha256(File::open(fixture)?)?,"release_asset":false}});
     validate_record(&document, &tag, &source, target_name, architecture, package)?;
+    validate_fixture(&document, &tag, target_name, architecture, directory)?;
     storage::atomic_write(
         directory,
         Path::new("build-record.json"),
@@ -168,6 +244,7 @@ pub fn run(
     storage::relative_path(Path::new(filename))?;
     let package = directory.join(filename);
     validate_record(&record, &tag, &source, target_name, architecture, &package)?;
+    let fixture = validate_fixture(&record, &tag, target_name, architecture, &directory)?;
     let checker = directory.join("among-tools");
     if checker.canonicalize()? != std::env::current_exe()?.canonicalize()?
         || record["checker_sha256"] != storage::sha256(File::open(&checker)?)?
@@ -177,14 +254,15 @@ pub fn run(
     fs::create_dir(output)?;
     let output = output.canonicalize()?;
     let mut runner = runner(&output);
-    let mut evidence = json!({"schema":1,"tag":tag,"source_sha":source,"target":target_name,"architecture":architecture,
-        "package_sha256":record["sha256"],"checker_sha256":record["checker_sha256"],"status":"in-progress","checks":[],
-        "release_acceptance":false,"scope":"native clean RPM installation, X11 desktop/focus/status/Sessions, remove/reinstall leaves synthetic user-home files untouched; no application-state migration, historical upgrade or GNOME/Wayland certification"});
     // Resolved once here as root; the unprivileged check user receives it
     // explicitly, because its own HOME would yield a different default.
     let checks = crate::scratch::root()?;
     let checks_text = checks.to_str().ok_or("check root is not UTF-8")?;
     let check_root = format!("{}={checks_text}", crate::scratch::VARIABLE);
+    let mut evidence = json!({"schema":1,"tag":tag,"source_sha":source,"target":target_name,"architecture":architecture,
+        "package_sha256":record["sha256"],"checker_sha256":record["checker_sha256"],"older_fixture":record["older_fixture"],
+        "display":"X11/Xvfb/Openbox","status":"in-progress","checks":[],
+        "release_acceptance":false,"scope":"native clean RPM installation; X11 desktop, focus, keyboard divider resize, preferences with external plugins, plugin status and consented Sessions; downgrade to a repacked older fixture, upgrade, remove, reinstall and erase with seeded user state and a running user process untouched; no historical-release upgrade, application-state migration or GNOME/Wayland certification"});
     let result = (|| -> Result<()> {
         runner.runtime_only()?;
         let package = package.to_str().ok_or("RPM path is not UTF-8")?;
@@ -236,6 +314,24 @@ pub fn run(
                     "/usr/share/among/plugins",
                 ],
             ),
+            // Keyboard divider movement in all four directions on the
+            // installed executable, not only on a development build.
+            (
+                "installed-live-resize",
+                vec!["check-live-resize", "/usr/bin/among"],
+            ),
+            // The packaged plugins copied into the user's own data directory
+            // are external plugins to the installed application.
+            (
+                "installed-preferences-external-plugins",
+                vec![
+                    "check-preferences",
+                    "/usr/bin/among",
+                    "/usr/share/among/plugins",
+                ],
+            ),
+            // Restored split layout, a pane command that keeps running while
+            // its workspace is hidden, a pointer pane move and consent.
             (
                 "installed-sessions",
                 vec!["check-sessions", "/usr/bin/among"],
@@ -258,48 +354,17 @@ pub fn run(
                 .ok_or("RPM checks array absent")?
                 .push(json!(check));
         }
-        let states = [
-            Path::new("/home/among-check/.config/among/settings.json"),
-            Path::new("/home/among-check/.local/state/among/session.json"),
-            Path::new("/home/among-check/.config/among/plugins.json"),
-        ];
-        for state in states {
-            fs::create_dir_all(state.parent().ok_or("user state parent absent")?)?;
-            fs::write(state, b"{\"synthetic-user-state\":true}")?;
-        }
-        runner.command(
-            "/usr/bin/chown",
-            &["-R", "among-check:among-check", "/home/among-check"],
-            30,
-        )?;
-        let digests = states
-            .into_iter()
-            .map(|path| storage::sha256(File::open(path)?))
-            .collect::<Result<Vec<_>>>()?;
-        for (label, args) in [
-            ("remove", vec!["remove", "-y", "among"]),
-            ("reinstall", vec!["install", "-y", package]),
-            ("remove-after-reinstall", vec!["remove", "-y", "among"]),
-        ] {
-            runner.command("/usr/bin/dnf", &args, 300)?;
-            for (state, digest) in states.into_iter().zip(&digests) {
-                if storage::sha256(File::open(state)?)? != *digest {
-                    return Err("RPM operation changed user state".into());
-                }
-            }
-            if label.starts_with("remove") && Path::new("/usr/bin/among").exists() {
-                return Err("RPM remove left owned executable".into());
-            }
-            if label == "reinstall"
-                && runner.command("/usr/bin/rpm", &["-q", "--qf", "%{VERSION}", "among"], 30)?
-                    != version
-            {
-                return Err("RPM reinstall version differs".into());
-            }
+        for check in crate::rpm_lifecycle::run(
+            &mut runner,
+            Path::new(package),
+            &fixture,
+            &version,
+            Path::new("/home/among-check"),
+        )? {
             evidence["checks"]
                 .as_array_mut()
                 .ok_or("RPM checks array absent")?
-                .push(json!(label));
+                .push(json!(check));
         }
         Ok(())
     })();

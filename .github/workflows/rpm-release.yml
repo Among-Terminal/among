@@ -133,6 +133,10 @@ jobs:
           tar -tzf "$sources/${staging}.tar.gz" \
             | grep -qE "^${staging}/Cargo\.toml$" \
             || { echo "tarball lacks ${staging}/Cargo.toml for autosetup" >&2; exit 1; }
+          # The SRPM is the source delivered with the RPM: it must hold exactly
+          # the tagged commit's files, not whatever else the checkout contains.
+          "$AMONG_CHECK_ROOT"/target/debug/among-tools check-rpm-source-archive . \
+            "$AMONG_CHECK_ROOT"/srpm-contents.txt "$staging"
           ls -l "$sources/${staging}.tar.gz"
 
       - name: Build the binary RPM and the SRPM
@@ -232,13 +236,29 @@ jobs:
           fi
           # Allowlist: every owned path must be one the spec names. This is
           # what catches an accidental stray file a name blocklist misses.
-          grep -vE '^(/etc/|/usr/share/doc/|/usr/share/licenses/among($|/)|/usr/bin/among$|/usr/share/among/plugins($|/[^/]+$)|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
+          grep -vE '^(/etc/|/usr/share/doc/|/usr/share/licenses/among($|/)|/usr/bin/among$|/usr/share/among($|/plugins($|/[^/]+$))|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
             "$AMONG_CHECK_ROOT"/rpm-files.txt > "$AMONG_CHECK_ROOT"/rpm-unexpected.txt || true
           if test -s "$AMONG_CHECK_ROOT"/rpm-unexpected.txt; then
             echo 'the payload owns files the spec does not declare' >&2
             cat "$AMONG_CHECK_ROOT"/rpm-unexpected.txt >&2
             exit 1
           fi
+
+      - name: License notices in the payload match the tagged source and the locked inventory
+        run: |
+          set -eu
+          binary=$(cat "$AMONG_CHECK_ROOT"/binary-rpm-path.txt)
+          payload="$AMONG_CHECK_ROOT"/payload
+          mkdir "$payload"
+          rpm2cpio "$binary" | (cd "$payload" && cpio -idm --quiet)
+          rpm -qp --requires "$binary" > "$AMONG_CHECK_ROOT"/rpm-all-requires.txt
+          # The packaged notice texts themselves against the three locked Cargo
+          # graphs, then byte equality with the tag and the system/shipped split.
+          "$AMONG_CHECK_ROOT"/target/debug/among-tools third-party-notices . \
+            "$payload/usr/share/licenses/among/THIRD_PARTY" check
+          "$AMONG_CHECK_ROOT"/target/debug/among-tools check-rpm-notices . "$payload" \
+            "$AMONG_CHECK_ROOT"/rpm-all-requires.txt > "$AMONG_CHECK_ROOT"/rpm-notices.json
+          cat "$AMONG_CHECK_ROOT"/rpm-notices.json
 
       - name: Resolve every runtime dependency in a clean environment
         run: |
@@ -273,6 +293,11 @@ jobs:
             echo "rust=$(cargo --version)"
             echo "rpm=$(rpm --version | head -1)"
             echo "tag=${GITHUB_REF_NAME}"
+            # The library versions this target's executables were linked
+            # against; rpmbuild already refused any below the spec floors.
+            for module in gtk4 libadwaita-1 vte-2.91-gtk4; do
+              echo "linked-$module=$(pkg-config --modversion "$module")"
+            done
           } > "$AMONG_CHECK_ROOT"/build-environment.txt
           cat "$AMONG_CHECK_ROOT"/build-environment.txt
           sha256sum "$(cat "$AMONG_CHECK_ROOT"/binary-rpm-path.txt)" \
@@ -283,8 +308,17 @@ jobs:
           mkdir -p "$AMONG_CHECK_ROOT"/rpm-candidate
           cp "$(cat "$AMONG_CHECK_ROOT"/binary-rpm-path.txt)" "$AMONG_CHECK_ROOT"/rpm-candidate/
           cp "$AMONG_CHECK_ROOT"/target/release/among-tools "$AMONG_CHECK_ROOT"/rpm-candidate/
+          # The older package for the installed lifecycle check is the
+          # candidate's payload repacked under a lower version. rpmbuild may not
+          # exist on the clean installed worker, so it is made here, unprivileged,
+          # in a directory of its own that marks it as never a release asset.
+          mkdir "$AMONG_CHECK_ROOT"/fixture-work
+          chown among-builder:among-builder "$AMONG_CHECK_ROOT"/fixture-work "$AMONG_CHECK_ROOT"/rpm-candidate
+          /usr/sbin/runuser --user among-builder -- "$AMONG_CHECK_ROOT"/target/release/among-tools \
+            make-rpm-older-fixture "$(cat "$AMONG_CHECK_ROOT"/binary-rpm-path.txt)" \
+            "$AMONG_CHECK_ROOT"/fixture-work "$AMONG_CHECK_ROOT"/rpm-candidate
           "$AMONG_CHECK_ROOT"/target/release/among-tools record-rpm-candidate . "${{ matrix.target }}" "${{ matrix.architecture }}" "$AMONG_CHECK_ROOT"/rpm-candidate
-          (cd "$AMONG_CHECK_ROOT"/rpm-candidate && sha256sum among-tools *.rpm > SHA256SUMS)
+          (cd "$AMONG_CHECK_ROOT"/rpm-candidate && sha256sum among-tools *.rpm ci-lifecycle-fixture-not-for-release/*.rpm > SHA256SUMS)
 
       - name: Retain the candidate and its evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

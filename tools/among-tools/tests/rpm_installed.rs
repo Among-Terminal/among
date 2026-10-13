@@ -69,3 +69,51 @@ fn local_install_checks_refuse_before_writing_evidence() -> Result<()> {
     assert!(!spec.exists());
     Ok(())
 }
+
+#[test]
+fn lifecycle_fixture_binding_refuses_wrong_name_place_and_bytes() -> Result<()> {
+    let root = storage::private_directory(&std::env::temp_dir(), "among-rpm-fixture")?;
+    let directory = root.join(among_tools::rpm_lifecycle::FIXTURE_DIRECTORY);
+    fs::create_dir(&directory)?;
+    let name = "among-0.1.0~rc.3~ciolder-1.fc43.x86_64.rpm";
+    fs::write(directory.join(name), b"synthetic older fixture bytes")?;
+    let record = json!({"older_fixture":{"filename":name,
+        "sha256":storage::sha256(fs::File::open(directory.join(name))?)?}});
+    let path = rpm_installed::validate_fixture(&record, "v0.1.0-rc.3", "fedora43", "amd64", &root)?;
+    assert_eq!(path, directory.join(name));
+
+    // A fixture for another target or one that is not older than the
+    // candidate would test a different upgrade than the one shipped.
+    for (tag, target, architecture) in [
+        ("v0.1.0-rc.4", "fedora43", "amd64"),
+        ("v0.1.0-rc.3", "fedora44", "amd64"),
+        ("v0.1.0-rc.3", "fedora43", "arm64"),
+    ] {
+        assert!(
+            rpm_installed::validate_fixture(&record, tag, target, architecture, &root).is_err()
+        );
+    }
+    let mut renamed = record.clone();
+    renamed["older_fixture"]["filename"] = json!("among-0.1.0~rc.3-1.fc43.x86_64.rpm");
+    assert!(
+        rpm_installed::validate_fixture(&renamed, "v0.1.0-rc.3", "fedora43", "amd64", &root)
+            .is_err()
+    );
+
+    // Beside the candidate instead of in its own directory, it could be
+    // mistaken for the single binary RPM of the release.
+    fs::rename(directory.join(name), root.join(name))?;
+    assert!(
+        rpm_installed::validate_fixture(&record, "v0.1.0-rc.3", "fedora43", "amd64", &root)
+            .is_err()
+    );
+    fs::rename(root.join(name), directory.join(name))?;
+
+    fs::write(directory.join(name), b"different bytes")?;
+    assert!(
+        rpm_installed::validate_fixture(&record, "v0.1.0-rc.3", "fedora43", "amd64", &root)
+            .is_err()
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}

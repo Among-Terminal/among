@@ -54,6 +54,8 @@ pub mod release_policy;
 pub mod resources;
 pub mod rpm;
 pub mod rpm_installed;
+pub mod rpm_lifecycle;
+pub mod rpm_payload;
 pub mod scratch;
 pub mod sessions;
 pub mod sha3;
