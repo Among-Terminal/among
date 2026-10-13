@@ -24,6 +24,129 @@ If `~/.local/bin` is already in PATH, the command is `among`.
 The installer does not edit shell startup files. If the menu does not refresh
 immediately, log out and back in.
 
+## Binary archive
+
+A binary archive holds the same executables as the DEB of the same release,
+without a package manager. It is built for one distribution and architecture
+and does not bundle libraries: the distribution must provide them.
+
+| Your system | File |
+|---|---|
+| Debian 13, x86-64 | `among-<version>-debian13-amd64.tar.gz` |
+| Debian 13, ARM 64-bit | `among-<version>-debian13-arm64.tar.gz` |
+| Ubuntu 24.04, x86-64 | `among-<version>-ubuntu24.04-amd64.tar.gz` |
+| Ubuntu 24.04, ARM 64-bit | `among-<version>-ubuntu24.04-arm64.tar.gz` |
+
+`dpkg --print-architecture` prints `amd64` or `arm64`. Download the archive and
+the release's `SHA256SUMS` into one directory and verify the archive:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+The line for the archive must end in `OK`. Install the runtime libraries.
+`INSTALL.txt` inside the archive lists the exact packages and minimum versions
+the DEB of the same build depends on; on both distributions this installs them:
+
+```sh
+sudo apt-get install --no-install-recommends libgtk-4-1 libadwaita-1-0 libvte-2.91-gtk4-0 librsvg2-common
+```
+
+Extract into a new directory and start Among:
+
+```sh
+mkdir ~/among
+tar -xzf among-<version>-ubuntu24.04-arm64.tar.gz -C ~/among
+~/among/bin/among
+```
+
+No compiler, Rust toolchain or Among package is needed. The archive adds no
+applications-menu entry. The example plugins are in `~/among/plugins/`; they
+stay disabled until you install and enable them as described in
+[plugins](plugins.md#installing). To remove Among, delete `~/among`. Settings,
+sessions and separately installed plugins are preserved.
+
+## AppImage
+
+An AppImage is one executable file that carries Among together with GTK,
+libadwaita, VTE and the libraries they need. It installs nothing.
+
+| Your system | File |
+|---|---|
+| x86-64 | `among-<version>-amd64.AppImage` |
+| ARM 64-bit | `among-<version>-arm64.AppImage` |
+
+Supported hosts: Debian 13, Ubuntu 24.04 and Fedora 43 on both architectures;
+these are the hosts its release checks start it on. It needs GNU C library
+2.39 or newer, because it is built on Ubuntu 24.04. A few libraries are always
+taken from the host, as with every AppImage: the C and C++ runtime, X11 and
+XCB, Wayland client, fontconfig, FreeType, HarfBuzz, FriBidi, Expat, GMP,
+libgpg-error, com_err and zlib. Desktop installations of the supported hosts
+have them.
+
+Download the AppImage and the release's `SHA256SUMS` into one directory, verify
+it, make it executable and start it:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+chmod +x among-<version>-amd64.AppImage
+./among-<version>-amd64.AppImage
+```
+
+The AppImage mounts itself with FUSE, which needs `fusermount3` from the
+`fuse3` package (`sudo apt-get install fuse3` or `sudo dnf install fuse3`).
+Without FUSE it prints `Cannot mount AppImage, please check your FUSE setup`.
+Then extract it and start the extracted copy instead:
+
+```sh
+./among-<version>-amd64.AppImage --appimage-extract
+./squashfs-root/AppRun
+```
+
+This creates `squashfs-root/` in the current directory; move or delete it like
+any directory. The upstream runtime also offers `--appimage-extract-and-run`,
+which extracts to a temporary directory on every start
+([AppImage documentation](https://docs.appimage.org/user-guide/troubleshooting/fuse.html));
+Among's checks cover the extraction above, not that option.
+
+Among started from the AppImage does not change the environment of the shells
+it opens: library, GSettings and XDG data paths stay as you set them. The
+AppImage runtime itself sets `APPIMAGE`, `APPDIR`, `ARGV0` and, when mounted,
+`OWD` for its process, so those are visible in the shells.
+
+The AppImage does not add itself to the applications menu. Its desktop entry
+uses the ID `com.github.among-terminal`. To add a menu entry for the file at
+`~/Applications/among.AppImage`:
+
+```sh
+mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
+cd ~/Applications
+./among.AppImage --appimage-extract usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg
+cp squashfs-root/usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg \
+  ~/.local/share/icons/hicolor/scalable/apps/
+rm -r squashfs-root
+cat > ~/.local/share/applications/com.github.among-terminal.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=Among Terminal
+Comment=Organize live terminals in project workspaces
+Exec=$HOME/Applications/among.AppImage
+Icon=com.github.among-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=true
+StartupWMClass=among
+EOF
+```
+
+If you move or rename the AppImage, edit `Exec=` accordingly.
+
+The example plugins are inside the image in `usr/share/among/plugins/`;
+`--appimage-extract 'usr/share/among/plugins/*'` copies them out for
+installation as described in [plugins](plugins.md#installing). To remove Among,
+delete the AppImage file and, if you added them, the desktop entry and icon
+above. Settings, sessions and separately installed plugins are preserved.
+
 ## Cargo installation (binary only)
 
 With the native prerequisites from [building](build.md) installed:

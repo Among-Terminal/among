@@ -122,3 +122,38 @@ through the running application instead.
 - `text_range` and `text_selected_full` are commented out in the generated
   bindings and are unavailable. `text_selected` is behind the `v0_70` feature, and
   going through the clipboard to read text is not reliable enough to build on.
+
+## AppImage candidates
+
+`.github/workflows/appimage-release.yml` builds AppImages on native amd64 and
+arm64 runners inside the digest-pinned Ubuntu 24.04 image and starts them on
+clean Debian 13, Ubuntu 24.04 and Fedora 43 hosts. The same steps run in a
+disposable Ubuntu 24.04 container of the target architecture, as root, from a
+checkout, after installing the packages listed in the workflow's first step
+and Rust 1.98.1:
+
+```sh
+cargo build --release --locked
+cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
+cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
+tools=tools/among-tools/target/release/among-tools
+mkdir binaries
+cp target/release/among examples/plugins/target/release/clock \
+  examples/plugins/target/release/system-status examples/plugins/target/release/pane-pwd binaries/
+"$tools" stage-appimage . binaries tools/among-tools/target/release/among-apprun amd64 Among.AppDir
+"$tools" fetch-appimage-tools amd64 appimage-tools
+"$tools" build-appimage Among.AppDir appimage-tools amd64 "$("$tools" package-version .)" appimage-candidate
+"$tools" collect-appimage-sources appimage-candidate/among-*-amd64.audit.json appimage-sources
+```
+
+Use `arm64` instead of `amd64` on an arm64 machine; the commands refuse a
+foreign architecture. `fetch-appimage-tools` executes nothing and keeps only
+helper bytes whose SHA-256 matches the reviewed pins. `build-appimage` copies
+those helpers again and re-checks the copies before running them, runs
+linuxdeploy with its GTK plugin and appimagetool with the pinned runtime, puts
+the reviewed `AppRun` back where linuxdeploy wraps it (the wrapper would export
+GTK search paths into every shell), refuses an image without compiled schemas,
+MIME cache or SVG pixbuf loader, audits the bundled libraries and extracts the
+finished image to repeat those checks. Every output directory must be new.
+`collect-appimage-sources` changes the container's APT configuration, so it
+refuses to run outside a root container.

@@ -116,10 +116,18 @@ pub fn run(
     host_name: &str,
     architecture: &str,
     directory: &Path,
+    check_root: &Path,
     output: &Path,
     caller: &BTreeMap<String, String>,
 ) -> Result<()> {
     let expected = host(host_name)?;
+    if !check_root.is_absolute() {
+        return Err("the check working root must be an absolute path".into());
+    }
+    let check_root_text = check_root
+        .to_str()
+        .ok_or("check working root is not UTF-8")?
+        .to_string();
     if !nix::unistd::getuid().is_root()
         || caller.get("RUNNER_ENVIRONMENT").map(String::as_str) != Some("github-hosted")
     {
@@ -187,10 +195,12 @@ pub fn run(
         let installed = home.join("Among.AppImage");
         fs::copy(&image, &installed)?;
         fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
-        fs::create_dir_all("/tmp/opencode")?;
+        // Display checks keep their working directories and evidence under this
+        // root, which the unprivileged user must own.
+        fs::create_dir_all(check_root)?;
         runner.command(
             "/usr/bin/chown",
-            &[&format!("{USER}:{USER}"), "/tmp/opencode"],
+            &[&format!("{USER}:{USER}"), &check_root_text],
             30,
         )?;
         runner.command(
@@ -327,7 +337,15 @@ pub fn run(
                 let data = format!("XDG_DATA_HOME={HOME}/data");
                 let cache = format!("XDG_CACHE_HOME={HOME}/cache");
                 let runtime = format!("XDG_RUNTIME_DIR={HOME}/runtime");
-                argv.extend([home_env.as_str(), &config, &data, &cache, &runtime]);
+                let check_env = format!("AMONG_CHECK_ROOT={check_root_text}");
+                argv.extend([
+                    home_env.as_str(),
+                    &config,
+                    &data,
+                    &cache,
+                    &runtime,
+                    &check_env,
+                ]);
                 argv.extend([tools.as_str(), "ci-x11", tools.as_str()]);
                 argv.extend(args);
                 runner.command("/usr/sbin/runuser", &argv, timeout)?;
@@ -337,10 +355,7 @@ pub fn run(
         evidence["status"] = "passed".into();
         Ok(())
     })();
-    let saved = crate::deb_installed::save_evidence(
-        Path::new("/tmp/opencode"),
-        &runner.base.join("display-logs"),
-    );
+    let saved = crate::deb_installed::save_evidence(check_root, &runner.base.join("display-logs"));
     if saved.is_err() {
         evidence["status"] = "failed".into();
     }
