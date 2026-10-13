@@ -1,5 +1,42 @@
 # Installing Among Terminal
 
+## Ready-made packages
+
+Every [GitHub Release](https://github.com/Among-Terminal/among/releases) carries
+the same files for x86-64 (`amd64`) and ARM 64-bit (`arm64`), under names without
+a version. `https://github.com/Among-Terminal/among/releases/latest/download/<file>`
+always fetches the file from the newest stable release; the README links each one.
+`uname -m` prints `x86_64` for amd64 and `aarch64` for arm64.
+
+| Your system | Files | Details |
+|---|---|---|
+| Debian 13, Ubuntu 24.04 | `among-terminal-<debian13 or ubuntu24.04>-<arch>.deb` | [Debian packaging](debian-packaging.md#installing-a-built-package) |
+| Fedora 43, Fedora 44 | `among-terminal-<fedora43 or fedora44>-<arch>.rpm` | [RPM packaging](rpm-packaging.md#choosing-the-package-for-your-system) |
+| Other distributions with glibc 2.39 or newer | `among-terminal-<arch>.AppImage` | [AppImage](#appimage) |
+| Debian 13, Ubuntu 24.04 without a package manager | `among-terminal-<debian13 or ubuntu24.04>-<arch>.tar.gz` | [Binary archive](#binary-archive) |
+
+```sh
+sudo apt install ./among-terminal-ubuntu24.04-amd64.deb
+sudo dnf install ./among-terminal-fedora44-amd64.rpm
+```
+
+APT and DNF install the libraries Among needs from the distribution. Each
+release also carries `SHA256SUMS`; download it next to your file and check it:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+The line for your file must end in `OK`. Releases are immutable: once
+published, their files and tag cannot change. GitHub records an attestation for
+each release; with the GitHub CLI, `gh release verify-asset <tag> <file> --repo
+Among-Terminal/among` checks a downloaded file against it.
+
+To update, download the newer release's file and install it the same way. Close
+and reopen Among to use the new version.
+
+## From source
+
 From a source checkout, run as your normal user:
 
 ```sh
@@ -32,10 +69,10 @@ and does not bundle libraries: the distribution must provide them.
 
 | Your system | File |
 |---|---|
-| Debian 13, x86-64 | `among-<version>-debian13-amd64.tar.gz` |
-| Debian 13, ARM 64-bit | `among-<version>-debian13-arm64.tar.gz` |
-| Ubuntu 24.04, x86-64 | `among-<version>-ubuntu24.04-amd64.tar.gz` |
-| Ubuntu 24.04, ARM 64-bit | `among-<version>-ubuntu24.04-arm64.tar.gz` |
+| Debian 13, x86-64 | `among-terminal-debian13-amd64.tar.gz` |
+| Debian 13, ARM 64-bit | `among-terminal-debian13-arm64.tar.gz` |
+| Ubuntu 24.04, x86-64 | `among-terminal-ubuntu24.04-amd64.tar.gz` |
+| Ubuntu 24.04, ARM 64-bit | `among-terminal-ubuntu24.04-arm64.tar.gz` |
 
 `dpkg --print-architecture` prints `amd64` or `arm64`. Download the archive and
 the release's `SHA256SUMS` into one directory and verify the archive:
@@ -57,7 +94,7 @@ Extract into a new directory and start Among:
 
 ```sh
 mkdir ~/among
-tar -xzf among-<version>-ubuntu24.04-arm64.tar.gz -C ~/among
+tar -xzf among-terminal-ubuntu24.04-arm64.tar.gz -C ~/among
 ~/among/bin/among
 ```
 
@@ -74,8 +111,8 @@ libadwaita, VTE and the libraries they need. It installs nothing.
 
 | Your system | File |
 |---|---|
-| x86-64 | `among-<version>-amd64.AppImage` |
-| ARM 64-bit | `among-<version>-arm64.AppImage` |
+| x86-64 | `among-terminal-amd64.AppImage` |
+| ARM 64-bit | `among-terminal-arm64.AppImage` |
 
 Supported hosts: Debian 13, Ubuntu 24.04 and Fedora 43 on both architectures;
 these are the hosts its release checks start it on. It needs GNU C library
@@ -99,8 +136,8 @@ it, make it executable and start it:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS
-chmod +x among-<version>-amd64.AppImage
-./among-<version>-amd64.AppImage
+chmod +x among-terminal-amd64.AppImage
+./among-terminal-amd64.AppImage
 ```
 
 The AppImage mounts itself with FUSE, which needs `fusermount3` from the
@@ -109,7 +146,7 @@ Without FUSE it prints `Cannot mount AppImage, please check your FUSE setup`.
 Then extract it and start the extracted copy instead:
 
 ```sh
-./among-<version>-amd64.AppImage --appimage-extract
+./among-terminal-amd64.AppImage --appimage-extract
 ./squashfs-root/AppRun
 ```
 

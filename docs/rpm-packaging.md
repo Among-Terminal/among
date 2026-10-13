@@ -88,37 +88,45 @@ check, and states `release_acceptance: false`.
 
 ## Choosing the package for your system
 
-| Target | Package |
-|---|---|
-| `fedora43` / `amd64` | `among-<version>-1.fc43.x86_64.rpm` |
-| `fedora43` / `arm64` | `among-<version>-1.fc43.aarch64.rpm` |
-| `fedora44` / `amd64` | `among-<version>-1.fc44.x86_64.rpm` |
-| `fedora44` / `arm64` | `among-<version>-1.fc44.aarch64.rpm` |
+A GitHub Release attaches each package under a version-free name, with `amd64`
+and `arm64` as in every other format, so the same name in
+`releases/latest/download/` always fetches the newest stable package. The build
+job writes the RPM file name, which the package header repeats:
 
+| Target | Release file | Build output |
+|---|---|---|
+| `fedora43` / `amd64` | `among-terminal-fedora43-amd64.rpm` | `among-<version>-1.fc43.x86_64.rpm` |
+| `fedora43` / `arm64` | `among-terminal-fedora43-arm64.rpm` | `among-<version>-1.fc43.aarch64.rpm` |
+| `fedora44` / `amd64` | `among-terminal-fedora44-amd64.rpm` | `among-<version>-1.fc44.x86_64.rpm` |
+| `fedora44` / `arm64` | `among-terminal-fedora44-arm64.rpm` | `among-<version>-1.fc44.aarch64.rpm` |
+
+The source package of each Fedora release is attached as
+`among-terminal-fedora43.src.rpm` and `among-terminal-fedora44.src.rpm`.
 `rpm -E %fedora` prints your Fedora release and `uname -m` your architecture
-(`x86_64` is amd64, `aarch64` is arm64). For `v0.1.0-rc.10`, `<version>` is
+(`x86_64` is amd64, `aarch64` is arm64); `rpm -qp among-terminal-fedora43-amd64.rpm`
+prints a downloaded file's version. For `v0.1.0-rc.10`, `<version>` is
 `0.1.0~rc.10`. A package for one Fedora release is not a substitute on
 another.
 
 ## Installing, upgrading, rolling back and removing
 
 ```sh
-sudo dnf install ./among-<version>-1.fc43.x86_64.rpm
+sudo dnf install ./among-terminal-fedora43-amd64.rpm
 ```
 
 `dnf` resolves GTK 4, libadwaita, GTK 4 VTE and the icon and settings data from
 the Fedora repositories. There is no RPM repository or Copr project for Among
 Terminal, so `dnf upgrade` never moves to a new version by itself; a release is
-upgraded by installing its newer local file:
+upgraded by installing the newer release's file:
 
 ```sh
-sudo dnf upgrade ./among-<newer-version>-1.fc43.x86_64.rpm
+sudo dnf upgrade ./among-terminal-fedora43-amd64.rpm
 ```
 
-Rollback is a downgrade to an older local file:
+Rollback is a downgrade to an older release's file:
 
 ```sh
-sudo dnf downgrade ./among-<older-version>-1.fc43.x86_64.rpm
+sudo dnf downgrade ./among-terminal-fedora43-amd64.rpm
 ```
 
 Remove the package through `dnf`, or erase it with `rpm` directly:

@@ -41,6 +41,7 @@ Usage:
   among-tools ci-deb-build <source-root> <target> <architecture> <digest-pinned-image> <new-output>
   among-tools check-deb-workflow <source-root>
   among-tools stage-release-assets <artifacts> <tag> <commit> <new-output>
+  among-tools release-notes <staged-assets> <owner/repo> <tag> <commit> <run-url> <highlights-dir> <new-output.md>
   among-tools check-deb-desktop
   among-tools check-native-checker <directory> <source-sha> <tag> <target> <architecture>
   among-tools package-native-checker <binary> <source-sha> <tag> <target> <architecture> <new-directory>
@@ -660,6 +661,20 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 println!("{name}");
             }
             println!("PASS release files and SHA256SUMS staged; nothing was uploaded");
+        }
+        [command, assets, repository, tag, commit, run_url, highlights, output]
+            if command == "release-notes" =>
+        {
+            among_tools::release_notes::write(
+                Path::new(assets),
+                repository,
+                tag,
+                commit,
+                run_url,
+                Path::new(highlights),
+                Path::new(output),
+            )?;
+            println!("PASS release description written; every staged file is linked once");
         }
         [command, root] if command == "check-deb-workflow" => {
             among_tools::deb_workflow::run(Path::new(root), &among_tools::scratch::root()?)?;

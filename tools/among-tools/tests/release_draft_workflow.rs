@@ -35,7 +35,7 @@ fn actual_workflow_satisfies_the_release_draft_policy() -> Result<()> {
 fn policy_refuses_publication_scope_order_and_input_drift() -> Result<()> {
     let valid = actual()?;
     type Mutation = fn(&mut Value) -> Result<()>;
-    let mutations: [(&str, Mutation); 17] = [
+    let mutations: [(&str, Mutation); 19] = [
         ("manual trigger", |w| {
             w["on"]["workflow_dispatch"] = json!(null);
             Ok(())
@@ -125,6 +125,22 @@ fn policy_refuses_publication_scope_order_and_input_drift() -> Result<()> {
         ("additional job", |w| {
             w["jobs"]["publish"] =
                 json!({"runs-on":"ubuntu-24.04","permissions":{"contents":"read"},"steps":[]});
+            Ok(())
+        }),
+        ("draft without the generated pull request list", |w| {
+            let step = draft_step(w)?;
+            let text = step["run"]
+                .as_str()
+                .ok_or("run")?
+                .replace("-F generate_release_notes=true", "");
+            step["run"] = text.into();
+            Ok(())
+        }),
+        ("description not handed to the draft job", |w| {
+            w["jobs"]["assemble"]["steps"]
+                .as_array_mut()
+                .ok_or("assemble steps")?
+                .retain(|step| step["with"]["name"] != "release-notes");
             Ok(())
         }),
     ];
@@ -236,6 +252,10 @@ if [ "$1" = api ]; then
       cat "$state/releases.json" ;;
     "POST repos/$repo/releases")
       printf '%s\n' "${fields[@]}" > "$state/created"
+      # gh reads a field value given as @file from that file.
+      for field in "${fields[@]}"; do
+        case "$field" in body=@*) cat "${field#body=@}" > "$state/body" ;; esac
+      done
       jq -n --arg tag "$GITHUB_REF_NAME" '[{id: 7, tag_name: $tag, draft: true, prerelease: true}]' > "$state/releases.json"
       echo '{"id": 7}' ;;
     "GET repos/$repo/releases/7/assets?per_page=100")
@@ -260,10 +280,12 @@ fi
 "#;
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+/// Stands in for the description the assembly job renders.
+const NOTES: &str = "## Download\n\n| System | Format | amd64 | arm64 |\n";
 const FILES: [(&str, &str); 3] = [
-    ("among-terminal_0.1.0.rc.11-1.debian13_amd64.deb", "deb"),
-    ("among-0.1.0.rc.11-1.fc43.src.rpm", "srpm"),
-    ("Among-0.1.0-rc.11-arm64.AppImage", "appimage"),
+    ("among-terminal-debian13-amd64.deb", "deb"),
+    ("among-terminal-fedora43.src.rpm", "srpm"),
+    ("among-terminal-arm64.AppImage", "appimage"),
 ];
 
 struct Draft {
@@ -291,6 +313,8 @@ impl Draft {
             sums.push_str(&format!("{}  {name}\n", storage::sha256(bytes.as_bytes())?));
         }
         fs::write(assets.join("SHA256SUMS"), sums)?;
+        fs::create_dir_all(root.join("work/release-notes"))?;
+        fs::write(root.join("work/release-notes/body.md"), NOTES)?;
         Ok(Self { root, state })
     }
 
@@ -329,7 +353,6 @@ impl Draft {
             .env("GITHUB_REPOSITORY", "owner/among")
             .env("GITHUB_REF_NAME", tag)
             .env("GITHUB_SHA", COMMIT)
-            .env("RUN_URL", "https://github.invalid/run/1")
             .env("FAKE_GH_STATE", &self.state)
             .env("FAKE_TAG_COMMIT", tag_commit)
             .output()?;
@@ -407,7 +430,35 @@ fn new_release_candidate_draft_is_a_prerelease_with_every_file() -> Result<()> {
     assert!(created.contains("draft=true"));
     assert!(created.contains("prerelease=true"));
     assert!(created.contains("tag_name=v0.1.0-rc.11"));
+    assert!(created.contains("name=Among Terminal 0.1.0-rc.11"));
     assert_eq!(draft.uploaded(), all_names());
+    Ok(())
+}
+
+/// The draft carries the rendered description, and GitHub is asked to append
+/// its list of merged pull requests after it.
+#[test]
+#[ignore = "runs the draft step, which needs jq as on the GitHub-hosted runner; package-build containers lack jq, the Checks ignored-test runner runs it"]
+fn new_draft_carries_the_rendered_description_and_the_generated_list() -> Result<()> {
+    let draft = Draft::new(json!([]))?;
+    assert!(draft.run("v0.1.0", COMMIT)?.succeeded());
+    let created = draft.read("created");
+    assert!(created
+        .lines()
+        .any(|line| line == "generate_release_notes=true"));
+    assert_eq!(draft.read("body"), NOTES);
+    Ok(())
+}
+
+#[test]
+#[ignore = "runs the draft step, which needs jq as on the GitHub-hosted runner; package-build containers lack jq, the Checks ignored-test runner runs it"]
+fn a_missing_description_stops_before_any_release_call() -> Result<()> {
+    let draft = Draft::new(json!([]))?;
+    fs::remove_file(draft.root.join("work/release-notes/body.md"))?;
+    assert!(draft
+        .run("v0.1.0", COMMIT)?
+        .refused_because("release description missing"));
+    assert_eq!(draft.read("calls.log"), "");
     Ok(())
 }
 
@@ -496,7 +547,7 @@ fn foreign_published_moved_or_conflicting_releases_are_left_untouched() -> Resul
             existing.clone(),
             Some((FILES[1].0, b"rebuilt")),
             COMMIT,
-            "draft asset among-0.1.0.rc.11-1.fc43.src.rpm differs from this build",
+            "draft asset among-terminal-fedora43.src.rpm differs from this build",
         ),
         (
             existing,

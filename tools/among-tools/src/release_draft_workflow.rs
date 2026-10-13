@@ -160,14 +160,28 @@ pub fn validate(document: &Value) -> Result<()> {
         "assembly must stage the release files with the pinned toolchain for this tag and commit",
     )?;
     require(
-        steps(assemble)?.iter().any(|step| {
-            step["uses"]
-                .as_str()
-                .is_some_and(|action| action.starts_with("actions/upload-artifact@"))
-                && step["with"]["name"] == "release-assets"
-                && step["with"]["if-no-files-found"] == "error"
-        }),
+        assembly.contains("release-notes \\\n  release-assets \"$GITHUB_REPOSITORY\" \"$GITHUB_REF_NAME\" \"$GITHUB_SHA\" \"$RUN_URL\" \\\n  .github/release-notes release-notes/body.md"),
+        "assembly must describe the staged files of this tag and commit",
+    )?;
+    let uploads = |name: &str, path: &str| {
+        steps(assemble).is_ok_and(|steps| {
+            steps.iter().any(|step| {
+                step["uses"]
+                    .as_str()
+                    .is_some_and(|action| action.starts_with("actions/upload-artifact@"))
+                    && step["with"]["name"] == name
+                    && step["with"]["path"] == path
+                    && step["with"]["if-no-files-found"] == "error"
+            })
+        })
+    };
+    require(
+        uploads("release-assets", "release-assets/"),
         "assembly must hand over the staged files as the release-assets artifact",
+    )?;
+    require(
+        uploads("release-notes", "release-notes/body.md"),
+        "assembly must hand over the description as the release-notes artifact",
     )?;
     let draft = &jobs["draft"];
     require(
@@ -179,8 +193,12 @@ pub fn validate(document: &Value) -> Result<()> {
         "the draft job needs contents write and nothing else",
     )?;
     require(
-        downloads(draft)? == [("release-assets".to_string(), "release-assets".to_string())],
-        "the draft job must take only the staged release files",
+        downloads(draft)?
+            == [
+                ("release-assets".to_string(), "release-assets".to_string()),
+                ("release-notes".to_string(), "release-notes".to_string()),
+            ],
+        "the draft job must take only the staged release files and their description",
     )?;
     for step in steps(draft)? {
         if let Some(action) = step["uses"].as_str() {
@@ -195,6 +213,9 @@ pub fn validate(document: &Value) -> Result<()> {
         "set -euo pipefail",
         "is required on the runner",
         "-F draft=true -F prerelease=\"$prerelease\"",
+        "-F body=@\"$notes\"",
+        "-F generate_release_notes=true",
+        "release description missing",
         "*-rc.*) prerelease=true ;;",
         "repos/$repo/commits/refs/tags/$tag",
         "sha256sum --check --strict SHA256SUMS",

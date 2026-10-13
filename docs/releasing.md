@@ -40,10 +40,11 @@ rehearsal is not evidence for this new release model.
 
 ## 1. Establish ownership and protections
 
-Create or select the GitHub repository `Among-Terminal/among`, with permission
-to distribute the original code. This working directory has no Git history; do
-not assume it can be tagged/pushed as-is. Review and create the source repository
-deliberately, retaining applicable third-party attribution.
+The source repository is `Among-Terminal/among`; distribute the original code
+with the applicable third-party attribution retained. Enable immutable releases
+before the first publication (repository settings, "Releases", or
+`gh api --method PUT repos/Among-Terminal/among/immutable-releases`); it applies
+only to releases published afterwards.
 
 Protect `main`: require pull requests, review and the Checks job; disallow force
 push/deletion. Restrict creation/update/deletion of `v*` tags to authorized release
@@ -266,7 +267,7 @@ run only when called this way.
 | Job | Token | Does |
 |---|---|---|
 | `deb`, `rpm`, `appimage` | `contents: read` | build and installed checks |
-| `assemble` | `contents: read` | `among-tools stage-release-assets`: selects, binds and checksums the files |
+| `assemble` | `contents: read` | `among-tools stage-release-assets`: selects, binds and checksums the files; `among-tools release-notes`: renders the description |
 | `draft` | `contents: write` | creates or reconciles the draft, uploads, verifies; runs nothing it downloaded |
 
 `assemble` reads exactly these workflow artifacts and nothing else:
@@ -283,19 +284,41 @@ older upgrade-test package in `ci-lifecycle-fixture-not-for-release/` is never
 selected. Each AppImage must be an ELF executable for its architecture and match
 its audit record. Its sources must name exactly the source packages the audit
 lists, every descriptor and file must verify, and nothing else may be present;
-they are attached as one tar per architecture,
-`among-<version>-<arch>-appimage-sources.tar`, because the LGPL libraries in the
+they are attached as one tar per architecture, because the LGPL libraries in the
 AppImage must be accompanied by their corresponding source. Checker binaries,
 build records, audit records and runtime evidence are not attached.
 
-The draft holds nineteen assets: four DEB, four binary archives, four RPM, two
-SRPM, two AppImages, two AppImage source archives and `SHA256SUMS`. GitHub
-limits a release to 1000 assets, each under 2 GiB. GitHub renames asset names with special
-characters, so `~` in package versions becomes `.` (for example
-`among-terminal_0.1.0.rc.11-1.debian13_amd64.deb`) before `SHA256SUMS` is
-written; any other unusual character fails the run. After uploading, the run
-downloads every asset of the draft and requires `sha256sum --check SHA256SUMS`
-to pass. Tags with `-rc.N` produce a prerelease draft.
+The draft holds nineteen assets under version-free names, the same for every
+tag, so `releases/latest/download/<name>` (linked from the README) always
+fetches the newest stable file:
+
+| Files | Attached as |
+|---|---|
+| four DEB | `among-terminal-{debian13,ubuntu24.04}-{amd64,arm64}.deb` |
+| four binary archives | `among-terminal-{debian13,ubuntu24.04}-{amd64,arm64}.tar.gz` |
+| four RPM | `among-terminal-{fedora43,fedora44}-{amd64,arm64}.rpm` |
+| two SRPM | `among-terminal-{fedora43,fedora44}.src.rpm` |
+| two AppImages | `among-terminal-{amd64,arm64}.AppImage` |
+| two AppImage source archives | `among-terminal-{amd64,arm64}-appimage-sources.tar` |
+| checksums | `SHA256SUMS` |
+
+Build outputs keep their versioned names; only the attached name differs.
+GitHub limits a release to 1000 assets, each under 2 GiB, and renames asset
+names with special characters; the attached names use only letters, digits,
+`.`, `_` and `-`. After uploading, the run downloads every asset of the draft
+and requires `sha256sum --check SHA256SUMS` to pass. Tags with `-rc.N` produce
+a prerelease draft.
+
+The draft's description is rendered by `among-tools release-notes` from the
+staged `SHA256SUMS`: the highlights in `.github/release-notes/<tag>.md`, a
+download table linking every file of this tag once, install and verification
+commands, the scope of the installed checks, source materials, commit and run.
+A stable tag without a non-empty highlights file fails in `assemble`, before any
+release exists; release candidates may omit it. The description travels as the
+separate `release-notes` artifact, and the draft job creates the release with it
+as `body` and `generate_release_notes=true`, so GitHub appends the merged pull
+requests grouped by `.github/release.yml`. A repeated run keeps an existing
+draft's description.
 
 Repeated runs never replace bytes. A published release for the tag, more than
 one release for it, an existing draft whose prerelease flag disagrees with the
@@ -307,8 +330,14 @@ after five days, after which a re-run must rebuild from the start.
 
 The draft is not a publication. Download every asset into an empty directory,
 run `sha256sum -c SHA256SUMS`, review the notes, then publish the draft in the
-GitHub interface. That click is the owner's approval. Offline checks:
-`cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test release_assets --test release_draft_workflow -- --include-ignored`.
+GitHub interface. That click is the owner's approval. The repository has
+immutable releases enabled: once published, a release's assets cannot be
+changed or deleted, its tag cannot move, and a deleted release's tag name
+cannot be reused, so a defect found after publishing ships as a new version.
+GitHub records an attestation for each published release, which
+`gh release verify <tag>` and `gh release verify-asset <tag> <file>` check.
+Offline checks:
+`cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test release_assets --test release_notes --test readme_downloads --test release_draft_workflow -- --include-ignored`.
 The tests that execute the draft step need `jq`, as the GitHub-hosted runner
 provides; they are `#[ignore]`d so that package builds, whose containers have
 no `jq`, skip them, and the Checks workflow runs them with its ignored-test
