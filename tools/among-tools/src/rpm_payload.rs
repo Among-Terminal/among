@@ -167,6 +167,11 @@ pub fn check_source_listing(tracked: &[String], listing: &str, prefix: &str) -> 
     let top = format!("{prefix}/");
     let mut members = BTreeMap::new();
     for line in listing.lines() {
+        // `tar -c .` records the archived directory itself as `./`; the
+        // workflow's `--transform` rewrites only names below it.
+        if line == "./" {
+            continue;
+        }
         let name = line
             .strip_prefix(&top)
             .ok_or_else(|| format!("Source0 member outside {top}: {line}"))?;

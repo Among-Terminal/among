@@ -106,7 +106,7 @@ fn tracked() -> Vec<String> {
 
 #[test]
 fn source_archive_is_exactly_the_tagged_tree_without_ci_and_vcs_files() -> Result<()> {
-    let listing = "among-0.1.0/\namong-0.1.0/Cargo.toml\namong-0.1.0/packaging/\namong-0.1.0/packaging/rpm/\namong-0.1.0/packaging/rpm/among.spec\namong-0.1.0/src/\namong-0.1.0/src/main.rs\n";
+    let listing = "./\namong-0.1.0/\namong-0.1.0/Cargo.toml\namong-0.1.0/packaging/\namong-0.1.0/packaging/rpm/\namong-0.1.0/packaging/rpm/among.spec\namong-0.1.0/src/\namong-0.1.0/src/main.rs\n";
     assert_eq!(
         rpm_payload::check_source_listing(&tracked(), listing, "among-0.1.0")?,
         3
