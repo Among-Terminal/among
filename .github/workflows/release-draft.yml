@@ -152,7 +152,7 @@ jobs:
 
           # The by-tag endpoint does not return drafts, so releases are listed.
           gh api --paginate "repos/$repo/releases?per_page=100" \
-            | jq -c --arg tag "$tag" '.[] | select(.tag_name == $tag) | {id, draft}' > "$work/matches"
+            | jq -c --arg tag "$tag" '.[] | select(.tag_name == $tag) | {id, draft, prerelease}' > "$work/matches"
           case "$(wc -l < "$work/matches")" in
             0)
               notes="Draft built by $RUN_URL from commit $GITHUB_SHA. Verify downloads with: sha256sum -c SHA256SUMS"
@@ -162,6 +162,9 @@ jobs:
               ;;
             1)
               [ "$(jq -r .draft "$work/matches")" = true ] || fail "$tag already has a published release"
+              # The workflow never edits a release, so a wrong flag is left for the owner.
+              [ "$(jq -r .prerelease "$work/matches")" = "$prerelease" ] \
+                || fail "existing draft for $tag must have prerelease=$prerelease"
               id=$(jq -r .id "$work/matches")
               ;;
             *) fail "$tag has more than one release" ;;
