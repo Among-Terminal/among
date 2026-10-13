@@ -198,6 +198,7 @@ pub fn validate(document: &Value) -> Result<()> {
         "repos/$repo/commits/refs/tags/$tag",
         "sha256sum --check --strict SHA256SUMS",
         "already has a published release",
+        "must have prerelease=$prerelease",
         "differs from this build",
     ] {
         require(

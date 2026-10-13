@@ -232,7 +232,7 @@ if [ "$1" = api ]; then
       cat "$state/releases.json" ;;
     "POST repos/$repo/releases")
       printf '%s\n' "${fields[@]}" > "$state/created"
-      jq -n --arg tag "$GITHUB_REF_NAME" '[{id: 7, tag_name: $tag, draft: true}]' > "$state/releases.json"
+      jq -n --arg tag "$GITHUB_REF_NAME" '[{id: 7, tag_name: $tag, draft: true, prerelease: true}]' > "$state/releases.json"
       echo '{"id": 7}' ;;
     "GET repos/$repo/releases/7/assets?per_page=100")
       list_assets ;;
@@ -378,7 +378,7 @@ fn stable_tag_draft_is_not_a_prerelease() -> Result<()> {
 
 #[test]
 fn retry_keeps_matching_assets_and_uploads_only_the_missing_ones() -> Result<()> {
-    let draft = Draft::new(json!([{"id":7,"tag_name":"v0.1.0-rc.11","draft":true}]))?;
+    let draft = Draft::new(rc_draft())?;
     let (first, _) = FILES[0];
     draft.existing(1, first, &draft.staged(first)?)?;
     draft.existing(2, "SHA256SUMS", &draft.staged("SHA256SUMS")?)?;
@@ -394,6 +394,23 @@ fn retry_keeps_matching_assets_and_uploads_only_the_missing_ones() -> Result<()>
     Ok(())
 }
 
+fn rc_draft() -> Value {
+    json!([{"id":7,"tag_name":"v0.1.0-rc.11","draft":true,"prerelease":true}])
+}
+
+/// Re-running only the draft job after a complete upload changes nothing.
+#[test]
+fn complete_matching_draft_is_verified_without_writes() -> Result<()> {
+    let draft = Draft::new(rc_draft())?;
+    for (index, name) in all_names().iter().enumerate() {
+        draft.existing(index as u32 + 1, name, &draft.staged(name)?)?;
+    }
+    assert!(draft.run("v0.1.0-rc.11", COMMIT)?);
+    assert!(draft.read("created").is_empty());
+    assert!(draft.uploaded().is_empty());
+    Ok(())
+}
+
 /// A draft asset left by an earlier run: its name and bytes.
 type Leftover<'a> = Option<(&'a str, &'a [u8])>;
 
@@ -401,13 +418,21 @@ type Leftover<'a> = Option<(&'a str, &'a [u8])>;
 #[test]
 fn foreign_published_moved_or_conflicting_releases_are_left_untouched() -> Result<()> {
     let published = json!([{"id":7,"tag_name":"v0.1.0-rc.11","draft":false}]);
-    let existing = json!([{"id":7,"tag_name":"v0.1.0-rc.11","draft":true}]);
+    let existing = rc_draft();
     let duplicate = json!([
-        {"id":7,"tag_name":"v0.1.0-rc.11","draft":true},
-        {"id":8,"tag_name":"v0.1.0-rc.11","draft":true}
+        {"id":7,"tag_name":"v0.1.0-rc.11","draft":true,"prerelease":true},
+        {"id":8,"tag_name":"v0.1.0-rc.11","draft":true,"prerelease":true}
     ]);
-    let cases: [(&str, Value, Leftover, &str); 5] = [
+    let not_prerelease =
+        json!([{"id":7,"tag_name":"v0.1.0-rc.11","draft":true,"prerelease":false}]);
+    let cases: [(&str, Value, Leftover, &str); 6] = [
         ("published release", published, None, COMMIT),
+        (
+            "release candidate draft not marked as a prerelease",
+            not_prerelease,
+            None,
+            COMMIT,
+        ),
         ("two releases for the tag", duplicate, None, COMMIT),
         (
             "draft asset with other bytes",

@@ -289,9 +289,9 @@ downloads every asset of the draft and requires `sha256sum --check SHA256SUMS`
 to pass. Tags with `-rc.N` produce a prerelease draft.
 
 Repeated runs never replace bytes. A published release for the tag, more than
-one release for it, a draft asset outside the expected set or with other bytes,
-or a tag that no longer points at the built commit fails the run without
-changes. A draft with a matching subset gets only the missing assets, so
+one release for it, an existing draft whose prerelease flag disagrees with the
+tag, a draft asset outside the expected set or with other bytes, or a tag that
+no longer points at the built commit fails the run without changes. A draft with a matching subset gets only the missing assets, so
 "Re-run failed jobs" after an interrupted upload is safe. A rebuild produces new
 bytes; to rebuild, delete the draft first. The `rpm-checked-*` artifacts expire
 after five days, after which a re-run must rebuild from the start.
