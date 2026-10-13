@@ -133,10 +133,7 @@ pub fn validate(document: &Value) -> Result<Vec<String>> {
     )?;
     require(
         commands[0].contains("useradd --create-home --shell /bin/bash among-build")
-            && commands[0].contains(&format!(
-                "chown among-build:among-build {}",
-                crate::SCRATCH_ROOT
-            )),
+            && commands[0].contains("chown among-build:among-build /tmp/opencode"),
         "native package tests require a dedicated unprivileged build user and owned test scratch",
     )?;
     require(
