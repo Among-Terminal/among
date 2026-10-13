@@ -206,10 +206,10 @@ pub fn run(
             &["--create-home", "--shell", "/bin/bash", "among-check"],
             30,
         )?;
-        fs::create_dir_all("/tmp/opencode")?;
+        fs::create_dir_all(crate::SCRATCH_ROOT)?;
         runner.command(
             "/usr/bin/chown",
-            &["among-check:among-check", "/tmp/opencode"],
+            &["among-check:among-check", crate::SCRATCH_ROOT],
             30,
         )?;
         fs::set_permissions(&checker, fs::Permissions::from_mode(0o755))?;
@@ -295,10 +295,7 @@ pub fn run(
         &output.join("user-logs"),
     )
     .and_then(|()| {
-        crate::deb_installed::save_evidence(
-            Path::new("/tmp/opencode"),
-            &output.join("display-logs"),
-        )
+        crate::deb_installed::save_evidence(crate::scratch_root(), &output.join("display-logs"))
     });
     evidence["status"] = json!(if result.is_ok() && saved.is_ok() {
         "passed"

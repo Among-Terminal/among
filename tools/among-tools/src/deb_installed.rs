@@ -221,10 +221,10 @@ pub fn run(
         for name in ["config", "data", "cache", "runtime"] {
             fs::DirBuilder::new().mode(0o700).create(home.join(name))?;
         }
-        fs::create_dir_all("/tmp/opencode")?;
+        fs::create_dir_all(crate::SCRATCH_ROOT)?;
         runner.command(
             "/usr/bin/chown",
-            &["among-check:among-check", "/tmp/opencode"],
+            &["among-check:among-check", crate::SCRATCH_ROOT],
             30,
         )?;
         runner.command(
@@ -331,7 +331,10 @@ pub fn run(
         )?;
         runner.command(
             "/usr/bin/chown",
-            &["among-archive-check:among-archive-check", "/tmp/opencode"],
+            &[
+                "among-archive-check:among-archive-check",
+                crate::SCRATCH_ROOT,
+            ],
             30,
         )?;
         runner.runtime_only()?;
@@ -401,12 +404,7 @@ pub fn run(
             &runner.base.join("archive-user-logs"),
         )
     })
-    .and_then(|()| {
-        save_evidence(
-            Path::new("/tmp/opencode"),
-            &runner.base.join("display-logs"),
-        )
-    });
+    .and_then(|()| save_evidence(crate::scratch_root(), &runner.base.join("display-logs")));
     if saved.is_err() {
         evidence["status"] = "failed".into();
     }
