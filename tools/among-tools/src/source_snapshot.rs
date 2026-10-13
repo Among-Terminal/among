@@ -19,6 +19,7 @@ pub const FILES: &[&str] = &[
     "tools/among-tools/Cargo.lock",
     "tools/among-tools/README.md",
     "examples/check-clipboard.rs",
+    "examples/fake-plugin.rs",
 ];
 
 pub fn check(path: &Path) -> Result<usize> {
