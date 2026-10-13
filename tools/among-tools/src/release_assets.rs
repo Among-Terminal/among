@@ -2,9 +2,11 @@
 //! attached to the tag's GitHub Release draft.
 //!
 //! Every file is bound to the tag and commit by the record of the job that
-//! built and installed it, its name is derived from the tag rather than taken
-//! from that record, and it is renamed to a form GitHub keeps unchanged so the
-//! written `SHA256SUMS` still verifies the downloaded assets.
+//! built and installed it, and its build name is derived from the tag rather
+//! than taken from that record. It is attached under a version-free name, so
+//! `releases/latest/download/<name>` always serves the newest stable file, and
+//! that name uses only characters GitHub keeps unchanged, so the written
+//! `SHA256SUMS` still verifies the downloaded assets.
 
 use crate::{appimage_build, appimage_sources, binary_archive, deb, storage, Result};
 use serde_json::Value;
@@ -46,22 +48,59 @@ pub fn input_artifacts() -> BTreeSet<String> {
     names
 }
 
-/// GitHub renames asset names with special characters; its documentation does
-/// not give the exact rule. Release names here map the one character package
-/// versions need (`~`, observed to become `.`) and refuse anything else that is
-/// not plainly safe, so the uploaded name is predictable.
-pub fn asset_name(name: &str) -> Result<String> {
-    let mapped = name.replace('~', ".");
-    if mapped.is_empty()
-        || mapped.starts_with('.')
-        || mapped.ends_with('.')
-        || !mapped
+/// Every attached name starts with the repository's and the DEB package's name.
+const PREFIX: &str = "among-terminal";
+
+/// DEB (`deb`), binary archive (`tar.gz`) or RPM (`rpm`) of one distribution
+/// and architecture. RPMs also use `amd64`/`arm64`, so one download table
+/// column serves every format; `dnf` reads the architecture from the package.
+pub fn package_asset(target: &str, architecture: &str, extension: &str) -> String {
+    format!("{PREFIX}-{target}-{architecture}.{extension}")
+}
+
+pub fn srpm_asset(target: &str) -> String {
+    format!("{PREFIX}-{target}.src.rpm")
+}
+
+pub fn appimage_asset(architecture: &str) -> String {
+    format!("{PREFIX}-{architecture}.AppImage")
+}
+
+pub fn source_archive_name(architecture: &str) -> String {
+    format!("{PREFIX}-{architecture}-appimage-sources.tar")
+}
+
+/// The complete set of attached names apart from `SHA256SUMS`. It is the same
+/// for every tag, which is what lets the README link the latest release.
+pub fn attached_names() -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for architecture in ARCHITECTURES {
+        for target in DEB_TARGETS {
+            names.insert(package_asset(target, architecture, "deb"));
+            names.insert(package_asset(target, architecture, "tar.gz"));
+        }
+        for target in RPM_TARGETS {
+            names.insert(package_asset(target, architecture, "rpm"));
+        }
+        names.insert(appimage_asset(architecture));
+        names.insert(source_archive_name(architecture));
+    }
+    for target in RPM_TARGETS {
+        names.insert(srpm_asset(target));
+    }
+    names
+}
+
+/// GitHub renames asset names with special characters and its documentation
+/// does not give the exact rule; a name made only of these characters, not
+/// starting or ending with a dot, has been observed to stay unchanged.
+fn kept_by_github(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+        && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err(format!("{name:?} has no release asset name GitHub keeps unchanged").into());
-    }
-    Ok(mapped)
 }
 
 fn rpm_machine(architecture: &str) -> Result<&'static str> {
@@ -173,7 +212,7 @@ fn files_with_suffix(directory: &Path, suffix: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// One verified file: where it is, the name it gets, and its digest.
+/// One verified file: where it is, the name it is attached under, and its digest.
 struct Selected {
     source: PathBuf,
     name: String,
@@ -183,6 +222,7 @@ struct Selected {
 fn select(
     directory: &Path,
     name: &str,
+    attached: String,
     recorded: &Value,
     sums: Option<&BTreeMap<String, String>>,
 ) -> Result<Selected> {
@@ -209,7 +249,7 @@ fn select(
     }
     Ok(Selected {
         source,
-        name: asset_name(name)?,
+        name: attached,
         sha256,
     })
 }
@@ -251,12 +291,14 @@ fn debian(inputs: &Path, tag: &str, commit: &str) -> Result<Vec<Selected>> {
             selected.push(select(
                 &directory,
                 &package,
+                package_asset(target, architecture, "deb"),
                 &record["sha256"],
                 Some(&sums),
             )?);
             selected.push(select(
                 &directory,
                 &archive,
+                package_asset(target, architecture, "tar.gz"),
                 &record["binary_archive"]["sha256"],
                 Some(&sums),
             )?);
@@ -306,7 +348,13 @@ fn fedora(inputs: &Path, tag: &str, commit: &str) -> Result<Vec<Selected>> {
             // Only top-level files are candidates: the older package in
             // `ci-lifecycle-fixture-not-for-release/` is upgrade-test input.
             only(&directory, ".rpm", &package)?;
-            let file = select(&directory, &package, &record["sha256"], Some(&sums))?;
+            let file = select(
+                &directory,
+                &package,
+                package_asset(target, architecture, "rpm"),
+                &record["sha256"],
+                Some(&sums),
+            )?;
             checked.insert((target, architecture), (package, file.sha256.clone()));
             selected.push(file);
         }
@@ -338,7 +386,13 @@ fn fedora(inputs: &Path, tag: &str, commit: &str) -> Result<Vec<Selected>> {
             .into());
         }
         let recorded = Value::from(digests.get(&source).cloned());
-        selected.push(select(&sources, &source, &recorded, None)?);
+        selected.push(select(
+            &sources,
+            &source,
+            srpm_asset(target),
+            &recorded,
+            None,
+        )?);
     }
     Ok(selected)
 }
@@ -355,14 +409,6 @@ struct SourceBundle {
     name: String,
 }
 
-pub fn source_archive_name(tag: &str, architecture: &str) -> Result<String> {
-    Ok(format!(
-        "among-{}-{architecture}-appimage-sources.tar",
-        tag.strip_prefix('v')
-            .ok_or("release tag lacks its v prefix")?
-    ))
-}
-
 fn appimages(inputs: &Path, tag: &str) -> Result<(Vec<Selected>, Vec<SourceBundle>)> {
     let version = tag
         .strip_prefix('v')
@@ -375,7 +421,13 @@ fn appimages(inputs: &Path, tag: &str) -> Result<(Vec<Selected>, Vec<SourceBundl
         let name = appimage_build::file_name(version, architecture)?;
         only(&directory, ".AppImage", &name)?;
         let recorded = Value::from(sums.get(&name).cloned());
-        let file = select(&directory, &name, &recorded, None)?;
+        let file = select(
+            &directory,
+            &name,
+            appimage_asset(architecture),
+            &recorded,
+            None,
+        )?;
         deb::elf_architecture(&file.source, architecture).map_err(|error| {
             format!(
                 "{}: {name} is not an {architecture} executable: {error}",
@@ -396,7 +448,7 @@ fn appimages(inputs: &Path, tag: &str) -> Result<(Vec<Selected>, Vec<SourceBundl
             )
             .into());
         }
-        bundles.push(appimage_sources_bundle(inputs, tag, architecture, &audit)?);
+        bundles.push(appimage_sources_bundle(inputs, architecture, &audit)?);
         selected.push(file);
     }
     Ok((selected, bundles))
@@ -407,7 +459,6 @@ fn appimages(inputs: &Path, tag: &str) -> Result<(Vec<Selected>, Vec<SourceBundl
 /// every descriptor and listed file verifies, and nothing else is present.
 fn appimage_sources_bundle(
     inputs: &Path,
-    tag: &str,
     architecture: &str,
     audit: &Value,
 ) -> Result<SourceBundle> {
@@ -470,7 +521,7 @@ fn appimage_sources_bundle(
     if present != files {
         fail("holds files its descriptors do not list")?;
     }
-    let name = source_archive_name(tag, architecture)?;
+    let name = source_archive_name(architecture);
     Ok(SourceBundle {
         directory,
         files: files.into_iter().collect(),
@@ -530,16 +581,12 @@ pub fn stage(inputs: &Path, tag: &str, commit: &str, output: &Path) -> Result<Ve
         .map(|file| &file.name)
         .chain(bundles.iter().map(|bundle| &bundle.name))
     {
-        if name == "SHA256SUMS" || !names.insert(asset_name(name)?) {
-            return Err(format!("release asset name {name} is not unique").into());
+        if !kept_by_github(name) || !names.insert(name.clone()) {
+            return Err(format!("release asset name {name} is not unique or not kept").into());
         }
     }
-    if names.len() != FILE_COUNT {
-        return Err(format!(
-            "expected {FILE_COUNT} release files, selected {}",
-            names.len()
-        )
-        .into());
+    if names != attached_names() || names.len() != FILE_COUNT {
+        return Err(format!("expected the {FILE_COUNT} attached names, selected {names:?}").into());
     }
     fs::DirBuilder::new().mode(0o755).create(output)?;
     let mut digests = BTreeMap::new();

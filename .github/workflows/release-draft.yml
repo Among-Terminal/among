@@ -110,10 +110,27 @@ jobs:
           "$CARGO_TARGET_DIR/release/among-tools" stage-release-assets \
             release-inputs "$GITHUB_REF_NAME" "$GITHUB_SHA" release-assets
           (cd release-assets && sha256sum --check --strict SHA256SUMS)
+      # The description lives in its own artifact: the draft job requires the
+      # release-assets directory to hold exactly the files SHA256SUMS lists.
+      - name: Describe the release
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/release-target
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir release-notes
+          "$CARGO_TARGET_DIR/release/among-tools" release-notes \
+            release-assets "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$RUN_URL" \
+            .github/release-notes release-notes/body.md
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-assets
           path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-notes
+          path: release-notes/body.md
           if-no-files-found: error
           retention-days: 14
 
@@ -130,12 +147,15 @@ jobs:
         with:
           name: release-assets
           path: release-assets
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-notes
+          path: release-notes
       - name: Create or reconcile the draft and verify its downloaded assets
         id: draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           fail() { echo "release draft: $*" >&2; exit 1; }
@@ -147,6 +167,8 @@ jobs:
           repo="$GITHUB_REPOSITORY"
           tag="$GITHUB_REF_NAME"
           assets="$PWD/release-assets"
+          notes="$PWD/release-notes/body.md"
+          [ -s "$notes" ] || fail 'release description missing'
           work=$(mktemp -d -p "$RUNNER_TEMP")
           case "$tag" in
             *-rc.*) prerelease=true ;;
@@ -168,9 +190,11 @@ jobs:
             | jq -c --arg tag "$tag" '.[] | select(.tag_name == $tag) | {id, draft, prerelease}' > "$work/matches"
           case "$(wc -l < "$work/matches")" in
             0)
-              notes="Draft built by $RUN_URL from commit $GITHUB_SHA. Verify downloads with: sha256sum -c SHA256SUMS"
+              # GitHub appends its list of merged pull requests, grouped by
+              # .github/release.yml, after the given body.
               id=$(gh api --method POST "repos/$repo/releases" \
-                -f tag_name="$tag" -f name="Among ${tag#v}" -f body="$notes" \
+                -f tag_name="$tag" -f name="Among Terminal ${tag#v}" -F body=@"$notes" \
+                -F generate_release_notes=true \
                 -F draft=true -F prerelease="$prerelease" | jq -r .id)
               ;;
             1)

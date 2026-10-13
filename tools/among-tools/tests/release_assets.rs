@@ -45,19 +45,26 @@ fn write_sums(directory: &Path, names: &[&str]) -> Result<()> {
 /// Artifact directories shaped like the ones `deb-release.yml`,
 /// `rpm-release.yml` and the AppImage workflow upload.
 fn fixture(root: &Path) -> Result<PathBuf> {
+    fixture_for(root, TAG, VERSION)
+}
+
+/// The same artifacts for any tag: `version` is the package version (with
+/// `~` before a release-candidate suffix), `plain` the tag without its `v`.
+fn fixture_for(root: &Path, tag: &str, version: &str) -> Result<PathBuf> {
+    let plain = tag.trim_start_matches('v');
     let inputs = root.join("inputs");
     fs::create_dir(&inputs)?;
     for target in ["debian13", "ubuntu24.04"] {
         for arch in ["amd64", "arm64"] {
             let directory = inputs.join(format!("deb-{target}-{arch}"));
             fs::create_dir_all(directory.join("native-checker"))?;
-            let package = format!("among-terminal_{VERSION}-1~{target}_{arch}.deb");
-            let archive = format!("among-0.1.0-rc.11-{target}-{arch}.tar.gz");
+            let package = format!("among-terminal_{version}-1~{target}_{arch}.deb");
+            let archive = format!("among-{plain}-{target}-{arch}.tar.gz");
             fs::write(directory.join(&package), format!("deb {target} {arch}"))?;
             fs::write(directory.join(&archive), format!("tar {target} {arch}"))?;
             fs::write(directory.join("native-checker/among-tools"), "checker")?;
             write_sums(&directory, &[&package, &archive])?;
-            let record = json!({"schema":1,"tag":TAG,"source_sha":commit(),"target":target,"architecture":arch,
+            let record = json!({"schema":1,"tag":tag,"source_sha":commit(),"target":target,"architecture":arch,
                 "filename":package,"sha256":sha(format!("deb {target} {arch}").as_bytes())?,
                 "binary_archive":{"filename":archive,"sha256":sha(format!("tar {target} {arch}").as_bytes())?}});
             fs::write(
@@ -71,11 +78,11 @@ fn fixture(root: &Path) -> Result<PathBuf> {
         for (arch, machine) in [("amd64", "x86_64"), ("arm64", "aarch64")] {
             let directory = inputs.join(format!("rpm-{target}-{arch}"));
             fs::create_dir(&directory)?;
-            let package = format!("among-{VERSION}-1.fc{release}.{machine}.rpm");
+            let package = format!("among-{version}-1.fc{release}.{machine}.rpm");
             fs::write(directory.join(&package), format!("rpm {target} {arch}"))?;
             fs::write(directory.join("among-tools"), "checker")?;
             write_sums(&directory, &["among-tools", &package])?;
-            let record = json!({"schema":1,"tag":TAG,"source_sha":commit(),"target":target,"architecture":arch,
+            let record = json!({"schema":1,"tag":tag,"source_sha":commit(),"target":target,"architecture":arch,
                 "filename":package,"sha256":sha(format!("rpm {target} {arch}").as_bytes())?});
             fs::write(
                 directory.join("build-record.json"),
@@ -85,8 +92,8 @@ fn fixture(root: &Path) -> Result<PathBuf> {
         let directory = inputs.join(format!("rpm-checked-{target}-amd64"));
         fs::create_dir_all(directory.join("rpmbuild/SRPMS"))?;
         fs::create_dir_all(directory.join("rpmbuild/RPMS/x86_64"))?;
-        let source = format!("among-{VERSION}-1.fc{release}.src.rpm");
-        let package = format!("among-{VERSION}-1.fc{release}.x86_64.rpm");
+        let source = format!("among-{version}-1.fc{release}.src.rpm");
+        let package = format!("among-{version}-1.fc{release}.x86_64.rpm");
         fs::write(
             directory.join("rpmbuild/SRPMS").join(&source),
             format!("srpm {target}"),
@@ -103,14 +110,14 @@ fn fixture(root: &Path) -> Result<PathBuf> {
     for (arch, machine) in [("amd64", 62u16), ("arm64", 183u16)] {
         let directory = inputs.join(format!("appimage-{arch}"));
         fs::create_dir(&directory)?;
-        let name = format!("among-0.1.0-rc.11-{arch}.AppImage");
+        let name = format!("among-{plain}-{arch}.AppImage");
         fs::write(directory.join(&name), elf(machine))?;
         let image = json!({"filename":name,"sha256":sha(&elf(machine))?,"bytes":64});
         let audit = json!({"appimage":image,"architecture":arch,
             "bundled_libraries":[{"source_package":"gtk4","source_version":"4.14.5+ds-0ubuntu0.1"}],
             "bundled_data_packages":[{"source_package":"adwaita-icon-theme","source_version":"1:46.0-1"}]});
         fs::write(
-            directory.join(format!("among-0.1.0-rc.11-{arch}.audit.json")),
+            directory.join(format!("among-{plain}-{arch}.audit.json")),
             serde_json::to_vec(&audit)?,
         )?;
         // The producer's SHA256SUMS lists only the AppImage.
@@ -165,20 +172,26 @@ fn scratch(prefix: &str) -> Result<PathBuf> {
 }
 
 #[test]
-fn complete_inventory_is_staged_with_github_safe_names_and_verifiable_sums() -> Result<()> {
+fn complete_inventory_is_staged_with_version_free_names_and_verifiable_sums() -> Result<()> {
     let root = scratch("among-release-assets")?;
     let inputs = fixture(&root)?;
     let output = root.join("release-assets");
     let names = release_assets::stage(&inputs, TAG, &commit(), &output)?;
     assert_eq!(names.len(), release_assets::FILE_COUNT);
-    assert!(names.contains(&"among-terminal_0.1.0.rc.11-1.debian13_arm64.deb".to_string()));
-    assert!(names.contains(&"among-0.1.0.rc.11-1.fc44.src.rpm".to_string()));
-    assert!(names.contains(&"among-0.1.0-rc.11-ubuntu24.04-amd64.tar.gz".to_string()));
-    assert!(names.contains(&"among-0.1.0-rc.11-arm64.AppImage".to_string()));
-    assert!(names.contains(&"among-0.1.0-rc.11-amd64-appimage-sources.tar".to_string()));
+    for expected in [
+        "among-terminal-debian13-arm64.deb",
+        "among-terminal-ubuntu24.04-amd64.tar.gz",
+        "among-terminal-fedora44-arm64.rpm",
+        "among-terminal-fedora43-amd64.rpm",
+        "among-terminal-fedora44.src.rpm",
+        "among-terminal-arm64.AppImage",
+        "among-terminal-amd64-appimage-sources.tar",
+    ] {
+        assert!(names.contains(&expected.to_string()), "{expected}");
+    }
     // The source archive carries every verified file under one directory.
     let listing = std::process::Command::new("tar")
-        .args(["-tf", "among-0.1.0-rc.11-amd64-appimage-sources.tar"])
+        .args(["-tf", "among-terminal-amd64-appimage-sources.tar"])
         .current_dir(&output)
         .output()?;
     assert!(listing.status.success());
@@ -187,7 +200,7 @@ fn complete_inventory_is_staged_with_github_safe_names_and_verifiable_sums() -> 
         .map(str::to_string)
         .collect::<Vec<_>>();
     members.sort();
-    let prefix = "among-0.1.0-rc.11-amd64-appimage-sources/";
+    let prefix = "among-terminal-amd64-appimage-sources/";
     assert_eq!(
         members,
         [
@@ -426,26 +439,47 @@ fn rpm_lifecycle_fixtures_are_never_attached() -> Result<()> {
     Ok(())
 }
 
+/// The README links `releases/latest/download/<name>`; that only works if a
+/// stable tag attaches exactly the names a release candidate does.
 #[test]
-fn asset_names_map_tilde_and_refuse_characters_github_would_rename() -> Result<()> {
+fn a_stable_tag_attaches_the_same_names_as_a_release_candidate() -> Result<()> {
+    let root = scratch("among-release-assets-stable")?;
+    let inputs = fixture_for(&root, "v0.1.0", "0.1.0")?;
+    let output = root.join("release-assets");
+    let stable = release_assets::stage(&inputs, "v0.1.0", &commit(), &output)?;
+    fs::remove_dir_all(&root)?;
+
+    let root = scratch("among-release-assets-candidate")?;
+    let inputs = fixture(&root)?;
+    let output = root.join("release-assets");
+    let candidate = release_assets::stage(&inputs, TAG, &commit(), &output)?;
+    fs::remove_dir_all(&root)?;
+
+    assert_eq!(stable, candidate);
     assert_eq!(
-        release_assets::asset_name("among-terminal_0.1.0~rc.11-1~debian13_amd64.deb")?,
-        "among-terminal_0.1.0.rc.11-1.debian13_amd64.deb"
+        stable
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        release_assets::attached_names()
     );
-    for unsafe_name in [
-        "a+b.rpm",
-        "a b.deb",
-        ".hidden",
-        "trailing.",
-        "ü.AppImage",
-        "",
-    ] {
+    Ok(())
+}
+
+/// GitHub renames asset names with characters such as `~`, `+` or spaces, and
+/// a renamed asset no longer matches its `SHA256SUMS` line.
+#[test]
+fn attached_names_carry_no_version_and_no_character_github_renames() {
+    let names = release_assets::attached_names();
+    assert_eq!(names.len(), release_assets::FILE_COUNT);
+    for name in &names {
+        assert!(name.starts_with("among-terminal-"), "{name}");
+        assert!(!name.contains("0.1"), "{name}");
         assert!(
-            release_assets::asset_name(unsafe_name).is_err(),
-            "{unsafe_name:?}"
+            name.bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)),
+            "{name}"
         );
     }
-    Ok(())
 }
 
 #[test]

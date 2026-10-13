@@ -117,16 +117,20 @@ Unit tests use executable fixtures, not evidence of packaged application behavio
 
 The four supported targets are named exactly as the release job names them.
 Each package carries its own distribution and architecture in the filename, so
-the right one is chosen by reading the name, never by guessing:
+the right one is chosen by reading the name, never by guessing. A GitHub Release
+attaches each package under a version-free name, so the same name in
+`releases/latest/download/` always fetches the newest stable package; the build
+job writes the Debian file name, which the package metadata repeats:
 
-| Target | Package |
-|---|---|
-| `debian13` / `amd64` | `among-terminal_<version>-1~debian13_amd64.deb` |
-| `debian13` / `arm64` | `among-terminal_<version>-1~debian13_arm64.deb` |
-| `ubuntu24.04` / `amd64` | `among-terminal_<version>-1~ubuntu24.04_amd64.deb` |
-| `ubuntu24.04` / `arm64` | `among-terminal_<version>-1~ubuntu24.04_arm64.deb` |
+| Target | Release file | Build output |
+|---|---|---|
+| `debian13` / `amd64` | `among-terminal-debian13-amd64.deb` | `among-terminal_<version>-1~debian13_amd64.deb` |
+| `debian13` / `arm64` | `among-terminal-debian13-arm64.deb` | `among-terminal_<version>-1~debian13_arm64.deb` |
+| `ubuntu24.04` / `amd64` | `among-terminal-ubuntu24.04-amd64.deb` | `among-terminal_<version>-1~ubuntu24.04_amd64.deb` |
+| `ubuntu24.04` / `arm64` | `among-terminal-ubuntu24.04-arm64.deb` | `among-terminal_<version>-1~ubuntu24.04_arm64.deb` |
 
-For `v0.1.0-rc.1`, `<version>` is `0.1.0~rc.1`. Debian version ordering puts
+`dpkg-deb --field among-terminal-debian13-amd64.deb Version` prints the version
+of a downloaded file. For `v0.1.0-rc.1`, `<version>` is `0.1.0~rc.1`. Debian version ordering puts
 successive RCs before `0.1.0`; stable promotion still refuses all RC tags.
 RC tags are cut from `main` ancestry and are previews of a version not yet
 published as stable. Do not replace an installed stable version with an RC of
@@ -138,7 +142,7 @@ Install the package built for your own distribution. A `debian13` package is not
 a substitute on Ubuntu 24.04 or the reverse: the dependency versions differ.
 
 ```sh
-sudo apt install ./among-terminal_<version>-1~debian13_amd64.deb
+sudo apt install ./among-terminal-debian13-amd64.deb
 ```
 
 `apt install ./file.deb` resolves and installs dependencies from the configured
@@ -149,16 +153,16 @@ the newer local package.
 ### Upgrade, remove, purge and rollback
 
 ```sh
-sudo apt install ./among-terminal_<newer-version>-1~debian13_amd64.deb   # upgrade
-sudo apt remove among-terminal                                   # remove
-sudo apt purge among-terminal                                    # purge
+sudo apt install ./among-terminal-debian13-amd64.deb   # upgrade with a newer release's file
+sudo apt remove among-terminal                         # remove
+sudo apt purge among-terminal                          # purge
 ```
 
-Rollback is installing an older local package over a newer one. `apt` refuses a
-downgrade by default; the explicit form is:
+Rollback is installing an older release's package over a newer one. `apt`
+refuses a downgrade by default; the explicit form is:
 
 ```sh
-sudo apt install --allow-downgrades ./among-terminal_<older-version>-1~debian13_amd64.deb
+sudo apt install --allow-downgrades ./among-terminal-debian13-amd64.deb
 ```
 
 None of these commands touch your shell startup files, sessions, preferences or

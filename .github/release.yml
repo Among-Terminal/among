@@ -1,0 +1,13 @@
+# Groups GitHub's generated list of merged pull requests in release
+# descriptions. Pull requests without one of these labels land in the last
+# category.
+changelog:
+  categories:
+    - title: New features
+      labels: [enhancement]
+    - title: Fixes
+      labels: [bug]
+    - title: Packaging and releases
+      labels: [packaging]
+    - title: Other changes
+      labels: ['*']

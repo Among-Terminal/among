@@ -55,6 +55,7 @@ pub mod raw_pty;
 pub mod release_assets;
 pub mod release_draft_workflow;
 pub mod release_metadata;
+pub mod release_notes;
 pub mod release_policy;
 pub mod resources;
 pub mod rpm;
