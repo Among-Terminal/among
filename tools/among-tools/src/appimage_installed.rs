@@ -260,19 +260,14 @@ pub fn run(
         }
         add_check(&mut evidence, "no-fuse-extracted-without-fusermount")?;
         let mut unresolved = String::new();
+        // Every bundled ELF library, including pixbuf loaders and GTK modules
+        // in subdirectories, plus the application itself.
         let mut elves = vec![extracted.join("usr/bin/among")];
-        for entry in fs::read_dir(extracted.join("usr/lib"))? {
-            let path = entry?.path();
-            if path.symlink_metadata()?.is_file()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.contains(".so"))
-            {
-                elves.push(path);
-            }
-        }
-        elves.sort();
+        elves.extend(
+            crate::appimage_build::bundled_libraries(&extracted)?
+                .into_keys()
+                .map(|relative| extracted.join(relative)),
+        );
         // With several files ldd prints a "<file>:" header before each list.
         let arguments = elves
             .iter()

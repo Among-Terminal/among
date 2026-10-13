@@ -67,6 +67,7 @@ Usage:
   among-tools stage-appimage <source-root> <binaries-directory> <launcher> <architecture> <new-AppDir>
   among-tools fetch-appimage-tools <architecture> <new-tools-directory>
   among-tools build-appimage <staged-AppDir> <tools-directory> <amd64|arm64> <version> <new-output>
+  among-tools appimage-version <source-root> <ref-type> <ref-name>
   among-tools collect-appimage-sources <audit.json> <new-output>
   among-tools ci-appimage-install <source-root> <debian13|ubuntu24.04|fedora43> <amd64|arm64> <candidate-directory> <absolute-check-root> <new-output>
   among-tools record-rpm-candidate <source-root> <target> <architecture> <candidate-directory>
@@ -104,6 +105,16 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 version,
                 Path::new(output),
             )?;
+        }
+        [command, root, ref_type, ref_name] if command == "appimage-version" => {
+            println!(
+                "{}",
+                among_tools::appimage_build::candidate_version(
+                    Path::new(root),
+                    ref_type,
+                    ref_name
+                )?
+            );
         }
         [command, audit, output] if command == "collect-appimage-sources" => {
             among_tools::appimage_sources::collect(Path::new(audit), Path::new(output))?;

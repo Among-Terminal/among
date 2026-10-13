@@ -49,6 +49,26 @@ pub struct Owner {
     pub source_version: String,
 }
 
+/// The version an AppImage is named after. A tag build takes the tag without
+/// its `v` and must be a release tag whose base version equals the Cargo
+/// version, exactly as the Debian candidates require; otherwise a tag such as
+/// `v0.2.0` on a 0.1.0 tree would publish a file claiming the wrong release.
+/// Any other build is named after the Cargo version.
+pub fn candidate_version(root: &Path, ref_type: &str, ref_name: &str) -> Result<String> {
+    let cargo = crate::package_version::read(root)?;
+    if ref_type != "tag" {
+        return Ok(cargo);
+    }
+    let (base, _) = deb::release_version(ref_name)?;
+    if base != cargo {
+        return Err(format!("tag {ref_name} does not match the Cargo version {cargo}").into());
+    }
+    Ok(ref_name
+        .strip_prefix('v')
+        .ok_or("release tag lacks its v prefix")?
+        .to_string())
+}
+
 pub fn file_name(version: &str, architecture: &str) -> Result<String> {
     if !matches!(architecture, "amd64" | "arm64") {
         return Err("unsupported AppImage architecture".into());
@@ -755,6 +775,31 @@ mod tests {
                 file_name(version, architecture).is_err(),
                 "{version} {architecture}"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tag_builds_must_match_the_cargo_version_and_other_builds_use_it() -> Result<()> {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cargo = crate::package_version::read(&root)?;
+        assert_eq!(candidate_version(&root, "branch", "main")?, cargo);
+        assert_eq!(
+            candidate_version(&root, "tag", &format!("v{cargo}"))?,
+            cargo
+        );
+        assert_eq!(
+            candidate_version(&root, "tag", &format!("v{cargo}-rc.3"))?,
+            format!("{cargo}-rc.3")
+        );
+        for tag in [
+            "v999.0.0",
+            "v999.0.0-rc.1",
+            cargo.as_str(),
+            &format!("v{cargo}-rc.0"),
+            "nightly",
+        ] {
+            assert!(candidate_version(&root, "tag", tag).is_err(), "{tag}");
         }
         Ok(())
     }

@@ -65,11 +65,7 @@ jobs:
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Name the candidate after the tag or the package version
         run: |
-          if [ "$REF_TYPE" = tag ]; then
-            version="${REF_NAME#v}"
-          else
-            version="$(tools/among-tools/target/release/among-tools package-version .)"
-          fi
+          version="$(tools/among-tools/target/release/among-tools appimage-version . "$REF_TYPE" "$REF_NAME")"
           printf 'APPIMAGE_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
       - name: Stage the payload and fetch the pinned helpers
         run: |
