@@ -130,6 +130,7 @@ fn actual_cli_resolves_git_once_reads_only_and_preserves_existing_output() -> Re
             .env_clear()
             .env("PATH", f.0.join("bin"))
             .env("GH_TOKEN", "synthetic-secret")
+            .env("AMONG_CHECK_ROOT", f.0.join("checks"))
             .arg("select-nightly")
             .arg(&f.0)
             .arg("fixture/among")

@@ -261,7 +261,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             if command == "release-promotion" =>
         {
             let lock = match rest {
-                [] => PathBuf::from("/tmp/opencode/among-publication.lock"),
+                [] => among_tools::scratch::root()?.join("among-publication.lock"),
                 [flag] if flag.starts_with("--lock=") => PathBuf::from(&flag[7..]),
                 _ => return Err("release-promotion takes only --lock=<path>".into()),
             };
@@ -293,7 +293,11 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 approved,
                 &source_root,
             )?;
-            let workdir = lock.parent().unwrap_or(Path::new("/tmp/opencode"));
+            let workdir = match lock.parent() {
+                Some(parent) => parent.to_path_buf(),
+                None => among_tools::scratch::root()?,
+            };
+            let workdir = workdir.as_path();
             std::fs::create_dir_all(workdir)?;
             let mut destinations =
                 among_tools::promotion_publication::Publication::new(repository, workdir)?;
@@ -328,7 +332,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             let status = display::run(
                 mode,
                 rest,
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
                 std::time::Duration::from_secs(300),
             )?;
             let code = status
@@ -351,7 +355,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                         .into(),
                 ),
             };
-            among_tools::snap_runtime::run(approved, Path::new("/tmp/opencode"))?;
+            among_tools::snap_runtime::run(approved, &among_tools::scratch::root()?)?;
         }
         [command, output] if command == "snap-host-probe" => {
             among_tools::snap_runtime::host_probe(Path::new(output))?;
@@ -377,7 +381,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 serde_json::to_string_pretty(&among_tools::delivery_package::package(
                     &inputs,
                     Path::new(output),
-                    Path::new("/tmp/opencode")
+                    &among_tools::scratch::root()?
                 )?)?
             );
         }
@@ -386,7 +390,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(prime),
                 Path::new(debs),
                 Path::new(output),
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, metadata, native, sources] if command == "check-apt-provenance" => {
@@ -397,7 +401,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                     Path::new(metadata),
                     &native,
                     Path::new(sources),
-                    Path::new("/tmp/opencode")
+                    &among_tools::scratch::root()?
                 )?)?
             );
         }
@@ -423,7 +427,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 repository,
                 Path::new(output),
                 None,
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, repo, repository, output, option, now]
@@ -434,7 +438,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 repository,
                 Path::new(output),
                 Some(now),
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, native, prime] if command == "check-snap-notices" => {
@@ -461,7 +465,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(root),
                 Path::new(destination),
                 check,
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, repo, record, bundle] if command == "check-stable-source" => {
@@ -476,7 +480,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             );
         }
         [command, root] if command == "check-release-metadata" => {
-            among_tools::release_metadata::run(Path::new(root), Path::new("/tmp/opencode"))?;
+            among_tools::release_metadata::run(Path::new(root), &among_tools::scratch::root()?)?;
         }
         [command, root, output, tag] if command == "prepare-stable-build" => {
             println!(
@@ -577,10 +581,10 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             println!("PASS source/target/digest-bound native checker");
         }
         [command] if command == "check-deb-desktop" => {
-            among_tools::desktop::installed(Path::new("/tmp/opencode"))?;
+            among_tools::desktop::installed(&among_tools::scratch::root()?)?;
         }
         [command, root] if command == "check-deb-workflow" => {
-            among_tools::deb_workflow::run(Path::new(root), Path::new("/tmp/opencode"))?;
+            among_tools::deb_workflow::run(Path::new(root), &among_tools::scratch::root()?)?;
         }
         [command, root, target, architecture, image, output] if command == "ci-deb-build" => {
             among_tools::deb_build::run(
@@ -610,7 +614,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             among_tools::deb_selection::run(
                 Path::new(root),
                 Path::new(binaries),
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, root] if command == "deb-tag-source" => {
@@ -649,7 +653,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             among_tools::menu_check::run_snap(
                 Path::new(clipboard),
                 theme,
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
                 approved,
             )?;
         }
@@ -658,14 +662,14 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(binary),
                 Path::new(clipboard),
                 theme,
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, output, mode] if command == "raw-menu-pty" => {
             among_tools::raw_pty::run(Path::new(output), mode)?;
         }
         [command, binary] if command == "check-context-menu-launch" => {
-            among_tools::menu_launch::run(Path::new(binary), Path::new("/tmp/opencode"))?;
+            among_tools::menu_launch::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
         [command, output, arguments @ ..] if command == "record-menu-uri" => {
             among_tools::menu_launch::record(Path::new(output), arguments)?;
@@ -677,7 +681,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             among_tools::desktop::run(
                 Path::new(root),
                 Path::new(binary),
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, root, binary, plugins] if command == "check-live-status" => {
@@ -685,17 +689,17 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(root),
                 Path::new(binary),
                 Path::new(plugins),
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, binary] if command == "check-live-focus" => {
-            among_tools::live_focus::run(Path::new(binary), Path::new("/tmp/opencode"))?;
+            among_tools::live_focus::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
         [command, binary] if command == "check-live-resize" => {
-            among_tools::live_resize::run(Path::new(binary), &std::env::temp_dir())?;
+            among_tools::live_resize::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
         [command, binary] if command == "check-sessions" => {
-            among_tools::sessions::run(Path::new(binary), Path::new("/tmp/opencode"))?;
+            among_tools::sessions::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
         [command, root, app, built, installer] if command == "check-plugin-install" => {
             among_tools::plugin_install::run(
@@ -703,7 +707,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(app),
                 Path::new(built),
                 Path::new(installer),
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, root, rest @ ..] if command == "install" => {
@@ -730,21 +734,21 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             preferences::from_cargo(
                 Path::new(records),
                 Path::new(plugins),
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, executable, plugins] if command == "check-preferences" => {
             preferences::run(
                 Path::new(executable),
                 Path::new(plugins),
-                Path::new("/tmp/opencode"),
+                &among_tools::scratch::root()?,
             )?;
         }
         [command, binary] if command == "check-resource-measurements" => {
-            resources::run(Path::new(binary), Path::new("/tmp/opencode"))?;
+            resources::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
         [command, records] if command == "run-ignored-tests" => {
-            let count = ignored_tests::run(Path::new(records), Path::new("/tmp/opencode"))?;
+            let count = ignored_tests::run(Path::new(records), &among_tools::scratch::root()?)?;
             println!("Executed {count} ignored tests, one owned display per test");
         }
         [family, operation] if family == "platform" && operation == "discover" => {

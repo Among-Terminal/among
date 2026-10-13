@@ -558,9 +558,9 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
-        assert!(
-            std::env::var("XDG_CONFIG_HOME").is_ok_and(|path| path.starts_with("/tmp/opencode/"))
-        );
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .expect("never test against personal configuration: XDG_CONFIG_HOME is not set");
+        crate::test_isolation::assert_below_check_root(std::path::Path::new(&config));
         gtk::init().expect("isolated GTK display");
         let terminal = vte::Terminal::new();
         let window = gtk::Window::builder()

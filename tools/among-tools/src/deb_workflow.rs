@@ -93,6 +93,16 @@ pub fn validate(document: &Value) -> Result<Vec<String>> {
         matrix(build, true)? == matrix(installed, false)?,
         "installed and build native targets differ",
     )?;
+    for job in [build, installed] {
+        // Inside the container the default would follow the job's HOME,
+        // which the unprivileged check user cannot share; evidence must also
+        // stay off a temporary file system.
+        let root = job["env"][crate::scratch::VARIABLE].as_str().unwrap_or("");
+        require(
+            root.starts_with('/') && !root.starts_with("/tmp/") && root != "/tmp",
+            "release jobs must name an absolute on-disk check root",
+        )?;
+    }
     let mut scripts = Vec::new();
     let mut commands = Vec::new();
     for job in [build, installed] {
@@ -132,9 +142,8 @@ pub fn validate(document: &Value) -> Result<Vec<String>> {
         "native builder dispatch/pinned Rust missing",
     )?;
     require(
-        commands[0].contains("useradd --create-home --shell /bin/bash among-build")
-            && commands[0].contains("chown among-build:among-build /tmp/opencode"),
-        "native package tests require a dedicated unprivileged build user and owned test scratch",
+        commands[0].contains("useradd --create-home --shell /bin/bash among-build"),
+        "native package tests require a dedicated unprivileged build user",
     )?;
     require(
         !commands[0].contains("gh release") && !commands[0].contains("snapcraft upload"),

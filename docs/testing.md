@@ -23,3 +23,23 @@ In these commands, `~` represents a space.
 `collapse-sidebar`, `expand-sidebar` and `request-close` exercise window controls.
 
 See [contributor checks](../CONTRIBUTING.md#checking-changes) for isolated X11 tests.
+
+## Where checks keep their evidence
+
+`among-tools` checks create private work directories (application home,
+configuration, logs, screenshots) below one check root and leave them there
+as evidence:
+
+1. `AMONG_CHECK_ROOT`, if set; it must be an absolute path.
+2. Otherwise `$XDG_CACHE_HOME/among/checks`.
+3. Otherwise `$HOME/.cache/among/checks`.
+
+A missing root is created with mode `0700`. The location is on disk on
+purpose: evidence must survive a reboot, so do not point it at a `tmpfs`
+such as `/tmp`. Old evidence is not removed automatically; delete runs you no
+longer need.
+
+The display harness passes `AMONG_CHECK_ROOT` to every command it runs. The
+application's ignored graphical tests refuse to start unless their
+configuration directory lies below that root, so they never touch personal
+configuration. CI workflows set the root explicitly.

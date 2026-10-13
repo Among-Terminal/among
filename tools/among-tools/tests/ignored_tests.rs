@@ -39,11 +39,15 @@ fn actual_cli_refuses_a_failed_test_listing() -> among_tools::Result<()> {
         &path,
         r#"{"reason":"compiler-artifact","profile":{"test":true},"executable":"/usr/bin/false"}"#,
     )?;
+    let checks = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("among-ignored-refusal-{}", std::process::id()));
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
+        .env("AMONG_CHECK_ROOT", &checks)
         .arg("run-ignored-tests")
         .arg(&path)
         .output()?;
     std::fs::remove_file(path)?;
+    std::fs::remove_dir_all(&checks)?;
     assert!(!output.status.success());
     assert!(String::from_utf8(output.stderr)?.contains("test executable listing failed"));
     Ok(())

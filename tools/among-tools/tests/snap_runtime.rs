@@ -16,8 +16,10 @@ impl Drop for Fixture {
     }
 }
 fn fixture() -> Result<Fixture> {
+    // On disk inside the build's own target directory, so the suite needs no
+    // pre-created shared directory and works for an unprivileged build user.
     let f = Fixture(storage::private_directory(
-        Path::new("/tmp/opencode"),
+        &Path::new(env!("CARGO_TARGET_TMPDIR")).canonicalize()?,
         "among-snap-rust-fixture",
     )?);
     Ok(f)
@@ -27,11 +29,12 @@ fn actual_host_probe_records_real_cwd_maps_environment_and_refuses_foreign_or_ex
 ) -> Result<()> {
     let f = fixture()?;
     let output = f.0.join("observed.json");
-    let run = |marker: &str| {
+    let run_under = |marker: &str, root: &Path| {
         std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
             .env_clear()
             .current_dir(&f.0)
             .env("AMONG_HOST_MARKER", marker)
+            .env("AMONG_CHECK_ROOT", root)
             .env("HOME", f.0.join("home"))
             .env("PATH", "/synthetic/tools:/usr/bin:/bin")
             .env("LD_LIBRARY_PATH", "")
@@ -41,8 +44,15 @@ fn actual_host_probe_records_real_cwd_maps_environment_and_refuses_foreign_or_ex
             .arg(&output)
             .output()
     };
+    let run = |marker: &str| run_under(marker, &f.0);
     let denied = run("not-approved")?;
     assert!(!denied.status.success());
+    assert!(!output.exists());
+    // Output outside the check root the probe was given is foreign evidence
+    // space and must be refused even with the approved marker.
+    let foreign = run_under("vm-fixture", &f.0.join("other-root"))?;
+    assert!(!foreign.status.success());
+    assert!(String::from_utf8(foreign.stderr)?.contains("owned private evidence directory"));
     assert!(!output.exists());
     let observed = run("vm-fixture")?;
     assert!(
@@ -125,12 +135,19 @@ fn actual_runtime_cli_refuses_unowned_display_and_unported_replacement_option() 
         vec!["check-snap-runtime", "--github-hosted"],
         vec!["check-snap-runtime", "--replace-vte"],
     ] {
+        let checks = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("among-snap-runtime-refusal-{}", std::process::id()));
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
             .env_clear()
-            .args(args)
+            .env("AMONG_CHECK_ROOT", &checks)
+            .args(&args)
             .output()?;
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
+        if checks.exists() {
+            assert_eq!(fs::read_dir(&checks)?.count(), 0, "{args:?}");
+            fs::remove_dir(&checks)?;
+        }
     }
     Ok(())
 }

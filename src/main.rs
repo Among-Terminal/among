@@ -219,6 +219,61 @@ pub fn spawn_shell(
     );
 }
 
+/// Ignored graphical tests write preferences and sessions. The among-tools
+/// display harness gives each run private XDG directories below its check
+/// root and names that root in `AMONG_CHECK_ROOT`. These helpers refuse to run
+/// such a test anywhere else, so it can never read or overwrite the
+/// developer's own configuration.
+#[cfg(test)]
+pub(crate) mod test_isolation {
+    use std::path::{Path, PathBuf};
+
+    const PERSONAL: &str = "never test against personal configuration";
+
+    /// The harness check root; panics when the test was not started by it.
+    pub(crate) fn check_root() -> PathBuf {
+        let root = std::env::var_os("AMONG_CHECK_ROOT")
+            .map(PathBuf::from)
+            .filter(|root| root.is_absolute())
+            .unwrap_or_else(|| {
+                panic!("{PERSONAL}: AMONG_CHECK_ROOT must be the absolute root set by the harness")
+            });
+        root.canonicalize()
+            .unwrap_or_else(|error| panic!("{PERSONAL}: check root unusable: {error}"))
+    }
+
+    /// Asserts that `path` lies strictly below the harness check root.
+    pub(crate) fn assert_below_check_root(path: &Path) {
+        let root = check_root();
+        assert!(
+            path.is_absolute()
+                && !path
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir),
+            "{PERSONAL}: {} is not a plain absolute path",
+            path.display()
+        );
+        // The directory may not exist yet; its nearest existing ancestor
+        // decides where it really resolves to.
+        let mut existing = path;
+        let mut missing = Vec::new();
+        while !existing.exists() {
+            missing.push(existing.file_name().unwrap_or_default());
+            existing = existing.parent().unwrap_or(Path::new("/"));
+        }
+        let mut resolved = existing
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("{PERSONAL}: {}: {error}", path.display()));
+        resolved.extend(missing.into_iter().rev());
+        assert!(
+            resolved.starts_with(&root) && resolved != root,
+            "{PERSONAL}: {} is outside the check root {}",
+            path.display(),
+            root.display()
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,7 +286,10 @@ mod tests {
         let terminal = vte::Terminal::builder().pty(&pty).build();
         let result = std::rc::Rc::new(std::cell::RefCell::new(None));
         let received = result.clone();
-        let missing = format!("/tmp/opencode/no-such-directory-{}", std::process::id());
+        let missing = std::env::temp_dir()
+            .join(format!("among-no-such-directory-{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
         let expected = crate::session::initial_directory(Some(&missing)).0;
         let startup = std::env::current_dir()
             .unwrap()
@@ -265,7 +323,13 @@ mod tests {
         println!("PASS unavailable spawn directory handled with one completion and actual native fallback cwd");
 
         let shell = std::env::var_os("SHELL");
-        std::env::set_var("SHELL", "/tmp/opencode/no-such-shell-executable");
+        std::env::set_var(
+            "SHELL",
+            std::env::temp_dir().join(format!(
+                "among-no-such-shell-executable-{}",
+                std::process::id()
+            )),
+        );
         let pty = new_pty().unwrap();
         let terminal = vte::Terminal::builder().pty(&pty).build();
         let failure = std::rc::Rc::new(std::cell::RefCell::new(None));

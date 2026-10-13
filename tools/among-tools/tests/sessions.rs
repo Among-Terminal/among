@@ -27,12 +27,17 @@ fn consent_rectangles_require_complete_values_and_sparse_ids_do_not_match_suffix
 #[test]
 fn actual_sessions_cli_refuses_unowned_display_before_creating_fixtures() -> among_tools::Result<()>
 {
+    let checks = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("among-sessions-refusal-{}", std::process::id()));
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
         .env_clear()
         .env("HOME", "/synthetic-personal-home")
+        .env("AMONG_CHECK_ROOT", &checks)
         .args(["check-sessions", "/bin/true"])
         .output()?;
     assert!(!output.status.success());
     assert!(String::from_utf8(output.stderr)?.contains("owned display runner"));
+    assert_eq!(std::fs::read_dir(&checks)?.count(), 0);
+    std::fs::remove_dir(&checks)?;
     Ok(())
 }

@@ -28,7 +28,7 @@ fn source_timestamp_failure_is_not_hidden_by_echo() -> Result<()> {
 fn package_build_and_permission_tests_run_without_root_privileges() -> Result<()> {
     let text = workflow()?;
     assert!(text.contains("/usr/sbin/runuser --user among-builder -- /usr/bin/env"));
-    assert!(text.contains("chown among-builder:among-builder /tmp/opencode"));
+    assert!(text.contains("chown among-builder:among-builder \"$AMONG_CHECK_ROOT\""));
     assert!(text.contains("\"RUSTUP_HOME=$RUSTUP_HOME\" \"RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN\""));
     assert!(text.contains("\"SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH\""));
     Ok(())
@@ -116,8 +116,56 @@ fn rpm_release_identity_is_validated_after_bootstrap_and_rc_is_not_skipped() -> 
         scripts.find("dnf install").ok_or("bootstrap missing")?
             < scripts.find("cargo test").ok_or("tests missing")?
     );
-    assert!(scripts.contains("prepare-rpm-release . /tmp/opencode/among.spec"));
-    assert!(scripts.contains("/tmp/opencode/target/debug/among-tools"));
+    assert!(scripts.contains("prepare-rpm-release . \"$AMONG_CHECK_ROOT\"/among.spec"));
+    assert!(scripts.contains("\"$AMONG_CHECK_ROOT\"/target/debug/among-tools"));
+    Ok(())
+}
+
+/// The installed checks hand one check root from the root user to the check
+/// user, and the build keeps its evidence there. Each job must name that root
+/// explicitly on the container's disk, and every retained path must follow
+/// it: an upload pointing elsewhere finds nothing once the root moves.
+#[test]
+fn every_job_names_an_on_disk_check_root_and_retains_evidence_from_it() -> Result<()> {
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
+    for job in ["build", "installed"] {
+        let root = document["jobs"][job]["env"]["AMONG_CHECK_ROOT"]
+            .as_str()
+            .ok_or("check root absent")?;
+        assert!(
+            root.starts_with('/') && !root.starts_with("/tmp"),
+            "{job} check root {root} must be absolute and off tmpfs"
+        );
+    }
+    let build = &document["jobs"]["build"];
+    let root = build["env"]["AMONG_CHECK_ROOT"]
+        .as_str()
+        .ok_or("check root absent")?;
+    for key in ["CARGO_HOME", "CARGO_TARGET_DIR"] {
+        let value = build["env"][key].as_str().ok_or("Cargo directory absent")?;
+        assert!(value.starts_with(&format!("{root}/")), "{key}={value}");
+    }
+    let mut uploads = 0;
+    for step in build["steps"].as_sequence().ok_or("steps missing")? {
+        if !step["uses"]
+            .as_str()
+            .is_some_and(|action| action.starts_with("actions/upload-artifact@"))
+        {
+            continue;
+        }
+        for path in step["with"]["path"]
+            .as_str()
+            .ok_or("upload path absent")?
+            .lines()
+        {
+            uploads += 1;
+            assert!(
+                path.trim().starts_with("${{ env.AMONG_CHECK_ROOT }}/"),
+                "upload path {path} does not follow the check root"
+            );
+        }
+    }
+    assert!(uploads > 0, "the build retains no evidence");
     Ok(())
 }
 
@@ -351,7 +399,7 @@ fn the_rpm_workflow_has_read_only_scope_and_no_publication_step() -> Result<()> 
 fn the_workflow_builds_the_repository_spec() -> Result<()> {
     let text = workflow()?;
     assert!(
-        text.contains("prepare-rpm-release . /tmp/opencode/among.spec"),
+        text.contains("prepare-rpm-release . \"$AMONG_CHECK_ROOT\"/among.spec"),
         "the workflow does not build packaging/rpm/among.spec"
     );
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

@@ -64,3 +64,59 @@ fn main_snap_workflow_uses_native_rust_drivers_without_direct_python_or_publicat
     // Runtime drivers were separately exercised on both installed architectures.
     Ok(())
 }
+
+fn snap_workflow() -> Result<Value> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bytes = fs::read(root.join(".github/workflows/snap-build.yml"))?;
+    Ok(serde_yaml_ng::from_slice(&bytes)?)
+}
+
+fn job_scripts(job: &Value) -> Result<String> {
+    Ok(job["steps"]
+        .as_array()
+        .ok_or("steps absent")?
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// The failure-evidence upload tolerates an empty match, so a check root that
+/// moved while the upload path stayed behind would silently retain nothing.
+#[test]
+fn failure_evidence_upload_follows_the_check_root_the_job_exports() -> Result<()> {
+    let workflow = snap_workflow()?;
+    let job = &workflow["jobs"]["snap"];
+    assert!(job_scripts(job)?
+        .contains("echo \"AMONG_CHECK_ROOT=$RUNNER_TEMP/among-checks\" >> \"$GITHUB_ENV\""));
+    let upload = job["steps"]
+        .as_array()
+        .ok_or("steps absent")?
+        .iter()
+        .find(|step| step["name"] == "Retain display check evidence after a failure")
+        .ok_or("failure-evidence upload absent")?;
+    assert_eq!(upload["with"]["path"], "${{ env.AMONG_CHECK_ROOT }}/");
+    Ok(())
+}
+
+/// The clean runtime writes evidence to a bind-mounted directory: the mount
+/// target, the checker environment, the image's mount point and the script
+/// must all name the same container path, or evidence is lost or refused.
+#[test]
+fn clean_runtime_mount_environment_image_and_script_agree_on_the_check_root() -> Result<()> {
+    let container = "/var/lib/among-checks";
+    let workflow = snap_workflow()?;
+    let scripts = job_scripts(&workflow["jobs"]["clean-runtime"])?;
+    assert!(scripts.contains(&format!(
+        "--mount \"type=bind,source=$PWD/runtime-evidence,target={container}\""
+    )));
+    assert!(scripts.contains(&format!("AMONG_CHECK_ROOT={container} \\")));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/ci/snap-runtime");
+    let dockerfile = fs::read_to_string(root.join("Dockerfile"))?;
+    assert!(dockerfile.contains(&format!("mkdir -p {container}")));
+    let script = fs::read_to_string(root.join("check-installed.sh"))?;
+    assert!(script.contains("checks=\"${AMONG_CHECK_ROOT:?"));
+    // Every evidence write goes through the variable, never a literal path.
+    assert!(!script.contains(container));
+    Ok(())
+}

@@ -93,7 +93,8 @@ fn private_directory(parent: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn environment(base: &Path, cairo: bool) -> Result<BTreeMap<OsString, OsString>> {
+fn environment(scratch: &Path, base: &Path, cairo: bool) -> Result<BTreeMap<OsString, OsString>> {
+    let root = scratch.canonicalize()?;
     let caller = std::env::vars_os().collect();
     let mut env = launch_environment(&caller);
     if !env.contains_key(&OsString::from("PATH")) {
@@ -123,12 +124,19 @@ fn environment(base: &Path, cairo: bool) -> Result<BTreeMap<OsString, OsString>>
     ] {
         env.insert(key.into(), base.join(directory).into_os_string());
     }
+    // The commands under the display (checks, ignored application tests)
+    // write below the same root; they cannot derive it themselves because
+    // HOME and XDG_CACHE_HOME above already point into the private base.
+    env.insert(
+        crate::scratch::VARIABLE.into(),
+        root.clone().into_os_string(),
+    );
     if cairo {
         env.insert("GSK_RENDERER".into(), "cairo".into());
     }
     if let Some(home) = std::env::var_os("CARGO_HOME") {
         let home = PathBuf::from(home).canonicalize()?;
-        if home.starts_with(Path::new("/tmp/opencode").canonicalize()?) {
+        if home.starts_with(&root) {
             env.insert("CARGO_HOME".into(), home.into_os_string());
         }
     }
@@ -256,7 +264,7 @@ pub fn run(
     }
     let base = private_directory(scratch)?;
     eprintln!("Owned display evidence: {}", base.display());
-    let mut env = environment(&base, matches!(mode, Mode::Ci | Mode::Video))?;
+    let mut env = environment(scratch, &base, matches!(mode, Mode::Ci | Mode::Video))?;
     let nested = matches!(mode, Mode::NestedGnome | Mode::VideoGnome);
     let mut parent = None;
     let (mut server, display) = if nested {
@@ -419,8 +427,9 @@ mod tests {
     #[ignore = "requires disposable X11 container"]
     fn readiness_failures_stop_owned_children_only() -> Result<()> {
         let mut unrelated = Unrelated(std::process::Command::new("/bin/sleep").arg("30").spawn()?);
-        let base = private_directory(Path::new("/tmp/opencode"))?;
-        let mut env = environment(&base, true)?;
+        let root = crate::scratch::root()?;
+        let base = private_directory(&root)?;
+        let mut env = environment(&root, &base, true)?;
         assert!(start_server(Path::new("/bin/false"), false, &env, &base, "failed").is_err());
         assert!(start_server(
             Path::new("/missing-x-server"),
@@ -468,7 +477,7 @@ mod tests {
     #[ignore = "requires disposable X11 container"]
     fn command_timeout_preserves_unrelated_child_and_retains_failure_logs() -> Result<()> {
         let mut unrelated = Unrelated(std::process::Command::new("/bin/sleep").arg("30").spawn()?);
-        let scratch = private_directory(Path::new("/tmp/opencode"))?;
+        let scratch = private_directory(&crate::scratch::root()?)?;
         let error = run(
             Mode::Ci,
             &["/bin/sleep".into(), "30".into()],

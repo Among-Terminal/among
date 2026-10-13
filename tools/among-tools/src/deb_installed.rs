@@ -162,6 +162,11 @@ pub fn run(
     fs::DirBuilder::new().mode(0o755).create(output)?;
     runner.base = output.canonicalize()?;
     let mut evidence = json!({"schema":1,"target":target,"architecture":architecture,"tag":tag,"source_sha":source,"package_sha256":record["sha256"],"binary_archive":record["binary_archive"],"checker_sha256":storage::sha256(File::open(&checker)?)?,"display":"X11/Xvfb/Openbox","checks":[],"status":"failed","scope":"partial-installed-runtime-lifecycle-and-extracted-binary-runtime","release_acceptance":false});
+    // Resolved once here as root; each unprivileged check user receives it
+    // explicitly, because its own HOME would yield a different default.
+    let checks = crate::scratch::root()?;
+    let checks_text = checks.to_str().ok_or("check root is not UTF-8")?;
+    let check_root = format!("{}={checks_text}", crate::scratch::VARIABLE);
     let result = (|| -> Result<()> {
         missing_dependency(&mut runner)?;
         add_check(&mut evidence, "unavailable-dependency-rejected")?;
@@ -221,10 +226,9 @@ pub fn run(
         for name in ["config", "data", "cache", "runtime"] {
             fs::DirBuilder::new().mode(0o700).create(home.join(name))?;
         }
-        fs::create_dir_all("/tmp/opencode")?;
         runner.command(
             "/usr/bin/chown",
-            &["among-check:among-check", "/tmp/opencode"],
+            &["among-check:among-check", checks_text],
             30,
         )?;
         runner.command(
@@ -275,6 +279,7 @@ pub fn run(
                 "XDG_DATA_HOME=/home/among-check/data",
                 "XDG_CACHE_HOME=/home/among-check/cache",
                 "XDG_RUNTIME_DIR=/home/among-check/runtime",
+                &check_root,
                 tools,
                 "ci-x11",
                 tools,
@@ -331,7 +336,7 @@ pub fn run(
         )?;
         runner.command(
             "/usr/bin/chown",
-            &["among-archive-check:among-archive-check", "/tmp/opencode"],
+            &["among-archive-check:among-archive-check", checks_text],
             30,
         )?;
         runner.runtime_only()?;
@@ -378,6 +383,7 @@ pub fn run(
                 "XDG_DATA_HOME=/home/among-archive-check/data",
                 "XDG_CACHE_HOME=/home/among-archive-check/cache",
                 "XDG_RUNTIME_DIR=/home/among-archive-check/runtime",
+                &check_root,
                 tools,
                 "ci-x11",
                 tools,
@@ -401,12 +407,7 @@ pub fn run(
             &runner.base.join("archive-user-logs"),
         )
     })
-    .and_then(|()| {
-        save_evidence(
-            Path::new("/tmp/opencode"),
-            &runner.base.join("display-logs"),
-        )
-    });
+    .and_then(|()| save_evidence(&checks, &runner.base.join("display-logs")));
     if saved.is_err() {
         evidence["status"] = "failed".into();
     }
