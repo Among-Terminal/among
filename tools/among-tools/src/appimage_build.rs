@@ -162,6 +162,25 @@ pub fn restore_launcher(appdir: &Path, launcher_sha256: &str) -> Result<()> {
     Ok(())
 }
 
+/// The GTK plugin also copies GTK print backends and GObject introspection
+/// typelibs. Only the plugin's hook (removed above) would point GTK and
+/// GObject at them, so the bundled GTK never loads them; the print backends
+/// cannot even resolve `libgtk-4.so.1` from their directory, which the
+/// clean-host linkage check reported on every host. Shipping them would add
+/// unreachable code whose licences and sources still had to be delivered.
+pub fn remove_unreachable_modules(appdir: &Path) -> Result<()> {
+    for relative in ["usr/lib/gtk-4.0", "usr/lib/girepository-1.0"] {
+        let path = storage::safe_path(appdir, Path::new(relative))?;
+        match path.symlink_metadata() {
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path)?,
+            Ok(_) => return Err(format!("{relative} is not a directory").into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 fn walk(root: &Path, relative: &Path, files: &mut Vec<(PathBuf, bool)>) -> Result<()> {
     let path = if relative.as_os_str().is_empty() {
         root.to_path_buf()
@@ -619,6 +638,7 @@ pub fn build(
         1800,
     )?;
     restore_launcher(&appdir, &launcher_sha256)?;
+    remove_unreachable_modules(&appdir)?;
     require_runtime_data(&appdir)?;
     let libraries = bundled_libraries(&appdir)?;
     let audit_env = system.clone();

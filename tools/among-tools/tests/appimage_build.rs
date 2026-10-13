@@ -254,6 +254,12 @@ fn real_pinned_helpers_build_an_audited_appimage_and_refuse_existing_output() ->
     assert!(audit["host_libraries"]
         .as_array()
         .is_some_and(|names| names.iter().any(|name| name == "libc.so.6")));
+    assert!(
+        libraries.iter().all(|record| record["path"]
+            .as_str()
+            .is_some_and(|path| !path.starts_with("usr/lib/gtk-4.0/"))),
+        "unreachable GTK modules were bundled"
+    );
     let sha = Command::new("/usr/bin/sha256sum")
         .args(["--check", "SHA256SUMS"])
         .current_dir(&output)
@@ -262,6 +268,36 @@ fn real_pinned_helpers_build_an_audited_appimage_and_refuse_existing_output() ->
     let second = build(&output)?;
     assert!(!second.status.success());
     assert_eq!(storage::sha256(fs::File::open(&image)?)?, digest);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn unreachable_gtk_modules_and_typelibs_are_removed_and_odd_entries_refused() -> Result<()> {
+    let root = scratch("among-appimage-modules")?;
+    // Nothing to remove is not an error.
+    appimage_build::remove_unreachable_modules(&root)?;
+    write(
+        &root,
+        "usr/lib/gtk-4.0/4.0.0/printbackends/libprintbackend-file.so",
+        ELF,
+    )?;
+    write(
+        &root,
+        "usr/lib/girepository-1.0/Gtk-4.0.typelib",
+        b"typelib",
+    )?;
+    write(&root, "usr/lib/libgtk-4.so.1", ELF)?;
+    appimage_build::remove_unreachable_modules(&root)?;
+    assert!(!root.join("usr/lib/gtk-4.0").exists());
+    assert!(!root.join("usr/lib/girepository-1.0").exists());
+    assert!(root.join("usr/lib/libgtk-4.so.1").is_file());
+    // A file or a link in place of the module directory is an unknown layout.
+    write(&root, "usr/lib/gtk-4.0", b"not a directory")?;
+    assert!(appimage_build::remove_unreachable_modules(&root).is_err());
+    fs::remove_file(root.join("usr/lib/gtk-4.0"))?;
+    std::os::unix::fs::symlink("/usr/lib", root.join("usr/lib/girepository-1.0"))?;
+    assert!(appimage_build::remove_unreachable_modules(&root).is_err());
     fs::remove_dir_all(root)?;
     Ok(())
 }
