@@ -262,7 +262,7 @@ pub fn run(
     let mut evidence = json!({"schema":1,"tag":tag,"source_sha":source,"target":target_name,"architecture":architecture,
         "package_sha256":record["sha256"],"checker_sha256":record["checker_sha256"],"older_fixture":record["older_fixture"],
         "display":"X11/Xvfb/Openbox","status":"in-progress","checks":[],
-        "release_acceptance":false,"scope":"native clean RPM installation; X11 desktop, focus, keyboard divider resize, preferences with external plugins, plugin status and consented Sessions; downgrade to a repacked older fixture, upgrade, remove, reinstall and erase with seeded user state and a running user process untouched; no historical-release upgrade, application-state migration or GNOME/Wayland certification"});
+        "release_acceptance":false,"scope":"native clean RPM installation; X11 desktop, focus, keyboard divider resize, plugin status with the packaged plugins as external plugins and consented Sessions; downgrade to a repacked older fixture, upgrade, remove, reinstall and erase with seeded user state and a running user process untouched; no installed preferences editing, historical-release upgrade, application-state migration or GNOME/Wayland certification"});
     let result = (|| -> Result<()> {
         runner.runtime_only()?;
         let package = package.to_str().ok_or("RPM path is not UTF-8")?;
@@ -319,16 +319,6 @@ pub fn run(
             (
                 "installed-live-resize",
                 vec!["check-live-resize", "/usr/bin/among"],
-            ),
-            // The packaged plugins copied into the user's own data directory
-            // are external plugins to the installed application.
-            (
-                "installed-preferences-external-plugins",
-                vec![
-                    "check-preferences",
-                    "/usr/bin/among",
-                    "/usr/share/among/plugins",
-                ],
             ),
             // Restored split layout, a pane command that keeps running while
             // its workspace is hidden, a pointer pane move and consent.

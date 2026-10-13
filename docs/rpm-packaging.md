@@ -60,10 +60,12 @@ after installation.
 As an unprivileged user in a private Xvfb/Openbox session, against
 `/usr/bin/among`, it then runs: the system desktop entry launched through GIO
 with application ID, icon and shell input; focus; keyboard divider resizing in
-all four directions; preferences with the packaged example plugins copied into
-the user's own plugin directory; plugin status; and consented session
+all four directions; plugin status with the packaged example plugins copied
+into a user plugin directory and enabled there; and consented session
 restoration with a restored split layout, a pane command that keeps running
-while its workspace is hidden, and a pointer pane move.
+while its workspace is hidden, and a pointer pane move. Editing preferences in
+the installed application is not checked: the existing preferences check
+drives a Cargo test executable, not the packaged program.
 
 The lifecycle check then installs an older package, upgrades, removes,
 reinstalls and erases. The older package is the candidate's own payload
