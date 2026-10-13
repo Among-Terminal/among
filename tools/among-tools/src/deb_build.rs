@@ -370,11 +370,7 @@ pub fn run(
     storage::atomic_write(
         output,
         Path::new("SHA256SUMS"),
-        format!(
-            "{digest}  {}\n{archive_digest}  {archive}\n",
-            identity.filename
-        )
-        .as_bytes(),
+        checksum_lines(&[(&digest, &identity.filename), (&archive_digest, &archive)]).as_bytes(),
         0o644,
     )?;
     storage::atomic_write(
@@ -403,6 +399,16 @@ pub fn run(
         base.display()
     );
     Ok(base)
+}
+
+/// `SHA256SUMS` in the text form `sha256sum --check` reads: digest, two
+/// spaces (text mode), file name. Users verify downloads with exactly that
+/// command, so the candidate's file must be in this form.
+pub fn checksum_lines(entries: &[(&str, &str)]) -> String {
+    entries
+        .iter()
+        .map(|(digest, name)| format!("{digest}  {name}\n"))
+        .collect()
 }
 
 pub fn reject_checker_payload(root: &Path) -> Result<()> {

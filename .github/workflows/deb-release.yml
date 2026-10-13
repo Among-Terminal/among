@@ -147,6 +147,8 @@ jobs:
         run: |
           cd release-candidate
           sha256sum --check native-checker.sha256
+          # The same verification a user runs on the downloaded DEB and archive.
+          sha256sum --check SHA256SUMS
           chmod 755 native-checker/among-tools
           cd ..
           release-candidate/native-checker/among-tools check-native-checker \

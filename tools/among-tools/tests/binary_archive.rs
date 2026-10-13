@@ -213,3 +213,65 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+/// Users verify a downloaded candidate with `sha256sum --check SHA256SUMS`.
+/// The file written next to the DEB and the archive must satisfy exactly that
+/// command, and the same command must reject an archive changed after the
+/// checksum was written.
+#[test]
+fn candidate_checksums_verify_the_deb_and_the_archive_with_sha256sum() -> Result<()> {
+    let root = storage::private_directory(&std::env::temp_dir(), "among-candidate-sums")?;
+    let payload = root.join("payload");
+    fs::create_dir_all(payload.join("usr/bin"))?;
+    fs::create_dir_all(payload.join("usr/share/among/plugins"))?;
+    fs::create_dir_all(payload.join("usr/share/doc/among-terminal/THIRD_PARTY"))?;
+    let mut elf = [0u8; 20];
+    elf[..6].copy_from_slice(b"\x7fELF\x02\x01");
+    elf[18] = 62;
+    for relative in [
+        "usr/bin/among",
+        "usr/share/among/plugins/clock",
+        "usr/share/among/plugins/system-status",
+        "usr/share/among/plugins/pane-pwd",
+    ] {
+        fs::write(payload.join(relative), elf)?;
+    }
+    for name in ["LICENSE", "NOTICE", "THIRD_PARTY/inventory.json"] {
+        fs::write(
+            payload.join("usr/share/doc/among-terminal").join(name),
+            b"synthetic attribution fixture",
+        )?;
+    }
+    let candidate = root.join("candidate");
+    fs::create_dir(&candidate)?;
+    let deb = "among-terminal_0.1.0_amd64.deb";
+    fs::write(candidate.join(deb), b"synthetic package bytes")?;
+    let deb_digest = storage::sha256(fs::File::open(candidate.join(deb))?)?;
+    let (archive, archive_digest) = binary_archive::create(
+        &payload,
+        "v0.1.0",
+        "ubuntu24.04",
+        "amd64",
+        "libgtk-4-1",
+        &candidate,
+    )?;
+    fs::write(
+        candidate.join("SHA256SUMS"),
+        among_tools::deb_build::checksum_lines(&[(&deb_digest, deb), (&archive_digest, &archive)]),
+    )?;
+    let check = |directory: &Path| {
+        std::process::Command::new("/usr/bin/sha256sum")
+            .args(["--check", "SHA256SUMS"])
+            .current_dir(directory)
+            .output()
+    };
+    let verified = check(&candidate)?;
+    assert!(verified.status.success());
+    let report = String::from_utf8(verified.stdout)?;
+    assert!(report.contains(&format!("{deb}: OK")), "{report}");
+    assert!(report.contains(&format!("{archive}: OK")), "{report}");
+    fs::write(candidate.join(&archive), b"changed after the checksum")?;
+    assert!(!check(&candidate)?.status.success());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}

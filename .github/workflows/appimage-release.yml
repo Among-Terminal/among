@@ -1,0 +1,239 @@
+name: AppImage candidates
+
+# Builds and checks AppImage candidates; never publishes. A tag release calls
+# this workflow and attaches what it keeps. Artifact contract for callers:
+#   appimage-<amd64|arm64>          the AppImage, its SHA256SUMS line, the audit record
+#   appimage-SHA256SUMS             one SHA256SUMS covering both AppImages
+#   appimage-sources-<amd64|arm64>  Debian source packages of every bundled library
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+            rust_host: x86_64-unknown-linux-gnu
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+            rust_host: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CARGO_HOME: /opt/among-cargo
+      RUSTUP_HOME: /opt/among-rustup
+      CARGO_BUILD_JOBS: '2'
+      RUST_HOST: ${{ matrix.rust_host }}
+      BUILD_ARCH: ${{ matrix.architecture }}
+      REF_TYPE: ${{ github.ref_type }}
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - name: Install the Ubuntu 24.04 build image packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates curl file build-essential \
+            pkg-config libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev desktop-file-utils \
+            libglib2.0-bin librsvg2-common adwaita-icon-theme gsettings-desktop-schemas shared-mime-info
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain in the build container
+        run: |
+          base="https://static.rust-lang.org/rustup/archive/1.28.2/${RUST_HOST}"
+          curl --fail --silent --show-error --location "$base/rustup-init" -o "$RUNNER_TEMP/rustup-init"
+          curl --fail --silent --show-error --location "$base/rustup-init.sha256" -o "$RUNNER_TEMP/rustup-init.sha256"
+          cd "$RUNNER_TEMP"
+          sha256sum --check rustup-init.sha256
+          chmod 755 rustup-init
+          ./rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.1
+          echo '/opt/among-cargo/bin' >> "$GITHUB_PATH"
+      - name: Build the application, plugins and tooling
+        run: |
+          cargo build --release --locked
+          cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
+          cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
+      - name: Name the candidate after the tag or the package version
+        run: |
+          if [ "$REF_TYPE" = tag ]; then
+            version="${REF_NAME#v}"
+          else
+            version="$(tools/among-tools/target/release/among-tools package-version .)"
+          fi
+          printf 'APPIMAGE_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Stage the payload and fetch the pinned helpers
+        run: |
+          mkdir "$RUNNER_TEMP/binaries"
+          cp target/release/among examples/plugins/target/release/clock \
+            examples/plugins/target/release/system-status examples/plugins/target/release/pane-pwd \
+            "$RUNNER_TEMP/binaries/"
+          tools=tools/among-tools/target/release/among-tools
+          "$tools" stage-appimage . "$RUNNER_TEMP/binaries" tools/among-tools/target/release/among-apprun \
+            "$BUILD_ARCH" "$RUNNER_TEMP/Among.AppDir"
+          "$tools" fetch-appimage-tools "$BUILD_ARCH" "$RUNNER_TEMP/appimage-tools"
+          cat "$RUNNER_TEMP/appimage-tools/tool-inputs.json"
+      - name: Build with the real pinned helpers under test
+        env:
+          AMONG_APPIMAGE_STAGED: ${{ runner.temp }}/Among.AppDir
+          AMONG_APPIMAGE_TOOLS: ${{ runner.temp }}/appimage-tools
+          AMONG_APPIMAGE_ARCH: ${{ matrix.architecture }}
+        run: |
+          AMONG_APPIMAGE_VERSION="$APPIMAGE_VERSION" cargo test --locked \
+            --manifest-path tools/among-tools/Cargo.toml --test appimage_build -- --nocapture \
+            | tee "$RUNNER_TEMP/appimage-build-test.log"
+          if grep -q SKIPPED "$RUNNER_TEMP/appimage-build-test.log"; then
+            echo 'the real AppImage build test skipped' >&2
+            exit 1
+          fi
+      - name: Build the candidate
+        run: |
+          tools/among-tools/target/release/among-tools build-appimage "$RUNNER_TEMP/Among.AppDir" \
+            "$RUNNER_TEMP/appimage-tools" "$BUILD_ARCH" "$APPIMAGE_VERSION" appimage-candidate
+          cd appimage-candidate
+          sha256sum --check SHA256SUMS
+      - name: Collect corresponding source of the bundled libraries
+        run: |
+          tools/among-tools/target/release/among-tools collect-appimage-sources \
+            "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.audit.json" appimage-sources
+      - name: Bind the checker for the clean hosts
+        run: |
+          mkdir appimage-checker
+          cp tools/among-tools/target/release/among-tools appimage-checker/among-tools
+          cd appimage-checker
+          sha256sum among-tools > SHA256SUMS
+      - name: Retain build logs after a failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-build-failure-${{ matrix.architecture }}
+          path: among-appimage-*/
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-${{ matrix.architecture }}
+          path: appimage-candidate/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-sources-${{ matrix.architecture }}
+          path: appimage-sources/
+          if-no-files-found: error
+          retention-days: 14
+      # Internal checker for the clean hosts, not a release asset.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-checker-${{ matrix.architecture }}
+          path: appimage-checker/
+          if-no-files-found: error
+          retention-days: 5
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-amd64
+          path: amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-arm64
+          path: arm64
+      - name: One SHA256SUMS that verifies both AppImages
+        run: |
+          (cd amd64 && sha256sum --check SHA256SUMS)
+          (cd arm64 && sha256sum --check SHA256SUMS)
+          mkdir both
+          cp amd64/*.AppImage arm64/*.AppImage both/
+          cat amd64/SHA256SUMS arm64/SHA256SUMS > both/SHA256SUMS
+          test "$(wc -l < both/SHA256SUMS)" -eq 2
+          (cd both && sha256sum --check SHA256SUMS)
+          mkdir combined
+          cp both/SHA256SUMS combined/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-SHA256SUMS
+          path: combined/
+          if-no-files-found: error
+          retention-days: 14
+
+  clean-host:
+    needs: build
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [debian13, ubuntu24.04, fedora43]
+        architecture: [amd64, arm64]
+        include:
+          - host: debian13
+            image: debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+          - host: ubuntu24.04
+            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+          - host: fedora43
+            image: fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+      # FUSE is the normal way an AppImage starts; the no-FUSE method is
+      # checked in the same job with fusermount made unreachable.
+      options: --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined
+    steps:
+      - name: Install display tools, FUSE and the host libraries AppImages expect
+        run: |
+          if command -v apt-get > /dev/null; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates \
+              fuse3 xvfb xauth openbox dbus-x11 xdotool x11-utils procps imagemagick \
+              libwayland-client0 libx11-6 libxcb1 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
+              libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core
+          else
+            dnf install -y git ca-certificates fuse3 xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo \
+              xwininfo openbox dbus-x11 xdotool procps-ng ImageMagick util-linux shadow-utils glibc-common \
+              libwayland-client libX11 libxcb fontconfig freetype harfbuzz fribidi expat gmp libgpg-error \
+              libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-${{ matrix.architecture }}
+          path: appimage-candidate
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: appimage-checker-${{ matrix.architecture }}
+          path: appimage-checker
+      - name: Start the AppImage as an unprivileged user with and without FUSE
+        env:
+          HOST: ${{ matrix.host }}
+          BUILD_ARCH: ${{ matrix.architecture }}
+        run: |
+          (cd appimage-checker && sha256sum --check SHA256SUMS)
+          chmod 755 appimage-checker/among-tools
+          appimage-checker/among-tools ci-appimage-install . "$HOST" "$BUILD_ARCH" \
+            appimage-candidate appimage-runtime-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: appimage-runtime-${{ matrix.host }}-${{ matrix.architecture }}
+          path: appimage-runtime-evidence/
+          if-no-files-found: warn
+          retention-days: 14
