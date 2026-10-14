@@ -1,4 +1,4 @@
-use among_tools::{display, ignored_tests, inventory, platform, preferences, resources, Result};
+use among_tools::{display, ignored_tests, platform, preferences, resources, Result};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -7,8 +7,6 @@ use std::{
 const HELP: &str = "among-tools — independent headless project tooling
 
 Usage:
-  among-tools inventory freeze <project-root> <new-inventory.json>
-  among-tools inventory check <project-root> <inventory.json>
   among-tools platform discover
   among-tools platform check <os> <version> <architecture>
   among-tools ci-x11 <command> [args...]
@@ -90,7 +88,6 @@ Usage:
   among-tools package-source-delivery <snap> <snapshot> <native> <sources> <metadata> <prime> <builder> <instructions> <new-output>
   among-tools --help
 
-Inventory commands read source as inert data; they never execute legacy tools.
 Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
@@ -840,26 +837,6 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             let actual = platform::discover()?;
             platform::validate_target(&actual, os, version, architecture)?;
             println!("{}", serde_json::to_string_pretty(&actual)?);
-        }
-        [family, operation, root, output] if family == "inventory" => {
-            let root = Path::new(root);
-            let output = Path::new(output);
-            match operation.as_str() {
-                "freeze" => {
-                    let inventory = inventory::discover(root)?;
-                    inventory::freeze(output, &inventory)?;
-                    println!(
-                        "Frozen {} Python sources and {} direct command/dependency references",
-                        inventory.sources.len(),
-                        inventory.direct_references.len()
-                    );
-                }
-                "check" => {
-                    inventory::check(root, output)?;
-                    println!("Inventory matches owned source bytes and discovered callers");
-                }
-                _ => return Err(format!("unsupported inventory operation: {operation}").into()),
-            }
         }
         _ => return Err("invalid command; use among-tools --help".into()),
     }

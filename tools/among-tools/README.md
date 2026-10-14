@@ -36,26 +36,6 @@ general promo review are separate commands (`prepare-readme-promo`,
 film on a private desktop has no Rust command, so media migration is not
 complete.
 
-## Migration traceability
-
-`among-tools inventory freeze ROOT NEW_JSON` exclusively creates a deterministic
-baseline. `among-tools inventory check ROOT JSON` rejects added/removed/changed
-owned Python sources, assertions and caller references. Neither command executes
-legacy tooling. The scan covers scripts, owned video tools, application source,
-documentation, workflows and package build inputs; private agent trees and bounded
-generated/cache directories are not caller roots. Unknown owned symlinks fail.
-
-The inventory includes complete inert source bytes and inline caller baselines,
-SHA-256 source digests, assertion/scenario/import/output/prerequisite references,
-callers and **planned**, not implemented, Rust operations. Unported operations
-remain pending and are not exposed as successful CLI stubs. Static reference
-excerpts are navigation aids; the complete frozen sources are authoritative for
-multiline conditions, fixture expectations and runtime parity review.
-
-The inventory is internal migration evidence, not a public source-distribution
-input. Freeze fails if its destination exists; do not overwrite an established
-baseline just to conceal drift. Reconcile changes explicitly during caller cutover.
-
 ## Shared storage contracts
 
 Storage primitives require caller-owned directories. Relative names reject
