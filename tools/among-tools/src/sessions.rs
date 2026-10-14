@@ -177,15 +177,18 @@ pub(crate) fn pair(text: &str, name: &str, separator: char) -> Result<[i64; 2]> 
         .map_err(|_| "invalid geometry pair".into())
 }
 
-pub(crate) struct Harness {
-    pub(crate) base: PathBuf,
+/// One owned application run with private XDG directories. Public beyond the
+/// crate so that tools built on this library drive the same harness instead of
+/// keeping a second copy of it.
+pub struct Harness {
+    pub base: PathBuf,
     data: PathBuf,
     session: PathBuf,
     launched: PathBuf,
     pub(crate) app: PathBuf,
-    pub(crate) env: BTreeMap<OsString, OsString>,
+    pub env: BTreeMap<OsString, OsString>,
     pub(crate) process: Option<OwnedProcess>,
-    pub(crate) log: PathBuf,
+    pub log: PathBuf,
     pub(crate) window: String,
 }
 
@@ -200,7 +203,7 @@ impl Drop for Harness {
 }
 
 impl Harness {
-    pub(crate) fn text(&self) -> Result<String> {
+    pub fn text(&self) -> Result<String> {
         Ok(fs::read_to_string(&self.log)?)
     }
     fn snapshot(&self) -> Result<Value> {
@@ -217,7 +220,7 @@ impl Harness {
     fn count_shells(&self) -> Result<usize> {
         Ok(fs::read_to_string(&self.launched)?.lines().count())
     }
-    pub(crate) fn probe(&self, program: &str, args: &[&str]) -> Result<String> {
+    pub fn probe(&self, program: &str, args: &[&str]) -> Result<String> {
         let path = self.base.join("probe.log");
         let file = File::create(&path)?;
         let mut process =
@@ -229,7 +232,7 @@ impl Harness {
         }
         Ok(fs::read_to_string(path)?)
     }
-    pub(crate) fn wait(
+    pub fn wait(
         &mut self,
         timeout: u64,
         mut predicate: impl FnMut(&mut Self) -> Result<bool>,
@@ -276,11 +279,11 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    pub(crate) fn xdo(&self, args: &[&str]) -> Result<()> {
+    pub fn xdo(&self, args: &[&str]) -> Result<()> {
         self.probe("/usr/bin/xdotool", args)?;
         Ok(())
     }
-    pub(crate) fn key(&self, key: &str) -> Result<()> {
+    pub fn key(&self, key: &str) -> Result<()> {
         // Fedora's XKB CTRL+ALT function-key type repeats F11 at several
         // levels. xdotool's symbolic lookup selects Alt+F11 even with
         // --clearmodifiers. Numeric keycodes bypass that lookup with modmask=0.
@@ -315,7 +318,7 @@ impl Harness {
         )?;
         self.xdo(&["click", "1"])
     }
-    pub(crate) fn stop(&mut self, crash: bool) -> Result<()> {
+    pub fn stop(&mut self, crash: bool) -> Result<()> {
         if let Some(mut process) = self.process.take() {
             process.signal(if crash {
                 Signal::SIGKILL
@@ -333,7 +336,7 @@ impl Harness {
             .ok_or("app process missing")?
             .is_running()?)
     }
-    pub(crate) fn start(&mut self, phase: &str) -> Result<u32> {
+    pub fn start(&mut self, phase: &str) -> Result<u32> {
         self.stop(false)?;
         self.window.clear();
         self.log = self.base.join(format!("{phase}.log"));
@@ -396,7 +399,7 @@ impl Harness {
         })?;
         self.clean_log(&self.log)
     }
-    pub(crate) fn clean_log(&self, log: &Path) -> Result<()> {
+    pub fn clean_log(&self, log: &Path) -> Result<()> {
         let text = fs::read_to_string(log)?;
         require(
             ![
@@ -469,7 +472,7 @@ impl Harness {
     }
 }
 
-pub(crate) fn fresh(binary: &Path, scratch: &Path, prefix: &str) -> Result<Harness> {
+pub fn fresh(binary: &Path, scratch: &Path, prefix: &str) -> Result<Harness> {
     crate::preferences::owned_display()?;
     if nix::unistd::geteuid().is_root() {
         return Err("permission scenarios require non-root execution".into());

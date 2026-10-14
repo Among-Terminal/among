@@ -56,12 +56,6 @@ pub fn names(listing: &str) -> Result<Vec<String>> {
                 eprintln!("Third-party extraction requires its dedicated disposable audit container, not a host graphical test; this skip is not an acceptance pass");
                 continue;
             }
-            if name
-                == "npm_render_caller_targets_native_command_and_requires_explicit_private_output"
-            {
-                eprintln!("The README video wiring needs the private video directory, absent from the public repository; this skip is not an acceptance pass");
-                continue;
-            }
             if name == "actual_collection_preserves_a_local_signed_repository_in_a_root_container" {
                 eprintln!("APT collection rewrites APT configuration as root and runs only in its dedicated offline audit container; this skip is not an acceptance pass");
                 continue;
