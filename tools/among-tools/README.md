@@ -1,6 +1,6 @@
 # Among tools
 
-Independent Apache-2.0 Rust tooling. Pure tests and inventory commands do not link
+Independent Apache-2.0 Rust tooling. Pure tests and headless commands do not link
 GTK or require a display. Use Rust 1.98.1 and the committed lockfile:
 
 ```sh
@@ -15,7 +15,7 @@ Run automation inside a disposable container, never against the owner's desktop
 or personal configuration. The project-level `scripts/check-packages.sh` also
 checks this independent third package.
 
-## Approved action V5 encoded review (partial media port)
+## Approved action V5 encoded review
 
 `review-readme-action ROOT NEW_PRIVATE_EVIDENCE_DIRECTORY` checks the existing
 approved action V5: one video stream, 1920×1440, 575 frames, full FFmpeg decode,
@@ -32,9 +32,52 @@ one permitted CPU, low priority, bounded timeouts, owned process groups and a
 credential-free environment. Preparation, rendering, plugin capture and the
 general promo review are separate commands (`prepare-readme-promo`,
 `render-readme-promo`, `render-readme-action`, `capture-readme-plugins`,
-`review-readme-promo`). Recording the demonstration clips and the storyboard
-film on a private desktop has no Rust command, so media migration is not
-complete.
+`review-readme-promo`).
+
+## Demonstration clips and film
+
+No command records the demonstration clips or the storyboard film; the four
+commands below start from recordings that already exist and only encode, check,
+join or caption them. Each creates a new evidence directory whose parent must
+exist and must not lie in a `video/readme-promo` workspace above the input, runs `/usr/bin/ffmpeg`,
+`/usr/bin/ffprobe` and, for badges, `/usr/bin/convert` with the same single-CPU,
+low-priority, credential-free environment as the reviews above, and refuses
+inputs that change while it runs. Run them in an isolated media container with
+those tools and the DejaVu fonts.
+
+- `encode-demo-clip RAW_VIDEO EVENTS.json NEW_EVIDENCE_DIRECTORY` reads a JSON
+  array of at most 1000 events `{"start": SECONDS, "keys": "Ctrl+Shift+E"}`
+  (start 0–3600 s; keys of up to 32 ASCII letters, digits, `+`, `,` or spaces).
+  Each label becomes a badge shown centred for 1.6 s or until the next event.
+  The result is `clip.mp4`, silent H.264/yuv420p without metadata, and
+  `clip-encoding.json` with the raw, events and clip digests. Symlinked inputs
+  are refused.
+- `check-demo-clips CAPTURE_DIRECTORY NEW_EVIDENCE_DIRECTORY` needs
+  `clips-result.json` naming every feature clip after `01-themes`,
+  `restoration-proof.json` whose
+  saved and actual directories match with no shell PID reused, `clips-app*.log`
+  files without `CRITICAL` or `panicked`, and the thirteen clips
+  `01-themes.mp4` … `08-close-pane.mp4` listed in `src/demo_clips.rs`. Each
+  clip must be one silent H.264/yuv420p 1600×1200 stream of 3–60 s with no
+  unreviewed tags, and decode completely; contact sheets and a poster go to
+  `review-clips/`, the summary to `clips-inspection.json`. The visual and
+  privacy review stays manual.
+- `assemble-demo REVIEWED_CLIP_DIRECTORY NEW_EVIDENCE_DIRECTORY` reads
+  `manifest.json` whose `files` holds 2–100 entries with `name`, `title`,
+  `sha256` and `duration` (the fields of `files` in `clips-inspection.json`).
+  Every `NAME.mp4` must match its digest. The clips are joined in order into
+  `among-terminal-overview.mp4` with a poster six seconds into the second
+  chapter, and `overview-manifest.json` records the chapters.
+- `export-demo CAPTURE_DIRECTORY NEW_EVIDENCE_DIRECTORY` reads `raw.mp4` and
+  `storyboard-result.json` with a `duration` of 60–90 s and ordered `events`
+  `{"start": SECONDS, "caption": TEXT}`. It writes `captions.srt` and
+  `transcript.md`, burns the captions into a band under the picture in
+  `among-terminal-demo.mp4`, checks the result is one H.264/yuv420p stream of
+  60–90 s, and adds a poster at 38 s, one review frame per second in
+  `review-frames/` and `media-inspection.json`.
+
+`check-demo-clips`, `assemble-demo` and `export-demo` refuse an evidence
+directory inside their input directory.
 
 ## Shared storage contracts
 
