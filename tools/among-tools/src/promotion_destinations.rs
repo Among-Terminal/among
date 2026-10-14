@@ -220,14 +220,39 @@ impl GitHubRelease {
         self
     }
 
-    /// One release by tag, or `None` when the tag has no release yet.
+    /// One release by tag, draft or published, or `None` when the tag has no
+    /// release yet.
     ///
-    /// A missing release is an expected state for a first publication, so it must
-    /// be distinguished from a transport failure: treating "not found" as an error
-    /// would make the first run impossible, and treating every error as "absent"
+    /// GitHub's by-tag endpoint returns published releases only, so a draft
+    /// this adapter created would read as absent there: preparation would
+    /// report it was never created and a retry would create a second one. The
+    /// paginated release list shows drafts to a token with push access, so
+    /// the release is chosen from it by `tag_name`. Exactly one match is
+    /// required; two releases with one tag leave no way to know which one a
+    /// user downloads. A failed listing propagates: treating it as "absent"
     /// would let a failed check look like an empty repository.
     fn release(&self, tag: &str) -> Result<Option<Value>> {
-        self.release_at(&format!("repos/{}/releases/tags/{tag}", self.repository))
+        let listing = self.api(&[
+            "--paginate",
+            &format!("repos/{}/releases?per_page=100", self.repository),
+        ])?;
+        let mut matches = Vec::new();
+        // `gh api --paginate` prints each page as its own JSON array.
+        for page in serde_json::Deserializer::from_str(&listing).into_iter::<Value>() {
+            for release in page?
+                .as_array()
+                .ok_or("GitHub release listing is not an array")?
+            {
+                if release["tag_name"] == tag {
+                    matches.push(release.clone());
+                }
+            }
+        }
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => Err("more than one GitHub release carries this tag".into()),
+        }
     }
 
     /// The newest published release, which GitHub exposes under a dedicated
@@ -474,8 +499,10 @@ impl Destinations for GitHubRelease {
         let expected_source = record["source_sha"]
             .as_str()
             .ok_or("promotion record has no source")?;
-        let release = self.api(&[&format!("repos/{}/releases/tags/{tag}", self.repository)])?;
-        if storage::parse_json(release.as_bytes())?["draft"].as_bool() == Some(true) {
+        let release = self
+            .release(tag)?
+            .ok_or("GitHub release to publish is absent")?;
+        if release["draft"].as_bool() == Some(true) {
             quiet_output(
                 &self.program,
                 &[
