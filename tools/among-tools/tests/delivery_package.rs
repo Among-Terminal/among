@@ -196,6 +196,7 @@ fn squash(directory: &std::path::Path, image: &std::path::Path) -> Result<()> {
 /// whose executable, plugin or metadata bytes differ from the audited prime,
 /// or that lacks one of them, is refused, and a matching one passes.
 #[test]
+#[ignore = "builds SquashFS images with mksquashfs from squashfs-tools; package-build containers lack it, the Checks ignored-test runner runs it"]
 fn snap_members_are_compared_with_the_audited_prime_bytes() -> Result<()> {
     let f = Fixture(storage::private_directory(
         &std::env::temp_dir(),
