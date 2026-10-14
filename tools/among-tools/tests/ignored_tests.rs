@@ -33,6 +33,12 @@ fn phase_based_preferences_are_not_misrun_and_invalid_names_fail() -> among_tool
         "actual_collection_preserves_a_local_signed_repository_in_a_root_container: test"
     )?
     .is_empty());
+    // The README video wiring needs a private directory no CI runner has; run
+    // there, it would fail for the missing directory, not for the wiring.
+    assert!(ignored_tests::names(
+        "npm_render_caller_targets_native_command_and_requires_explicit_private_output: test"
+    )?
+    .is_empty());
     assert!(ignored_tests::names("-bad: test").is_err());
     Ok(())
 }
