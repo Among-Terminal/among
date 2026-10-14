@@ -56,6 +56,10 @@ pub fn names(listing: &str) -> Result<Vec<String>> {
                 eprintln!("Third-party extraction requires its dedicated disposable audit container, not a host graphical test; this skip is not an acceptance pass");
                 continue;
             }
+            if name == "actual_collection_preserves_a_local_signed_repository_in_a_root_container" {
+                eprintln!("APT collection rewrites APT configuration as root and runs only in its dedicated offline audit container; this skip is not an acceptance pass");
+                continue;
+            }
             if !names.insert(name.to_string()) {
                 return Err("duplicate Rust test name".into());
             }

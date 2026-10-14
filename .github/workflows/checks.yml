@@ -71,7 +71,7 @@ jobs:
           tools/among-tools/target/release/among-tools check-rpm-spec .
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test deb_workflow --test rpm --test rpm_workflow --test publication_boundary
           tools/among-tools/target/release/among-tools check-deb-workflow .
-      - name: Native source extraction in a disposable audit container
+      - name: Native source extraction and APT collection in disposable audit containers
         run: |
           docker build --file tools/among-tools/containers/Dockerfile.deb-selection --tag among-source-audit:ci .
           set -- $(find tools/among-tools/target/debug/deps -maxdepth 1 -type f -executable -name 'native_unpack-*')
@@ -81,6 +81,15 @@ jobs:
             --mount "type=bind,source=$PWD,target=$PWD,readonly" \
             --workdir "$PWD" among-source-audit:ci \
             "$PWD/$1" --ignored --exact actual_dpkg_source_extraction_records_build_inputs_and_refuses_owner_output --nocapture
+          # APT collection rewrites the container's APT configuration, so it
+          # runs as the container's root, still offline and without capabilities.
+          set -- $(find tools/among-tools/target/debug/deps -maxdepth 1 -type f -executable -name 'apt_collect-*')
+          test "$#" -eq 1
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --user 0:0 --tmpfs /tmp:rw,exec,mode=1777,size=128m \
+            --mount "type=bind,source=$PWD,target=$PWD,readonly" \
+            --workdir "$PWD" among-source-audit:ci \
+            "$PWD/$1" --ignored --exact actual_collection_preserves_a_local_signed_repository_in_a_root_container --nocapture
       - name: Isolated native X11 regressions
         run: |
           tools/among-tools/target/release/among-tools ci-x11 \
