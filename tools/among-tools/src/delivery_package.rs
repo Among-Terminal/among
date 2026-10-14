@@ -216,6 +216,16 @@ pub fn package(inputs: &Inputs<'_>, output: &Path, scratch: &Path) -> Result<Val
     )?)?)?;
     let trust = apt_provenance::authenticate(inputs.metadata, &native, inputs.sources, scratch)?;
     native_notices::check(&native, inputs.prime)?;
+    compare_snap_payload(inputs.snap, inputs.prime, scratch)?;
+    write_bundle(inputs, output, &trust)
+}
+
+/// Read the executable, plugin and metadata members out of the actual Snap
+/// with `unsquashfs` and require the bytes the audit saw in prime.
+///
+/// The association published next to the Snap claims these sources build
+/// this binary; a Snap repacked after the audit would make that claim false.
+pub fn compare_snap_payload(snap: &Path, prime: &Path, scratch: &Path) -> Result<()> {
     let base = storage::private_directory(scratch, "among-delivery-prime")?;
     let env = BTreeMap::from([
         ("PATH".into(), "/usr/bin:/bin".into()),
@@ -235,11 +245,7 @@ pub fn package(inputs: &Inputs<'_>, output: &Path, scratch: &Path) -> Result<Val
         let errors = File::create(base.join(format!("member-{index}.stderr")))?;
         let mut process = OwnedProcess::spawn_split(
             Path::new("/usr/bin/unsquashfs"),
-            &[
-                "-cat",
-                inputs.snap.to_str().ok_or("Snap path not UTF-8")?,
-                name,
-            ],
+            &["-cat", snap.to_str().ok_or("Snap path not UTF-8")?, name],
             &env,
             &base,
             &File::create(&actual)?,
@@ -247,10 +253,10 @@ pub fn package(inputs: &Inputs<'_>, output: &Path, scratch: &Path) -> Result<Val
         )?;
         if !process.wait(Duration::from_secs(60))?.success()
             || storage::sha256(File::open(actual)?)?
-                != storage::sha256(File::open(native_sources::regular(inputs.prime, name)?)?)?
+                != storage::sha256(File::open(native_sources::regular(prime, name)?)?)?
         {
             return Err("Snap differs from audited prime executable/metadata bytes".into());
         }
     }
-    write_bundle(inputs, output, &trust)
+    Ok(())
 }
