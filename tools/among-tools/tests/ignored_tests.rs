@@ -27,6 +27,12 @@ fn phase_based_preferences_are_not_misrun_and_invalid_names_fail() -> among_tool
         "actual_dpkg_source_extraction_records_build_inputs_and_refuses_owner_output: test"
     )?
     .is_empty());
+    // Collecting APT metadata rewrites the system APT configuration as root;
+    // on a host runner that would change the runner itself.
+    assert!(ignored_tests::names(
+        "actual_collection_preserves_a_local_signed_repository_in_a_root_container: test"
+    )?
+    .is_empty());
     assert!(ignored_tests::names("-bad: test").is_err());
     Ok(())
 }
