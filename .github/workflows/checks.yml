@@ -32,7 +32,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config \
             desktop-file-utils appstream librsvg2-common xvfb openbox dbus-x11 \
-            xdotool x11-utils imagemagick
+            xdotool x11-utils imagemagick squashfs-tools
       - name: Check root on the runner's disk
         # Job-level env cannot read the runner context, so the root and the
         # Cargo home below it are exported for every later step from here.
