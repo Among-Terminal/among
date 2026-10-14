@@ -78,11 +78,23 @@ fn npm_render_caller_targets_native_command_and_requires_explicit_private_output
         );
         return Ok(());
     }
-    let package = storage::parse_json(&fs::read(manifest)?)?;
+    let package = storage::parse_json(&fs::read(&manifest)?)?;
+    let render = package["scripts"]["render"]
+        .as_str()
+        .ok_or("render script absent")?;
     assert_eq!(
-        package["scripts"]["render"],
-        "../../tools/among-tools/target/release/among-tools render-readme-promo ../.."
+        render,
+        "../../../tools/among-tools/target/release/among-tools render-readme-promo ../../.."
     );
+    // npm runs the script from the package's real directory, behind the
+    // `video` link, so the relative root must climb out of that directory and
+    // land on a checkout, not merely look right as a string.
+    let package_directory = fs::canonicalize(manifest.parent().ok_or("package directory absent")?)?;
+    let root_argument = render.rsplit(' ').next().ok_or("root argument absent")?;
+    assert!(package_directory
+        .join(root_argument)
+        .join("tools/among-tools/Cargo.toml")
+        .is_file());
     let result = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
         .env_clear()
         .arg("render-readme-promo")
