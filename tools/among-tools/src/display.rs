@@ -193,7 +193,18 @@ fn start_server_profile(
     let mut pipe = server.take_stdout()?;
     let flags = OFlag::from_bits_truncate(fcntl(&pipe, FcntlArg::F_GETFL)?);
     fcntl(&pipe, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
-    let display = read_display(&mut pipe, Duration::from_secs(10))?;
+    // The first X server on a cold, busy CI runner has exceeded 10 seconds
+    // before announcing its display. The bound only matters when the server
+    // is stuck, so it is generous; the server's own log is quoted then, since
+    // the evidence directory is not always retained.
+    let display = read_display(&mut pipe, Duration::from_secs(60)).map_err(|error| {
+        let log = fs::read_to_string(base.join(format!("{label}.log"))).unwrap_or_default();
+        let tail = log.lines().rev().take(20).collect::<Vec<_>>();
+        format!(
+            "{error}; {label} server log ends with:\n{}",
+            tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+        )
+    })?;
     if !server.is_running()? {
         return Err("owned X server exited during readiness".into());
     }
