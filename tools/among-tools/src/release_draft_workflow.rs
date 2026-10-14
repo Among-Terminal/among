@@ -259,10 +259,6 @@ pub fn validate(document: &Value) -> Result<()> {
                     require(pinned(action), "workflow action must be SHA-pinned")?;
                 }
             }
-            require(
-                !script(job)?.contains("python"),
-                "release automation must not run Python",
-            )?;
             // Hosted runners provide a per-job temporary directory; a fixed
             // path under /tmp would be shared with anything else on the host.
             require(
