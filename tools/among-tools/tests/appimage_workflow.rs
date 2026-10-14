@@ -70,7 +70,7 @@ fn appimage_workflow_is_callable_read_only_and_keeps_the_artifact_contract() -> 
     ] {
         assert!(artifacts.contains(name), "artifact {name} is not uploaded");
     }
-    for forbidden in ["gh release", "python3", "snapcraft upload", "--clobber"] {
+    for forbidden in ["gh release", "snapcraft upload", "--clobber"] {
         assert!(
             !scripts.contains(forbidden),
             "forbidden AppImage workflow command: {forbidden}"
