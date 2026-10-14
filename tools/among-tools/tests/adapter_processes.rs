@@ -109,6 +109,10 @@ for arg in "$@"; do printf 'gh %s\n' "$arg" >> "$log"; done
 case "$*" in
   *"releases/latest"*) printf '{"body":"{\"state\":\"complete\",\"record\":{\"tag\":\"v0.1.0\",\"source_sha\":\"%s\"}}"}' "$(cat "$(dirname "$0")/../source")" ;;
   *"git/ref/tags/"*) printf '{"object":{"type":"commit","sha":"%s"}}' "$(cat "$(dirname "$0")/../source")" ;;
+  *"releases?per_page=100"*)
+    # `gh api --paginate` prints one JSON array per page, back to back.
+    printf '[{"tag_name":"v9.9.9","draft":false,"assets":[],"body":""}]'
+    if [ -f "$(dirname "$0")/../release.json" ]; then printf '[%s]' "$(cat "$(dirname "$0")/../release.json")"; else printf '[]'; fi ;;
   *"releases/tags/"*) if [ -f "$(dirname "$0")/../release.json" ]; then cat "$(dirname "$0")/../release.json"; else printf 'HTTP 404: Not Found\n' >&2; exit 1; fi ;;
   *) printf '{}' ;;
 esac
@@ -198,7 +202,7 @@ fn github_reads_a_published_record_with_a_credential_and_no_wrong_arguments() ->
         "the credential was not passed to gh: {log}"
     );
     assert!(
-        log.contains("repos/fixture/among/releases/tags/v0.1.0"),
+        log.contains("repos/fixture/among/releases?per_page=100"),
         "the API path was wrong: {log}"
     );
     Ok(())
@@ -234,6 +238,7 @@ fn a_rolling_release_body_is_not_read_as_a_success_marker() -> Result<()> {
     fs::write(
         fixture.0.join("release.json"),
         serde_json::to_string(&json!({
+            "tag_name": "nightly",
             "draft": false,
             "body": json!({"state":"rolling","record":{"tag":"nightly","source_sha":"e"}}).to_string(),
         }))?,
@@ -463,7 +468,8 @@ fn an_unsupported_architecture_never_reaches_the_store_command() -> Result<()> {
 /// A `gh` stand-in for a repository where the release and its tag do not
 /// exist yet. `release create` records the draft release from the notes file
 /// the adapter wrote; the tag stays absent, as it does for a draft until the
-/// release is published.
+/// release is published. As GitHub documents, the by-tag endpoint returns only
+/// published releases, so the draft is visible only in the release list.
 const FIRST_RELEASE_GH: &str = r#"#!/bin/sh
 root="$(dirname "$0")/.."
 for arg in "$@"; do printf 'gh %s\n' "$arg" >> "$root/gh.out"; done
@@ -475,9 +481,10 @@ case "$*" in
       previous="$arg"
     done
     body="$(sed 's/\\/\\\\/g; s/"/\\"/g' "$notes")"
-    printf '{"draft":true,"assets":[],"body":"%s"}' "$body" > "$root/release.json" ;;
+    printf '{"tag_name":"%s","draft":true,"assets":[],"body":"%s"}' "$3" "$body" > "$root/release.json" ;;
   *"git/ref/tags/"*) printf 'HTTP 404: Not Found\n' >&2; exit 1 ;;
-  *"releases/tags/"*) if [ -f "$root/release.json" ]; then cat "$root/release.json"; else printf 'HTTP 404: Not Found\n' >&2; exit 1; fi ;;
+  *"releases?per_page=100"*) if [ -f "$root/release.json" ]; then printf '[%s]' "$(cat "$root/release.json")"; else printf '[]'; fi ;;
+  *"releases/tags/"*) printf 'HTTP 404: Not Found\n' >&2; exit 1 ;;
   *) printf '{}' ;;
 esac
 "#;
@@ -737,8 +744,10 @@ fn a_release_the_channel_map_does_not_show_is_a_failure() -> Result<()> {
 /// A `gh` stand-in that keeps one release as state, so a sequence of writes
 /// can be observed the way GitHub would answer it.
 ///
-/// The release exists while `draft` exists; `body` and `assets` are what the
-/// API returns for it. `release create` and a `release edit` with a notes file
+/// The release exists while `draft` exists; `tag`, `body` and `assets` are
+/// what the API returns for it. As GitHub documents, `releases/tags/TAG`
+/// returns a published release only, so a draft is visible only in the
+/// paginated release list. `release create` and a `release edit` with a notes file
 /// copy that file into `body` (the adapter deletes its body files after the
 /// call, so the copy is the only record of what was sent), and `--draft=false`
 /// publishes. `tag-source` is the commit the tag resolves to; without it the
@@ -754,9 +763,15 @@ for arg in "$@"; do
   [ "$previous" = "--notes-file" ] && notes="$arg"
   previous="$arg"
 done
+release() {
+  body="$(sed 's/\\/\\\\/g; s/"/\\"/g' "$root/body")"
+  printf '{"tag_name":"%s","draft":%s,"assets":%s,"body":"%s"}' "$(cat "$root/tag")" \
+    "$(cat "$root/draft")" "$(cat "$root/assets")" "$body"
+}
 case "$1 $2" in
   "release create")
-    cp "$notes" "$root/body"; printf true > "$root/draft"; printf '[]' > "$root/assets" ;;
+    cp "$notes" "$root/body"; printf true > "$root/draft"; printf '[]' > "$root/assets"
+    printf '%s' "$3" > "$root/tag" ;;
   "release edit")
     [ ! -f "$root/fail-edit" ] || { printf 'edit refused\n' >&2; exit 1; }
     [ -z "$notes" ] || cp "$notes" "$root/body"
@@ -768,10 +783,15 @@ case "$1 $2" in
     if [ -f "$root/tag-source" ]; then
       printf '{"object":{"type":"commit","sha":"%s"}}' "$(cat "$root/tag-source")"
     else printf 'HTTP 404: Not Found\n' >&2; exit 1; fi ;;
+  "api --paginate")
+    # One JSON array per page, back to back, as `gh api --paginate` prints
+    # them; the first page holds an unrelated release.
+    printf '[{"tag_name":"v9.9.9","draft":false,"assets":[],"body":""}]'
+    if [ -f "$root/draft" ]; then printf '[%s]' "$(release)"; else printf '[]'; fi ;;
   "api "*"/releases/tags/"*)
-    if [ -f "$root/draft" ]; then
-      body="$(sed 's/\\/\\\\/g; s/"/\\"/g' "$root/body")"
-      printf '{"draft":%s,"assets":%s,"body":"%s"}' "$(cat "$root/draft")" "$(cat "$root/assets")" "$body"
+    # GitHub documents this endpoint as returning a published release only.
+    if [ -f "$root/draft" ] && [ "$(cat "$root/draft")" = false ]; then
+      release
     else printf 'HTTP 404: Not Found\n' >&2; exit 1; fi ;;
   *) printf '{}' ;;
 esac
@@ -828,8 +848,17 @@ impl Repository {
     }
 
     /// Put an existing release in place: draft or published, the body GitHub
-    /// holds for it and the assets attached to it.
+    /// holds for it and the assets attached to it. A nightly record lives on
+    /// the rolling `nightly` release; any other record on its own tag.
     fn release(&self, draft: bool, body: &Value, assets: Value) -> Result<()> {
+        let tag = if body["record"]["mode"] == "nightly" {
+            "nightly"
+        } else {
+            body["record"]["tag"]
+                .as_str()
+                .ok_or("release body has no tag")?
+        };
+        fs::write(self.root().join("tag"), tag)?;
         fs::write(self.root().join("draft"), draft.to_string())?;
         fs::write(self.root().join("body"), body.to_string())?;
         fs::write(self.root().join("assets"), assets.to_string())?;
@@ -884,9 +913,12 @@ fn message<T>(outcome: Result<T>) -> Result<String> {
         .to_string())
 }
 
-const RELEASE_V010: &str = "api repos/fixture/among/releases/tags/v0.1.0";
+/// Releases, drafts included, are found through the paginated list; the
+/// by-tag endpoint would not show a draft.
+const RELEASES: &str = "api --paginate repos/fixture/among/releases?per_page=100";
+const RELEASE_V010: &str = RELEASES;
 const TAG_V010: &str = "api repos/fixture/among/git/ref/tags/v0.1.0";
-const RELEASE_NIGHTLY: &str = "api repos/fixture/among/releases/tags/nightly";
+const RELEASE_NIGHTLY: &str = RELEASES;
 
 /// Publishing a prepared draft turns exactly that release public and then
 /// confirms its tag names the checked commit: the Store may only start serving
@@ -963,7 +995,7 @@ fn publishing_a_missing_release_fails_without_any_write() -> Result<()> {
     repository.tag_points_to(&repository.source)?;
     assert_eq!(
         message(repository.drive(|github| github.publish(&record)))?,
-        "HTTP 404"
+        "GitHub release to publish is absent"
     );
     assert_eq!(repository.calls()?, [RELEASE_V010]);
     Ok(())
@@ -1309,6 +1341,62 @@ fn a_nightly_asset_without_an_id_stops_the_roll_before_upload() -> Result<()> {
             .iter()
             .any(|call| call.contains("upload") || call.contains("DELETE")),
         "{calls:?}"
+    );
+    Ok(())
+}
+
+/// A first roll interrupted after creating its draft leaves a draft nightly
+/// with assets. The retry must find that draft, which only the release list
+/// shows, rewrite it and remove its assets, never create a second release
+/// for the same tag.
+#[test]
+fn a_roll_after_an_interrupted_first_roll_reuses_the_draft() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.nightly_record()?;
+    repository.release(
+        true,
+        &json!({"state":"rolling","record":record}),
+        json!([{"id":7,"name":"among-amd64.snap"}]),
+    )?;
+    repository.drive(|github| github.roll(&record, &repository.assets()))?;
+    let calls = repository.calls()?;
+    assert!(
+        !calls.iter().any(|call| call.starts_with("release create")),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&"api --method DELETE repos/fixture/among/releases/assets/7".to_string()),
+        "{calls:?}"
+    );
+    assert_eq!(
+        repository.body()?,
+        json!({"state":"complete","record":record})
+    );
+    Ok(())
+}
+
+/// Two releases carrying one tag leave no way to know which one users see,
+/// so the lookup refuses rather than picking one.
+#[test]
+fn two_releases_with_one_tag_are_refused() -> Result<()> {
+    let fixture = fixture()?;
+    install(
+        &fixture.0,
+        "gh",
+        r#"#!/bin/sh
+printf '[{"tag_name":"v0.1.0","draft":true}][{"tag_name":"v0.1.0","draft":false}]'
+"#,
+    )?;
+    unsafe { std::env::set_var("GH_TOKEN", "test-token") };
+    let observed = GitHubRelease::new("fixture/among", &fixture.0).and_then(|github| {
+        github
+            .using_program(&fixture.0.join("bin/gh"))
+            .record("v0.1.0")
+    });
+    unsafe { std::env::remove_var("GH_TOKEN") };
+    assert_eq!(
+        observed.map_err(|error| error.to_string()),
+        Err("more than one GitHub release carries this tag".to_string())
     );
     Ok(())
 }
