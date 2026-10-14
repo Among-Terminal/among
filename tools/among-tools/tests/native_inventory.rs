@@ -275,7 +275,9 @@ fn actual_cli_inventories_a_real_debian_package_against_prime() -> Result<()> {
 
 /// Two package files for the same binary package make it ambiguous which one
 /// was staged, and a package with no file in prime was not staged at all;
-/// both are refused without an inventory.
+/// both are refused. A refusal leaves no output directory, not even the
+/// notices extracted from the packages read before it, and an output that
+/// already exists is refused untouched.
 #[test]
 fn actual_cli_refuses_duplicate_and_unstaged_real_packages() -> Result<()> {
     let f = fixture()?;
@@ -291,9 +293,20 @@ fn actual_cli_refuses_duplicate_and_unstaged_real_packages() -> Result<()> {
         String::from_utf8(result.stderr)?.trim_end(),
         "among-tools: duplicate binary package inputs"
     );
-    assert!(!f.0.join("audit/inventory.json").exists());
+    assert!(!f.0.join("audit").exists());
 
+    fs::create_dir(f.0.join("audit"))?;
+    fs::write(f.0.join("audit/kept"), b"earlier evidence")?;
+    let result = run_inventory(&f.0)?;
+    assert!(!result.status.success());
+    assert_eq!(
+        String::from_utf8(result.stderr)?.trim_end(),
+        "among-tools: native inventory output must be new"
+    );
+    assert_eq!(fs::read(f.0.join("audit/kept"))?, b"earlier evidence");
+    assert_eq!(fs::read_dir(f.0.join("audit"))?.count(), 1);
     fs::remove_dir_all(f.0.join("audit"))?;
+
     fs::remove_file(f.0.join("debs/second.deb"))?;
     fs::remove_file(prime.join("usr/lib/libsynthetic.so.1"))?;
     build_deb(&f.0, "unstaged-library", &f.0.join("debs/unstaged.deb"))?;
@@ -304,6 +317,6 @@ fn actual_cli_refuses_duplicate_and_unstaged_real_packages() -> Result<()> {
         String::from_utf8(result.stderr)?.trim_end(),
         "among-tools: Debian input has no observable regular files in prime"
     );
-    assert!(!f.0.join("audit/inventory.json").exists());
+    assert!(!f.0.join("audit").exists());
     Ok(())
 }

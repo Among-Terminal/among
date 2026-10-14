@@ -128,6 +128,9 @@ pub fn payload(
             }
         }
     }
+    // A package that contributes nothing to the prime is not staged in the
+    // artifact. Its notices must not be audited as if they shipped, or a
+    // base-image package reintroduces references the payload never had.
     if staged.is_empty() {
         return Err("Debian input has no observable regular files in prime".into());
     }
@@ -188,7 +191,27 @@ pub fn inventory(prime: &Path, debs: &Path, output: &Path, scratch: &Path) -> Re
             "no exact staged Debian artifacts; host package metadata is not a substitute".into(),
         );
     }
+    if output.symlink_metadata().is_ok() {
+        return Err("native inventory output must be new".into());
+    }
     fs::create_dir(output)?;
+    // A refused inventory leaves nothing behind: extracted notices without an
+    // inventory.json would look like an audit that was started and kept.
+    let result = write_inventory(&inputs, prime, output, scratch);
+    if result.is_err() {
+        // The refusal is what the caller needs; a failed cleanup of the
+        // directory this call just created cannot change it.
+        let _ = fs::remove_dir_all(output);
+    }
+    result
+}
+
+fn write_inventory(
+    inputs: &[std::path::PathBuf],
+    prime: &Path,
+    output: &Path,
+    scratch: &Path,
+) -> Result<Value> {
     let base = storage::private_directory(scratch, "among-native-inventory")?;
     let env = BTreeMap::from([
         ("PATH".into(), "/usr/bin:/bin".into()),
@@ -242,16 +265,6 @@ pub fn inventory(prime: &Path, debs: &Path, output: &Path, scratch: &Path) -> Re
             return Err("cannot inspect exact Debian payload archive".into());
         }
         let (staged, notices, references) = payload(File::open(data)?, prime, output, package)?;
-        // A package that contributes nothing to the prime is not staged in the
-        // artifact. Its notices must not be audited as if they shipped, or a
-        // base-image package reintroduces references the payload never had.
-        if staged.is_empty() {
-            return Err(format!(
-                "Debian input {package} contributes no file to the prime; \
-                 it is not staged in this artifact and its notices must not be audited"
-            )
-            .into());
-        }
         records.push(json!({"package":package,"version":version,"architecture":deb822::required(&fields,"Architecture")?,"source_package":source,"source_version":source_version,"input":{"filename":deb.file_name().and_then(|name|name.to_str()).ok_or("Debian filename is not UTF-8")?,"sha256":storage::sha256(File::open(deb)?)?},"staged_files":staged,"notices":notices,"common_license_references":references}));
     }
     let document = json!({"schema":1,"scope":"exact Debian stage inputs and their observed prime files","source_delivery":"not established; matching source archives/patches/build instructions still required","packages":records});
