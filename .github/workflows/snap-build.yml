@@ -199,6 +199,10 @@ jobs:
             --mount "type=bind,source=$PWD/packaging/ci/snap-runtime/check-installed.sh,target=/check-installed.sh,readonly" \
             --mount "type=bind,source=$PWD/runtime-evidence,target=/var/lib/among-checks" \
             among-clean-snap:ci
+          # systemctl needs systemd's private socket, which appears only after
+          # the detached container's init has started; calling it earlier
+          # fails with "Failed to connect to bus".
+          timeout 120 sh -c 'until docker exec among-clean-runtime test -S /run/systemd/private; do sleep 1; done'
           docker exec among-clean-runtime mount -t securityfs securityfs /sys/kernel/security
           docker exec among-clean-runtime sh -eu -c 'test -d /sys/kernel/security/apparmor; cat /proc/self/mountinfo > /var/lib/among-checks/runtime-mountinfo.txt'
           docker exec among-clean-runtime systemctl restart apparmor snapd.apparmor

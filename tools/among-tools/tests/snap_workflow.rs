@@ -90,6 +90,23 @@ fn failure_evidence_upload_follows_the_check_root_the_job_exports() -> Result<()
     Ok(())
 }
 
+/// A detached systemd container accepts `docker exec` before its init has
+/// opened the private socket systemctl talks to; a systemctl call in that
+/// window fails with "Failed to connect to bus". The wait must come first.
+#[test]
+fn clean_runtime_waits_for_systemd_before_the_first_systemctl() -> Result<()> {
+    let workflow = snap_workflow()?;
+    let scripts = job_scripts(&workflow["jobs"]["clean-runtime"])?;
+    let wait = scripts
+        .find("until docker exec among-clean-runtime test -S /run/systemd/private")
+        .ok_or("clean runtime never waits for systemd's private socket")?;
+    let first = scripts
+        .find("docker exec among-clean-runtime systemctl")
+        .ok_or("clean runtime no longer calls systemctl")?;
+    assert!(wait < first);
+    Ok(())
+}
+
 /// The clean runtime writes evidence to a bind-mounted directory: the mount
 /// target, the checker environment, the image's mount point and the script
 /// must all name the same container path, or evidence is lost or refused.
