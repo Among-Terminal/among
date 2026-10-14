@@ -60,23 +60,25 @@ fn actual_render_cli_refuses_missing_dependencies_without_creating_output() -> R
     Ok(())
 }
 
+/// The README video tooling is kept outside the public repository, behind the
+/// private `video` link of the owner's checkout. Where it is absent the wiring
+/// cannot be checked at all, so the test is not part of the default run and,
+/// when asked for explicitly, fails instead of passing without checking.
 #[test]
+#[ignore = "needs the private README video directory, which the public repository does not contain; run with --ignored in a checkout that has the video link"]
 fn npm_render_caller_targets_native_command_and_requires_explicit_private_output() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .ok_or("project root absent")?;
-    // The README video tooling is release tooling kept outside this repository,
-    // the same way the capture harness is. When it is absent the wiring it
-    // describes cannot be checked, and that is reported rather than passed
-    // silently.
     let manifest = root.join("video/readme-promo/package.json");
     if !manifest.is_file() {
-        eprintln!(
-            "SKIPPED: video/readme-promo/package.json is absent; the README video render \
-             wiring was not checked."
-        );
-        return Ok(());
+        return Err(format!(
+            "{} is absent: this check needs the private README video directory behind the \
+             video link of the owner's checkout",
+            manifest.display()
+        )
+        .into());
     }
     let package = storage::parse_json(&fs::read(&manifest)?)?;
     let render = package["scripts"]["render"]
