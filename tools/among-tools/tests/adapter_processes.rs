@@ -7,9 +7,9 @@
 //!
 //! Fakes of the `Destinations` trait alone cannot catch a wrong argument, a
 //! missing credential or a swallowed error; these tests can. They cover the
-//! adapters' read paths and the Store architecture refusal; the write paths
-//! (GitHub prepare, publish and roll, Store upload and release) are not driven
-//! here.
+//! adapters' read paths and their write paths: GitHub prepare, publish and
+//! roll, and the Store upload and release behind `ensure`, including retries
+//! that must write nothing and failures part-way through.
 
 use among_tools::{
     promotion::Destinations,
@@ -731,5 +731,584 @@ fn a_release_the_channel_map_does_not_show_is_a_failure() -> Result<()> {
         .ok_or("an unobserved release was accepted")?
         .to_string();
     assert!(refusal.contains("not observed"), "{refusal}");
+    Ok(())
+}
+
+/// A `gh` stand-in that keeps one release as state, so a sequence of writes
+/// can be observed the way GitHub would answer it.
+///
+/// The release exists while `draft` exists; `body` and `assets` are what the
+/// API returns for it. `release create` and a `release edit` with a notes file
+/// copy that file into `body` (the adapter deletes its body files after the
+/// call, so the copy is the only record of what was sent), and `--draft=false`
+/// publishes. `tag-source` is the commit the tag resolves to; without it the
+/// tag is absent. `fail-upload` and `fail-edit` make those calls fail the way
+/// a rejected `gh` call does. Every call is logged as one line, so tests can
+/// compare the exact sequence.
+const STATEFUL_GH: &str = r#"#!/bin/sh
+root="$(dirname "$0")/.."
+[ -n "${GH_TOKEN:-}" ] || { printf 'gh without credential\n' >> "$root/gh.out"; exit 3; }
+printf 'gh %s\n' "$*" >> "$root/gh.out"
+notes=""; previous=""
+for arg in "$@"; do
+  [ "$previous" = "--notes-file" ] && notes="$arg"
+  previous="$arg"
+done
+case "$1 $2" in
+  "release create")
+    cp "$notes" "$root/body"; printf true > "$root/draft"; printf '[]' > "$root/assets" ;;
+  "release edit")
+    [ ! -f "$root/fail-edit" ] || { printf 'edit refused\n' >&2; exit 1; }
+    [ -z "$notes" ] || cp "$notes" "$root/body"
+    case " $* " in *" --draft=false "*) printf false > "$root/draft" ;; esac ;;
+  "release upload")
+    [ ! -f "$root/fail-upload" ] || { printf 'upload refused\n' >&2; exit 1; } ;;
+  "api --method") ;;
+  "api "*"/git/ref/tags/"*)
+    if [ -f "$root/tag-source" ]; then
+      printf '{"object":{"type":"commit","sha":"%s"}}' "$(cat "$root/tag-source")"
+    else printf 'HTTP 404: Not Found\n' >&2; exit 1; fi ;;
+  "api "*"/releases/tags/"*)
+    if [ -f "$root/draft" ]; then
+      body="$(sed 's/\\/\\\\/g; s/"/\\"/g' "$root/body")"
+      printf '{"draft":%s,"assets":%s,"body":"%s"}' "$(cat "$root/draft")" "$(cat "$root/assets")" "$body"
+    else printf 'HTTP 404: Not Found\n' >&2; exit 1; fi ;;
+  *) printf '{}' ;;
+esac
+"#;
+
+/// A repository driven through `STATEFUL_GH`, with one checked artifact.
+struct Repository {
+    fixture: Fixture,
+    source: String,
+    artifact: PathBuf,
+}
+
+impl Repository {
+    fn new() -> Result<Self> {
+        let fixture = fixture()?;
+        install(&fixture.0, "gh", STATEFUL_GH)?;
+        let artifact = fixture.0.join("among-amd64.snap");
+        fs::write(&artifact, b"synthetic checked snap")?;
+        Ok(Self {
+            fixture,
+            source: "b".repeat(40),
+            artifact,
+        })
+    }
+
+    fn root(&self) -> &Path {
+        &self.fixture.0
+    }
+
+    fn record(&self, tag: &str) -> Result<Value> {
+        Ok(json!({
+            "tag": tag,
+            "source_sha": self.source,
+            "assets": {"among-amd64.snap": storage::sha256(fs::File::open(&self.artifact)?)?},
+        }))
+    }
+
+    fn nightly_record(&self) -> Result<Value> {
+        let mut record = self.record("nightly-20261013")?;
+        record["mode"] = json!("nightly");
+        Ok(record)
+    }
+
+    fn assets(&self) -> std::collections::BTreeMap<String, PathBuf> {
+        std::collections::BTreeMap::from([("among-amd64.snap".to_string(), self.artifact.clone())])
+    }
+
+    /// The SHA-256 digest GitHub reports for the checked artifact.
+    fn artifact_digest(&self) -> Result<String> {
+        Ok(format!(
+            "sha256:{}",
+            storage::sha256(fs::File::open(&self.artifact)?)?
+        ))
+    }
+
+    /// Put an existing release in place: draft or published, the body GitHub
+    /// holds for it and the assets attached to it.
+    fn release(&self, draft: bool, body: &Value, assets: Value) -> Result<()> {
+        fs::write(self.root().join("draft"), draft.to_string())?;
+        fs::write(self.root().join("body"), body.to_string())?;
+        fs::write(self.root().join("assets"), assets.to_string())?;
+        Ok(())
+    }
+
+    fn tag_points_to(&self, source: &str) -> Result<()> {
+        fs::write(self.root().join("tag-source"), source)?;
+        Ok(())
+    }
+
+    fn fail(&self, call: &str) -> Result<()> {
+        fs::write(self.root().join(format!("fail-{call}")), b"")?;
+        Ok(())
+    }
+
+    /// Run one adapter operation with the credential set for its whole
+    /// duration, as a release job has it.
+    fn drive<T>(&self, operation: impl FnOnce(&mut GitHubRelease) -> Result<T>) -> Result<T> {
+        unsafe { std::env::set_var("GH_TOKEN", "test-token") };
+        let outcome = GitHubRelease::new("fixture/among", self.root()).and_then(|github| {
+            let mut github = github.using_program(&self.root().join("bin/gh"));
+            operation(&mut github)
+        });
+        unsafe { std::env::remove_var("GH_TOKEN") };
+        outcome
+    }
+
+    /// Every `gh` invocation in order, without the `gh ` prefix.
+    fn calls(&self) -> Result<Vec<String>> {
+        Ok(log_of(self.root())?
+            .lines()
+            .filter_map(|line| line.strip_prefix("gh "))
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// The body GitHub holds for the release now.
+    fn body(&self) -> Result<Value> {
+        storage::parse_json(&fs::read(self.root().join("body"))?)
+    }
+
+    fn path(&self, name: &str) -> String {
+        self.root().join(name).display().to_string()
+    }
+}
+
+fn message<T>(outcome: Result<T>) -> Result<String> {
+    Ok(outcome
+        .err()
+        .ok_or("the operation was expected to fail")?
+        .to_string())
+}
+
+const RELEASE_V010: &str = "api repos/fixture/among/releases/tags/v0.1.0";
+const TAG_V010: &str = "api repos/fixture/among/git/ref/tags/v0.1.0";
+const RELEASE_NIGHTLY: &str = "api repos/fixture/among/releases/tags/nightly";
+
+/// Publishing a prepared draft turns exactly that release public and then
+/// confirms its tag names the checked commit: the Store may only start serving
+/// a binary once its corresponding source is public.
+#[test]
+fn publishing_a_prepared_draft_makes_it_public_and_confirms_its_tag() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        true,
+        &json!({"state":"prepared","record":record}),
+        json!([]),
+    )?;
+    repository.tag_points_to(&repository.source)?;
+    repository.drive(|github| github.publish(&record))?;
+    assert_eq!(
+        repository.calls()?,
+        [
+            RELEASE_V010,
+            "release edit v0.1.0 --repo fixture/among --draft=false",
+            TAG_V010,
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(repository.root().join("draft"))?,
+        "false"
+    );
+    Ok(())
+}
+
+/// A retry after a successful publication must not touch the public release
+/// again; it only re-confirms the tag.
+#[test]
+fn publishing_an_already_public_release_writes_nothing() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        false,
+        &json!({"state":"prepared","record":record}),
+        json!([]),
+    )?;
+    repository.tag_points_to(&repository.source)?;
+    repository.drive(|github| github.publish(&record))?;
+    assert_eq!(repository.calls()?, [RELEASE_V010, TAG_V010]);
+    Ok(())
+}
+
+/// A public release whose tag names another commit does not carry the checked
+/// source, so the Store step after it must be refused.
+#[test]
+fn a_published_tag_naming_another_commit_refuses_store_promotion() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        false,
+        &json!({"state":"prepared","record":record}),
+        json!([]),
+    )?;
+    repository.tag_points_to(&"9".repeat(40))?;
+    assert_eq!(
+        message(repository.drive(|github| github.publish(&record)))?,
+        "published tag does not identify the checked source; Store promotion refused"
+    );
+    assert_eq!(repository.calls()?, [RELEASE_V010, TAG_V010]);
+    Ok(())
+}
+
+/// Publishing a release that was never prepared is a failure, not a silent
+/// success with nothing published.
+#[test]
+fn publishing_a_missing_release_fails_without_any_write() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.tag_points_to(&repository.source)?;
+    assert_eq!(
+        message(repository.drive(|github| github.publish(&record)))?,
+        "HTTP 404"
+    );
+    assert_eq!(repository.calls()?, [RELEASE_V010]);
+    Ok(())
+}
+
+/// When GitHub rejects the publication, the failure surfaces without the
+/// command's own output and nothing after it runs.
+#[test]
+fn a_rejected_publication_stops_before_the_tag_check() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        true,
+        &json!({"state":"prepared","record":record}),
+        json!([]),
+    )?;
+    repository.tag_points_to(&repository.source)?;
+    repository.fail("edit")?;
+    assert_eq!(
+        message(repository.drive(|github| github.publish(&record)))?,
+        "protected destination operation failed; see the protected job log"
+    );
+    assert_eq!(
+        repository.calls()?,
+        [
+            RELEASE_V010,
+            "release edit v0.1.0 --repo fixture/among --draft=false",
+        ]
+    );
+    Ok(())
+}
+
+/// Re-running preparation against a release that already carries this record
+/// and the checked bytes must upload nothing.
+#[test]
+fn preparing_again_with_the_same_record_and_bytes_uploads_nothing() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        true,
+        &json!({"state":"prepared","record":record}),
+        json!([{"name":"among-amd64.snap","digest":repository.artifact_digest()?}]),
+    )?;
+    repository.tag_points_to(&repository.source)?;
+    repository.drive(|github| github.prepare(&record, &repository.assets()))?;
+    assert_eq!(repository.calls()?, [RELEASE_V010, RELEASE_V010, TAG_V010]);
+    Ok(())
+}
+
+/// A release prepared for another record belongs to another candidate; adding
+/// these bytes to it would mix two provenances in one release.
+#[test]
+fn a_release_prepared_for_another_record_is_a_provenance_conflict() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    let mut other = record.clone();
+    other["source_sha"] = json!("a".repeat(40));
+    repository.release(true, &json!({"state":"prepared","record":other}), json!([]))?;
+    repository.tag_points_to(&repository.source)?;
+    assert_eq!(
+        message(repository.drive(|github| github.prepare(&record, &repository.assets())))?,
+        "GitHub release provenance conflict"
+    );
+    assert!(!repository
+        .calls()?
+        .iter()
+        .any(|call| call.starts_with("release")));
+    Ok(())
+}
+
+/// An attached asset whose recorded digest differs from the checked bytes
+/// means the release already ships something else under that name.
+#[test]
+fn an_attached_asset_with_another_digest_is_a_conflict() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        true,
+        &json!({"state":"prepared","record":record}),
+        json!([{"name":"among-amd64.snap","digest":format!("sha256:{}", "0".repeat(64))}]),
+    )?;
+    repository.tag_points_to(&repository.source)?;
+    assert_eq!(
+        message(repository.drive(|github| github.prepare(&record, &repository.assets())))?,
+        "existing GitHub asset digest conflict"
+    );
+    assert!(!repository
+        .calls()?
+        .iter()
+        .any(|call| call.starts_with("release")));
+    Ok(())
+}
+
+/// An attached asset with no recorded digest is not evidence of the checked
+/// bytes either; it is refused rather than trusted.
+#[test]
+fn an_attached_asset_without_a_digest_is_a_conflict() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        true,
+        &json!({"state":"prepared","record":record}),
+        json!([{"name":"among-amd64.snap"}]),
+    )?;
+    repository.tag_points_to(&repository.source)?;
+    assert_eq!(
+        message(repository.drive(|github| github.prepare(&record, &repository.assets())))?,
+        "existing GitHub asset digest conflict"
+    );
+    Ok(())
+}
+
+/// An attached asset this run never checked would ship unverified bytes.
+#[test]
+fn an_attached_asset_outside_the_record_is_refused() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        true,
+        &json!({"state":"prepared","record":record}),
+        json!([{"name":"unchecked.snap","digest":repository.artifact_digest()?}]),
+    )?;
+    repository.tag_points_to(&repository.source)?;
+    assert_eq!(
+        message(repository.drive(|github| github.prepare(&record, &repository.assets())))?,
+        "unexpected immutable release assets"
+    );
+    assert!(!repository
+        .calls()?
+        .iter()
+        .any(|call| call.starts_with("release")));
+    Ok(())
+}
+
+/// A public release cannot gain assets: it would change what users have
+/// already downloaded under that tag.
+#[test]
+fn a_public_release_missing_a_checked_asset_is_not_amended() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        false,
+        &json!({"state":"prepared","record":record}),
+        json!([]),
+    )?;
+    repository.tag_points_to(&repository.source)?;
+    assert_eq!(
+        message(repository.drive(|github| github.prepare(&record, &repository.assets())))?,
+        "published immutable release is missing a checked asset"
+    );
+    assert!(!repository
+        .calls()?
+        .iter()
+        .any(|call| call.starts_with("release")));
+    Ok(())
+}
+
+/// An existing stable tag naming another commit binds the release to the
+/// wrong source.
+#[test]
+fn an_existing_tag_naming_another_commit_is_refused_before_upload() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.record("v0.1.0")?;
+    repository.release(
+        true,
+        &json!({"state":"prepared","record":record}),
+        json!([]),
+    )?;
+    repository.tag_points_to(&"9".repeat(40))?;
+    assert_eq!(
+        message(repository.drive(|github| github.prepare(&record, &repository.assets())))?,
+        "remote immutable release tag/source conflict"
+    );
+    assert!(!repository
+        .calls()?
+        .iter()
+        .any(|call| call.starts_with("release")));
+    Ok(())
+}
+
+/// The first nightly creates the rolling release as a draft prerelease that
+/// never becomes "latest", attaches the artifact, moves the tag and only then
+/// publishes it with a "complete" body. Afterwards that body is the success
+/// marker a repeated nightly is compared against, and no body file is left in
+/// the work directory.
+#[test]
+fn the_first_roll_creates_uploads_moves_the_tag_and_completes_last() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.nightly_record()?;
+    let marker = repository.drive(|github| {
+        github.roll(&record, &repository.assets())?;
+        github.marker()
+    })?;
+    let source = &repository.source;
+    assert_eq!(
+        repository.calls()?,
+        [
+            RELEASE_NIGHTLY.to_string(),
+            format!(
+                "release create nightly --repo fixture/among --target {source} --draft \
+                 --prerelease --latest=false --notes-file {}",
+                repository.path("release-body-rolling.json")
+            ),
+            RELEASE_NIGHTLY.to_string(),
+            format!(
+                "release upload nightly {} --repo fixture/among",
+                repository.artifact.display()
+            ),
+            format!(
+                "api --method PATCH repos/fixture/among/git/refs/tags/nightly \
+                 -f sha={source} -F force=true"
+            ),
+            format!(
+                "release edit nightly --repo fixture/among --notes-file {} --prerelease \
+                 --latest=false --draft=false",
+                repository.path("release-body-complete.json")
+            ),
+            RELEASE_NIGHTLY.to_string(),
+        ]
+    );
+    assert_eq!(
+        repository.body()?,
+        json!({"state":"complete","record":record})
+    );
+    assert_eq!(marker, Some(record));
+    for name in ["release-body-rolling.json", "release-body-complete.json"] {
+        assert!(
+            !repository.root().join(name).exists(),
+            "{name} was left behind"
+        );
+    }
+    Ok(())
+}
+
+/// Rolling onto an existing nightly first rewrites its body to "rolling", so
+/// the previous success marker is gone before any asset is removed, then
+/// deletes every old asset and uploads the new one.
+#[test]
+fn rolling_an_existing_nightly_invalidates_the_marker_before_replacing_assets() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.nightly_record()?;
+    let mut previous = record.clone();
+    previous["source_sha"] = json!("a".repeat(40));
+    repository.release(
+        false,
+        &json!({"state":"complete","record":previous}),
+        json!([{"id":7,"name":"among-amd64.snap"},{"id":8,"name":"among-arm64.snap"}]),
+    )?;
+    repository.drive(|github| github.roll(&record, &repository.assets()))?;
+    let calls = repository.calls()?;
+    assert_eq!(
+        calls[..6],
+        [
+            RELEASE_NIGHTLY.to_string(),
+            format!(
+                "release edit nightly --repo fixture/among --notes-file {}",
+                repository.path("release-body-rolling.json")
+            ),
+            RELEASE_NIGHTLY.to_string(),
+            "api --method DELETE repos/fixture/among/releases/assets/7".to_string(),
+            "api --method DELETE repos/fixture/among/releases/assets/8".to_string(),
+            format!(
+                "release upload nightly {} --repo fixture/among",
+                repository.artifact.display()
+            ),
+        ]
+    );
+    assert_eq!(calls.len(), 8, "{calls:?}");
+    assert_eq!(
+        repository.body()?,
+        json!({"state":"complete","record":record})
+    );
+    Ok(())
+}
+
+/// An upload that fails part-way leaves the rolling body in place: the tag is
+/// not moved, the release is not completed, no success marker is readable and
+/// a retry reconciles instead of reporting the nightly delivered.
+#[test]
+fn a_failed_roll_upload_leaves_no_success_marker() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.nightly_record()?;
+    let mut previous = record.clone();
+    previous["source_sha"] = json!("a".repeat(40));
+    repository.release(
+        false,
+        &json!({"state":"complete","record":previous}),
+        json!([{"id":7,"name":"among-amd64.snap"}]),
+    )?;
+    repository.fail("upload")?;
+    let failure = message(repository.drive(|github| github.roll(&record, &repository.assets())))?;
+    assert_eq!(
+        failure,
+        "protected destination operation failed; see the protected job log"
+    );
+    let calls = repository.calls()?;
+    assert!(
+        calls
+            .last()
+            .is_some_and(|call| call.starts_with("release upload")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call.contains("PATCH")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call.contains("--draft=false")),
+        "{calls:?}"
+    );
+    assert_eq!(
+        repository.body()?,
+        json!({"state":"rolling","record":record})
+    );
+    assert_eq!(repository.drive(|github| github.marker())?, None);
+    for name in ["release-body-rolling.json", "release-body-complete.json"] {
+        assert!(
+            !repository.root().join(name).exists(),
+            "{name} was left behind"
+        );
+    }
+    Ok(())
+}
+
+/// An attached asset the API reports without an id cannot be removed, so the
+/// roll stops before uploading anything next to it.
+#[test]
+fn a_nightly_asset_without_an_id_stops_the_roll_before_upload() -> Result<()> {
+    let repository = Repository::new()?;
+    let record = repository.nightly_record()?;
+    repository.release(
+        false,
+        &json!({"state":"complete","record":record}),
+        json!([{"name":"among-amd64.snap"}]),
+    )?;
+    assert_eq!(
+        message(repository.drive(|github| github.roll(&record, &repository.assets())))?,
+        "nightly asset has no id"
+    );
+    let calls = repository.calls()?;
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.contains("upload") || call.contains("DELETE")),
+        "{calls:?}"
+    );
     Ok(())
 }
