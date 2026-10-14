@@ -74,16 +74,6 @@ Usage:
   among-tools check-rpm-notices <source-root> <extracted-payload> <requires.txt>
   among-tools check-rpm-source-archive <source-root> <tar-listing.txt> <top-directory>
   among-tools make-rpm-older-fixture <candidate.rpm> <empty-work-directory> <candidate-directory>
-  among-tools review-readme-action <source-root> <new-private-evidence-directory>
-  among-tools review-readme-promo <source-root> <video-basename.mp4> <new-private-evidence-directory>
-  among-tools prepare-readme-promo <source-root> <new-private-workspace>
-  among-tools render-readme-promo <source-root> <new-private-workspace>
-  among-tools render-readme-action <source-root> <new-private-workspace>
-  among-tools export-demo <private-capture-directory> <new-private-evidence-directory>
-  among-tools assemble-demo <reviewed-clip-directory> <new-private-evidence-directory>
-  among-tools check-demo-clips <private-capture-directory> <new-private-evidence-directory>
-  among-tools encode-demo-clip <private-raw-video> <recorded-events.json> <new-private-evidence-directory>
-  among-tools capture-readme-plugins <source-root> <application> <native-plugin-directory> <on|off> <new-private-evidence-directory>
   among-tools inventory-snap-native <prime> <exact-debs> <new-output>
   among-tools package-source-delivery <snap> <snapshot> <native> <sources> <metadata> <prime> <builder> <instructions> <new-output>
   among-tools --help
@@ -186,101 +176,6 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             println!(
                 "{}",
                 among_tools::rpm::prepare_release(Path::new(root), Path::new(output))?
-            );
-        }
-        [command, root, app, plugins, mode, output] if command == "capture-readme-plugins" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::plugin_capture::capture(
-                    Path::new(root),
-                    Path::new(app),
-                    Path::new(plugins),
-                    mode,
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, raw, events, output] if command == "encode-demo-clip" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::demo_clip_media::encode(
-                    Path::new(raw),
-                    Path::new(events),
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, source, output] if command == "check-demo-clips" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::demo_clips::review(
-                    Path::new(source),
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, source, output] if command == "assemble-demo" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::demo_assembly::assemble(
-                    Path::new(source),
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, source, output] if command == "export-demo" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::demo_export::export(
-                    Path::new(source),
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, root, output] if command == "render-readme-action" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::promo_render::render_action(
-                    Path::new(root),
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, root, output] if command == "render-readme-promo" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::promo_render::render(
-                    Path::new(root),
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, root, output] if command == "prepare-readme-promo" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::promo_prepare::prepare(
-                    Path::new(root),
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, root, filename, output] if command == "review-readme-promo" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::promo_review::review(
-                    Path::new(root),
-                    filename,
-                    Path::new(output)
-                )?)?
-            );
-        }
-        [command, root, output] if command == "review-readme-action" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&among_tools::action_review::review(
-                    Path::new(root),
-                    Path::new(output)
-                )?)?
             );
         }
         [command, root] if command == "check-rpm-spec" => {
