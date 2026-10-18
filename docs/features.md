@@ -12,7 +12,9 @@ demo tools, not software installed or configured by Among Terminal.
 
 Press **Ctrl+Shift+N** to split the focused pane. A wide pane splits side by side;
 a tall pane splits top to bottom. Repeat to build a nested layout with separate
-shells, for example a project listing, file manager and process monitor.
+shells, for example a project listing, file manager and process monitor. The new
+terminal starts in the directory of the pane it was split from, so both halves
+open where the work already is. See [panes](panes.md#splitting-a-pane).
 
 Drag a divider to allocate more space, or press **Ctrl+Shift** with an arrow to
 move the divider next to the focused pane in that direction: Left/Right move a

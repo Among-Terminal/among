@@ -238,6 +238,19 @@ owned evidence directory. Permission fixtures are restored even on failure.
 Passing against a source executable does not close release-CI installed-package
 gates. Pair this with `check-preferences-from-cargo` for all ten Preferences phases.
 
+## Split-inherited terminal directory
+
+`ci-x11 among-tools check-split-directory AMONG_BINARY` drives the selected native
+application and proves where a new terminal actually starts. It changes directory in
+a pane, makes that pane publish its directory, splits it, and then reads the
+self-check report and each shell's own `pwd`: the new terminal must be in the
+directory of the pane it was split from, the pane that was split must not move, and
+an available directory must not be reported as unavailable. Removing that directory
+before a further split must produce the fallback directory and a report naming the
+requested location. Requirements match `check-sessions`: non-root execution, an
+owned X11/D-Bus display, xdotool, xprop and ImageMagick; evidence stays in its own
+directory.
+
 ## Source and native provenance
 
 `package-native-checker BINARY SOURCE_SHA TAG TARGET ARCH NEW_DIRECTORY` copies a

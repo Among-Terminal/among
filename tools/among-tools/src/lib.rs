@@ -56,6 +56,7 @@ pub mod sha3;
 pub mod snap_runtime;
 pub mod source_delivery;
 pub mod source_snapshot;
+pub mod split_directory;
 pub mod stable_build;
 pub mod stable_source;
 pub mod storage;

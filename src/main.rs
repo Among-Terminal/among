@@ -210,7 +210,9 @@ pub fn spawn_shell(
                 done(Ok(actual));
             }
             Err(err) if retry => {
-                eprintln!("among: shell launch failed at saved directory, trying fallback: {err}");
+                eprintln!(
+                    "among: shell launch failed at requested directory, trying fallback: {err}"
+                );
                 let (fallback, _) = session::initial_directory(initial.as_deref());
                 spawn_shell(&retry_pty, &watched, fallback, false, done);
             }

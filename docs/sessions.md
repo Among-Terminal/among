@@ -28,7 +28,9 @@ If a saved directory is deleted or inaccessible, the shell uses an accessible
 home or startup directory. Settings shows affected panes. VTE can silently fall
 back during spawning; the host reads the new process's actual `/proc/<pid>/cwd`
 rather than assuming the requested path was used. Only the actual known location
-is recorded. New ordinary terminals retain the normal startup directory.
+is recorded. A workspace's first terminal keeps the normal startup directory; a
+terminal created by [splitting a pane](panes.md#splitting-a-pane) starts in that
+pane's directory instead, and records it because it really started there.
 
 For directory changes after launch, the shell must publish OSC 7. See the tested
 [Bash integration](plugins.md#live-status-examples). This does not require enabling
@@ -70,9 +72,12 @@ Pane IDs are nonzero and unique across all workspaces. Sparse IDs retain their
 numbers without reserving an array up to that number; exhausted IDs prevent new
 pane creation instead of wrapping. Each focused ID must belong to that workspace.
 Directory entries must exactly match its leaves. Paths are absolute or `null`
-when unknown; they come from terminal-reported cwd or a known initial shell
-directory, never another pane's cwd. Changes after launch need shell OSC 7 reporting
-to be known reliably. No plugin is required to collect these reports.
+when unknown; they come from terminal-reported cwd or the directory the shell
+actually started in. A pane with no directory of its own records `null` rather
+than borrowing another pane's location; a pane created by splitting records the
+directory it was started in, which is the pane it was split from. Changes after
+launch need shell OSC 7 reporting to be known reliably. No plugin is required to
+collect these reports.
 
 The file contains no commands, process IDs, shell environment or scrollback.
 Input is bounded to 8 MiB, 64 nested splits, 4096 panes and 256 workspaces;

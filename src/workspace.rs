@@ -63,7 +63,7 @@ impl Workspace {
         self.nodes.panes()
     }
 
-    #[cfg(test)]
+    /// The directory recorded for a pane, or `None` while it is unknown.
     pub fn cwd_of(&self, pane: PaneId) -> Option<&str> {
         self.cwd
             .iter()
@@ -86,7 +86,14 @@ impl Workspace {
         let orientation = tree::auto_orientation(width, height);
         let focused = self.focused;
         self.nodes = self.nodes.split_pane(focused, orientation, new_pane)?;
-        self.cwd.push((new_pane, None));
+        // The new terminal starts where the pane it was split from is, so both
+        // halves of a split open in the same directory instead of the new one
+        // falling back to the directory Among itself started in. The entry is a
+        // copy of a string, not a link to the other pane's record: each shell
+        // then updates only its own, and a later change in one half cannot move
+        // the other.
+        let inherited = self.cwd_of(focused).map(str::to_owned);
+        self.cwd.push((new_pane, inherited));
         self.running += 1;
         // Focus moves to the newly created pane.
         self.focused = new_pane;
@@ -455,6 +462,46 @@ mod tests {
 
         ws.close(PaneId(2)).unwrap();
         assert_eq!(ws.cwd_of(PaneId(2)), None);
+    }
+
+    #[test]
+    fn a_split_hands_the_origin_panes_directory_to_the_new_pane() {
+        let mut ws = workspace();
+        ws.set_cwd(PaneId(1), Some("/projects/among".into()));
+        let new = ws.split_focused(400, 200, PaneId(2)).unwrap();
+        assert_eq!(new, PaneId(2));
+        assert_eq!(
+            ws.cwd_of(PaneId(2)),
+            Some("/projects/among"),
+            "the new terminal is started in the directory of the pane it was split from"
+        );
+    }
+
+    #[test]
+    fn a_split_from_a_pane_without_a_directory_records_none() {
+        let mut ws = workspace();
+        ws.split_focused(400, 200, PaneId(2));
+        assert_eq!(
+            ws.cwd_of(PaneId(2)),
+            None,
+            "an unknown origin leaves the new pane unknown, so the start directory still applies"
+        );
+    }
+
+    #[test]
+    fn a_split_copies_the_directory_rather_than_linking_it() {
+        let mut ws = workspace();
+        ws.set_cwd(PaneId(1), Some("/one".into()));
+        ws.split_focused(400, 200, PaneId(2));
+        assert_eq!(ws.focused, PaneId(2), "focus follows the split");
+
+        ws.set_cwd(PaneId(1), Some("/two".into()));
+        assert_eq!(ws.cwd_of(PaneId(1)), Some("/two"));
+        assert_eq!(
+            ws.cwd_of(PaneId(2)),
+            Some("/one"),
+            "a later change in the origin pane must not reach the pane split from it"
+        );
     }
 
     #[test]

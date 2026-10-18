@@ -35,6 +35,25 @@ the same afterwards, and focus follows the pane to its new position. The space
 the pane vacated is reclaimed by whatever shared it, so no gap is left behind. A
 drop on a pane's own area does nothing.
 
+## Splitting a pane
+
+Splitting a pane gives the new terminal the directory of the pane being split, so
+both halves of a split open where the work already is instead of in the
+directory Among Terminal itself started in. The pane that was split does not
+move: it keeps its own directory, its terminal and its process, and the two
+directories become independent — changing directory in one half never changes
+the other.
+
+A terminal only knows its directory when it can report it: the directory its
+shell started in is known from the start, and later changes arrive through
+[OSC 7](plugins.md#live-status-examples). If the inherited directory has been
+deleted or can no longer be entered, the new terminal starts in an accessible
+home or startup directory and the application reports that the requested
+location was unavailable.
+
+A workspace's first terminal is not part of this: it starts in the normal startup
+directory, so each workspace remains its own starting point.
+
 ## Headers and the terminal's title
 
 Clicking a terminal or its header makes that pane active: keyboard input, pane

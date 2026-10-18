@@ -2016,7 +2016,7 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
         session_restore_warning(
             ctx,
             &format!(
-                "Terminal {}: saved directory is unavailable; using a fallback directory.",
+                "Terminal {}: the requested directory is unavailable; using a fallback directory.",
                 id.0
             ),
         );

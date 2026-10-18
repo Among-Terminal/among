@@ -209,6 +209,14 @@ impl Harness {
     fn snapshot(&self) -> Result<Value> {
         storage::parse_json(&fs::read(&self.session)?)
     }
+    /// The snapshot as written so far, or `None` while none has been written.
+    ///
+    /// A caller waiting for a checkpoint has to treat "nothing written yet" as a
+    /// state to keep waiting through, which the fallible reader above cannot
+    /// express.
+    pub(crate) fn snapshot_if_written(&self) -> Option<Value> {
+        storage::parse_json(&fs::read(&self.session).ok()?).ok()
+    }
     fn write_snapshot(&self, value: &Value) -> Result<()> {
         storage::atomic_write(
             &self.data,
@@ -303,7 +311,7 @@ impl Harness {
             &y.to_string(),
         ])
     }
-    fn button(&mut self, name: &str) -> Result<()> {
+    pub(crate) fn button(&mut self, name: &str) -> Result<()> {
         self.wait(15, |this| {
             let samples = rectangles(&this.text()?, name);
             Ok(samples.len() >= 2 && samples[samples.len() - 1] == samples[samples.len() - 2])
@@ -392,7 +400,7 @@ impl Harness {
         })?;
         Ok(pid)
     }
-    fn ready(&mut self) -> Result<()> {
+    pub(crate) fn ready(&mut self) -> Result<()> {
         self.wait(15, |this| {
             let text = this.text()?;
             Ok(text.contains("session_ready=true") && text.contains("has_focus=true"))
@@ -920,7 +928,7 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
         h.key("ctrl+Page_Up")?;
         h.pwd(large, &base.join("home"), phase)?;
         require(
-            h.text()?.contains("saved directory is unavailable"),
+            h.text()?.contains("the requested directory is unavailable"),
             "directory fallback warning missing",
         )?;
         h.stop(false)?;
