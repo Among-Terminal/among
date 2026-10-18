@@ -53,9 +53,16 @@ dragging inside terminal text still selects text.
 
 ## Organize projects into workspaces
 
-Use the header's **New workspace** button or **Ctrl+Shift+T**. Double-click its
-sidebar name to rename it: **Enter** accepts, **Escape** cancels, and empty names
-are rejected. Each workspace has a colour marker and a live terminal count.
+Use the header's **New workspace** button or **Ctrl+Shift+T**. A single click on a
+sidebar entry switches to that workspace; a double-click turns its name into a field
+to type in. **Enter** applies the name, **Escape** keeps the one the workspace
+already has, and clicking elsewhere applies what was typed. A name that is empty or
+only spaces is refused, and the row shows the name the workspace still holds. Only
+one name is edited at a time: starting a rename on another workspace ends the first
+one. Each workspace has a colour marker and a live terminal count.
+
+Renaming changes nothing else: the workspace's terminals keep running, their
+directories and layout stay as they were, and the keyboard goes back to the terminal.
 
 Click a sidebar entry, use **Alt+1…9**, or cycle with **Ctrl+PageUp/PageDown**.
 Inactive workspaces keep their terminals and processes running. The sidebar

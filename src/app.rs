@@ -52,6 +52,14 @@ pub struct AppState {
     /// displays. Rebuilding anyway would recreate the rows, which takes an
     /// in-progress rename away and interrupts a double-click.
     pub sidebar_signature: String,
+    /// What the sidebar's rows were built from, without names or the active
+    /// marker.
+    ///
+    /// A rename ends by putting a name back in place and moving the marker on the
+    /// rows that already exist, so neither is a reason to build the rows again;
+    /// anything else the rows show is. Compared when a rename ends, to tell
+    /// whether the rows still match the model.
+    pub sidebar_shape: String,
     /// The workspace whose name is being edited, while a rename is in progress.
     ///
     /// Plugin updates rebuild the sidebar on a timer, which would destroy the
@@ -95,6 +103,7 @@ impl AppState {
             exited: std::collections::HashMap::new(),
             sidebar_collapsed: false,
             sidebar_signature: String::new(),
+            sidebar_shape: String::new(),
             renaming: None,
             exiting: false,
             notices_shown: 0,
@@ -840,9 +849,10 @@ fn selfcheck(ctx: &Window, label: &str) {
             if let Some(content) = list_row.child() {
                 colour =
                     find_with_class(&content, "workspace-stripe").and_then(|w| colour_index_of(&w));
-                editing = find_editable(&content)
-                    .map(|e| e.is_editing())
-                    .unwrap_or(false);
+                // A name is being edited exactly while the row holds an entry rather than a
+                // label; the field exists at no other time.
+                editing =
+                    find_name_widget(&content).is_some_and(|widget| widget.is::<gtk::Entry>());
                 // Inspect the built-in displayed count, independently of optional
                 // plugin summaries now that the legacy count example is removed.
                 let count_class = if collapsed {
@@ -859,10 +869,10 @@ fn selfcheck(ctx: &Window, label: &str) {
                 "{row_index}:{}:{editing}:{count}",
                 colour.map(|c| c.to_string()).unwrap_or("?".into())
             ));
-            // The name label's own bounds, so a pointer test aims at the label
-            // rather than at where it is assumed to be.
+            // The name widget's own bounds, so a pointer test aims at the name
+            // rather than at where it is assumed to be, in either state.
             if let Some(content) = list_row.child() {
-                if let Some(label) = find_editable(content.upcast_ref()) {
+                if let Some(label) = find_name_widget(content.upcast_ref()) {
                     if let Some(rect) = label.compute_bounds(&ctx.workspace_list) {
                         name_rects.push(format!(
                             "{row_index}:{}+{}+{}x{}",
@@ -1282,14 +1292,23 @@ fn find_with_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
     None
 }
 
-/// The first editable label among a widget's descendants.
-fn find_editable(root: &gtk::Widget) -> Option<gtk::EditableLabel> {
-    if let Some(label) = root.downcast_ref::<gtk::EditableLabel>() {
-        return Some(label.clone());
+/// A row's name widget: the entry while a rename is in progress, the plain label
+/// otherwise.
+///
+/// Which of the two it is tells a reader both whether a name is being edited and
+/// where the name is, so a pointer test can aim at the name in either state —
+/// the two occupy the same place, and a test must not have to know which state it
+/// is in to find it.
+fn find_name_widget(root: &gtk::Widget) -> Option<gtk::Widget> {
+    if root.downcast_ref::<gtk::Entry>().is_some() {
+        return Some(root.clone());
+    }
+    if root.has_css_class("workspace-name") {
+        return Some(root.clone());
     }
     let mut child = root.first_child();
     while let Some(node) = child {
-        if let Some(found) = find_editable(&node) {
+        if let Some(found) = find_name_widget(&node) {
             return Some(found);
         }
         child = node.next_sibling();
@@ -1469,7 +1488,7 @@ fn type_into_focused_pane(ctx: &Window, command: String, step: &str) {
 
 fn rebuild(ctx: &Window) {
     invalidate_terminal_menus(ctx);
-    rebuild_sidebar(ctx);
+    rebuild_sidebar(ctx, false);
     rebuild_panes(ctx);
     apply_focus(ctx);
     refresh_slots(ctx);
@@ -1500,14 +1519,45 @@ fn sidebar_signature(state: &AppState) -> String {
     parts.join("|")
 }
 
-fn rebuild_sidebar(ctx: &Window) {
+/// A summary of what a row is built from, without the name or the active marker.
+///
+/// A rename ends by putting a name back where it was and moving the marker on rows
+/// that already exist, so neither is a reason to build the rows again — and building
+/// them would take away the very row a pointer sequence is aimed at. Everything else
+/// a row shows — how many panes its workspace has, what plugins have contributed,
+/// whether the sidebar is collapsed — comes from the build, so this is what says
+/// whether the rows still match the model.
+fn sidebar_shape(state: &AppState) -> String {
+    let mut parts = vec![format!("collapsed={}", state.sidebar_collapsed)];
+    for (index, workspace) in state.workspaces.workspaces().iter().enumerate() {
+        parts.push(format!(
+            "{index}:{}:{}",
+            workspace.colour,
+            workspace.panes().len()
+        ));
+        for summary in state.store.summaries(index) {
+            parts.push(format!("summary:{:?}", summary.text));
+        }
+    }
+    parts.join("|")
+}
+
+/// Rebuild the sidebar's rows.
+///
+/// Skipped when nothing the sidebar shows has changed, because the rows are what
+/// a pointer is interacting with. `force` says the widgets on screen are known to
+/// differ from the model whatever the summary says — true at the end of a rename,
+/// where a field stands in for a name and only a rebuild removes it, and where a
+/// cancelled or refused rename leaves every value the summary reads exactly as it
+/// was.
+fn rebuild_sidebar(ctx: &Window, force: bool) {
     {
         let state = ctx.state.borrow();
         // An in-progress rename owns the sidebar's widgets until it finishes.
         if state.renaming.is_some() {
             return;
         }
-        if sidebar_signature(&state) == state.sidebar_signature {
+        if !force && sidebar_signature(&state) == state.sidebar_signature {
             // Nothing the sidebar shows has changed, so leave its widgets alone.
             return;
         }
@@ -1581,7 +1631,7 @@ fn rebuild_sidebar(ctx: &Window) {
             // TEMPORARY probe: an icon whose rendering is known, next to the
             // strip's icon, so a broken glyph can be told from a real one.
         } else {
-            let name = name_widget(ctx, index, &row_plan.name, row_plan.colour);
+            let name = name_label(&row_plan.name, row_plan.colour);
             content.append(&name);
             let count = gtk::Label::new(Some(&row_plan.panes.to_string()));
             count.add_css_class("workspace-terminal-count");
@@ -1589,29 +1639,47 @@ fn rebuild_sidebar(ctx: &Window) {
 
             // Double-clicking the entry starts editing it. The list box claims the
             // pointer sequence, so the gesture belongs on the row rather than on a
-            // widget inside it.
+            // widget inside it. The first press is left alone: that is the click
+            // that switches workspaces, and claiming it would stop the entry from
+            // ever being used to switch.
             let entry_click = gtk::GestureClick::new();
             entry_click.set_propagation_phase(gtk::PropagationPhase::Capture);
             entry_click.connect_pressed({
                 let content = content.clone();
                 let target = ctx.handle();
                 move |gesture, presses, _, _| {
-                    if std::env::var_os("AMONG_SELFCHECK").is_some() {
-                        eprintln!("among[entry-click]: presses={presses}");
-                    }
-                    if presses != 2 {
+                    if presses < 2 {
+                        // The first press of a sequence is the click that switches
+                        // workspaces. Any press after it is a further click in the
+                        // same sequence, which for a person is still the second click
+                        // of a double-click — the count reaches three only when the
+                        // clicks come faster than the threshold, and then the editor
+                        // should still open rather than nothing happening.
                         return;
                     }
-                    if let Some(label) = find_editable(content.upcast_ref()) {
-                        gesture.set_state(gtk::EventSequenceState::Claimed);
-                        target.state.borrow_mut().renaming = Some(index);
-                        // ListBox's default pointer handler otherwise takes focus
-                        // back from the editor opened during capture.
-                        glib::idle_add_local_once(move || {
-                            label.grab_focus();
-                            label.set_editing(true);
-                        });
-                    }
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    // The name and the colour are read now, not held from the row's
+                    // build: the row outlives them, since a rename ends by putting a
+                    // new name back into the row rather than building a new row.
+                    let (name, colour) = {
+                        let state = target.state.borrow();
+                        match state.workspaces.workspaces().get(index) {
+                            Some(workspace) => (workspace.name.clone(), workspace.colour),
+                            None => return,
+                        }
+                    };
+                    target.state.borrow_mut().renaming = Some(index);
+                    // The field is opened once the click sequence has finished:
+                    // ListBox takes focus back while the sequence is still live,
+                    // which would pull the entry straight back out of editing.
+                    let target = target.clone();
+                    let content = content.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Err(problem) = Rename::begin(&target, index, &content, &name, colour)
+                        {
+                            eprintln!("among: workspace {index} cannot be renamed: {problem}");
+                        }
+                    });
                 }
             });
             row.add_controller(entry_click);
@@ -1647,7 +1715,13 @@ fn rebuild_sidebar(ctx: &Window) {
         let state = ctx.state.borrow();
         sidebar_signature(&state)
     };
-    ctx.state.borrow_mut().sidebar_signature = signature;
+    let shape = {
+        let state = ctx.state.borrow();
+        sidebar_shape(&state)
+    };
+    let mut state = ctx.state.borrow_mut();
+    state.sidebar_signature = signature;
+    state.sidebar_shape = shape;
 }
 
 /// Show a workspace that is already in the model.
@@ -1748,89 +1822,201 @@ fn colour_class(colour: usize) -> String {
 ///
 /// In place rather than a dialog: the name lives in the list, and a modal for a
 /// one-word change interrupts the work being done in the terminal.
-fn name_widget(ctx: &Window, index: usize, name: &str, colour: usize) -> gtk::Widget {
-    let label = gtk::EditableLabel::new(name);
+///
+/// A plain label, deliberately. An editable label starts editing on a single
+/// click and claims that pointer sequence for itself, which is what made
+/// switching to a workspace and renaming it fight over the same click.
+fn name_label(name: &str, colour: usize) -> gtk::Label {
+    let label = gtk::Label::new(Some(name));
     label.add_css_class("workspace-name");
     label.set_hexpand(true);
     label.set_halign(gtk::Align::Start);
-    // An editable label that cannot take focus reverts out of editing as soon
-    // as it enters it, so double-click would appear to do nothing.
-    label.set_focusable(true);
     // The colour class goes on the name too, so the entry reads as one thing
-    // when the stripe is thin.
+    // when the stripe is thin, and so the renamed row keeps its workspace's
+    // colour while it is being typed into.
     label.add_css_class(&colour_class(colour));
-    let _ = colour;
-
-    // Enter confirms and Escape cancels. The keys are handled in the capture
-    // phase so the editable label's own handling cannot commit a cancel.
-    let keys = gtk::EventControllerKey::new();
-    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    keys.connect_key_pressed({
-        let target = ctx.handle();
-        let label = label.clone();
-        move |_, key, _, _| {
-            use gtk::gdk;
-            let confirm = key == gdk::Key::Return || key == gdk::Key::KP_Enter;
-            let cancel = key == gdk::Key::Escape;
-            if !confirm && !cancel {
-                return gtk::glib::Propagation::Proceed;
-            }
-            let typed = label.text().to_string();
-            finish_rename(&target, index, &label, &typed, confirm);
-            glib::Propagation::Stop
-        }
-    });
-    label.add_controller(keys);
-
-    label.upcast()
+    label
 }
 
-/// Apply or abandon an in-place rename.
+/// One in-place rename: the field, what it was opened with, and how it ends.
 ///
-/// Shared by the keys and by the row losing edit mode, so a rename ends the same
-/// way however it was finished.
-fn finish_rename(
-    ctx: &Window,
+/// The widgets are held here rather than in the closures that react to keys and
+/// focus, because ending a rename has to put them back — and has to be able to tell
+/// whether it can.
+struct Rename {
+    /// The workspace whose name is being edited.
     index: usize,
-    label: &gtk::EditableLabel,
-    typed: &str,
-    confirm: bool,
-) {
-    let applied = if confirm {
-        let mut state = ctx.state.borrow_mut();
-        match state.workspaces.workspaces_mut().get_mut(index) {
-            // An empty name is refused, so an unnamed workspace cannot be
-            // created by accident; the old name stays.
-            Some(workspace) => workspace.rename(typed),
-            None => false,
-        }
-    } else {
-        false
-    };
+    /// The name the field was opened with.
+    ///
+    /// A workspace that no longer carries it is not this rename's business: closing
+    /// a workspace moves every row after it, so an index that was right when the
+    /// field opened can name a different workspace by the time it is applied.
+    opened: String,
+    /// The workspace's colour, so the name that comes back looks the same.
+    colour: usize,
+    /// The row's content box, where the field stands in for the name.
+    content: gtk::Box,
+    /// The field itself.
+    entry: gtk::Entry,
+    /// Set once the rename has ended, so the first ending is the only one.
+    ///
+    /// A focus change follows the very act of removing the field, so without this
+    /// every ending would be followed by a second one.
+    ended: std::cell::Cell<bool>,
+}
 
-    let name = {
-        let state = ctx.state.borrow();
-        state
+impl Rename {
+    /// Put an entry in place of a name label, holding the name, and focus it.
+    ///
+    /// The entry carries the colour class the label had, so a rename looks like the
+    /// same row being edited rather than a different widget appearing in it.
+    fn begin(
+        ctx: &Window,
+        index: usize,
+        content: &gtk::Box,
+        name: &str,
+        colour: usize,
+    ) -> Result<(), String> {
+        // Which widget to replace is looked up now, not held from the row's build: a
+        // rename that has already ended puts a fresh label back, and this click is
+        // meant to edit whatever the row is showing at this moment.
+        let label = find_name_widget(content.upcast_ref())
+            .and_then(|widget| widget.downcast::<gtk::Label>().ok())
+            .ok_or_else(|| format!("workspace {index} has no name to edit"))?;
+        let entry = gtk::Entry::new();
+        entry.set_text(name);
+        entry.add_css_class("workspace-name");
+        entry.add_css_class(&colour_class(colour));
+        entry.set_hexpand(true);
+        entry.set_halign(gtk::Align::Start);
+
+        let rename = std::rc::Rc::new(Rename {
+            index,
+            opened: name.to_string(),
+            colour,
+            content: content.clone(),
+            entry: entry.clone(),
+            ended: std::cell::Cell::new(false),
+        });
+
+        // One rename, three endings: Enter applies, Escape cancels, and focus leaving
+        // the field applies what was typed.
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        keys.connect_key_pressed({
+            let target = ctx.handle();
+            let rename = rename.clone();
+            move |_, key, _, _| {
+                use gtk::gdk;
+                let confirm = key == gdk::Key::Return || key == gdk::Key::KP_Enter;
+                let cancel = key == gdk::Key::Escape;
+                if !confirm && !cancel {
+                    return gtk::glib::Propagation::Proceed;
+                }
+                rename.finish(&target, confirm);
+                gtk::glib::Propagation::Stop
+            }
+        });
+        entry.add_controller(keys);
+
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_leave({
+            let target = ctx.handle();
+            let rename = rename.clone();
+            move |_| rename.finish(&target, true)
+        });
+        entry.add_controller(focus);
+
+        // The entry takes the label's place rather than the row's last position, so a
+        // pointer aimed at the name finds the field exactly where the text was. GTK4
+        // has no call that swaps two children outright.
+        content.append(&entry);
+        content.reorder_child_after(&entry, Some(&label));
+        label.unparent();
+        entry.grab_focus();
+        entry.select_region(0, -1);
+        Ok(())
+    }
+
+    /// End the rename: apply or keep the name, then take the field away.
+    ///
+    /// Shared by every ending, so a rename ends the same way however it was finished.
+    fn finish(&self, ctx: &Window, confirm: bool) {
+        if self.ended.replace(true) {
+            return;
+        }
+        let typed = self.entry.text().to_string();
+        let mut state = ctx.state.borrow_mut();
+        let known = state.workspaces.workspaces().get(self.index).is_some();
+        if confirm {
+            state.workspaces.rename_at(self.index, &self.opened, &typed);
+        }
+        let name = state
             .workspaces
             .workspaces()
-            .get(index)
-            .map(|w| w.name.clone())
-            .unwrap_or_default()
-    };
-    if applied {
-        label.set_text(&name);
-    } else {
-        // Either cancelled or refused: show what the workspace still has.
-        label.set_text(&name);
+            .get(self.index)
+            .map(|workspace| workspace.name.clone());
+        // The field only ever stands for a name, so a rename that changed nothing
+        // else leaves rows that still match the model — and rebuilding them would
+        // replace the row a pointer sequence is halfway through aiming at. Anything
+        // that did change while the field was open — a workspace added or removed, a
+        // plugin's contribution, the sidebar collapsed — is only visible in rows built
+        // again, as is a workspace that is no longer there to have a name.
+        let rows_match = known && sidebar_shape(&state) == state.sidebar_shape;
+        state.renaming = None;
+        if rows_match {
+            let signature = sidebar_signature(&state);
+            let shape = sidebar_shape(&state);
+            state.sidebar_signature = signature;
+            state.sidebar_shape = shape;
+        }
+        drop(state);
+
+        // The name is applied above, in the model, as the keystroke or click happens;
+        // the field is only taken away once the event that ended the rename is over.
+        // Removing a widget from the tree while GTK is still working through the focus
+        // change that brought the rename to an end leaves it holding a widget that is
+        // no longer there, and the next thing it asks about that widget is a crash.
+        let target = ctx.handle();
+        let content = self.content.clone();
+        let entry = self.entry.clone();
+        let colour = self.colour;
+        let name = name.unwrap_or_default();
+        glib::idle_add_local_once(move || {
+            if rows_match {
+                restore_row_name(&target, &content, &entry, &name, colour);
+            } else {
+                rebuild_sidebar(&target, true);
+            }
+            // The terminal is what takes the keyboard back: a rename ends with the
+            // field gone, and nothing else here would.
+            apply_focus(&target);
+        });
     }
-    label.set_editing(false);
-    // The edit is over, so the sidebar may be rebuilt again.
-    ctx.state.borrow_mut().renaming = None;
-    // Rebuilt either way: an applied rename changes the name, and a refused one
-    // may have left the field showing something the workspace does not have.
-    rebuild_sidebar(ctx);
-    let focus = ctx.handle();
-    glib::idle_add_local_once(move || apply_focus(&focus));
+}
+
+/// Put a row's plain name back where its field was.
+///
+/// The row may no longer be the one on screen — a plugin's update that arrived after
+/// the rename could have rebuilt the sidebar — and then the row that is there already
+/// shows the name, and this field is no longer part of anything.
+fn restore_row_name(
+    ctx: &Window,
+    content: &gtk::Box,
+    entry: &gtk::Entry,
+    name: &str,
+    colour: usize,
+) {
+    if entry.parent().as_ref() != Some(content.upcast_ref()) {
+        return;
+    }
+    // The marker moves on the rows that are already there, which is what a rebuild
+    // would have done for them.
+    mark_active_row(ctx);
+    let label = name_label(name, colour);
+    content.append(&label);
+    content.reorder_child_after(&label, Some(entry));
+    entry.unparent();
 }
 
 fn rebuild_panes(ctx: &Window) {
@@ -3161,7 +3347,7 @@ fn set_sidebar_collapsed(ctx: &Window, collapsed: bool) {
         state.sidebar_collapsed = collapsed;
     }
     apply_sidebar_width(&ctx.split_view, collapsed);
-    rebuild_sidebar(ctx);
+    rebuild_sidebar(ctx, false);
 }
 
 /// Apply the sidebar's width for the current presentation.
@@ -3380,7 +3566,7 @@ fn collect_plugin_results(ctx: &Window) {
     }
     if changed {
         refresh_slots(ctx);
-        rebuild_sidebar(ctx);
+        rebuild_sidebar(ctx, false);
     }
 }
 

@@ -54,6 +54,7 @@ pub mod scratch;
 pub mod scroll_calibration;
 pub mod sessions;
 pub mod sha3;
+pub mod sidebar_rename;
 pub mod snap_runtime;
 pub mod source_delivery;
 pub mod source_snapshot;

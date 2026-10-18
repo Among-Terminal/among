@@ -24,6 +24,7 @@ Usage:
   among-tools check-sessions <among-binary>
   among-tools check-split-directory <among-binary>
   among-tools check-scroll-calibration <among-binary>
+  among-tools check-sidebar-rename <among-binary>
   among-tools check-live-focus <among-binary>
   among-tools check-live-resize <among-binary>
   among-tools check-live-status <source-root> <among-binary> <prebuilt-plugins>
@@ -674,6 +675,9 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 Path::new(binary),
                 &among_tools::scratch::root()?,
             )?;
+        }
+        [command, binary] if command == "check-sidebar-rename" => {
+            among_tools::sidebar_rename::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
         [command, binary] if command == "check-live-focus" => {
             among_tools::live_focus::run(Path::new(binary), &among_tools::scratch::root()?)?;

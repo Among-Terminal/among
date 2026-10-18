@@ -272,6 +272,19 @@ impl WorkspaceSet {
         &mut self.workspaces
     }
 
+    /// Apply a name typed into an in-place editor to the workspace at an index.
+    ///
+    /// `opened` is the name the editor was opened with. A workspace that no longer
+    /// carries it is not the one being renamed: closing a workspace moves every row
+    /// after it, so an index that named this workspace when the editor opened can
+    /// name a different one by the time the name is applied.
+    pub fn rename_at(&mut self, index: usize, opened: &str, typed: &str) -> bool {
+        match self.workspaces.get_mut(index) {
+            Some(workspace) if workspace.name == opened => workspace.rename(typed),
+            _ => false,
+        }
+    }
+
     /// Append a workspace and make it active.
     pub fn push_active(&mut self, workspace: Workspace) -> usize {
         self.workspaces.push(workspace);
@@ -336,6 +349,58 @@ mod tests {
     fn a_new_workspace_has_a_colour_from_the_palette() {
         let ws = workspace();
         assert!(ws.colour < PALETTE_SIZE);
+    }
+
+    /// A set of three workspaces named `first`, `second`, `third`.
+    fn three() -> WorkspaceSet {
+        let mut alloc = PaneAllocator::default();
+        let mut set = WorkspaceSet::new(Workspace::new("first".into(), alloc.next(), 0));
+        for name in ["second", "third"] {
+            let colour = set.next_colour();
+            set.push_active(Workspace::new(name.into(), alloc.next(), colour));
+        }
+        set
+    }
+
+    fn names(set: &WorkspaceSet) -> Vec<String> {
+        set.workspaces()
+            .iter()
+            .map(|workspace| workspace.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_rename_reaches_the_workspace_it_was_opened_for() {
+        let mut set = three();
+        assert!(set.rename_at(1, "second", "renamed"));
+        assert_eq!(names(&set), ["first", "renamed", "third"]);
+    }
+
+    #[test]
+    fn a_rename_is_refused_when_the_workspace_at_that_index_is_another_one() {
+        let mut set = three();
+        // An editor opened on `second` at index 1, while `first` is closed: the
+        // editor's index now names `third`, and the typed name must not land there.
+        set.remove(0);
+        assert!(!set.rename_at(1, "second", "renamed"));
+        assert_eq!(names(&set), ["second", "third"]);
+    }
+
+    #[test]
+    fn a_rename_is_refused_when_there_is_no_workspace_left_at_that_index() {
+        let mut set = three();
+        assert!(!set.rename_at(7, "second", "renamed"));
+        assert_eq!(names(&set), ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn a_rename_cannot_be_applied_twice() {
+        let mut set = three();
+        assert!(set.rename_at(1, "second", "renamed"));
+        // The editor is gone; anything that still holds the name it was opened with
+        // is stale, and must not rename the workspace that took this one's place.
+        assert!(!set.rename_at(1, "second", "again"));
+        assert_eq!(names(&set), ["first", "renamed", "third"]);
     }
 
     #[test]

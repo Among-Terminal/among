@@ -206,6 +206,18 @@ impl Harness {
     pub fn text(&self) -> Result<String> {
         Ok(fs::read_to_string(&self.log)?)
     }
+    /// Remove the session file this harness owns, if there is one.
+    ///
+    /// A launch that finds one asks the user whether to restore it, and the
+    /// application stays behind that question: no keyboard focus, and none of the
+    /// window a pointer test needs. A later launch therefore starts clean.
+    pub(crate) fn forget_session(&self) -> Result<()> {
+        match fs::remove_file(&self.session) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
     fn snapshot(&self) -> Result<Value> {
         storage::parse_json(&fs::read(&self.session)?)
     }

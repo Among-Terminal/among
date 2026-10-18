@@ -107,6 +107,7 @@ $tool ci-x11 $tool check-live-status . target/release/among examples/plugins/tar
 $tool ci-x11 $tool check-sessions target/release/among
 $tool ci-x11 $tool check-split-directory target/release/among
 $tool ci-x11 $tool check-scroll-calibration target/release/among
+$tool ci-x11 $tool check-sidebar-rename target/release/among
 $tool ci-x11 $tool check-desktop . target/release/among
 ```
 

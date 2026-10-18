@@ -36,6 +36,13 @@ The self-check line carries `pane_scroll=["<pane>:<lines back>@<row height>", ..
 which is zero while a terminal shows its newest output and grows while it shows
 older output.
 
+The self-check's `sidebar_states=[<row>:<colour>:<editing>:<panes>, ...]` and
+`name_rects=[<row>:x+y+WxH, ...]` follow the name itself rather than the kind of
+widget showing it: a row that is not being renamed reports the bounds of its name
+label, a row being renamed reports the bounds of its field, and `editing` is true
+while the field is there. A pointer test can aim at a name without knowing which of
+the two widgets it will find.
+
 See [contributor checks](../CONTRIBUTING.md#checking-changes) for isolated X11 tests.
 
 ## Where checks keep their evidence

@@ -267,6 +267,25 @@ requested location. Requirements match `check-sessions`: non-root execution, an
 owned X11/D-Bus display, xdotool, xprop and ImageMagick; evidence stays in its own
 directory.
 
+## Workspace renaming
+
+`ci-x11 among-tools check-sidebar-rename AMONG_BINARY` drives the selected native
+application and proves how a workspace's name is edited. Clicks are aimed at the
+bounds the application publishes for each name, and the pointer's real position is
+read back, so a click that landed elsewhere cannot be read as an application that
+ignores clicks. A single click must switch workspaces and open no field; a
+double-click must open a field in the place the name was, holding that name and
+holding the keyboard — established by deleting the last character and confirming,
+which must leave exactly the name minus that character. Enter applies, Escape keeps,
+and clicking elsewhere applies; an empty or whitespace-only name is refused on each
+of those endings, and the row shows the name the workspace still holds. Starting a
+rename on another row must end the first one, leave exactly one field, and leave the
+active marker on the workspace being renamed. A rename must change nothing else in
+its workspace — panes, directories, layout and plugin contributions, compared as a
+fingerprint taken on both sides of it — and the terminal must hold the keyboard
+afterwards, which is shown by typing a command without clicking and reading the file
+it wrote. Requirements match `check-sessions`.
+
 ## Source and native provenance
 
 `package-native-checker BINARY SOURCE_SHA TAG TARGET ARCH NEW_DIRECTORY` copies a
