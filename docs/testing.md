@@ -22,6 +22,20 @@ to the focused terminal; `feed:<pane>:<command>` targets a numbered pane.
 In these commands, `~` represents a space.
 `collapse-sidebar`, `expand-sidebar` and `request-close` exercise window controls.
 
+`scroll:<pane>:<delta>` hands one touch surface delta to the same handler a real
+gesture reaches, so a check can exercise touchpad scrolling on hardware that
+cannot produce one: XTEST sends wheel clicks and nothing else. The delta is in
+surface pixels and negative scrolls towards older output. The step reports
+`pane`, `delta`, the row height, whether it moved the history, and the value and
+limits of the terminal's scroll adjustment, so a failing scroll check can be
+read from the log. There is deliberately no wheel form: wheel clicks are the
+terminal library's own, a harness can send a real one, and the library offers no
+way to ask for one programmatically.
+
+The self-check line carries `pane_scroll=["<pane>:<lines back>@<row height>", ...]`,
+which is zero while a terminal shows its newest output and grows while it shows
+older output.
+
 See [contributor checks](../CONTRIBUTING.md#checking-changes) for isolated X11 tests.
 
 ## Where checks keep their evidence

@@ -992,6 +992,19 @@ fn selfcheck(ctx: &Window, label: &str) {
             })
         })
         .collect();
+    // Each pane's scroll position in lines, so a pointer test can tell a moved
+    // history from one that stayed put, and the calibrated amount can be read
+    // back rather than assumed. The row height travels with it because that is
+    // what converts a gesture's distance into lines.
+    let scrolls: Vec<String> = workspace
+        .panes()
+        .iter()
+        .filter_map(|id| {
+            state
+                .pane(*id)
+                .map(|pane| format!("{}:{:.2}@{}", id.0, pane.scroll_lines(), pane.cell_height()))
+        })
+        .collect();
     let titles: Vec<String> = workspace
         .panes()
         .iter()
@@ -1246,7 +1259,7 @@ fn selfcheck(ctx: &Window, label: &str) {
     );
 
     eprintln!(
-        "among[{label}]: split_binding={bound} unparsable={missing:?} plugins={plugins:?} app_header={:?} app_sources={sources:?} workspace_header={:?} pane_header={:?} workspace_summaries={summaries} focused_marked={focused_marked} notices_shown={notices} last_notice={last_notice:?} shortcuts_fired={shortcuts} shortcuts_installed={installed} drop_indication={indications:?} pane_titles={titles:?} pane_colours={pane_colours:?} pane_cwds={cwds:?} {stripe_measured} header_stripe={header_stripe} rejections={rejections:?}",
+        "among[{label}]: split_binding={bound} unparsable={missing:?} plugins={plugins:?} app_header={:?} app_sources={sources:?} workspace_header={:?} pane_header={:?} workspace_summaries={summaries} focused_marked={focused_marked} notices_shown={notices} last_notice={last_notice:?} shortcuts_fired={shortcuts} shortcuts_installed={installed} drop_indication={indications:?} pane_titles={titles:?} pane_colours={pane_colours:?} pane_cwds={cwds:?} pane_scroll={scrolls:?} {stripe_measured} header_stripe={header_stripe} rejections={rejections:?}",
         slot_summary(&state.store, Scope::AppHeader),
         slot_summary(&state.store, Scope::WorkspaceHeader),
         slot_summary(&state.store, Scope::PaneHeader(workspace.focused)),
@@ -1366,6 +1379,45 @@ fn run_script_step(ctx: &Window, step: &str) {
         selfcheck(ctx, step);
         return;
     }
+    if let Some(rest) = step.strip_prefix("scroll:") {
+        // scroll:<pane id>:<delta>. The harness cannot produce a touch surface
+        // event, so this reaches the same handler a real one does rather than a
+        // second path only the test could use. There is deliberately no wheel
+        // form: wheel clicks are the library's own, the harness can send a real
+        // one, and the library offers no way to ask for one programmatically.
+        let mut parts = rest.split(':');
+        let pane_id = parts.next().and_then(|p| p.parse::<u64>().ok());
+        let delta = parts.next().and_then(|d| d.parse::<f64>().ok());
+        match (pane_id, delta) {
+            (Some(raw), Some(delta)) => {
+                let pane = PaneId(raw);
+                match ctx.state.borrow().pane(pane) {
+                    Some(widget) => {
+                        let cell = widget.cell_height();
+                        let adjustment = widget.terminal().vadjustment();
+                        let before = adjustment.as_ref().map(|a| a.value());
+                        let moved = crate::pane::scroll_terminal(widget.terminal(), cell, delta);
+                        // What the step did to the adjustment, in flat fields a
+                        // check can read, so a failing scroll run can be read
+                        // from the log rather than guessed at.
+                        eprintln!(
+                            "among[scroll]: pane={raw} delta={delta} cell={cell} moved={moved} \
+from={} to={} lower={} upper={} page={}",
+                            field(before),
+                            field(widget.terminal().vadjustment().as_ref().map(|a| a.value())),
+                            field(adjustment.as_ref().map(|a| a.lower())),
+                            field(adjustment.as_ref().map(|a| a.upper())),
+                            field(adjustment.as_ref().map(|a| a.page_size())),
+                        );
+                    }
+                    None => eprintln!("among: no pane {raw} for `{step}`"),
+                }
+            }
+            _ => eprintln!("among: `{step}` is scroll:<pane>:<delta>"),
+        }
+        selfcheck(ctx, step);
+        return;
+    }
     if step == "request-close" {
         // The same call the window's close control makes.
         ctx.window.close();
@@ -1388,6 +1440,14 @@ fn run_script_step(ctx: &Window, step: &str) {
             selfcheck(ctx, step);
         }
         None => eprintln!("among: unknown script step `{step}`"),
+    }
+}
+
+/// One number for a diagnostic line, or `-` when it is not available.
+fn field(value: Option<f64>) -> String {
+    match value {
+        Some(value) => format!("{value:.2}"),
+        None => "-".to_string(),
     }
 }
 

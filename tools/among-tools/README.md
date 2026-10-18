@@ -238,6 +238,22 @@ owned evidence directory. Permission fixtures are restored even on failure.
 Passing against a source executable does not close release-CI installed-package
 gates. Pair this with `check-preferences-from-cargo` for all ten Preferences phases.
 
+## Terminal scrolling
+
+`ci-x11 among-tools check-scroll-calibration AMONG_BINARY` drives the selected
+native application and proves how each kind of scroll moves a terminal. Touch
+surface scrolling cannot be synthesised — XTEST sends wheel clicks — so it is
+driven through the `scroll:` script step, which reaches the same handler a real
+gesture does, and the check requires each delta to move the history by exactly
+the distance it reports converted to rows. Wheel clicks are sent as real clicks
+and must keep moving the history by the terminal library's own amount, which is a
+tenth of the pane's rows rounded up; a modified wheel click must reach the
+library too. A delta with no history to move through must be handed back rather
+than consumed, each pane's position must be its own, and a program drawing a
+full screen must receive the gesture — the check runs one that records the bytes
+it is sent and reads them back. Requirements match `check-sessions`: non-root
+execution, an owned X11/D-Bus display, xdotool, xprop and ImageMagick.
+
 ## Split-inherited terminal directory
 
 `ci-x11 among-tools check-split-directory AMONG_BINARY` drives the selected native

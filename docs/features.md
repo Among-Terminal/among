@@ -67,6 +67,24 @@ and every workspace remains reachable.
 **Demonstrations:** [create, rename and switch](media/features/05-workspaces.mp4) ·
 [collapse and expand the sidebar](media/features/05b-sidebar.mp4).
 
+## Scroll with a wheel or a touchpad
+
+A mouse wheel click moves the terminal's scrollback the way the terminal library
+moves it: about a tenth of the pane's rows per click, more in a tall pane. That is
+left alone deliberately.
+
+A touchpad is calibrated differently, and this is the difference you feel. A
+gesture covers a distance on the surface, and that distance becomes the distance
+the history moves, converted to text rows — the same calibration the rest of the
+desktop uses. Without it the terminal library multiplied the gesture's distance by
+a tenth of the pane's rows, so the same finger movement travelled several times
+further here than in any other application, and further still the taller the pane.
+
+Scrolling stays with the terminal program when the program owns the screen. A
+full-screen editor, pager or system monitor receives the gesture as its own keys,
+and the scrollback does not move underneath it. Each pane has its own position,
+so scrolling one does not move another.
+
 ## Clipboard, links and pane actions
 
 Right-click a terminal, or press **Shift+F10** in the focused terminal, to open

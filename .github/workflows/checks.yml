@@ -109,6 +109,8 @@ jobs:
             tools/among-tools/target/release/among-tools check-sessions target/release/among
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-split-directory target/release/among
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-scroll-calibration target/release/among
           cargo build --release --locked --example check-clipboard
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-context-menu target/release/among target/release/examples/check-clipboard light

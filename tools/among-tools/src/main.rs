@@ -23,6 +23,7 @@ Usage:
   among-tools check-plugin-install <source-root> <among-binary> <prebuilt-plugins> <prebuilt-plugin-installer>
   among-tools check-sessions <among-binary>
   among-tools check-split-directory <among-binary>
+  among-tools check-scroll-calibration <among-binary>
   among-tools check-live-focus <among-binary>
   among-tools check-live-resize <among-binary>
   among-tools check-live-status <source-root> <among-binary> <prebuilt-plugins>
@@ -667,6 +668,12 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, binary] if command == "check-split-directory" => {
             among_tools::split_directory::run(Path::new(binary), &among_tools::scratch::root()?)?;
+        }
+        [command, binary] if command == "check-scroll-calibration" => {
+            among_tools::scroll_calibration::run(
+                Path::new(binary),
+                &among_tools::scratch::root()?,
+            )?;
         }
         [command, binary] if command == "check-live-focus" => {
             among_tools::live_focus::run(Path::new(binary), &among_tools::scratch::root()?)?;

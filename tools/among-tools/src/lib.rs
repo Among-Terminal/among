@@ -51,6 +51,7 @@ pub mod rpm_installed;
 pub mod rpm_lifecycle;
 pub mod rpm_payload;
 pub mod scratch;
+pub mod scroll_calibration;
 pub mod sessions;
 pub mod sha3;
 pub mod snap_runtime;

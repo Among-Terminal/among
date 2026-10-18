@@ -378,6 +378,39 @@ impl Pane {
                 terminal.grab_focus();
             }
         });
+
+        self.attach_scroll();
+    }
+
+    /// Take over touch surface scrolling on this terminal.
+    ///
+    /// The library's own controller is on the same widget in the bubble phase,
+    /// so a capture-phase controller runs first and consuming an event stops it
+    /// from reaching the library. Wheel clicks and horizontal scrolling are not
+    /// consumed at all: there the library's own amount is already the one a
+    /// wheel is expected to move.
+    fn attach_scroll(&self) {
+        let state = self.state.clone();
+        let terminal = self.terminal.clone();
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+        scroll.connect_scroll(move |controller, _dx, dy| {
+            if controller.unit() != gtk::gdk::ScrollUnit::Surface {
+                return glib::Propagation::Proceed;
+            }
+            let cell_height = state
+                .borrow()
+                .metrics
+                .cell
+                .map(|cell| cell.height)
+                .unwrap_or_default();
+            if scroll_terminal(&terminal, cell_height, dy) {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        self.terminal.add_controller(scroll);
     }
 
     pub fn terminal(&self) -> &vte::Terminal {
@@ -627,6 +660,31 @@ impl Pane {
         self.state.borrow().cwd.clone()
     }
 
+    /// The height of one text row in pixels, or zero before the terminal has
+    /// been laid out.
+    pub fn cell_height(&self) -> i32 {
+        self.state
+            .borrow()
+            .metrics
+            .cell
+            .map(|cell| cell.height)
+            .unwrap_or_default()
+    }
+
+    /// How far this terminal is scrolled back from its newest output, in lines.
+    ///
+    /// Zero while the terminal shows the most recent row, which is where a
+    /// terminal starts and where typing returns it. The distance is measured
+    /// against the library's newest row rather than the top of the history,
+    /// because the newest row is the end a reader thinks of: a terminal scrolled
+    /// back is showing older output.
+    pub fn scroll_lines(&self) -> f64 {
+        self.terminal
+            .vadjustment()
+            .map(|adjustment| (adjustment.upper() - adjustment.page_size()) - adjustment.value())
+            .unwrap_or_default()
+    }
+
     /// Mark this pane focused or not, and hand keyboard focus to its terminal.
     pub fn set_focused(&self, focused: bool) {
         {
@@ -718,6 +776,72 @@ fn reconcile(
         state.borrow_mut().metrics.last_size = Some(next);
     }
     Some(next)
+}
+
+/// How many lines a touch surface delta scrolls the history by.
+///
+/// GTK scales a scrollable's own touch surface deltas by `MAGIC_SCROLL_FACTOR`
+/// before converting them to pixels, and it converts pixels to lines through the
+/// cell height; the two cancel into a distance per delta unit that does not
+/// depend on how tall the pane is. The terminal library has no equivalent: it
+/// multiplies every delta, wheel or surface, by a tenth of the pane's rows, so a
+/// touchpad gesture travels several times further in a tall pane than a finger
+/// moved that far in any other application.
+///
+/// A missing cell height yields no movement rather than a division by zero: the
+/// caller hands the event back to the library, which is what this did before.
+pub fn surface_scroll_lines(delta: f64, cell_height: i32) -> f64 {
+    const SURFACE_FACTOR: f64 = 2.5;
+    if cell_height <= 0 {
+        return 0.0;
+    }
+    delta * SURFACE_FACTOR / f64::from(cell_height)
+}
+
+/// Whether the terminal's adjustment has history to move through.
+///
+/// The bounds are the library's: a value below the first history row and a
+/// value one page above the last insert row are the limits, so anything at or
+/// between them means the screen cannot move. A terminal drawing a full screen
+/// reports its first row as both bounds, because that screen is not allowed to
+/// scroll at all — which is exactly the case where the library turns the
+/// gesture into arrow keys or button events instead.
+pub fn has_scroll_room(lower: f64, upper: f64, page_size: f64) -> bool {
+    upper - lower > page_size
+}
+
+/// Apply one touch surface scroll event to a terminal's history.
+///
+/// Returns whether the event was consumed. Everything except a vertical touch
+/// surface delta on a terminal with history to move through is left to the
+/// library, so a wheel click keeps its own amount and a program drawing a full
+/// screen keeps receiving the gesture as arrow keys or button events.
+pub fn scroll_terminal(terminal: &vte::Terminal, cell_height: i32, delta: f64) -> bool {
+    // The adjustment exists only once the terminal is realized; before that there
+    // is no history to move through either.
+    let Some(adjustment) = terminal.vadjustment() else {
+        return false;
+    };
+    let (oldest, page) = (adjustment.lower(), adjustment.page_size());
+    let newest = adjustment.upper() - page;
+    if !has_scroll_room(oldest, adjustment.upper(), page) {
+        return false;
+    }
+    let lines = surface_scroll_lines(delta, cell_height);
+    if lines == 0.0 {
+        return false;
+    }
+    // The library refuses to move past the first row or past the newest one, so
+    // the target is clamped to its own limits before it is set. A gesture that
+    // lands where the terminal already is moves nothing, and the library is
+    // better placed to report that than a handler claiming a move it did not
+    // make.
+    let target = (adjustment.value() + lines).clamp(oldest, newest.max(oldest));
+    if (target - adjustment.value()).abs() < f64::EPSILON {
+        return false;
+    }
+    adjustment.set_value(target);
+    true
 }
 
 /// The palette index marked by a class on this widget or any descendant.
@@ -821,6 +945,48 @@ fn percent_decode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_surface_delta_scrolls_the_distance_it_reports() {
+        // A 19 pixel row: one unit of surface delta moves 2.5 lines, which is the
+        // 47.5 pixels GTK would have scrolled for the same gesture.
+        let moved = surface_scroll_lines(19.0, 19);
+        assert!((moved - 2.5).abs() < 1e-9);
+        assert!((moved * 19.0 - 47.5).abs() < 1e-9);
+        // The distance a gesture covers is the reported one whatever the row
+        // height is, so the feel does not depend on the pane's size.
+        assert!((surface_scroll_lines(40.0, 20) * 20.0 - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn small_deltas_stay_fractional_so_scrolling_accumulates() {
+        let moved = surface_scroll_lines(0.5, 20);
+        assert!(
+            moved > 0.0 && moved < 1.0,
+            "{moved} should be a fraction of a line"
+        );
+    }
+
+    #[test]
+    fn an_unknown_cell_height_moves_nothing_and_never_divides_by_zero() {
+        assert_eq!(surface_scroll_lines(100.0, 0), 0.0);
+        assert_eq!(surface_scroll_lines(100.0, -1), 0.0);
+        assert!(surface_scroll_lines(f64::NAN, 19).is_nan());
+    }
+
+    #[test]
+    fn a_terminal_with_history_has_room_and_one_without_it_does_not() {
+        // 200 rows of history below a 40 row screen.
+        assert!(has_scroll_room(0.0, 240.0, 40.0));
+        // A full screen: its first row is both bounds, so there is nothing to move.
+        assert!(!has_scroll_room(0.0, 40.0, 40.0));
+        // A full screen that has scrolled inside itself still cannot move, because
+        // its history is its own screen.
+        assert!(!has_scroll_room(12.0, 52.0, 40.0));
+        // Both ends of a scrolled-back history have room in the other direction,
+        // so the decision rests on the bounds alone rather than on the position.
+        assert!(has_scroll_room(0.0, 240.0, 40.0));
+    }
 
     #[test]
     fn an_unnamed_pane_gets_a_placeholder() {
