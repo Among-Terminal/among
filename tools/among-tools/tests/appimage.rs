@@ -30,6 +30,16 @@ fn staging_preserves_attribution_selects_launcher_and_refuses_wrong_native_archi
         &destination,
     )?;
     assert_eq!(fs::read(destination.join("AppRun"))?, elf);
+    for path in [
+        "com.github.among-terminal.svg",
+        "usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg",
+    ] {
+        assert_eq!(
+            fs::read(destination.join(path))?,
+            include_bytes!("../../../docs/media/logo-small.svg"),
+            "the AppImage must carry the approved artwork at {path}"
+        );
+    }
     assert!(
         fs::read_to_string(destination.join("com.github.among-terminal.desktop"))?
             .contains("Exec=AppRun\n")

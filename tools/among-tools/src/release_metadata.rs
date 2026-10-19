@@ -13,6 +13,22 @@ fn require(value: bool, message: &str) -> Result<()> {
         Err(message.into())
     }
 }
+
+pub fn artwork(root: &Path) -> Result<()> {
+    let read = |name: &str| -> Result<Vec<u8>> {
+        Ok(fs::read(storage::safe_path(root, Path::new(name))?)?)
+    };
+    let vector = read("docs/media/logo-small.svg")?;
+    let raster = read("docs/media/logo-small.png")?;
+    require(
+        storage::sha256(vector.as_slice())?
+            == "9c6b334d1a60119e834681ffb95acc8707128756f2e74f440e8f1aa3fa9b0a01"
+            && storage::sha256(raster.as_slice())?
+                == "941cd693d135e329344312e3466cded3a6294c951a7d640a9c8fe77141b2857a"
+            && read("data/com.github.among-terminal.svg")? == vector,
+        "packaged artwork differs from the owner-approved square mark",
+    )
+}
 pub fn validate(
     metadata: &Value,
     manifests: &[toml::Value; 2],
@@ -113,7 +129,17 @@ pub fn validate(
     require(
         text("id") == Some("com.github.among-terminal")
             && text("project_license") == Some("Apache-2.0")
-            && text("launchable") == Some("com.github.among-terminal.desktop"),
+            && text("launchable") == Some("com.github.among-terminal.desktop")
+            && component
+                .children()
+                .filter(|node| node.has_tag_name("launchable"))
+                .count()
+                == 1
+            && component
+                .children()
+                .find(|node| node.has_tag_name("launchable"))
+                .and_then(|node| node.attribute("type"))
+                == Some("desktop-id"),
         "AppStream identity/license/launchable differs",
     )?;
     let release = component
@@ -165,6 +191,7 @@ pub fn validate(
 }
 
 pub fn run(root: &Path, scratch: &Path) -> Result<()> {
+    artwork(root)?;
     let read = |name: &str| -> Result<String> {
         Ok(fs::read_to_string(storage::safe_path(
             root,

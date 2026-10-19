@@ -16,11 +16,18 @@
   <launchable type="desktop-id">com.github.among-terminal.desktop</launchable>
   <url type="homepage">https://github.com/Among-Terminal/among</url>
   <url type="bugtracker">https://github.com/Among-Terminal/among/issues</url>
+  <url type="help">https://among-terminal.github.io/</url>
   <developer id="com.github.among-terminal">
     <name>Among Terminal contributors</name>
   </developer>
   <provides><binary>among</binary></provides>
   <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Terminal panes with a file manager and system monitor in a project workspace</caption>
+      <image type="source" width="1600" height="1200">https://raw.githubusercontent.com/Among-Terminal/among/3c74d833d3facd3822ac62274f86caf4827152ea/docs/media/among-terminal-overview.png</image>
+    </screenshot>
+  </screenshots>
   <releases>
     <release version="0.1.1" date="2026-10-19" type="stable">
       <description>

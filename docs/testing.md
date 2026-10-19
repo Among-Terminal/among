@@ -72,3 +72,23 @@ The display harness passes `AMONG_CHECK_ROOT` to every command it runs. The
 application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
+
+## AppImageLauncher on GNOME Wayland
+
+`among-tools check-appimage-gnome APPIMAGE NEW_EVIDENCE_DIRECTORY` runs the real
+`ail-cli` integrator and an owned headless GNOME Shell. It needs Debian's GNOME
+Shell, AppImageLauncher, Bubblewrap, D-Bus tools and an available graphics backend.
+It creates a private HOME/XDG profile, PID/network/mount namespaces and two private
+buses; it never uses the personal display, session bus or application settings.
+The shell's native automation hook enables inspection only in that compositor.
+
+The runner checks menu launch, pin activation, normal close/confirmation and
+fresh-process relaunch with session restore and real terminal input. It records
+the generated entry, versions, executable paths, window/shell IDs, icon bytes,
+child environment and a dock screenshot. It uses runtime extract-and-run because
+setuid FUSE mounting is unavailable in the unprivileged namespace.
+`--native-present` additionally requires a configured native DEB and its system
+desktop entry, and leaves that entry visible in the namespace; without it, any
+system entry is masked.
+This tests only the supplied image on the recorded profile, not final DEB/RPM
+acceptance. Missing prerequisites and failed observations are failures, not skips.

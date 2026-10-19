@@ -414,6 +414,7 @@ fn build_with_writer(
         .default_width(1200)
         .default_height(800)
         .build();
+    crate::packaged::apply_window_identity(&window);
 
     let state = Rc::new(RefCell::new(AppState::new()));
     {

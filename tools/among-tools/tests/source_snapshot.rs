@@ -117,6 +117,49 @@ fn deterministic_archive_excludes_private_and_compiled_state_preserves_modes_and
 }
 
 #[test]
+fn square_artwork_and_packaged_copy_reach_the_source_archive_unchanged() -> Result<()> {
+    let f = Fixture::new()?;
+    let assets: [(&str, &[u8]); 3] = [
+        (
+            "docs/media/logo-small.svg",
+            include_bytes!("../../../docs/media/logo-small.svg"),
+        ),
+        (
+            "docs/media/logo-small.png",
+            include_bytes!("../../../docs/media/logo-small.png"),
+        ),
+        (
+            "data/com.github.among-terminal.svg",
+            include_bytes!("../../../data/com.github.among-terminal.svg"),
+        ),
+    ];
+    for (name, bytes) in assets {
+        let path = f.root().join(name);
+        fs::create_dir_all(path.parent().ok_or("fixture path has no parent")?)?;
+        fs::write(path, bytes)?;
+    }
+    let output = f.0.join("source.tar");
+    snapshot::snapshot(&f.root(), &f.0.join("vendor"), &output)?;
+    let mut archive = tar::Archive::new(fs::File::open(output)?);
+    let mut found = 0;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        if let Some((_, expected)) = assets
+            .iter()
+            .find(|(name, _)| path == std::path::Path::new(name))
+        {
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            assert_eq!(bytes, *expected);
+            found += 1;
+        }
+    }
+    assert_eq!(found, assets.len());
+    Ok(())
+}
+
+#[test]
 fn unsafe_missing_source_vendor_and_output_inputs_never_produce_a_new_archive() -> Result<()> {
     for failure in [
         "source-file",
