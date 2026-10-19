@@ -52,6 +52,7 @@ pub const DIRECTORIES: &[&str] = &[
     "examples/plugins/examples",
     "tools/among-tools/src",
     "tools/among-tools/tests",
+    "tools/among-tools/examples",
     "tools/among-tools/containers",
 ];
 

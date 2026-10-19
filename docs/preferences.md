@@ -16,7 +16,23 @@ Shortcut overrides use `shortcuts.json`, version 1:
 ```
 
 An absent override inherits the current default; null explicitly removes a
-binding. Unknown fields and entries are retained when saving other preferences.
+binding.
+
+The expanded sidebar's width uses `window.json`, version 1:
+
+```json
+{"version": 1, "sidebar_width": 420}
+```
+
+Drag the expanded sidebar's right edge to resize it. The width is measured in
+logical pixels and saved when the drag finishes, without a Save button. It returns
+after collapse/expand and after restarting, even when you start a new terminal
+session. The collapsed strip stays fixed-width. A smaller window temporarily
+constrains the displayed width without replacing the saved preference. Without a
+saved width, the existing adaptive default is used; zero, negative and non-numeric
+widths are rejected.
+
+Unknown fields and entries are retained when saving other preferences.
 Malformed files and unsupported versions are not automatically overwritten.
 
 Writes use a private temporary file in the destination directory and atomic
@@ -33,9 +49,10 @@ Reassigning an occupied shortcut also saves the displaced action as unbound.
 Cancelled capture and rejected/no-op edits do not write new overrides.
 
 A failed write leaves the edit active for this session and shows a warning in
-Preferences and a notification. A later edit in the same settings category retries
-pending changes; successful saving clears that category's warning. Repair malformed
-files or directory permissions before retrying. Startup errors are visible too.
+Preferences and stderr, without a pop-up. A later edit in the same settings
+category retries pending changes; successful saving clears that category's warning.
+Repair malformed files or directory permissions before retrying. Startup errors
+are visible too.
 Plugin faults do not change the saved desired enabled state.
 
 Clock, resources and pane PWD remain optional and disabled by default. Only explicit

@@ -77,6 +77,7 @@ cargo fmt --check --manifest-path examples/plugins/Cargo.toml
 cargo clippy --locked --all-targets --manifest-path examples/plugins/Cargo.toml -- -D warnings
 cargo test --locked --manifest-path examples/plugins/Cargo.toml
 cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
+cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example notice-plugin
 cargo fmt --check --manifest-path tools/among-tools/Cargo.toml
 cargo clippy --locked --all-targets --manifest-path tools/among-tools/Cargo.toml -- -D warnings
 cargo test --locked --manifest-path tools/among-tools/Cargo.toml
@@ -108,6 +109,7 @@ $tool ci-x11 $tool check-sessions target/release/among
 $tool ci-x11 $tool check-split-directory target/release/among
 $tool ci-x11 $tool check-scroll-calibration target/release/among
 $tool ci-x11 $tool check-sidebar-rename target/release/among
+$tool ci-x11 $tool check-window-controls target/release/among tools/among-tools/target/release/examples/notice-plugin
 $tool ci-x11 $tool check-desktop . target/release/among
 ```
 

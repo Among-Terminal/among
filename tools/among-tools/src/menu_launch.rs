@@ -181,7 +181,7 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
                     "-window",
                     "root",
                     h.base
-                        .join("failure-toast.png")
+                        .join("failure-diagnostic.png")
                         .to_str()
                         .ok_or("screenshot path is not UTF-8")?,
                 ],

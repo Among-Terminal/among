@@ -113,6 +113,9 @@ jobs:
             tools/among-tools/target/release/among-tools check-scroll-calibration target/release/among
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-sidebar-rename target/release/among
+          cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example notice-plugin
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-window-controls target/release/among tools/among-tools/target/release/examples/notice-plugin
           cargo build --release --locked --example check-clipboard
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-context-menu target/release/among target/release/examples/check-clipboard light

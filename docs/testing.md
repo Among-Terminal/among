@@ -43,6 +43,14 @@ label, a row being renamed reports the bounds of its field, and `editing` is tru
 while the field is there. A pointer test can aim at a name without knowing which of
 the two widgets it will find.
 
+Window probes report `toast_widgets` from the live widget tree, `settings_problem`,
+the allocated `sidebar_width` and the desired `sidebar_preferred` (`-` before a
+width has been chosen). `sidebar_resize_visible` and `sidebar_resize_cursor`
+describe the drag target; `sidebar_resize_rect=[edge:x+y+WxH]` and
+`sidebar_toggle_rect=[toggle:x+y+WxH]` use native-surface coordinates, including
+client-side shadow offsets, so real pointer events can target the narrow edge.
+`notices_recorded` counts logged terminal/plugin notices, not visible pop-ups.
+
 See [contributor checks](../CONTRIBUTING.md#checking-changes) for isolated X11 tests.
 
 ## Where checks keep their evidence
