@@ -799,8 +799,8 @@ mod tests {
         let mut host = PluginHost::new();
         // The plugin stays alive after the bad line, so it is the only fault.
         host.register(spec(fake_plugin("malformed")));
-        assert!(wait_for(&mut host, |h| h.listing()[0].1.is_healthy()));
-
+        // a preliminary health poll can consume the bad line; the next poll
+        // clears that batch's rejections, so observe them in this loop only.
         for _ in 0..40 {
             host.poll();
             if !host.rejections().is_empty() {
@@ -808,11 +808,29 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        assert!(
-            !host.rejections().is_empty(),
+        assert_eq!(
+            host.rejections(),
+            &[("probe".into(), Rejection::Malformed)],
             "malformed line was not rejected"
         );
         // The plugin survives its own bad output.
+        assert!(host.listing()[0].1.is_healthy());
+
+        // a running state alone cannot prove that the child still responds.
+        assert!(host
+            .request_status("probe", "app_header", &Context::default())
+            .is_some());
+        assert!(
+            wait_for(&mut host, |h| !h.results.is_empty()),
+            "plugin did not answer after its malformed output"
+        );
+        let results = host.drain_results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].plugin, "probe");
+        assert_eq!(results[0].scope, "app_header");
+        assert_eq!(results[0].fragments.len(), 1);
+        assert_eq!(results[0].fragments[0].text.as_deref(), Some("ok"));
+        assert!(host.rejections().is_empty());
         assert!(host.listing()[0].1.is_healthy());
     }
 

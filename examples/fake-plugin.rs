@@ -56,18 +56,15 @@ fn main() -> std::io::Result<()> {
             send(&mut std::io::stdout().lock(), &hello())?;
             std::process::exit(1);
         }
-        // Greets, writes one line that is not JSON, then stays alive until the
-        // host closes stdin, so the bad line is the only fault.
+        // greets and writes bad JSON, then answers valid requests so the host
+        // can prove the malformed line did not stop its request/response path.
         "malformed" => {
             let mut output = std::io::stdout().lock();
             send(&mut output, &hello())?;
             writeln!(output, "this is not json")?;
             output.flush()?;
             drop(output);
-            for line in std::io::stdin().lock().lines() {
-                line?;
-            }
-            Ok(())
+            serve(true)
         }
         _ => {
             eprintln!("usage: fake-plugin echo|hanging|crashing|malformed");
