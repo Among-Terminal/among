@@ -1,3 +1,10 @@
+among-terminal (0.1.1-1) unstable; urgency=medium
+
+  * Remember resized sidebar width and remove bottom pop-up messages.
+  * Fix split directories, touchpad scrolling and workspace renaming.
+
+ -- Among Terminal <hello+amongterminal@highload.zone>  Mon, 19 Oct 2026 10:13:36 +0000
+
 among-terminal (0.1.0-1) unstable; urgency=medium
 
   * Initial local Debian packaging candidate; not a published release.

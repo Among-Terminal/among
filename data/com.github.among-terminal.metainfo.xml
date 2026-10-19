@@ -22,6 +22,17 @@
   <provides><binary>among</binary></provides>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.1" date="2026-10-19" type="stable">
+      <description>
+        <p>Terminal workflow fixes and a quieter, resizable sidebar.</p>
+        <ul>
+          <li>Resize the expanded sidebar and remember its width across restarts.</li>
+          <li>Keep diagnostics without bottom pop-up messages.</li>
+          <li>Inherit the originating pane's directory when splitting a terminal.</li>
+          <li>Calibrate touchpad scrolling and rename workspaces on a double-click.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-07" type="development">
       <description><p>Initial local release preparation; distribution is not yet published.</p></description>
     </release>
