@@ -2,6 +2,7 @@
 
 export CARGO_TARGET_DIR = $(CURDIR)/target/debian
 export DH_VERBOSE = 1
+include /usr/share/dpkg/pkg-info.mk
 
 %:
 	dh $@
@@ -21,6 +22,7 @@ override_dh_auto_test:
 
 override_dh_auto_install:
 	$(CARGO_TARGET_DIR)/release/among-tools stage-deb $(CURDIR) $(CARGO_TARGET_DIR)/release debian/tmp
+	$(CARGO_TARGET_DIR)/release/among-tools package-metainfo data/com.github.among-terminal.metainfo.xml "$(DEB_VERSION_UPSTREAM)" debian/tmp/usr/share/metainfo/com.github.among-terminal.metainfo.xml
 
 override_dh_auto_clean:
 	cargo +1.98.1 clean --target-dir $(CARGO_TARGET_DIR)

@@ -29,13 +29,15 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="0.1.2" date="2026-10-19" type="development">
+    <release version="0.1.2" date="2026-10-20" type="development">
       <description>
         <p>Release-candidate preparation for desktop artwork and integration corrections.</p>
         <ul>
           <li>Use the approved square Among mark for desktop application icons.</li>
           <li>Associate AppImageLauncher-launched Wayland windows with their generated desktop entry without changing the global application identity.</li>
           <li>Supply a public application screenshot and documentation link in AppStream metadata.</li>
+          <li>Keep release notes bound to each package version, including release candidates.</li>
+          <li>Resolve an existing AppImageLauncher entry when opening its registered file without desktop-launch hints.</li>
         </ul>
       </description>
     </release>

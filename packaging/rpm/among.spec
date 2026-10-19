@@ -36,7 +36,7 @@ Plugin installation and enablement are explicit user actions.
 %autosetup -n %{name}-%{version}
 
 %build
-# The application and the example plugins are three independent Cargo packages.
+# The product and build tooling use three independent Cargo packages.
 # Build them in-tree and install into a staging root so the build does not
 # require an installed Rust toolchain at run time.
 export CARGO_HOME=%{_builddir}/cargo-home
@@ -44,6 +44,7 @@ export CARGO_TARGET_DIR=%{_builddir}/cargo-target
 mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
 cargo build --release --locked --manifest-path Cargo.toml
 cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
+cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --bin among-tools
 
 %install
 export CARGO_TARGET_DIR=%{_builddir}/cargo-target
@@ -72,6 +73,9 @@ install -m 0644 data/com.github.among-terminal.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/
 install -m 0644 data/com.github.among-terminal.metainfo.xml \
     %{buildroot}%{_datadir}/metainfo/
+"$CARGO_TARGET_DIR/release/among-tools" package-metainfo \
+    data/com.github.among-terminal.metainfo.xml '%{version}' \
+    %{buildroot}%{_datadir}/metainfo/com.github.among-terminal.metainfo.xml
 
 %check
 export CARGO_HOME=%{_builddir}/cargo-home

@@ -82,7 +82,8 @@ It creates a private HOME/XDG profile, PID/network/mount namespaces and two priv
 buses; it never uses the personal display, session bus or application settings.
 The shell's native automation hook enables inspection only in that compositor.
 
-The runner checks menu launch, pin activation, normal close/confirmation and
+The runner integrates after the owned Shell has started, checks opening the
+registered file without GIO launch hints, menu activation, pin activation, normal close/confirmation and
 fresh-process relaunch with session restore and real terminal input. It records
 the generated entry, versions, executable paths, window/shell IDs, icon bytes,
 child environment and a dock screenshot. It uses runtime extract-and-run because

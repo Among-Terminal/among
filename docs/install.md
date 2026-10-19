@@ -35,6 +35,25 @@ Among-Terminal/among` checks a downloaded file against it.
 To update, download the newer release's file and install it the same way. Close
 and reopen Among to use the new version.
 
+### Local DEB cards in GNOME Software
+
+On Debian 13 with GNOME Software 48.3 / PackageKit 1.3.1, opening a standalone
+DEB shows package fallback information: `among-terminal`, a generic package
+icon, `Unknown License`, `No Screenshots` and no release description. Installing
+the package makes its desktop name and application icon available in the
+Installed list, but reopening the DEB can still show the fallback card.
+
+Among ships Apache-2.0 project licensing, a public UI screenshot and release
+notes in AppStream metadata. A separately indexed AppStream component can show
+those fields; valid bundled XML alone does not make the local-file path use it.
+Native package builds bind the current AppStream release to the package's
+upstream version, including its RC suffix, without rewriting release history.
+
+Local installation adds no Among repository or signing key. The consumer's
+third-party trust and missing-repository/update warnings remain applicable.
+Debian/Ubuntu APT catalogue publication is separate work, not a feature of these
+standalone packages. Third-party components keep their own licence terms.
+
 ## From source
 
 From a source checkout, run as your normal user:
@@ -194,22 +213,43 @@ If you move or rename the AppImage, edit `Exec=` accordingly.
 
 AppImageLauncher creates its own `appimagekit_…-Among_Terminal.desktop` entry and
 icon name. Builds from this source bind an AppImage's Wayland surface to that
-entry when its launch context identifies the same AppImage file. The global
+entry when its launch context identifies the same AppImage file. If a file-manager
+or terminal launch has no valid GIO hint, a unique existing AppImageLauncher entry
+whose executable matches that exact file supplies the association. No entry is
+created automatically, and ambiguous duplicate registrations are not guessed.
+The global
 GApplication ID, configuration paths and native desktop entry remain unchanged.
 The `GIO_LAUNCHED_DESKTOP_FILE` hints used for this association are removed before
-terminal children start. Direct launches without that context keep the normal identity.
+terminal children start. Launches without a matching registration keep the normal identity.
 
-The local integration regression runs Debian 13 / GNOME Shell 48.7 / Wayland with
-AppImageLauncher `3.0.0-alpha-4-gha253~36951ec`. A local experimental image passed
-menu launch, pin activation and fresh-process relaunch with one branded dock item;
-this is not final release-package acceptance or proof for other integrators.
-The immutable 0.1.1 download predates this correction.
+The integration regression uses Debian 13 / GNOME Shell 48.7 / Wayland with
+AppImageLauncher `3.0.0-alpha-4-gha253~36951ec`. It integrates while Shell is
+already running, opens the integrated file without GIO launch hints, then checks
+menu activation, pin activation and fresh-process relaunch. Results apply to the
+actual image tested, not every integrator or desktop. Immutable 0.1.1 and the
+first 0.1.2 RC lack the unhinted-file-launch correction.
 
-After replacing an older image, use AppImageLauncher's integration flow and pin
-the newly generated entry. Old pins, duplicate manual launchers and stale icon
-caches can still refer to older files. Do not delete unrelated desktop entries
-or reset the entire dock; native DEB pins are separate. Upgrade/reintegration and
-coexistence with an installed DEB remain acceptance checks for the next candidate.
+For a controlled upgrade, close the old application and remove only its owned
+integration before integrating the replacement:
+
+```sh
+ail-cli unintegrate "/actual/integrated/old.AppImage"
+ail-cli integrate "/path/to/new.AppImage"
+```
+
+Use the old entry's actual `Exec` path: AppImageLauncher can move the image to a
+hash-suffixed filename. Pin the newly generated entry. Beside a native package,
+AppImageLauncher can suffix the display name with `(1)`; native DEB pins remain
+separate. Do not delete unrelated desktop entries or reset the entire dock.
+Old pins, duplicate manual launchers and icon caches can still refer to older
+files; an invisible icon is not proof of which layer failed.
+
+Without a host desktop registration, GNOME Wayland may show a technical
+application ID and generic icon for a directly executed AppImage. Its embedded
+icon does not register an application with the host shell. Use AppImageLauncher
+or the explicit manual desktop entry above. If a native DEB is installed,
+prefer AppImageLauncher's distinct entry: a manual entry with the native ID can
+override its launcher. Among does not silently create host registration files.
 
 The example plugins are inside the image in `usr/share/among/plugins/`;
 `--appimage-extract 'usr/share/among/plugins/*'` copies them out for

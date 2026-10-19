@@ -160,27 +160,7 @@ pub fn run(image: &Path, output: &Path, scratch: &Path, native_present: bool) ->
         10,
     )?;
     fs::write(base.join("consumer-versions.tsv"), versions)?;
-    runner.command(
-        "/usr/bin/ail-cli",
-        &["integrate", copy.to_str().ok_or("image path is not UTF-8")?],
-        60,
-    )?;
-    let entries = fs::read_dir(base.join("data/applications"))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    let entries = entries
-        .iter()
-        .filter(|path| path.extension().is_some_and(|ext| ext == "desktop"))
-        .collect::<Vec<_>>();
-    if entries.len() != 1 {
-        return Err("AppImageLauncher must generate exactly one owned desktop entry".into());
-    }
-    let entry = entries[0];
-    let id = entry
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("desktop ID missing")?;
-    fs::copy(entry, base.join("integrated.desktop"))?;
+    fs::create_dir_all(base.join("data/applications"))?;
     let automation = base.join("automation.js");
     fs::write(&automation, AUTOMATION)?;
     fs::write(base.join("empty.desktop"), b"")?;
@@ -280,10 +260,59 @@ pub fn run(image: &Path, output: &Path, scratch: &Path, native_present: bool) ->
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    // A pre-integrated profile misses icon/app-info cache races in a running
+    // desktop. Integrate while the owned compositor is already observing it.
+    runner.command(
+        "/usr/bin/ail-cli",
+        &["integrate", copy.to_str().ok_or("image path is not UTF-8")?],
+        60,
+    )?;
+    let entries = fs::read_dir(base.join("data/applications"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let entries = entries
+        .iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "desktop"))
+        .collect::<Vec<_>>();
+    if entries.len() != 1 {
+        return Err("AppImageLauncher must generate exactly one owned desktop entry".into());
+    }
+    let entry = entries[0];
+    let id = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("desktop ID missing")?;
+    fs::copy(entry, base.join("integrated.desktop"))?;
     eval(&mut runner, "(async () => { const {default: Clutter} = await import('gi://Clutter'); const seat = global.stage.context.get_backend().get_default_seat(); global.ownedPointer = seat.create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE); global.ownedKeyboard = seat.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE); })()")?;
     let id_js = serde_json::to_string(id)?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let visible = eval(&mut runner, &format!("(async () => {{ const {{default: Shell}} = await import('gi://Shell'); return Boolean(Shell.AppSystem.get_default().lookup_app({id_js})); }})()"))?;
+        if visible.trim() == "(true, 'true')" {
+            break;
+        }
+        if !shell.is_running()? || Instant::now() >= deadline {
+            return Err("running GNOME did not discover the new integrated entry".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let activate = format!("(async () => {{ const {{default: Shell}} = await import('gi://Shell'); const app = Shell.AppSystem.get_default().lookup_app({id_js}); if (!app) throw new Error('integrated entry not found'); app.activate(); return true; }})()");
     eval(&mut runner, "global.settings.set_strv('favorite-apps', []); (async () => { const {default: Gio} = await import('gi://Gio'); new Gio.Settings({schema_id:'org.gnome.desktop.notifications'}).set_boolean('show-banners',false); })()")?;
+    // Opening the integrated file itself does not supply GIO desktop-launch
+    // hints. A later menu activation must not leave that first window unbranded.
+    let entry_text = fs::read_to_string(entry)?;
+    let integrated_image = entry_text
+        .lines()
+        .find_map(|line| line.strip_prefix("Exec="))
+        .ok_or("integrated executable missing")?;
+    if !integrated_image.starts_with('/') || integrated_image.chars().any(char::is_whitespace) {
+        return Err("test integration executable must be one absolute path".into());
+    }
+    let image_js = serde_json::to_string(integrated_image)?;
+    eval(&mut runner, &format!("(async () => {{ const {{default: Gio}} = await import('gi://Gio'); Gio.Subprocess.new([{image_js}],Gio.SubprocessFlags.NONE); }})()"))?;
+    wait_input(&mut shell, &input)?;
+    let unhinted = observe(&mut runner, &base, "unhinted-file-launch")?;
+    screenshot(&mut runner, &base.join("unhinted-file-launch.png"))?;
     eval(&mut runner, &activate)?;
     wait_input(&mut shell, &input)?;
     eval(&mut runner, "(async () => { const Main = await import('resource:///org/gnome/shell/ui/main.js'); Main.overview.hide(); global.get_window_actors()[0].meta_window.activate(global.get_current_time()); })()")?;
@@ -366,7 +395,7 @@ pub fn run(image: &Path, output: &Path, scratch: &Path, native_present: bool) ->
     )?;
     let approved_artwork =
         fs::read(icon_file)? == include_bytes!("../../../docs/media/logo-small.svg");
-    let matched = [&menu, &pin, &relaunch].iter().all(|value| {
+    let matched = [&unhinted, &menu, &pin, &relaunch].iter().all(|value| {
         value["windows"].as_array().is_some_and(|windows| {
             windows.len() == 1
                 && windows[0]["gtk_id"] == "com.github.among-terminal"
@@ -380,7 +409,7 @@ pub fn run(image: &Path, output: &Path, scratch: &Path, native_present: bool) ->
     fs::write(
         base.join("result.json"),
         serde_json::to_vec_pretty(
-            &json!({"image_sha256":digest,"desktop_id":id,"native_present":native_present,"matched":matched,"approved_artwork":approved_artwork,"clean_child_environment":clean_environment,"menu_launch":menu,"pin_activation":pin,"pin_relaunch":relaunch,"fuse_mode":"runtime extract-and-run inside owned namespace"}),
+            &json!({"image_sha256":digest,"desktop_id":id,"native_present":native_present,"matched":matched,"approved_artwork":approved_artwork,"clean_child_environment":clean_environment,"unhinted_file_launch":unhinted,"menu_launch":menu,"pin_activation":pin,"pin_relaunch":relaunch,"fuse_mode":"runtime extract-and-run inside owned namespace"}),
         )?,
     )?;
     eval(&mut runner, "(async () => { const Main = await import('resource:///org/gnome/shell/ui/main.js'); Main.overview.show(); })()")?;

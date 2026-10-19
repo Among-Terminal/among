@@ -599,6 +599,8 @@ pub fn build(
     let appdir = base.join("Among.AppDir");
     copy_tree(&staged.canonicalize()?, &appdir)?;
     fs::set_permissions(&appdir, fs::Permissions::from_mode(0o755))?;
+    let metainfo = appdir.join("usr/share/metainfo/com.github.among-terminal.metainfo.xml");
+    crate::release_metadata::write_package_metainfo(&metainfo, version, &metainfo)?;
     let mut commands = Commands { logs, counter: 0 };
     let system = BTreeMap::from([
         ("PATH".into(), "/usr/bin:/bin".into()),

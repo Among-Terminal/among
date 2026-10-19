@@ -14,6 +14,63 @@ fn require(value: bool, message: &str) -> Result<()> {
     }
 }
 
+/// bind only the current release to the installed version; preserve historical
+/// release text and source metadata so source checks still compare Cargo's base.
+pub fn package_metainfo(xml: &str, version: &str) -> Result<String> {
+    let normalized = version.replace("~rc.", "-rc.");
+    let tag = format!("v{normalized}");
+    let (base, _) = crate::deb::release_version(&tag)?;
+    let document = roxmltree::Document::parse(xml)?;
+    let component = document.root_element();
+    require(
+        component.has_tag_name("component")
+            && component
+                .children()
+                .find(|n| n.has_tag_name("id"))
+                .and_then(|n| n.text())
+                == Some(crate::deb::APP_ID),
+        "package metainfo component differs",
+    )?;
+    let release = component
+        .children()
+        .find(|n| n.has_tag_name("releases"))
+        .and_then(|n| n.children().find(|n| n.has_tag_name("release")))
+        .ok_or("package metainfo current release absent")?;
+    let attribute = release
+        .attribute_node("version")
+        .ok_or("package metainfo version absent")?;
+    require(
+        attribute.value() == base,
+        "package metainfo source base differs from package version",
+    )?;
+    let range = attribute.range_value();
+    require(
+        xml.get(range.clone()) == Some(base),
+        "package metainfo version uses unsupported XML escaping",
+    )?;
+    let mut rendered = xml.to_owned();
+    rendered.replace_range(range, version);
+    Ok(rendered)
+}
+
+pub fn write_package_metainfo(source: &Path, version: &str, output: &Path) -> Result<()> {
+    let rendered = package_metainfo(&fs::read_to_string(source)?, version)?;
+    let parent = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    storage::atomic_write(
+        parent,
+        Path::new(
+            output
+                .file_name()
+                .ok_or("metainfo output filename absent")?,
+        ),
+        rendered.as_bytes(),
+        0o644,
+    )
+}
+
 pub fn artwork(root: &Path) -> Result<()> {
     let read = |name: &str| -> Result<Vec<u8>> {
         Ok(fs::read(storage::safe_path(root, Path::new(name))?)?)
