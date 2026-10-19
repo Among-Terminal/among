@@ -219,6 +219,12 @@ fn every_allowlisted_directory_including_the_tool_sources_reaches_the_archive() 
         fs::create_dir_all(root.join(directory))?;
         fs::write(root.join(directory).join("member"), directory.as_bytes())?;
     }
+    fs::create_dir_all(root.join("tools/among-tools/examples"))?;
+    let notice_fixture = include_bytes!("../examples/notice-plugin.rs");
+    fs::write(
+        root.join("tools/among-tools/examples/notice-plugin.rs"),
+        notice_fixture,
+    )?;
     let output = f.0.join("snapshot.tar");
     snapshot::snapshot(&root, &f.0.join("vendor"), &output)?;
     let hashes = storage::inspect_tar(&fs::read(&output)?)?;
@@ -232,10 +238,15 @@ fn every_allowlisted_directory_including_the_tool_sources_reaches_the_archive() 
         "tools/among-tools/src/member",
         "tools/among-tools/tests/member",
         "tools/among-tools/containers/member",
+        "tools/among-tools/examples/notice-plugin.rs",
         "examples/fake-plugin.rs",
     ] {
         assert!(hashes.contains_key(required), "{required}");
     }
+    assert_eq!(
+        hashes["tools/among-tools/examples/notice-plugin.rs"],
+        storage::sha256(notice_fixture.as_slice())?
+    );
     Ok(())
 }
 

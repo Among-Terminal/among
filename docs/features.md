@@ -69,6 +69,14 @@ Inactive workspaces keep their terminals and processes running. The sidebar
 collapse button reduces the list to a strip: colours and counts remain visible,
 and every workspace remains reachable.
 
+Drag the expanded sidebar's right edge to change its width. The chosen width
+returns after expanding the strip and after restarting the application. Resizing
+the sidebar leaves the workspace's panes and running processes intact.
+
+Actions and plugin notifications do not show bottom pop-up messages. Diagnostics
+remain in stderr, with storage warnings also available in Settings; explicit
+plugin header, footer and sidebar content remains visible as before.
+
 [![Renaming and switching between Atlas and Orbit](media/features/05-workspaces.png)](media/features/05-workspaces.mp4)
 
 **Demonstrations:** [create, rename and switch](media/features/05-workspaces.mp4) ·

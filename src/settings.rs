@@ -13,6 +13,7 @@ static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 pub enum Document {
     Plugins,
     Shortcuts,
+    Window,
 }
 
 pub struct PreferencesStorage {
@@ -95,6 +96,23 @@ impl PreferencesStorage {
         result
     }
 
+    pub fn sidebar_width_changed(&mut self, width: f64) -> Result<(), StorageError> {
+        let result = self.path(Document::Window).and_then(|path| {
+            if !width.is_finite() || width <= 0.0 {
+                return Err(invalid(
+                    &path,
+                    "sidebar_width must be a positive finite number",
+                ));
+            }
+            update(&path, Document::Window, |value| {
+                value["sidebar_width"] = json!(width);
+                Ok(())
+            })
+        });
+        self.record(Document::Window, &result);
+        result
+    }
+
     fn record(&mut self, kind: Document, result: &Result<(), StorageError>) {
         match result {
             Ok(()) => {
@@ -126,6 +144,7 @@ impl Document {
         match self {
             Self::Plugins => "plugins.json",
             Self::Shortcuts => "shortcuts.json",
+            Self::Window => "window.json",
         }
     }
 
@@ -133,6 +152,7 @@ impl Document {
         match self {
             Self::Plugins => json!({"plugins": []}),
             Self::Shortcuts => json!({"version": 1, "overrides": {}}),
+            Self::Window => json!({"version": 1}),
         }
     }
 }
@@ -199,6 +219,22 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
             }
             if !value.get("overrides").is_some_and(Value::is_object) {
                 return Err(invalid(path, "overrides must be an object"));
+            }
+        }
+        Document::Window => {
+            if value.get("version").and_then(Value::as_u64) != Some(1) {
+                return Err(invalid(path, "unsupported window document version"));
+            }
+            if let Some(width) = value.get("sidebar_width") {
+                if !width
+                    .as_f64()
+                    .is_some_and(|width| width.is_finite() && width > 0.0)
+                {
+                    return Err(invalid(
+                        path,
+                        "sidebar_width must be a positive finite number",
+                    ));
+                }
             }
         }
         _ => {}
@@ -494,8 +530,8 @@ mod tests {
             .skip(1)
             .map(|body| body.split("```").next().unwrap().trim())
             .collect();
-        assert_eq!(fixtures.len(), 2);
-        for (kind, body) in [Document::Plugins, Document::Shortcuts]
+        assert_eq!(fixtures.len(), 3);
+        for (kind, body) in [Document::Plugins, Document::Shortcuts, Document::Window]
             .into_iter()
             .zip(fixtures)
         {
@@ -544,5 +580,93 @@ mod tests {
         assert!(value["overrides"]["split-pane"].is_null());
         assert_eq!(value["overrides"]["future-action"], "F8");
         assert_eq!(value["external"], true);
+    }
+
+    #[test]
+    fn window_width_defaults_and_saved_edits_preserve_unrelated_fields() {
+        let temp = Temp::new();
+        let mut store = PreferencesStorage::new(Some(temp.0.clone()));
+        assert_eq!(store.load(Document::Window), Some(json!({"version":1})));
+        let path = temp.0.join("window.json");
+        assert!(
+            !path.exists(),
+            "loading defaults must not create a preference"
+        );
+        std::fs::write(&path, r#"{"version":1,"sidebar_width":240,"external":42}"#).unwrap();
+        store.sidebar_width_changed(417.5).unwrap();
+        let mut reopened = PreferencesStorage::new(Some(temp.0.clone()));
+        assert_eq!(
+            reopened.load(Document::Window),
+            Some(json!({
+                "version":1,"sidebar_width":417.5,"external":42
+            }))
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+            0
+        );
+    }
+
+    #[test]
+    fn invalid_window_preferences_are_not_replaced_by_resize() {
+        let temp = Temp::new();
+        let path = temp.0.join("window.json");
+        for body in [
+            "broken",
+            "[]",
+            r#"{"version":2}"#,
+            r#"{"sidebar_width":300}"#,
+            r#"{"version":1,"sidebar_width":0}"#,
+            r#"{"version":1,"sidebar_width":-2}"#,
+            r#"{"version":1,"sidebar_width":"wide"}"#,
+            r#"{"version":1,"sidebar_width":null}"#,
+        ] {
+            std::fs::write(&path, body).unwrap();
+            let mut store = PreferencesStorage::new(Some(temp.0.clone()));
+            assert!(store.load(Document::Window).is_none(), "{body}");
+            assert!(!store.status().is_empty());
+            assert!(store.sidebar_width_changed(320.0).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        }
+    }
+
+    #[test]
+    fn failed_window_write_keeps_bytes_and_recovers_on_the_next_resize() {
+        let temp = Temp::new();
+        let path = temp.0.join("window.json");
+        let body = r#"{"version":1,"sidebar_width":240,"external":42}"#;
+        std::fs::write(&path, body).unwrap();
+        let link = temp.0.join("linked-window.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(update(&link, Document::Window, |value| {
+            value["sidebar_width"] = json!(500);
+            Ok(())
+        })
+        .is_err());
+        let error = update_with_hook(
+            &path,
+            Document::Window,
+            |value| {
+                value["sidebar_width"] = json!(500);
+                Ok(())
+            },
+            |_| Err(io::Error::other("interrupted window save")),
+        )
+        .unwrap_err();
+        assert!(!error.replaced);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        let mut store = PreferencesStorage::new(Some(temp.0.clone()));
+        for width in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
+            assert!(store.sidebar_width_changed(width).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        }
+        store.sidebar_width_changed(500.0).unwrap();
+        assert!(store.status().is_empty());
+        assert_eq!(
+            load(&path, Document::Window).unwrap(),
+            json!({
+                "version":1,"sidebar_width":500.0,"external":42
+            })
+        );
     }
 }

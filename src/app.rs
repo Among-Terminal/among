@@ -46,6 +46,8 @@ pub struct AppState {
     pub exited: std::collections::HashMap<PaneId, i32>,
     /// Whether the sidebar is showing the narrow strip rather than the list.
     pub sidebar_collapsed: bool,
+    /// Desired expanded width, not the allocation constrained by this window.
+    sidebar_width: Option<f64>,
     /// A summary of what the sidebar last showed.
     ///
     /// Plugin updates arrive on a timer and mostly change nothing the sidebar
@@ -68,8 +70,8 @@ pub struct AppState {
     /// Set once the user has confirmed they mean to exit, so the confirmation
     /// is asked for once rather than every time the window is closed.
     pub exiting: bool,
-    /// Notifications shown, so the behaviour is observable in a verification run.
-    pub notices_shown: u32,
+    /// Recorded terminal and plugin notices, independent of their presentation.
+    pub notices_recorded: u32,
     /// How many times any shortcut has fired.
     pub shortcuts_fired: u32,
     /// How many shortcuts the window's controller actually holds.
@@ -102,11 +104,12 @@ impl AppState {
             panes: std::collections::BTreeMap::new(),
             exited: std::collections::HashMap::new(),
             sidebar_collapsed: false,
+            sidebar_width: None,
             sidebar_signature: String::new(),
             sidebar_shape: String::new(),
             renaming: None,
             exiting: false,
-            notices_shown: 0,
+            notices_recorded: 0,
             shortcuts_fired: 0,
             shortcuts_installed: 0,
             last_notice: None,
@@ -322,7 +325,7 @@ struct Window {
     workspace_header: gtk::Box,
     app_header: gtk::Box,
     app_footer: gtk::Box,
-    toast: adw::ToastOverlay,
+    sidebar_resize: gtk::Separator,
     state: Rc<RefCell<AppState>>,
     /// Each `Paned` with the tree path it mirrors, so the tree's ratios can be
     /// applied to real pixel extents after layout.
@@ -335,6 +338,7 @@ struct SplitWidget {
     widget: gtk::Paned,
     path: Vec<usize>,
     initialized: Rc<std::cell::Cell<bool>>,
+    extent: Rc<std::cell::Cell<i32>>,
 }
 
 /// Install the application stylesheet.
@@ -415,6 +419,14 @@ fn build_with_writer(
     {
         let mut state = state.borrow_mut();
         state.settings.load(crate::settings::Document::Plugins);
+        state.sidebar_width = state
+            .settings
+            .load(crate::settings::Document::Window)
+            .and_then(|value| {
+                value
+                    .get("sidebar_width")
+                    .and_then(serde_json::Value::as_f64)
+            });
         if let Some(value) = state.settings.load(crate::settings::Document::Shortcuts) {
             if let Some(overrides) = value
                 .get("overrides")
@@ -476,6 +488,16 @@ fn build_with_writer(
         .child(&workspace_list)
         .vexpand(true)
         .build();
+    let sidebar_overlay = gtk::Overlay::new();
+    sidebar_overlay.set_child(Some(&sidebar_scroller));
+    let sidebar_resize = gtk::Separator::new(gtk::Orientation::Vertical);
+    sidebar_resize.add_css_class("sidebar-resize-handle");
+    sidebar_resize.set_size_request(6, -1);
+    sidebar_resize.set_halign(gtk::Align::End);
+    sidebar_resize.set_vexpand(true);
+    sidebar_resize.set_can_target(true);
+    sidebar_resize.set_cursor_from_name(Some("col-resize"));
+    sidebar_overlay.add_overlay(&sidebar_resize);
 
     let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content_box.append(&workspace_header);
@@ -486,15 +508,13 @@ fn build_with_writer(
     // narrow, which is what a strip needs. A navigation split view would be built
     // around adaptive back-navigation instead, which this does not want.
     let split_view = adw::OverlaySplitView::builder()
-        .sidebar(&sidebar_scroller)
+        .sidebar(&sidebar_overlay)
         .content(&content_box)
         .build();
     split_view.set_min_sidebar_width(EXPANDED_MIN_WIDTH);
     split_view.set_max_sidebar_width(EXPANDED_MAX_WIDTH);
 
-    let toast = adw::ToastOverlay::new();
-    toast.set_child(Some(&split_view));
-    toast.set_vexpand(true);
+    split_view.set_vexpand(true);
 
     // A header bar inside a toolbar view is what gives the window its standard
     // controls: close, minimise, and maximise, plus the sidebar toggle.
@@ -506,6 +526,7 @@ fn build_with_writer(
     header_bar.pack_start(&preferences_button);
 
     let sidebar_toggle = gtk::ToggleButton::new();
+    sidebar_toggle.add_css_class("sidebar-toggle");
     sidebar_toggle.set_icon_name("sidebar-show-symbolic");
     sidebar_toggle.set_tooltip_text(Some("Collapse the sidebar to a strip"));
     sidebar_toggle.update_property(&[gtk::accessible::Property::Label("Toggle sidebar")]);
@@ -521,7 +542,7 @@ fn build_with_writer(
     // The application header is a second top bar, so plugin content sits under
     // the controls rather than competing with them.
     toolbar_view.add_top_bar(&app_header);
-    toolbar_view.set_content(Some(&toast));
+    toolbar_view.set_content(Some(&split_view));
     toolbar_view.add_bottom_bar(&app_footer);
     window.set_content(Some(&toolbar_view));
 
@@ -534,7 +555,7 @@ fn build_with_writer(
         workspace_header,
         app_header,
         app_footer,
-        toast,
+        sidebar_resize,
         state,
         paneds: Rc::new(RefCell::new(Vec::new())),
         summary_requested: RefCell::new(Vec::new()),
@@ -542,6 +563,8 @@ fn build_with_writer(
 
     install_shortcuts(&ctx);
     install_tick(&ctx);
+    install_sidebar_resize(&ctx);
+    apply_sidebar_width(&ctx);
 
     // Collapsing switches the sidebar between the full list and the narrow
     // strip. The sidebar itself stays visible, because the spec requires every
@@ -612,10 +635,6 @@ fn build_with_writer(
     // whole screen; F11 leaves and re-enters fullscreen.
     ctx.window.maximize();
     ctx.window.present();
-    let settings_problem = ctx.state.borrow().settings.status();
-    if !settings_problem.is_empty() {
-        ctx.notify(&format!("Settings could not be loaded: {settings_problem}"));
-    }
 
     if std::env::var_os("AMONG_SELFCHECK").is_some() {
         install_selfcheck(&ctx);
@@ -725,6 +744,10 @@ fn selfcheck(ctx: &Window, label: &str) {
     {
         let state = ctx.state.borrow();
         eprintln!("among[{label}]: session_ready={} session_closing={} session_saved={} session_problem={:?}", state.session_ready, state.session_closing, state.session_saved.is_some(), state.session_problem);
+        eprintln!(
+            "among[{label}]: settings_problem={:?}",
+            state.settings.status()
+        );
         eprintln!("among[{label}]: window_active={}", ctx.window.is_active());
     }
     fn session_buttons(widget: &gtk::Widget, window: &gtk::Widget, output: &mut Vec<String>) {
@@ -768,6 +791,41 @@ fn selfcheck(ctx: &Window, label: &str) {
     );
     eprintln!("among[{label}]: session_buttons={responses:?}");
     let state = ctx.state.borrow();
+    // X11 pointer input is surface-relative, including the client-side shadow.
+    let (surface_x, surface_y) = ctx.window.surface_transform();
+    let toggle = find_with_class(ctx.header_bar.upcast_ref(), "sidebar-toggle")
+        .and_then(|widget| widget.compute_bounds(&ctx.window))
+        .map(|rect| {
+            format!(
+                "toggle:{:.0}+{:.0}+{:.0}x{:.0}",
+                f64::from(rect.x()) + surface_x,
+                f64::from(rect.y()) + surface_y,
+                rect.width(),
+                rect.height()
+            )
+        })
+        .unwrap_or_default();
+    let edge = ctx
+        .sidebar_resize
+        .compute_bounds(&ctx.window)
+        .map(|rect| {
+            format!(
+                "edge:{:.0}+{:.0}+{:.0}x{:.0}",
+                f64::from(rect.x()) + surface_x,
+                f64::from(rect.y()) + surface_y,
+                rect.width(),
+                rect.height()
+            )
+        })
+        .unwrap_or_default();
+    eprintln!(
+        "among[{label}]: toast_widgets={} sidebar_width={} sidebar_preferred={} sidebar_resize_visible={} sidebar_resize_cursor={} sidebar_resize_rect=[{edge}] sidebar_toggle_rect=[{toggle}]",
+        toast_widget_count(ctx.window.upcast_ref()),
+        ctx.split_view.sidebar().map(|widget| widget.width()).unwrap_or(0),
+        field(state.sidebar_width),
+        ctx.sidebar_resize.is_visible(),
+        ctx.sidebar_resize.cursor().and_then(|cursor| cursor.name()).unwrap_or_default(),
+    );
     let active = state.workspaces.active_index();
     let workspace = state.workspaces.active();
     let area = (ctx.pane_area.width(), ctx.pane_area.height());
@@ -955,7 +1013,7 @@ fn selfcheck(ctx: &Window, label: &str) {
         .pane(workspace.focused)
         .map(|pane| pane.is_focused())
         .unwrap_or(false);
-    let notices = state.notices_shown;
+    let notices = state.notices_recorded;
     let last_notice = state.last_notice.clone();
     // Whether a CSS marker is actually drawn at a usable size: a colour class
     // on a zero-sized widget is invisible, so the class alone proves nothing.
@@ -1269,7 +1327,7 @@ fn selfcheck(ctx: &Window, label: &str) {
     );
 
     eprintln!(
-        "among[{label}]: split_binding={bound} unparsable={missing:?} plugins={plugins:?} app_header={:?} app_sources={sources:?} workspace_header={:?} pane_header={:?} workspace_summaries={summaries} focused_marked={focused_marked} notices_shown={notices} last_notice={last_notice:?} shortcuts_fired={shortcuts} shortcuts_installed={installed} drop_indication={indications:?} pane_titles={titles:?} pane_colours={pane_colours:?} pane_cwds={cwds:?} pane_scroll={scrolls:?} {stripe_measured} header_stripe={header_stripe} rejections={rejections:?}",
+        "among[{label}]: split_binding={bound} unparsable={missing:?} plugins={plugins:?} app_header={:?} app_sources={sources:?} workspace_header={:?} pane_header={:?} workspace_summaries={summaries} focused_marked={focused_marked} notices_recorded={notices} last_notice={last_notice:?} shortcuts_fired={shortcuts} shortcuts_installed={installed} drop_indication={indications:?} pane_titles={titles:?} pane_colours={pane_colours:?} pane_cwds={cwds:?} pane_scroll={scrolls:?} {stripe_measured} header_stripe={header_stripe} rejections={rejections:?}",
         slot_summary(&state.store, Scope::AppHeader),
         slot_summary(&state.store, Scope::WorkspaceHeader),
         slot_summary(&state.store, Scope::PaneHeader(workspace.focused)),
@@ -1341,6 +1399,16 @@ fn count_panes(widget: &gtk::Widget) -> usize {
         child = node.next_sibling();
     }
     total
+}
+
+fn toast_widget_count(widget: &gtk::Widget) -> usize {
+    let mut count = usize::from(widget.type_().name().starts_with("AdwToast"));
+    let mut child = widget.first_child();
+    while let Some(node) = child {
+        count += toast_widget_count(&node);
+        child = node.next_sibling();
+    }
+    count
 }
 
 fn workspace_list_rows(ctx: &Window) -> usize {
@@ -2126,14 +2194,12 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                         crate::context_menu::Command::Close => close_pane(&ctx, id),
                         crate::context_menu::Command::OpenLink(uri) => {
                             let launcher = gtk::UriLauncher::new(&uri);
-                            let notify = ctx.handle();
                             launcher.launch(
                                 Some(&ctx.window),
                                 None::<&gio::Cancellable>,
                                 move |result| {
                                     if let Err(error) = result {
                                         eprintln!("among: Could not open link: {error}");
-                                        notify.notify(&format!("Could not open link: {error}"));
                                     }
                                 },
                             );
@@ -2334,10 +2400,12 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
 
             let split_path = path.clone();
             let initialized = Rc::new(std::cell::Cell::new(false));
+            let extent = Rc::new(std::cell::Cell::new(0));
             ctx.paneds.borrow_mut().push(SplitWidget {
                 widget: paned.clone(),
                 path: split_path.clone(),
                 initialized: initialized.clone(),
+                extent: extent.clone(),
             });
 
             path.push(0);
@@ -2364,6 +2432,11 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
                     gtk::Orientation::Horizontal => paned.width(),
                     _ => paned.height(),
                 };
+                // Allocation changes can notify a new pixel position too; only
+                // a divider moved within the same extent edits the layout ratio.
+                if extent.replace(total) != total {
+                    return;
+                }
                 let usable = (total - 1).max(0);
                 if usable <= 0 {
                     return;
@@ -2415,7 +2488,9 @@ fn sync_ratios_to_widgets(ctx: &Window) {
             continue;
         }
         let target = (usable as f64 * ratio).round() as i32;
+        split.extent.set(total);
         if paned.position() != target {
+            split.initialized.set(false);
             paned.set_position(target);
         }
         split.initialized.set(true);
@@ -2525,7 +2600,6 @@ fn report_unbound(ctx: &Window, action: Action) -> bool {
     if ctx.state.borrow().bindings.is_bound(action) {
         return false;
     }
-    ctx.notify(&format!("{} has no key binding", action.label()));
     eprintln!("among: `{}` has no key binding", action.label());
     true
 }
@@ -2628,13 +2702,9 @@ fn toggle_fullscreen(ctx: &Window) {
 /// Only the rendering changes: the tree is left exactly as it was, so restoring
 /// brings back every nested divider and ratio untouched.
 fn toggle_zoom(ctx: &Window) {
-    let zoomed = ctx.state.borrow_mut().workspaces.active_mut().toggle_zoom();
+    ctx.state.borrow_mut().workspaces.active_mut().toggle_zoom();
     rebuild_panes(ctx);
     apply_focus(ctx);
-    match zoomed {
-        Some(pane) => ctx.notify(&format!("Pane {} expanded", pane.0)),
-        None => ctx.notify("Layout restored"),
-    }
 }
 
 /// Open the preferences window, wiring it to the live application state.
@@ -2666,7 +2736,7 @@ fn open_preferences(ctx: &Window) {
             move |name: &str| {
                 state.borrow_mut().plugins.enable(name);
                 let result = state.borrow_mut().settings.plugin_changed(name, true);
-                report_settings_save(&window, result, &format!("Enabled {name}"));
+                report_settings_save(&window, result);
             }
         }),
         disable_plugin: Rc::new({
@@ -2678,7 +2748,7 @@ fn open_preferences(ctx: &Window) {
                 // frozen on screen.
                 state.borrow_mut().store.remove_source(name);
                 let result = state.borrow_mut().settings.plugin_changed(name, false);
-                report_settings_save(&window, result, &format!("Disabled {name}"));
+                report_settings_save(&window, result);
                 refresh_slots(&window);
             }
         }),
@@ -2694,7 +2764,7 @@ fn open_preferences(ctx: &Window) {
                 state.borrow_mut().bindings = new_bindings;
                 reinstall_shortcuts(&window);
                 let result = state.borrow_mut().settings.shortcuts_changed(changes);
-                report_settings_save(&window, result, "Shortcuts updated");
+                report_settings_save(&window, result);
             }
         }),
     };
@@ -2702,26 +2772,14 @@ fn open_preferences(ctx: &Window) {
     prefs::present(&ctx.window, preferences);
 }
 
-fn report_settings_save(
-    ctx: &Window,
-    result: Result<(), crate::settings::StorageError>,
-    success: &str,
-) {
+fn report_settings_save(ctx: &Window, result: Result<(), crate::settings::StorageError>) {
     let (model, status) = {
         let state = ctx.state.borrow();
         (state.settings_status.clone(), state.storage_status())
     };
     model.splice(0, 1, &[&status]);
-    match result {
-        Ok(()) => ctx.notify(success),
-        Err(error) => {
-            eprintln!("among: settings save failed: {error}");
-            if error.replaced {
-                ctx.notify("Could not confirm preferences were saved. See Settings for details.");
-            } else {
-                ctx.notify("Preferences could not be saved. See Settings for details.");
-            }
-        }
+    if let Err(error) = result {
+        eprintln!("among: settings save failed: {error}");
     }
 }
 
@@ -2832,7 +2890,7 @@ fn new_workspace(ctx: &Window) {
     }
     let id = ctx.state.borrow_mut().allocate();
     let Some(id) = id else {
-        ctx.notify("Cannot create another terminal: pane identifiers are exhausted.");
+        eprintln!("among: cannot create another terminal: pane identifiers are exhausted");
         return;
     };
     {
@@ -2854,7 +2912,7 @@ fn split_focused(ctx: &Window) {
     let focused = ctx.state.borrow().workspaces.active().focused;
     let new_id = ctx.state.borrow_mut().allocate();
     let Some(new_id) = new_id else {
-        ctx.notify("Cannot create another terminal: pane identifiers are exhausted.");
+        eprintln!("among: cannot create another terminal: pane identifiers are exhausted");
         return;
     };
 
@@ -3120,8 +3178,6 @@ fn session_warning(ctx: &Window, message: &str) {
     state.session_problem = message.to_string();
     let status = state.storage_status();
     state.settings_status.splice(0, 1, &[&status]);
-    drop(state);
-    ctx.notify("Session could not be fully saved or restored. See Settings for details.");
 }
 
 fn session_restore_warning(ctx: &Window, message: &str) {
@@ -3135,10 +3191,6 @@ fn session_restore_warning(ctx: &Window, message: &str) {
         state.session_restore_warnings.push(message.into());
         let status = state.storage_status();
         state.settings_status.splice(0, 1, &[&status]);
-        if state.session_restore_warnings.len() == 1 {
-            drop(state);
-            ctx.notify("Some terminals could not restore their original directory. See Settings for details.");
-        }
     }
 }
 
@@ -3346,19 +3398,118 @@ fn set_sidebar_collapsed(ctx: &Window, collapsed: bool) {
         }
         state.sidebar_collapsed = collapsed;
     }
-    apply_sidebar_width(&ctx.split_view, collapsed);
+    apply_sidebar_width(ctx);
     rebuild_sidebar(ctx, false);
 }
 
 /// Apply the sidebar's width for the current presentation.
-fn apply_sidebar_width(split_view: &adw::OverlaySplitView, collapsed: bool) {
+fn apply_sidebar_width(ctx: &Window) {
+    let (collapsed, preferred) = {
+        let state = ctx.state.borrow();
+        (state.sidebar_collapsed, state.sidebar_width)
+    };
+    let split_view = &ctx.split_view;
+    ctx.sidebar_resize.set_visible(!collapsed);
     if collapsed {
+        split_view.set_sidebar_width_unit(adw::LengthUnit::Sp);
         split_view.set_min_sidebar_width(STRIP_WIDTH);
         split_view.set_max_sidebar_width(STRIP_WIDTH);
+    } else if let Some(preferred) = preferred {
+        let available = if split_view.width() > 0 {
+            split_view.width()
+        } else {
+            ctx.window.default_width()
+        };
+        let (minimum, maximum) = sidebar_width_limits(available);
+        let width = preferred.clamp(minimum, maximum);
+        split_view.set_sidebar_width_unit(adw::LengthUnit::Px);
+        // Keep a small minimum: fixing both limits to the preferred width would
+        // prevent the window manager from shrinking a wide saved sidebar.
+        split_view.set_min_sidebar_width(minimum);
+        split_view.set_max_sidebar_width(width);
+        split_view
+            .set_sidebar_width_fraction((width / f64::from(available.max(1))).clamp(0.0, 1.0));
     } else {
+        split_view.set_sidebar_width_unit(adw::LengthUnit::Sp);
         split_view.set_min_sidebar_width(EXPANDED_MIN_WIDTH);
         split_view.set_max_sidebar_width(EXPANDED_MAX_WIDTH);
+        split_view.set_sidebar_width_fraction(0.25);
     }
+}
+
+fn sidebar_width_limits(available: i32) -> (f64, f64) {
+    let maximum = (f64::from(available) - 240.0).max(1.0);
+    (EXPANDED_MIN_WIDTH.min(maximum), maximum)
+}
+
+fn install_sidebar_resize(ctx: &Window) {
+    let drag = gtk::GestureDrag::new();
+    drag.set_button(1);
+    drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let start = Rc::new(std::cell::Cell::new(None));
+    drag.connect_drag_begin({
+        let ctx = ctx.handle();
+        let start = start.clone();
+        move |gesture, x, y| {
+            start.set(None);
+            let on_edge = ctx
+                .sidebar_resize
+                .compute_bounds(&ctx.split_view)
+                .is_some_and(|rect| {
+                    x >= f64::from(rect.x())
+                        && x < f64::from(rect.x() + rect.width())
+                        && y >= f64::from(rect.y())
+                        && y < f64::from(rect.y() + rect.height())
+                });
+            if ctx.state.borrow().sidebar_collapsed || !on_edge {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            start.set(
+                ctx.split_view
+                    .sidebar()
+                    .map(|sidebar| f64::from(sidebar.width())),
+            );
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+        }
+    });
+    drag.connect_drag_update({
+        let ctx = ctx.handle();
+        let start = start.clone();
+        move |_, offset, _| {
+            if let Some(initial) = start.get() {
+                resize_sidebar(&ctx, initial + offset);
+            }
+        }
+    });
+    drag.connect_drag_end({
+        let ctx = ctx.handle();
+        move |_, offset, _| {
+            if let Some(initial) = start.take() {
+                if offset.abs() >= 1.0 && !ctx.state.borrow().sidebar_collapsed {
+                    resize_sidebar(&ctx, initial + offset);
+                    let preferred = ctx.state.borrow().sidebar_width;
+                    if let Some(width) = preferred {
+                        let result = ctx.state.borrow_mut().settings.sidebar_width_changed(width);
+                        report_settings_save(&ctx, result);
+                    }
+                }
+                apply_focus(&ctx);
+            }
+        }
+    });
+    // Gesture offsets must be relative to a stationary widget. Attaching to the
+    // moving edge subtracts its own movement and makes the width lag the pointer.
+    ctx.split_view.add_controller(drag);
+}
+
+fn resize_sidebar(ctx: &Window, width: f64) {
+    if !width.is_finite() || ctx.state.borrow().sidebar_collapsed {
+        return;
+    }
+    let (minimum, maximum) = sidebar_width_limits(ctx.split_view.width());
+    ctx.state.borrow_mut().sidebar_width = Some(width.clamp(minimum, maximum));
+    apply_sidebar_width(ctx);
 }
 
 /// Whether anything would be lost by closing the window now.
@@ -3391,17 +3542,12 @@ impl Window {
             workspace_header: self.workspace_header.clone(),
             app_header: self.app_header.clone(),
             app_footer: self.app_footer.clone(),
-            toast: self.toast.clone(),
+            sidebar_resize: self.sidebar_resize.clone(),
             split_view: self.split_view.clone(),
             window: self.window.clone(),
             paneds: self.paneds.clone(),
             summary_requested: self.summary_requested.clone(),
         }
-    }
-
-    fn notify(&self, message: &str) {
-        self.toast
-            .add_toast(adw::Toast::builder().title(message).timeout(2).build());
     }
 
     /// Report that a pane's process exited, naming the status when it is not
@@ -3412,18 +3558,16 @@ impl Window {
         } else {
             format!("Terminal {} exited with status {status}", pane.0)
         };
-        // Recorded as well as shown: a toast is transient, and a verification
-        // run needs to see that the report happened.
         {
             let mut state = self.state.borrow_mut();
-            state.notices_shown += 1;
+            state.notices_recorded += 1;
             state.last_notice = Some(message.clone());
         }
-        self.notify(&message);
         eprintln!("among: {message}");
     }
 
     fn on_tick(&self) {
+        apply_sidebar_width(self);
         if !self.state.borrow().session_ready || self.state.borrow().session_closing {
             return;
         }
@@ -3434,7 +3578,7 @@ impl Window {
             let mut state = self.state.borrow_mut();
             state.plugins.poll();
         }
-        show_plugin_notices(self);
+        log_plugin_notices(self);
         collect_plugin_results(self);
         request_plugin_status(self);
 
@@ -3472,39 +3616,15 @@ impl Window {
     }
 }
 
-/// Show notifications plugins have raised.
-///
-/// A toast is used because it overlays the window without touching focus, so
-/// typing continues to reach the focused terminal. The notification is also
-/// counted into the workspace summary slot, which makes it visible after the
-/// toast has gone.
-fn show_plugin_notices(ctx: &Window) {
+/// Drain plugin notifications without adding UI or changing keyboard focus.
+fn log_plugin_notices(ctx: &Window) {
     let notices = ctx.state.borrow_mut().plugins.drain_notices();
     for (plugin, message, _style) in notices {
-        // libadwaita's Toast carries a title only, so the plugin name is the
-        // title and the message rides along with it.
-        let toast = adw::Toast::builder()
-            .title(format!("{plugin}: {message}"))
-            .timeout(3)
-            .build();
-        ctx.toast.add_toast(toast);
+        eprintln!("among: {plugin}: {message}");
         {
             let mut borrowed = ctx.state.borrow_mut();
-            borrowed.notices_shown += 1;
+            borrowed.notices_recorded += 1;
             borrowed.last_notice = Some(format!("{plugin}: {message}"));
-        }
-        // Focused pane must not change: a notification must never interrupt
-        // typing, which is the one thing a terminal cannot recover from.
-        let focused = ctx.state.borrow().workspaces.active().focused;
-        let still_focused = ctx
-            .state
-            .borrow()
-            .pane(focused)
-            .map(|pane| pane.is_focused())
-            .unwrap_or(false);
-        if !still_focused {
-            ctx.state.borrow_mut().workspaces.active_mut().focused = focused;
-            apply_focus(ctx);
         }
     }
 }
@@ -3803,6 +3923,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(survivors.len(), 1);
         assert!(survivors[0].has_focus());
+        assert_eq!(toast_widget_count(window.upcast_ref()), 0);
         println!("PASS live Preferences rebind/unbind refreshes native menu hints; split, unbound zoom/restore and close dispatch after win-group replacement");
         window.destroy();
         pump();
@@ -4359,6 +4480,7 @@ mod tests {
             pump();
         }
         assert_eq!(terminal.window_title().unwrap(), "persistence-input-ok");
+        assert_eq!(toast_widget_count(window.upcast_ref()), 0);
         eprintln!("PASS real Preferences {phase}, saved files and terminal typing");
         // End only this isolated test process; no shutdown save is invoked.
         window.destroy();

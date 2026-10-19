@@ -48,8 +48,9 @@ The snapshot takes exactly these inputs from the source root, the list
 - every regular file below `packaging`, `tests`, `src`, `data`, `snap`,
   `scripts`, `docs`, `THIRD_PARTY`, `.github`, `examples/plugins/src`,
   `examples/plugins/tests`, `examples/plugins/examples` and, for the project
-  tooling, `tools/among-tools/src`, `tools/among-tools/tests` and
-  `tools/among-tools/containers`, skipping `__pycache__` directories.
+  tooling, `tools/among-tools/src`, `tools/among-tools/tests`,
+  `tools/among-tools/examples` and `tools/among-tools/containers`, skipping
+  `__pycache__` directories.
 
 Each listed file must exist and a listed directory must not be a symlink. The
 vendor tree is added under `vendor/`, then a generated `.cargo/config.toml`

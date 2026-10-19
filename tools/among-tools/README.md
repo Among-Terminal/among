@@ -267,6 +267,22 @@ requested location. Requirements match `check-sessions`: non-root execution, an
 owned X11/D-Bus display, xdotool, xprop and ImageMagick; evidence stays in its own
 directory.
 
+## Quiet window controls and sidebar width
+
+Build the Rust subprocess fixture with
+`cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example notice-plugin`,
+then run `ci-x11 among-tools check-window-controls AMONG_BINARY NOTICE_PLUGIN_BINARY`.
+The check sends real pointer drags to the sidebar edge, checks its resize cursor,
+reads the saved width, and starts a fresh process against that configuration to
+prove the width controls the displayed sidebar. It covers the fixed collapsed
+strip, expansion, small-window clamping without rewriting the preferred width,
+write failure and recovery, invalid documents, and usable terminal input without
+restarting the shell or changing its pane layout. A real notification-producing
+plugin proves its message is logged while its explicit footer remains visible.
+Live probes must report zero toast widgets, including after zoom and process exit.
+Existing Preferences and URI-launch checks cover their error paths. Requirements
+match `check-sessions`; the fixture is prebuilt, so the runtime needs no compiler.
+
 ## Workspace renaming
 
 `ci-x11 among-tools check-sidebar-rename AMONG_BINARY` drives the selected native

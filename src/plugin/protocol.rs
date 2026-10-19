@@ -208,7 +208,7 @@ pub struct ValidNotice {
     pub style: Option<String>,
 }
 
-/// Validate a notification before it is shown.
+/// validate a notification before it crosses into host diagnostics.
 ///
 /// A notification is user-facing text, so an oversized one is rejected rather
 /// than shown: the point is to inform, not to blank the screen.

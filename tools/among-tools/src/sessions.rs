@@ -421,6 +421,14 @@ impl Harness {
     }
     pub fn clean_log(&self, log: &Path) -> Result<()> {
         let text = fs::read_to_string(log)?;
+        for line in text.lines() {
+            if let Some((_, value)) = line.split_once("toast_widgets=") {
+                require(
+                    value.split_whitespace().next() == Some("0"),
+                    "the live window contains a toast widget",
+                )?;
+            }
+        }
         require(
             ![
                 "CRITICAL",
