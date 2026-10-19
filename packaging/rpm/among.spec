@@ -1,5 +1,5 @@
 Name:           among
-Version:        0.1.0
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        GNOME terminal multiplexer with project workspaces
 
@@ -95,5 +95,9 @@ appstream-util validate-relax \
 %{_datadir}/among/plugins
 
 %changelog
+* Mon Oct 19 2026 Among Terminal <hello+amongterminal@highload.zone> - 0.1.1-1
+- Remember resized sidebar width and remove bottom pop-up messages.
+- Fix split directories, touchpad scrolling and workspace renaming.
+
 * Sat Oct 10 2026 Among Terminal <hello+amongterminal@highload.zone> - 0.1.0-1
 - Initial RPM packaging for Fedora 43 and 44 on amd64 and arm64.

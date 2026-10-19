@@ -1,4 +1,4 @@
-use among_tools::{rpm, storage, Result};
+use among_tools::{package_version, rpm, storage, Result};
 use std::fs;
 
 #[test]
@@ -33,7 +33,11 @@ fn fixture() -> Result<std::path::PathBuf> {
     fs::create_dir_all(root.join("examples/plugins"))?;
     // The real root manifest: its binding features are what the spec floors are
     // checked against, so a synthetic copy could drift from the real levels.
-    fs::write(root.join("Cargo.toml"), include_str!("../../../Cargo.toml"))?;
+    // pin only the fixture version; retain the real binding features as the
+    // independent source of library floors when the product version advances.
+    let mut manifest: toml::Value = toml::from_str(include_str!("../../../Cargo.toml"))?;
+    manifest["package"]["version"] = toml::Value::String("0.1.0".into());
+    fs::write(root.join("Cargo.toml"), toml::to_string(&manifest)?)?;
     fs::write(
         root.join("examples/plugins/Cargo.toml"),
         "[package]\nname = \"plugins\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
@@ -50,10 +54,18 @@ fn fixture() -> Result<std::path::PathBuf> {
         root.join("data/com.github.among-terminal.metainfo.xml"),
         "<component><id>com.github.among-terminal</id></component>\n",
     )?;
-    fs::write(
-        root.join("packaging/rpm/among.spec"),
-        include_str!("../../../packaging/rpm/among.spec"),
-    )?;
+    let spec = include_str!("../../../packaging/rpm/among.spec")
+        .lines()
+        .map(|line| {
+            if line.starts_with("Version:") {
+                "Version:        0.1.0".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(root.join("packaging/rpm/among.spec"), format!("{spec}\n"))?;
     Ok(root)
 }
 
@@ -74,7 +86,7 @@ fn real_spec_matches_the_packaged_payload_and_versions() -> Result<()> {
         .ok_or("project root is not resolvable")?;
     let report = rpm::check(root, &rpm::spec_path(root))?;
     assert_eq!(report["name"], "among");
-    assert_eq!(report["version"], "0.1.0");
+    assert_eq!(report["version"], package_version::read(root)?);
     assert!(report["payload"]
         .as_array()
         .is_some_and(|paths| paths.contains(&serde_json::json!("%{_bindir}/among"))));
