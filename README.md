@@ -2,7 +2,10 @@
 
 # Among Terminal
 
+[![CI](https://img.shields.io/github/actions/workflow/status/Among-Terminal/among/checks.yml?branch=main&label=CI)](https://github.com/Among-Terminal/among/actions/workflows/checks.yml?query=branch%3Amain)
 [![Latest release](https://img.shields.io/github/v/release/Among-Terminal/among)](https://github.com/Among-Terminal/among/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Among-Terminal/among/total?label=downloads)](https://github.com/Among-Terminal/among/releases)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 A native GNOME terminal multiplexer built with Rust, GTK4, libadwaita and VTE.
 Keep shells running in split panes and named workspaces, with keyboard controls
@@ -13,6 +16,13 @@ and optional status plugins.
 Download the file for your system. The links always fetch the
 [latest release](https://github.com/Among-Terminal/among/releases/latest); no
 Rust toolchain or compilation is needed.
+
+[![Download Ubuntu 24.04 DEB for amd64](https://img.shields.io/badge/Ubuntu-DEB_amd64-C7461A?style=for-the-badge&logo=ubuntu&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-ubuntu24.04-amd64.deb)
+[![Download Debian 13 DEB for amd64](https://img.shields.io/badge/Debian-DEB_amd64-A81D33?style=for-the-badge&logo=debian&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-debian13-amd64.deb)
+[![Download Fedora 44 RPM for amd64](https://img.shields.io/badge/Fedora_44-RPM_amd64-294172?style=for-the-badge&logo=fedora&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora44-amd64.rpm)
+[![Download Linux AppImage for amd64](https://img.shields.io/badge/Linux-AppImage_amd64-333333?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-amd64.AppImage)
+
+ARM64 packages and all other formats are listed below.
 
 | System | x86-64 (`amd64`) | ARM 64-bit (`arm64`) |
 |---|---|---|
