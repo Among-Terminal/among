@@ -154,7 +154,8 @@ This creates `squashfs-root/` in the current directory; move or delete it like
 any directory. The upstream runtime also offers `--appimage-extract-and-run`,
 which extracts to a temporary directory on every start
 ([AppImage documentation](https://docs.appimage.org/user-guide/troubleshooting/fuse.html));
-Among's checks cover the extraction above, not that option.
+The package clean-host checks cover the extraction above. The separate isolated
+GNOME integration check uses the runtime's extract-and-run mode.
 
 The AppImage's launcher exports no library, GSettings or XDG data search
 path; Among sets up its bundled schemas, MIME data and image loaders inside
@@ -188,6 +189,27 @@ EOF
 ```
 
 If you move or rename the AppImage, edit `Exec=` accordingly.
+
+### AppImageLauncher
+
+AppImageLauncher creates its own `appimagekit_…-Among_Terminal.desktop` entry and
+icon name. Builds from this source bind an AppImage's Wayland surface to that
+entry when its launch context identifies the same AppImage file. The global
+GApplication ID, configuration paths and native desktop entry remain unchanged.
+The `GIO_LAUNCHED_DESKTOP_FILE` hints used for this association are removed before
+terminal children start. Direct launches without that context keep the normal identity.
+
+The local integration regression runs Debian 13 / GNOME Shell 48.7 / Wayland with
+AppImageLauncher `3.0.0-alpha-4-gha253~36951ec`. A local experimental image passed
+menu launch, pin activation and fresh-process relaunch with one branded dock item;
+this is not final release-package acceptance or proof for other integrators.
+The immutable 0.1.1 download predates this correction.
+
+After replacing an older image, use AppImageLauncher's integration flow and pin
+the newly generated entry. Old pins, duplicate manual launchers and stale icon
+caches can still refer to older files. Do not delete unrelated desktop entries
+or reset the entire dock; native DEB pins are separate. Upgrade/reintegration and
+coexistence with an installed DEB remain acceptance checks for the next candidate.
 
 The example plugins are inside the image in `usr/share/among/plugins/`;
 `--appimage-extract 'usr/share/among/plugins/*'` copies them out for

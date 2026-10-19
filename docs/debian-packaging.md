@@ -101,6 +101,22 @@ assets with ID `com.github.among-terminal`, and license materials under
 `/usr/share/among/plugins/`; staging does not enable them or edit user files.
 Maintainer contact: Among Terminal <hello+amongterminal@highload.zone>.
 
+## Software-centre presentation
+
+The package supplies its desktop launcher, square SVG and AppStream metainfo,
+including the project licence, release details and a public application screenshot.
+Those inputs do not guarantee a rich card when a standalone DEB is opened:
+GNOME Software 48.3's PackageKit local-file path begins with package details and
+desktop-file discovery, not extraction of the DEB's metainfo. Its later AppStream
+refinement and the installed-app view are separate consumers to test.
+
+XML/desktop validation therefore does not certify the displayed name, icon,
+licence or screenshots in either view. The corrected candidate's actual
+pre-install and installed GNOME Software views remain acceptance gates. No Among
+APT repository or signing key is installed by these presentation changes; Debian
+and Ubuntu repository/catalogue publication is separate future work. Local-file
+trust and update-source notices are not suppressed.
+
 ## Staging checks
 
 ```sh

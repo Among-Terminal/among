@@ -16,6 +16,7 @@ pub mod deb_workflow;
 pub mod delivery_package;
 pub mod desktop;
 pub mod display;
+pub mod gnome_desktop;
 pub mod ignored_tests;
 pub mod installation;
 pub mod live_focus;

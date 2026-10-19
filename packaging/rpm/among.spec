@@ -1,5 +1,5 @@
 Name:           among
-Version:        0.1.1
+Version:        0.1.2
 Release:        1%{?dist}
 Summary:        GNOME terminal multiplexer with project workspaces
 
@@ -95,6 +95,10 @@ appstream-util validate-relax \
 %{_datadir}/among/plugins
 
 %changelog
+* Mon Oct 19 2026 Among Terminal <hello+amongterminal@highload.zone> - 0.1.2~rc.1-1
+- Use the approved square artwork and correct AppImageLauncher Wayland matching.
+- Add public application screenshot metadata without claiming local-DEB catalogue support.
+
 * Mon Oct 19 2026 Among Terminal <hello+amongterminal@highload.zone> - 0.1.1-1
 - Remember resized sidebar width and remove bottom pop-up messages.
 - Fix split directories, touchpad scrolling and workspace renaming.

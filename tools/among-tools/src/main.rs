@@ -30,6 +30,7 @@ Usage:
   among-tools check-live-resize <among-binary>
   among-tools check-live-status <source-root> <among-binary> <prebuilt-plugins>
   among-tools check-desktop <source-root> <among-binary>
+  among-tools check-appimage-gnome <appimage> <new-evidence-directory> [--native-present]
   among-tools check-context-menu-launch <among-binary>
   among-tools check-context-menu <among-binary> <prebuilt-clipboard-helper> <light|dark>
   among-tools check-context-menu-snap <prebuilt-clipboard-helper> <light|dark> [--github-hosted]
@@ -652,6 +653,19 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, runner_home, entry] if command == "desktop-session" => {
             among_tools::desktop::session(Path::new(runner_home), Path::new(entry))?;
+        }
+        [command, image, output, rest @ ..] if command == "check-appimage-gnome" => {
+            let native_present = match rest {
+                [] => false,
+                [flag] if flag == "--native-present" => true,
+                _ => return Err("unknown GNOME desktop option".into()),
+            };
+            among_tools::gnome_desktop::run(
+                Path::new(image),
+                Path::new(output),
+                &std::env::temp_dir(),
+                native_present,
+            )?;
         }
         [command, root, binary] if command == "check-desktop" => {
             among_tools::desktop::run(
