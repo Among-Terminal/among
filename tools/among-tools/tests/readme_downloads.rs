@@ -38,6 +38,55 @@ fn readme_links_exactly_the_installable_files_of_the_latest_release() -> Result<
 }
 
 #[test]
+fn readme_status_badges_describe_this_repository_and_its_main_ci() -> Result<()> {
+    let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))?;
+    for badge in [
+        "[![CI](https://img.shields.io/github/actions/workflow/status/Among-Terminal/among/checks.yml?branch=main&label=CI)](https://github.com/Among-Terminal/among/actions/workflows/checks.yml?query=branch%3Amain)",
+        "[![Downloads](https://img.shields.io/github/downloads/Among-Terminal/among/total?label=downloads)](https://github.com/Among-Terminal/among/releases)",
+        "[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)",
+    ] {
+        assert!(readme.contains(badge), "missing or misdirected badge: {badge}");
+    }
+    Ok(())
+}
+
+#[test]
+fn download_buttons_label_architecture_and_target_published_package_names() -> Result<()> {
+    let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))?;
+    for (label, badge, file) in [
+        (
+            "Ubuntu 24.04 DEB",
+            "Ubuntu-DEB_amd64-C7461A?style=for-the-badge&logo=ubuntu&logoColor=white",
+            "among-terminal-ubuntu24.04-amd64.deb",
+        ),
+        (
+            "Debian 13 DEB",
+            "Debian-DEB_amd64-A81D33?style=for-the-badge&logo=debian&logoColor=white",
+            "among-terminal-debian13-amd64.deb",
+        ),
+        (
+            "Fedora 44 RPM",
+            "Fedora_44-RPM_amd64-294172?style=for-the-badge&logo=fedora&logoColor=white",
+            "among-terminal-fedora44-amd64.rpm",
+        ),
+        (
+            "Linux AppImage",
+            "Linux-AppImage_amd64-333333?style=for-the-badge&logo=linux&logoColor=white",
+            "among-terminal-amd64.AppImage",
+        ),
+    ] {
+        let button = format!(
+            "[![Download {label} for amd64](https://img.shields.io/badge/{badge})]({LATEST}{file})"
+        );
+        assert!(
+            readme.contains(&button),
+            "missing or misdirected download button for {label}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_removed_or_renamed_link_is_noticed() {
     let complete = expected()
         .iter()
