@@ -147,6 +147,16 @@ impl Workspace {
         self.zoomed
     }
 
+    /// late header activations must never turn a restore into another expansion.
+    pub fn restore_expanded(&mut self, pane: PaneId) -> bool {
+        if self.zoomed != Some(pane) || !self.nodes.panes().contains(&pane) {
+            return false;
+        }
+        self.zoomed = None;
+        self.focused = pane;
+        true
+    }
+
     /// Whether this workspace is showing a single zoomed pane.
     pub fn is_zoomed(&self) -> bool {
         self.zoomed.is_some()
@@ -655,6 +665,38 @@ mod tests {
         ws.focused = PaneId(1);
         assert_eq!(ws.toggle_zoom(), Some(PaneId(1)));
         assert_eq!(ws.visible_panes(), vec![PaneId(1)]);
+    }
+
+    #[test]
+    fn restore_only_preserves_nested_layout_and_rejects_wrong_or_repeated_targets() {
+        let mut ws = workspace();
+        ws.split_focused(600, 300, PaneId(2));
+        ws.split_focused(250, 500, PaneId(3));
+        let layout = ws.nodes.clone();
+        let directories = ws.cwd.clone();
+        assert!(!ws.restore_expanded(PaneId(3)));
+        ws.toggle_zoom();
+        assert!(!ws.restore_expanded(PaneId(2)));
+        assert_eq!(ws.zoomed, Some(PaneId(3)));
+        assert!(ws.restore_expanded(PaneId(3)));
+        assert_eq!(ws.nodes, layout);
+        assert_eq!(ws.cwd, directories);
+        assert_eq!(ws.focused, PaneId(3));
+        assert_eq!(ws.running, 3);
+        assert!(!ws.restore_expanded(PaneId(3)));
+        assert!(!ws.is_zoomed());
+    }
+
+    #[test]
+    fn closed_or_other_workspace_targets_cannot_restore_a_different_pane() {
+        let mut ws = workspace();
+        ws.split_focused(400, 200, PaneId(2));
+        ws.toggle_zoom();
+        ws.close(PaneId(2)).unwrap();
+        assert!(!ws.restore_expanded(PaneId(2)));
+        ws.toggle_zoom();
+        assert!(!ws.restore_expanded(PaneId(20)));
+        assert_eq!(ws.zoomed, Some(PaneId(1)));
     }
 
     #[test]
