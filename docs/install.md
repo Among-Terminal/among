@@ -5,7 +5,8 @@
 Every [GitHub Release](https://github.com/Among-Terminal/among/releases) carries
 the same files for x86-64 (`amd64`) and ARM 64-bit (`arm64`), under names without
 a version. `https://github.com/Among-Terminal/among/releases/latest/download/<file>`
-always fetches the file from the newest stable release; the README links each one.
+always fetches the file from the newest stable release; the README links the
+DEB, RPM and AppImage files, while this guide also covers binary archives.
 `uname -m` prints `x86_64` for amd64 and `aarch64` for arm64.
 
 | Your system | Files | Details |
