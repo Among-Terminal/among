@@ -2860,12 +2860,15 @@ fn open_preferences(ctx: &Window) {
             let window = ctx.handle();
             move |name: &str| {
                 state.borrow_mut().plugins.disable(name);
-                // The plugin's content goes with it, rather than being left
-                // frozen on screen.
-                state.borrow_mut().store.remove_source(name);
+                // removing data here consumes poll's change signal too, so both
+                // slot widgets and the sidebar must be refreshed by this path.
+                let changed = state.borrow_mut().store.remove_source(name);
                 let result = state.borrow_mut().settings.plugin_changed(name, false);
                 report_settings_save(&window, result);
-                refresh_slots(&window);
+                if changed {
+                    refresh_slots(&window);
+                    rebuild_sidebar(&window, false);
+                }
             }
         }),
         bindings_changed: Rc::new({

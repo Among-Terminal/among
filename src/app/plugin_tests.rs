@@ -233,6 +233,102 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
 
 #[test]
 #[ignore = "requires an isolated graphical session, built fake-plugin and real keyboard input"]
+fn preferences_switch_withdraws_sole_sidebar_summary_without_other_results() {
+    fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+        let mut result = vec![widget.clone()];
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            result.extend(descendants(&widget));
+            child = widget.next_sibling();
+        }
+        result
+    }
+    let app = application("com.github.among-terminal.plugin-withdrawal-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    let terminal = ctx
+        .state
+        .borrow()
+        .pane(PaneId(1))
+        .unwrap()
+        .terminal()
+        .clone();
+    ctx.state.borrow_mut().plugins.register(PluginSpec {
+        name: "sole-summary".into(),
+        command: fixture("echo"),
+        enabled: true,
+    });
+    wait_for(
+        || {
+            mapped_labels(ctx.workspace_list.upcast_ref(), "ok") == 1
+                && has_label(ctx.app_header.upcast_ref(), "ok")
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(ctx.state.borrow().store.summaries(0).len(), 1);
+    gtk::prelude::WidgetExt::activate_action(&ctx.window, "win.preferences", None).unwrap();
+    let preferences = gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .unwrap();
+    let row = descendants(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| row.title() == "sole-summary")
+        .unwrap();
+    let switch = descendants(row.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
+        .unwrap();
+    let page = switch
+        .ancestor(adw::PreferencesPage::static_type())
+        .unwrap()
+        .downcast::<adw::PreferencesPage>()
+        .unwrap();
+    preferences.set_visible_page(&page);
+    wait_for(|| switch.is_mapped(), Duration::from_secs(2));
+    assert!(switch.is_active());
+    let ids = xdo(&[
+        "search",
+        "--onlyvisible",
+        "--pid",
+        &std::process::id().to_string(),
+        "--name",
+        "Preferences",
+    ]);
+    let id = ids.lines().last().unwrap();
+    xdo(&["windowactivate", "--sync", id]);
+    xdo(&["windowfocus", "--sync", id]);
+    assert!(switch.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait_for(
+        || !switch.is_active() && ctx.state.borrow().plugins.is_stopped(),
+        Duration::from_secs(2),
+    );
+    assert!(ctx.state.borrow().store.summaries(0).is_empty());
+    assert!(ctx.state.borrow().store.is_empty(Scope::AppHeader));
+    assert!(
+        !has_label(ctx.workspace_list.upcast_ref(), "ok"),
+        "actual Preferences disable left stale sidebar content after all supervisors stopped"
+    );
+    assert!(!has_label(ctx.app_header.upcast_ref(), "ok"));
+    let saved = crate::settings::load(
+        &plugin_config_path().unwrap(),
+        crate::settings::Document::Plugins,
+    )
+    .unwrap();
+    assert_eq!(saved["plugins"][0]["enabled"], false);
+    assert_eq!(
+        ctx.state.borrow().pane(PaneId(1)).unwrap().terminal(),
+        &terminal
+    );
+    println!("PASS real Space on the Preferences switch removes the sole rendered sidebar summary and header without another plugin result; saved disabled state and the original terminal survive");
+    preferences.destroy();
+    ctx.window.destroy();
+}
+
+#[test]
+#[ignore = "requires an isolated graphical session, built fake-plugin and real keyboard input"]
 fn eight_pane_collection_is_fair_to_fast_slow_and_interval_zero_sources() {
     use std::os::fd::AsRawFd;
     let app = application("com.github.among-terminal.plugin-burst-test");
