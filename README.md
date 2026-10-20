@@ -17,22 +17,15 @@ Download the file for your system. The links always fetch the
 [latest release](https://github.com/Among-Terminal/among/releases/latest); no
 Rust toolchain or compilation is needed.
 
-[![Download Ubuntu 24.04 DEB for amd64](https://img.shields.io/badge/Ubuntu-DEB_amd64-C7461A?style=for-the-badge&logo=ubuntu&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-ubuntu24.04-amd64.deb)
-[![Download Debian 13 DEB for amd64](https://img.shields.io/badge/Debian-DEB_amd64-A81D33?style=for-the-badge&logo=debian&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-debian13-amd64.deb)
-[![Download Fedora 44 RPM for amd64](https://img.shields.io/badge/Fedora_44-RPM_amd64-294172?style=for-the-badge&logo=fedora&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora44-amd64.rpm)
-[![Download Linux AppImage for amd64](https://img.shields.io/badge/Linux-AppImage_amd64-333333?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-amd64.AppImage)
+| x86-64 (`amd64`) | ARM 64-bit (`arm64`) |
+|---|---|
+| [![Download Ubuntu 24.04 DEB for amd64](https://img.shields.io/badge/Ubuntu_24.04-DEB_amd64-C7461A?style=for-the-badge&logo=ubuntu&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-ubuntu24.04-amd64.deb) | [![Download Ubuntu 24.04 DEB for arm64](https://img.shields.io/badge/Ubuntu_24.04-DEB_arm64-C7461A?style=for-the-badge&logo=ubuntu&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-ubuntu24.04-arm64.deb) |
+| [![Download Debian 13 DEB for amd64](https://img.shields.io/badge/Debian_13-DEB_amd64-A81D33?style=for-the-badge&logo=debian&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-debian13-amd64.deb) | [![Download Debian 13 DEB for arm64](https://img.shields.io/badge/Debian_13-DEB_arm64-A81D33?style=for-the-badge&logo=debian&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-debian13-arm64.deb) |
+| [![Download Fedora 44 RPM for amd64](https://img.shields.io/badge/Fedora_44-RPM_amd64-294172?style=for-the-badge&logo=fedora&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora44-amd64.rpm) | [![Download Fedora 44 RPM for arm64](https://img.shields.io/badge/Fedora_44-RPM_arm64-294172?style=for-the-badge&logo=fedora&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora44-arm64.rpm) |
+| [![Download Fedora 43 RPM for amd64](https://img.shields.io/badge/Fedora_43-RPM_amd64-294172?style=for-the-badge&logo=fedora&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora43-amd64.rpm) | [![Download Fedora 43 RPM for arm64](https://img.shields.io/badge/Fedora_43-RPM_arm64-294172?style=for-the-badge&logo=fedora&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora43-arm64.rpm) |
+| [![Download Linux AppImage for amd64](https://img.shields.io/badge/Linux-AppImage_amd64-333333?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-amd64.AppImage) | [![Download Linux AppImage for arm64](https://img.shields.io/badge/Linux-AppImage_arm64-333333?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-arm64.AppImage) |
 
-ARM64 packages and all other formats are listed below.
-
-| System | x86-64 (`amd64`) | ARM 64-bit (`arm64`) |
-|---|---|---|
-| Ubuntu 24.04 — DEB | [among-terminal-ubuntu24.04-amd64.deb](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-ubuntu24.04-amd64.deb) | [among-terminal-ubuntu24.04-arm64.deb](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-ubuntu24.04-arm64.deb) |
-| Debian 13 — DEB | [among-terminal-debian13-amd64.deb](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-debian13-amd64.deb) | [among-terminal-debian13-arm64.deb](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-debian13-arm64.deb) |
-| Fedora 44 — RPM | [among-terminal-fedora44-amd64.rpm](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora44-amd64.rpm) | [among-terminal-fedora44-arm64.rpm](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora44-arm64.rpm) |
-| Fedora 43 — RPM | [among-terminal-fedora43-amd64.rpm](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora43-amd64.rpm) | [among-terminal-fedora43-arm64.rpm](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-fedora43-arm64.rpm) |
-| Other distributions with glibc 2.39+ — AppImage | [among-terminal-amd64.AppImage](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-amd64.AppImage) | [among-terminal-arm64.AppImage](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-arm64.AppImage) |
-| Ubuntu 24.04 — binary archive | [among-terminal-ubuntu24.04-amd64.tar.gz](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-ubuntu24.04-amd64.tar.gz) | [among-terminal-ubuntu24.04-arm64.tar.gz](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-ubuntu24.04-arm64.tar.gz) |
-| Debian 13 — binary archive | [among-terminal-debian13-amd64.tar.gz](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-debian13-amd64.tar.gz) | [among-terminal-debian13-arm64.tar.gz](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-debian13-arm64.tar.gz) |
+AppImages require glibc 2.39 or newer.
 
 `uname -m` prints `x86_64` for amd64 and `aarch64` for arm64. Install from the
 download directory, using the file name you downloaded:
