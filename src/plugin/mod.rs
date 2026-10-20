@@ -9,6 +9,8 @@
 //! which are invisible next to the work a status plugin actually does.
 
 pub mod host;
+mod process;
 pub mod protocol;
+mod transport;
 
 pub use protocol::{Context, EventKind, IncomingSummary, TerminalInfo};

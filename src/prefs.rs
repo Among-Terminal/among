@@ -264,7 +264,10 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
         switch.set_valign(gtk::Align::Center);
         switch.set_active(matches!(
             state,
-            PluginState::Running | PluginState::Faulted { .. }
+            PluginState::Starting
+                | PluginState::Running
+                | PluginState::Faulted { .. }
+                | PluginState::Stopping { enabled: true, .. }
         ));
         // A plugin that is not installed cannot be switched on: there is
         // nothing to start, and pretending otherwise would be misleading.
@@ -319,6 +322,8 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
 
 fn describe_state(state: &PluginState) -> String {
     match state {
+        PluginState::Starting => "Starting".into(),
+        PluginState::Stopping { reason, .. } => format!("Stopping ({reason})"),
         PluginState::Running => "Running".into(),
         PluginState::Disabled => "Disabled".into(),
         PluginState::Missing { reason } => format!("Not installed ({reason})"),

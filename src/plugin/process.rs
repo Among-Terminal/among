@@ -1,0 +1,427 @@
+//! one cancellable worker owns spawn, nonblocking pipes and reaping. retaining
+//! its handle until exit prevents rapid toggles from accumulating generations.
+
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use super::protocol::Request;
+use super::transport::{FrameDecoder, MAX_FRAME_BYTES, MAX_QUEUE_FRAMES};
+
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const STOP_GRACE: Duration = Duration::from_millis(500);
+const IO_INTERVAL_MS: i32 = 20;
+
+pub enum Failure {
+    Missing(String),
+    Fault(&'static str),
+}
+
+struct Outbound {
+    bytes: Box<[u8]>,
+    queued: Instant,
+    written: usize,
+}
+
+pub struct Process {
+    pub frames: Receiver<String>,
+    failures: Receiver<Failure>,
+    input: SyncSender<Outbound>,
+    outstanding: Arc<AtomicUsize>,
+    cancel: Arc<AtomicBool>,
+    pid: Arc<AtomicU32>,
+    worker: JoinHandle<()>,
+}
+
+impl Process {
+    pub fn start(mut command: Command) -> io::Result<Self> {
+        command
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let (frame_sender, frames) = sync_channel(MAX_QUEUE_FRAMES);
+        let (input, requests) = sync_channel(MAX_QUEUE_FRAMES);
+        let (failure_sender, failures) = sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let pid = Arc::new(AtomicU32::new(0));
+        let worker_cancel = cancel.clone();
+        let worker_outstanding = outstanding.clone();
+        let worker_pid = pid.clone();
+        // spawn the worker before the child, so a thread-creation failure cannot
+        // strand a child or force a GUI-thread wait in the error path.
+        let worker = std::thread::Builder::new()
+            .name("among-plugin-supervisor".into())
+            .spawn(move || {
+                if worker_cancel.load(Ordering::Acquire) {
+                    return;
+                }
+                let mut child = match command.spawn() {
+                    Ok(child) => child,
+                    Err(err) => {
+                        let _ = failure_sender.try_send(Failure::Missing(err.to_string()));
+                        return;
+                    }
+                };
+                worker_pid.store(child.id(), Ordering::Release);
+                if let Err(reason) = pump(
+                    &mut child,
+                    requests,
+                    frame_sender,
+                    &worker_cancel,
+                    &worker_outstanding,
+                ) {
+                    let _ = failure_sender.try_send(Failure::Fault(reason));
+                }
+                terminate_and_reap(&mut child);
+            })?;
+        Ok(Self {
+            frames,
+            failures,
+            input,
+            outstanding,
+            cancel,
+            pid,
+            worker,
+        })
+    }
+
+    pub fn started(&self) -> bool {
+        self.pid.load(Ordering::Acquire) != 0
+    }
+
+    #[cfg(test)]
+    pub fn pid(&self) -> u32 {
+        self.pid.load(Ordering::Acquire)
+    }
+
+    pub fn finished(&self) -> bool {
+        self.worker.is_finished()
+    }
+
+    pub fn failure(&self) -> Option<Failure> {
+        self.failures.try_recv().ok()
+    }
+
+    pub fn stop(&self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+
+    pub fn send(&self, request: &Request) -> Result<(), &'static str> {
+        if self.cancel.load(Ordering::Acquire) {
+            return Err("plugin is stopping");
+        }
+        let mut encoded = BoundedFrame(Vec::new());
+        serde_json::to_writer(&mut encoded, request).map_err(|_| "host request exceeds 64 KiB")?;
+        encoded
+            .write_all(b"\n")
+            .map_err(|_| "host request exceeds 64 KiB")?;
+        // include the actively written frame in the 16-frame/1-MiB budget.
+        self.outstanding
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_QUEUE_FRAMES).then_some(count + 1)
+            })
+            .map_err(|_| "plugin stdin queue exceeds 16 frames")?;
+        let frame = Outbound {
+            bytes: encoded.0.into_boxed_slice(),
+            queued: Instant::now(),
+            written: 0,
+        };
+        if self.input.try_send(frame).is_err() {
+            self.outstanding.fetch_sub(1, Ordering::AcqRel);
+            return Err("plugin stdin queue closed or full");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        self.stop();
+        // dropping a JoinHandle detaches; only the worker may wait for a child.
+        // normal polling retains this object until finished, including faults.
+    }
+}
+
+struct BoundedFrame(Vec<u8>);
+
+impl Write for BoundedFrame {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > MAX_FRAME_BYTES.saturating_sub(self.0.len()) {
+            return Err(io::Error::other("frame limit"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn nonblocking(fd: RawFd) -> io::Result<()> {
+    // the owned pipe remains open for both calls and only this worker uses it.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn pump(
+    child: &mut Child,
+    requests: Receiver<Outbound>,
+    frames: SyncSender<String>,
+    cancel: &AtomicBool,
+    outstanding: &AtomicUsize,
+) -> Result<(), &'static str> {
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err("plugin stdin unavailable");
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        return Err("plugin stdout unavailable");
+    };
+    nonblocking(stdin.as_raw_fd()).map_err(|_| "cannot configure plugin stdin")?;
+    nonblocking(stdout.as_raw_fd()).map_err(|_| "cannot configure plugin stdout")?;
+    let mut decoder = FrameDecoder::default();
+    let mut pending: Option<Outbound> = None;
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            if pending.is_none() {
+                // best effort only; never append shutdown inside a partial frame
+                // and never wait for a plugin that has stopped reading.
+                if let Ok(mut bytes) = serde_json::to_vec(&Request::Shutdown) {
+                    bytes.push(b'\n');
+                    let _ = stdin.write(&bytes);
+                }
+            }
+            return Ok(());
+        }
+        if child_exited(child.id()).map_err(|_| "cannot observe plugin process")? {
+            return Err("plugin exited");
+        }
+        if pending.is_none() {
+            pending = requests.try_recv().ok();
+        }
+        if let Some(frame) = pending.as_mut() {
+            if frame.queued.elapsed() >= WRITE_TIMEOUT {
+                return Err("plugin stdin write exceeded two seconds");
+            }
+            match stdin.write(&frame.bytes[frame.written..]) {
+                Ok(0) => return Err("plugin closed its input"),
+                Ok(written) => {
+                    frame.written += written;
+                    if frame.written == frame.bytes.len() {
+                        pending = None;
+                        outstanding.fetch_sub(1, Ordering::AcqRel);
+                    }
+                }
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(_) => return Err("plugin closed its input"),
+            }
+        }
+        // bound each pass so stdout cannot postpone cancellation or stdin work.
+        for _ in 0..MAX_QUEUE_FRAMES {
+            match stdout.read(&mut buffer) {
+                Ok(0) => return Err("plugin stdout closed"),
+                Ok(count) => decoder.push(&buffer[..count], &frames)?,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return Err("cannot read plugin stdout"),
+            }
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: stdout.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if pending.is_some() {
+                    stdin.as_raw_fd()
+                } else {
+                    -1
+                },
+                events: if pending.is_some() { libc::POLLOUT } else { 0 },
+                revents: 0,
+            },
+        ];
+        // both descriptors and the array outlive this bounded syscall.
+        let result =
+            unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, IO_INTERVAL_MS) };
+        if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return Err("cannot poll plugin pipes");
+        }
+    }
+}
+
+fn child_exited(pid: u32) -> io::Result<bool> {
+    // WNOWAIT keeps the leader's PID reserved until the final group signal;
+    // otherwise a fast exit/reap could allow us to signal a recycled group ID.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } != 0)
+}
+
+fn terminate_and_reap(child: &mut Child) {
+    // process_group(0) makes this owned child's PID its group ID. do not claim
+    // control of a descendant that deliberately escapes the supervised group.
+    if let Ok(pid) = i32::try_from(child.id()) {
+        unsafe {
+            libc::kill(-pid, libc::SIGTERM);
+        }
+        std::thread::sleep(STOP_GRACE);
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    } else {
+        let _ = child.kill();
+    }
+    // an uninterruptible child holds this worker/generation, not the GUI. the
+    // caller must not replace it until this function really observes reaping.
+    while child.wait().is_err() {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(mode: &str) -> Process {
+        let executable = std::env::current_exe().unwrap();
+        let path = executable
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("examples/fake-plugin");
+        assert!(path.is_file(), "build fake-plugin before filtered tests");
+        let mut command = Command::new(path);
+        command.arg(mode);
+        Process::start(command).unwrap()
+    }
+
+    fn until(mut check: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !check() {
+            assert!(
+                Instant::now() < deadline,
+                "supervisor did not make progress"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn live(pid: u32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => !stat
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .trim_start()
+                .starts_with('Z'),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+            Err(err) => panic!("cannot inspect owned fixture {pid}: {err}"),
+        }
+    }
+
+    #[test]
+    fn a_full_stdin_pipe_hits_the_real_write_deadline_off_loop() {
+        let process = fixture("never-read");
+        until(|| process.started());
+        let request = Request::Event {
+            event: super::super::protocol::EventKind::PaneOpened,
+            pane: 1,
+            detail: Some("x".repeat(60 * 1024)),
+        };
+        let start = Instant::now();
+        for _ in 0..8 {
+            process.send(&request).unwrap();
+        }
+        assert!(start.elapsed() < Duration::from_millis(500));
+        let mut fault = None;
+        until(|| {
+            fault = process.failure();
+            fault.is_some()
+        });
+        assert!(matches!(fault, Some(Failure::Fault(reason)) if reason.contains("two seconds")));
+        until(|| process.finished());
+        assert!(!live(process.pid()));
+    }
+
+    #[test]
+    fn cancellation_kills_term_ignoring_descendants_and_inherited_pipes() {
+        for mode in ["group-tree", "inherited"] {
+            let process = fixture(mode);
+            let mut descendant = None;
+            until(|| {
+                for frame in process.frames.try_iter() {
+                    let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+                    if value["type"] == "notify" {
+                        descendant = value["message"].as_str().unwrap().parse::<u32>().ok();
+                    }
+                }
+                descendant.is_some()
+            });
+            let child = descendant.unwrap();
+            assert!(live(child));
+            let start = Instant::now();
+            if mode == "group-tree" {
+                process.stop();
+                assert!(start.elapsed() < Duration::from_millis(100));
+            } // inherited's leader exits while its descendant retains stdout.
+            until(|| process.finished());
+            assert!(!live(process.pid()), "leader still live");
+            assert!(!live(child), "descendant still live after {mode}");
+        }
+    }
+
+    #[test]
+    fn queue_and_encoded_frame_limits_are_enforced_before_sending() {
+        let process = fixture("never-read");
+        until(|| process.started());
+        let mut frame = Request::Event {
+            event: super::super::protocol::EventKind::PaneOpened,
+            pane: 1,
+            detail: Some("x".repeat(60 * 1024)),
+        };
+        let mut refused = false;
+        for _ in 0..64 {
+            if process.send(&frame).is_err() {
+                refused = true;
+                break;
+            }
+        }
+        assert!(refused);
+        assert!(process.outstanding.load(Ordering::Acquire) <= MAX_QUEUE_FRAMES);
+        if let Request::Event { detail, .. } = &mut frame {
+            *detail = Some("x".repeat(MAX_FRAME_BYTES));
+        }
+        assert_eq!(process.send(&frame), Err("host request exceeds 64 KiB"));
+        process.stop();
+        until(|| process.finished());
+    }
+}

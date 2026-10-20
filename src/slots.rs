@@ -239,7 +239,8 @@ impl SlotStore {
     }
 
     /// Remove a plugin's contribution from every slot and summary.
-    pub fn remove_source(&mut self, source: &str) {
+    pub fn remove_source(&mut self, source: &str) -> bool {
+        let before = self.slots.values().map(Vec::len).sum::<usize>() + self.summaries.len();
         for contributions in self.slots.values_mut() {
             contributions.retain(|c| c.source != source);
         }
@@ -247,6 +248,7 @@ impl SlotStore {
         // A sidebar summary from a plugin that stopped working is as stale as
         // its slot content, so it is withdrawn too.
         self.summaries.retain(|(_, owner), _| owner != source);
+        before != self.slots.values().map(Vec::len).sum::<usize>() + self.summaries.len()
     }
 
     /// Drop all content belonging to panes that no longer exist.

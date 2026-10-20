@@ -302,9 +302,36 @@ continues:
 - More than 64 fragments in one response.
 - A fragment with neither text nor an icon.
 
-A plugin that crashes, exits, or does not answer within the timeout is marked
-faulted and stopped. Its content is withdrawn rather than left frozen, and it is
-restarted later. The application and every terminal stay usable throughout.
+Stdout frames are limited to 64 KiB including the newline, with at most 32 JSON
+nesting levels. The reader never allocates an unlimited unterminated line. Each
+plugin's stdout queue holds at most 16 frames (at most 1 MiB); exceeding either
+the frame or queue limit faults that plugin instead of blocking the interface.
+Polling rotates its starting plugin and drains at most 16 frames per plugin,
+256 globally and five milliseconds of frame work per tick. A noisy source does
+not always run before every other source. Pending result/notification batches
+are also capped at 256 entries each.
+
+Stdin uses a separate bounded 16-frame/1-MiB budget, including a partially written
+frame, with a two-second enqueue-to-write deadline. Serialization stops at the
+64-KiB frame limit too. Spawn, pipe reads/writes, termination and reaping run in
+one cancellable worker per supervised process, not on the GUI thread. The host
+supervises at most 32 processes, including generations still stopping. A stopped
+generation cannot be replaced until its worker has actually reaped it.
+
+Starting is separate from Running: a compatible handshake is required within
+five seconds. At most 64 status requests may be outstanding per plugin, with
+only one per scope; excess requests are deferred. Unmatched, duplicate and
+previous-generation replies cannot update slots. Both faults and disablement
+withdraw the last contribution even when there are no new results.
+
+A plugin that crashes, exits, or does not answer within the timeout loses its
+content immediately. Stopping sends TERM to its supervised process group,
+escalates to KILL after 500 ms and reaps off-loop. It remains Stopping until exit
+is observed. At most three automatic restarts follow a fault, after 2, 4 and 8
+seconds; an explicit off/on cycle resets that allowance. Incompatible or missing
+executables are not automatically retried. The application and every terminal
+stay usable throughout. This is supervision, not an OS sandbox: descendants that
+deliberately escape the owned group retain the user's ordinary process authority.
 
 Standard error is discarded by the host. Use a protocol `error` response for a
 diagnostic, or exit nonzero for an unrecoverable failure so the host notices it;

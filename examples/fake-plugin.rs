@@ -66,8 +66,98 @@ fn main() -> std::io::Result<()> {
             drop(output);
             serve(true)
         }
+        "unterminated" => {
+            std::io::stdout()
+                .lock()
+                .write_all(&vec![b'x'; 256 * 1024])?;
+            serve(false)
+        }
+        "flood" => {
+            let mut output = std::io::stdout().lock();
+            send(&mut output, &hello())?;
+            for _ in 0..4096 {
+                send(&mut output, &json!({"type":"notify", "message":"flood"}))?;
+            }
+            drop(output);
+            serve(true)
+        }
+        "never-read" | "stubborn" | "group-tree" | "inherited" => {
+            if mode != "never-read" {
+                // the supervisor must escalate rather than assume TERM worked.
+                unsafe {
+                    libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                }
+            }
+            let mut output = std::io::stdout().lock();
+            send(&mut output, &hello())?;
+            if matches!(mode.as_str(), "group-tree" | "inherited") {
+                let child = std::process::Command::new(std::env::current_exe()?)
+                    .arg("stubborn")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::inherit())
+                    .spawn()?;
+                send(
+                    &mut output,
+                    &json!({"type":"notify", "message":child.id().to_string()}),
+                )?;
+                // retained by the supervised group, not by this fixture's wait.
+                drop(child);
+            }
+            drop(output);
+            if mode == "inherited" {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                return Ok(());
+            }
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        }
+        "unmatched" => {
+            let mut output = std::io::stdout().lock();
+            send(&mut output, &hello())?;
+            send(
+                &mut output,
+                &json!({"type":"status", "request_id":99999, "fragments":[{"text":"unsolicited"}]}),
+            )?;
+            drop(output);
+            serve(true)
+        }
+        "duplicate" => {
+            let mut output = std::io::stdout().lock();
+            for line in std::io::stdin().lock().lines() {
+                let message: Value = serde_json::from_str(&line?)?;
+                if message["type"] == "hello" {
+                    send(&mut output, &hello())?;
+                }
+                if message["type"] == "status" {
+                    let response = json!({"type":"status", "request_id":message["request_id"], "fragments":[{"text":"once"}]});
+                    send(&mut output, &response)?;
+                    send(&mut output, &response)?;
+                }
+            }
+            Ok(())
+        }
+        "one-status" => {
+            let mut output = std::io::stdout().lock();
+            for line in std::io::stdin().lock().lines() {
+                let message: Value = serde_json::from_str(&line?)?;
+                if message["type"] == "hello" {
+                    send(&mut output, &hello())?;
+                }
+                if message["type"] == "status" {
+                    send(
+                        &mut output,
+                        &json!({"type":"status", "request_id":message["request_id"], "fragments":[{"text":"vanishing"}]}),
+                    )?;
+                }
+                if message["type"] == "event" {
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
+        }
         _ => {
-            eprintln!("usage: fake-plugin echo|hanging|crashing|malformed");
+            eprintln!("unknown fake-plugin behaviour");
             std::process::exit(2);
         }
     }
