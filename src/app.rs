@@ -525,6 +525,29 @@ fn build_with_writer(
 
     let specs = load_plugin_specs();
     state.borrow_mut().plugins.register_all(specs);
+    if let Some(root) = crate::plugin::inventory::root() {
+        match crate::plugin::inventory::read(&root) {
+            Ok(entries) => {
+                let document = state
+                    .borrow_mut()
+                    .settings
+                    .load(crate::settings::Document::ManagedPlugins);
+                for entry in entries {
+                    let local = document.as_ref().and_then(|document| {
+                        crate::plugin::inventory::local(document, &entry.key())
+                    });
+                    state.borrow_mut().plugins.register_managed(entry, local);
+                }
+            }
+            Err(problem) => {
+                state
+                    .borrow_mut()
+                    .settings
+                    .problems
+                    .insert("managed installation".into(), problem.to_string());
+            }
+        }
+    }
     apply_env_plugin_switches(&state);
 
     let app_header = slot_area("app-slot-header");
@@ -2845,6 +2868,48 @@ fn open_preferences(ctx: &Window) {
         plugin_listing: Rc::new({
             let state = ctx.state.clone();
             move || state.borrow().plugins.listing()
+        }),
+        plugin_enabled: Rc::new({
+            let state = ctx.state.clone();
+            move |name| state.borrow().plugins.desired_enabled(name)
+        }),
+        plugin_details: Rc::new({
+            let state = ctx.state.clone();
+            move |name| state.borrow().plugins.managed_details(name)
+        }),
+        save_plugin_settings: Rc::new({
+            let window = ctx.handle();
+            move |name, generation, changes| {
+                let schema = window
+                    .state
+                    .borrow()
+                    .plugins
+                    .managed_details(name)
+                    .filter(|(entry, _)| entry.receipt.generation == generation)
+                    .and_then(|(entry, _)| entry.inspected.ok())
+                    .and_then(|inspected| inspected.manifest.settings)
+                    .ok_or_else(|| "Settings are unavailable for this plugin".to_string())?;
+                let result = window
+                    .state
+                    .borrow_mut()
+                    .settings
+                    .managed_settings_changed(name, &schema, changes);
+                match result {
+                    Ok(stored) => {
+                        window
+                            .state
+                            .borrow_mut()
+                            .plugins
+                            .stored_settings_changed(name, stored);
+                        report_settings_save(&window, Ok(()));
+                        Ok(())
+                    }
+                    Err(error) => {
+                        report_settings_save(&window, Err(error));
+                        Err("Settings were not durably saved; see Settings storage".into())
+                    }
+                }
+            }
         }),
         enable_plugin: Rc::new({
             let state = ctx.state.clone();
@@ -5188,6 +5253,9 @@ mod tests {
                         crate::plugin::host::PluginState::Running,
                     )]
                 }),
+                plugin_enabled: Rc::new(|_| true),
+                plugin_details: Rc::new(|_| None),
+                save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
                 enable_plugin: Rc::new(|_| {}),
                 disable_plugin: Rc::new({
                     let toggled = toggled.clone();

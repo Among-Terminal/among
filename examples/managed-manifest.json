@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "sample-status",
+  "version": "1.0.0",
+  "name": "Sample status",
+  "description": "Static manifest and settings vocabulary example, not an installed plugin.",
+  "entrypoint": "bin/sample-status",
+  "icon": "theme:utilities-terminal-symbolic",
+  "api": { "major": 1, "minor": 2 },
+  "required_features": ["status", "settings"],
+  "optional_features": [],
+  "settings": {
+    "version": 1,
+    "apply": "live",
+    "fields": [
+      { "key": "enabled-meter", "label": "Show meter", "kind": "boolean", "default": true },
+      { "key": "interval", "label": "Refresh seconds", "kind": "integer", "min": 1, "max": 60, "default": 5 },
+      { "key": "threshold", "label": "Warning threshold", "kind": "number", "min": 0, "max": 1, "default": 0.8 },
+      { "key": "label", "label": "Label", "kind": "string", "max_length": 64, "default": "Status" },
+      { "key": "style", "label": "Style", "kind": "enum", "choices": [
+        { "value": "plain", "label": "Plain" },
+        { "value": "compact", "label": "Compact" }
+      ], "default": "plain" },
+      { "key": "credential", "label": "Credential (unavailable)", "kind": "secret", "required": false }
+    ]
+  },
+  "delivery_channels": []
+}

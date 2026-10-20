@@ -294,6 +294,62 @@ application's version.
 - The **minor** version may be lower, so the host can add fields additively
   without breaking existing plugins.
 
+### Static managed metadata and settings
+
+Managed packages use a separate static `among-plugin.json`, schema version 1.
+The [complete vocabulary example](../examples/managed-manifest.json) is parsed
+by the production parser in tests. It is data, not a ready-built plugin package.
+Static metadata and local settings can be inspected without executing code.
+The runtime still speaks legacy 1.1; a package requiring managed API 1.2 is
+reported unavailable, not executed through the legacy adapter. No managed
+notification, delivery or permission-negotiation support is implied here.
+
+Manifest `id` is lowercase ASCII letters/digits/hyphens, at most 64 bytes.
+`version`, `name` and `description` are bounded display metadata, not authority.
+`entrypoint` is a relative executable file, never a shell command. Entrypoints
+and resources cannot use absolute paths, `..`, symlinks, hardlinks or special
+files. The per-user package directory/files must be owned and not writable by
+others. Inspection runs no `--version` probe, hook or downloaded validator.
+JSON is limited to 256 KiB and depth 32; duplicate keys, feature IDs and channel
+IDs are rejected. There are at most 32 declared features/channels each.
+
+Icons are optional `theme:<icon-name>` or contained static PNG files. PNGs have
+a 1-MiB encoded and 2048-by-2048 decoded limit; animated/compressed ancillary
+metadata is refused. Invalid optional artwork uses a host fallback. An escaping
+resource path is a package refusal, not a fallback to an outside file.
+
+Settings declare their own positive `version`, `apply` (`live` or `restart`) and
+up to 64 fields with stable `key`, `label`, `kind`, optional typed `default` and
+applicable bounds. Supported kinds are boolean, integer, finite number, string
+and enum. Enum choices have distinct `value` and `label`. Fields are required
+unless `required` is false. Required unsupported kinds make the schema
+incompatible; optional unsupported kinds remain unavailable. A secret field
+never becomes an ordinary or masked string control. No secret storage is
+supported. Defaults are displayed in memory, not written merely by inspection.
+
+The native Settings action validates an explicit Save, even while the plugin is
+disabled. Effective declared values fit 32 KiB; the complete local envelope fits
+256 KiB. Unknown local values survive edits but are not delivered as declared
+settings. A different stored settings version requires an explicit migration
+decision; inspection never rewrites it. Local saving and runtime application
+are distinct: the editor does not report a saved value as applied to a process.
+Diagnostics use host-owned reason text, not submitted settings values.
+
+Managed installation selection is separate from legacy executables. The
+application reads only its committed `among/managed/installed.json` record in
+the XDG data directory, not arbitrary discovered manifests or staging files.
+It retains invalid/missing selected packages as unavailable entries. A receipt
+binds GitHub's repository ID, owner/name, repository-local ID, exact revision,
+manifest/package SHA-256, release/asset IDs and immutable generation. A matching
+hash establishes content consistency, not an independently verified publisher.
+Identity is `github:<repository-id>/<local-id>`; a bare filename/display name
+cannot inherit another origin's settings or switch. New records default disabled.
+Local state lives separately in `managed-plugins.json` in the XDG config directory.
+Retained preferences alone are not evidence of installation. Repository browsing,
+download, update and uninstall are separate installer operations, not implemented
+by static inspection. Existing manifestless discovery/configuration and all three
+bundled examples keep their legacy identities and enablement.
+
 ## Failure handling
 
 Plugins are untrusted input. Everything below is discarded and the application

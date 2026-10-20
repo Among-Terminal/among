@@ -3,7 +3,7 @@
 use serde_json::{json, Value};
 use std::io;
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,6 +12,7 @@ static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, Debug)]
 pub enum Document {
     Plugins,
+    ManagedPlugins,
     Shortcuts,
     Window,
 }
@@ -58,6 +59,20 @@ impl PreferencesStorage {
     }
 
     pub fn plugin_changed(&mut self, name: &str, enabled: bool) -> Result<(), StorageError> {
+        if name.starts_with("github:") && name.contains('/') {
+            let result = self.path(Document::ManagedPlugins).and_then(|path| {
+                update(&path, Document::ManagedPlugins, |value| {
+                    let entry = &mut value["plugins"][name];
+                    if entry.is_null() {
+                        *entry = json!({});
+                    }
+                    entry["enabled"] = json!(enabled);
+                    Ok(())
+                })
+            });
+            self.record(Document::ManagedPlugins, &result);
+            return result;
+        }
         self.pending_plugins.insert(name.into(), enabled);
         let result = self.path(Document::Plugins).and_then(|path| {
             update(&path, Document::Plugins, |value| {
@@ -96,6 +111,34 @@ impl PreferencesStorage {
         result
     }
 
+    pub fn managed_settings_changed(
+        &mut self,
+        key: &str,
+        schema: &crate::plugin::schema::SettingsSchema,
+        changes: &serde_json::Map<String, Value>,
+    ) -> Result<Value, StorageError> {
+        let result = self.path(Document::ManagedPlugins).and_then(|path| {
+            update(&path, Document::ManagedPlugins, |value| {
+                let stored = value["plugins"][key].get("settings");
+                let merged = schema
+                    .merge_edit(stored, changes)
+                    .map_err(|problem| problem.to_string())?;
+                let entry = &mut value["plugins"][key];
+                if entry.is_null() {
+                    *entry = json!({});
+                }
+                entry["settings"] = merged;
+                Ok(())
+            })?;
+            load(&path, Document::ManagedPlugins)?["plugins"][key]
+                .get("settings")
+                .cloned()
+                .ok_or_else(|| invalid(&path, "saved settings could not be reloaded"))
+        });
+        self.record(Document::ManagedPlugins, &result);
+        result
+    }
+
     pub fn sidebar_width_changed(&mut self, width: f64) -> Result<(), StorageError> {
         let result = self.path(Document::Window).and_then(|path| {
             if !width.is_finite() || width <= 0.0 {
@@ -113,9 +156,9 @@ impl PreferencesStorage {
         result
     }
 
-    fn record(&mut self, kind: Document, result: &Result<(), StorageError>) {
+    fn record<T>(&mut self, kind: Document, result: &Result<T, StorageError>) {
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 self.problems.remove(kind.filename());
             }
             Err(error) => {
@@ -143,6 +186,7 @@ impl Document {
     pub fn filename(self) -> &'static str {
         match self {
             Self::Plugins => "plugins.json",
+            Self::ManagedPlugins => "managed-plugins.json",
             Self::Shortcuts => "shortcuts.json",
             Self::Window => "window.json",
         }
@@ -151,6 +195,7 @@ impl Document {
     fn empty(self) -> Value {
         match self {
             Self::Plugins => json!({"plugins": []}),
+            Self::ManagedPlugins => json!({"version":1,"plugins":{}}),
             Self::Shortcuts => json!({"version": 1, "overrides": {}}),
             Self::Window => json!({"version": 1}),
         }
@@ -193,7 +238,27 @@ pub fn directory() -> Option<PathBuf> {
     )
 }
 
-fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
+fn read_bytes(path: &Path, kind: Document) -> Result<Option<Vec<u8>>, StorageError> {
+    if matches!(kind, Document::ManagedPlugins) {
+        if matches!(std::fs::symlink_metadata(path),Err(error) if error.kind()==io::ErrorKind::NotFound)
+        {
+            return Ok(None);
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| invalid(path, "configuration has no parent"))?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid(path, "invalid configuration filename"))?;
+        return crate::plugin::data::owned_directory(parent)
+            .and_then(|parent| crate::plugin::data::contained_file(&parent, name))
+            .and_then(|file| {
+                crate::plugin::data::read_bounded(&file, crate::plugin::data::MAX_STATIC_BYTES)
+            })
+            .map(Some)
+            .map_err(|problem| invalid(path, problem));
+    }
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -205,11 +270,29 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
     let Some(bytes) = bytes else {
         return Ok(kind.empty());
     };
-    let value: Value = serde_json::from_slice(bytes).map_err(|error| invalid(path, error))?;
+    let value: Value = if matches!(kind, Document::ManagedPlugins) {
+        crate::plugin::data::parse_unique(bytes, crate::plugin::data::MAX_STATIC_BYTES)
+            .map_err(|problem| invalid(path, problem))?
+    } else {
+        serde_json::from_slice(bytes).map_err(|error| invalid(path, error))?
+    };
     if !value.is_object() {
         return Err(invalid(path, "configuration must be an object"));
     }
     match kind {
+        Document::ManagedPlugins => {
+            if value.get("version").and_then(Value::as_u64) != Some(1)
+                || !value.get("plugins").is_some_and(Value::is_object)
+            {
+                return Err(invalid(path, "unsupported managed preferences document"));
+            }
+            if value["plugins"]
+                .as_object()
+                .is_some_and(|entries| entries.values().any(|entry| !entry.is_object()))
+            {
+                return Err(invalid(path, "managed plugin preferences must be objects"));
+            }
+        }
         Document::Plugins if value.get("plugins").is_some_and(|v| !v.is_array()) => {
             return Err(invalid(path, "plugins must be an array"))
         }
@@ -243,7 +326,7 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
 }
 
 pub fn load(path: &Path, kind: Document) -> Result<Value, StorageError> {
-    parse(path, kind, read_bytes(path)?.as_deref())
+    parse(path, kind, read_bytes(path, kind)?.as_deref())
 }
 
 fn destination_mode(path: &Path) -> Result<u32, StorageError> {
@@ -278,11 +361,25 @@ fn update_with_hook(
         .ok_or_else(|| invalid(path, "configuration has no parent"))?;
     for _ in 0..3 {
         let mode = destination_mode(path)?;
-        let original = read_bytes(path)?;
+        let original = read_bytes(path, kind)?;
         let mut value = parse(path, kind, original.as_deref())?;
         edit(&mut value).map_err(|message| invalid(path, message))?;
+        if matches!(kind, Document::ManagedPlugins) {
+            crate::plugin::data::serialized_size(&value, crate::plugin::data::MAX_STATIC_BYTES)
+                .map_err(|problem| invalid(path, problem))?;
+        }
         let bytes = serde_json::to_vec_pretty(&value).map_err(|error| invalid(path, error))?;
-        std::fs::create_dir_all(parent).map_err(|error| invalid(path, error))?;
+        if matches!(kind, Document::ManagedPlugins) {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|error| invalid(path, error))?;
+            crate::plugin::data::owned_directory(parent)
+                .map_err(|problem| invalid(path, problem))?;
+        } else {
+            std::fs::create_dir_all(parent).map_err(|error| invalid(path, error))?;
+        }
         let temporary = parent.join(format!(
             ".among-settings-{}-{}",
             std::process::id(),
@@ -303,7 +400,7 @@ fn update_with_hook(
             let _ = std::fs::remove_file(&temporary);
             return Err(invalid(path, error));
         }
-        let current = destination_mode(path).and_then(|_| read_bytes(path));
+        let current = destination_mode(path).and_then(|_| read_bytes(path, kind));
         match current {
             Ok(current) if current != original => {
                 let _ = std::fs::remove_file(&temporary);
@@ -406,6 +503,86 @@ mod tests {
             load(&temp.0.join("shortcuts.json"), Document::Shortcuts).unwrap(),
             json!({"version":1,"overrides":{}})
         );
+    }
+
+    #[test]
+    fn managed_edits_preserve_origins_unknown_data_and_legacy_bytes() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let legacy = temp.0.join("plugins.json");
+        std::fs::write(&legacy, b"legacy bytes never inspected by managed settings").unwrap();
+        let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+        let schema = crate::plugin::schema::SettingsSchema::parse(
+            json!({"version":1,"apply":"live","fields":[
+            {"key":"label","label":"Label","kind":"string","max_length":8,"default":"base"}]}),
+        )
+        .unwrap();
+        let first = "github:1/sample";
+        let second = "github:2/sample";
+        storage.plugin_changed(first, false).unwrap();
+        storage.plugin_changed(second, true).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        update(&path, Document::ManagedPlugins, |document| {
+            document["plugins"][first]["settings"] =
+                json!({"version":1,"values":{"future":"preserve"},"extra":true});
+            Ok(())
+        })
+        .unwrap();
+        storage
+            .managed_settings_changed(
+                first,
+                &schema,
+                json!({"label":"edited"}).as_object().unwrap(),
+            )
+            .unwrap();
+        let saved = load(&path, Document::ManagedPlugins).unwrap();
+        assert_eq!(
+            saved["plugins"][first]["settings"]["values"]["future"],
+            "preserve"
+        );
+        assert_eq!(saved["plugins"][first]["settings"]["extra"], true);
+        assert_eq!(saved["plugins"][second]["enabled"], true);
+        assert!(saved["plugins"][second].get("settings").is_none());
+        let before = std::fs::read(&path).unwrap();
+        let error = storage
+            .managed_settings_changed(
+                first,
+                &schema,
+                json!({"label":"sensitive-too-long-value"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap_err();
+        assert!(!error.to_string().contains("sensitive-too-long-value"));
+        assert_eq!(before, std::fs::read(&path).unwrap());
+        assert_eq!(
+            std::fs::read(legacy).unwrap(),
+            b"legacy bytes never inspected by managed settings"
+        );
+    }
+
+    #[test]
+    fn managed_duplicate_oversized_future_and_symlink_documents_are_never_repaired() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        for body in [
+            r#"{"version":1,"version":1,"plugins":{}}"#.to_string(),
+            r#"{"version":2,"plugins":{}}"#.into(),
+            r#"{"version":1,"plugins":{"x":true}}"#.into(),
+            " ".repeat(crate::plugin::data::MAX_STATIC_BYTES + 1),
+        ] {
+            std::fs::write(&path, &body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+            assert!(storage.load(Document::ManagedPlugins).is_none());
+            assert!(storage.plugin_changed("github:1/sample", false).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        }
+        let target = temp.0.join("target.json");
+        std::fs::rename(&path, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(load(&path, Document::ManagedPlugins).is_err());
     }
 
     #[test]
