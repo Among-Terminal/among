@@ -6,7 +6,7 @@
 //! pane widgets are reused across rebuilds so their terminals — and the
 //! processes behind them — survive.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -94,7 +94,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(starts_allowed: Rc<Cell<bool>>) -> Self {
         // The first pane's id comes from the same allocator as every later one,
         // so a split can never mint an id that is already in use.
         let allocator = PaneAllocator::after(PaneId(1));
@@ -114,7 +114,7 @@ impl AppState {
             shortcuts_installed: 0,
             last_notice: None,
             store: SlotStore::new(),
-            plugins: PluginHost::new(),
+            plugins: PluginHost::with_start_gate(starts_allowed),
             bindings: Bindings::defaults(),
             settings: crate::settings::PreferencesStorage::new(crate::settings::directory()),
             settings_status: gtk::StringList::new(&[""]),
@@ -330,8 +330,9 @@ struct Window {
     /// Each `Paned` with the tree path it mirrors, so the tree's ratios can be
     /// applied to real pixel extents after layout.
     paneds: Rc<RefCell<Vec<SplitWidget>>>,
-    /// When each workspace's sidebar summary was last requested.
-    summary_requested: RefCell<Vec<u64>>,
+    /// Per-source clocks keep one accepted summary from suppressing a sibling.
+    summary_requested: Rc<RefCell<std::collections::BTreeMap<(usize, String), u64>>>,
+    collection_cursor: Rc<Cell<usize>>,
 }
 
 struct SplitWidget {
@@ -387,12 +388,62 @@ pub fn build(app: &adw::Application, requested: Option<Action>) {
     let _ = build_with_writer(app, requested, crate::session::Writer::new);
 }
 
+struct ApplicationPlugins {
+    app: glib::WeakRef<adw::Application>,
+    starts_allowed: Rc<Cell<bool>>,
+    retiring: Cell<usize>,
+}
+
+thread_local! {
+    static APPLICATION_PLUGINS: RefCell<Vec<Rc<ApplicationPlugins>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn application_plugins(app: &adw::Application) -> Rc<ApplicationPlugins> {
+    APPLICATION_PLUGINS.with(|entries| {
+        let mut entries = entries.borrow_mut();
+        entries.retain(|entry| entry.app.upgrade().is_some());
+        if let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.app.upgrade().as_ref() == Some(app))
+        {
+            return entry.clone();
+        }
+        let entry = Rc::new(ApplicationPlugins {
+            app: app.downgrade(),
+            starts_allowed: Rc::new(Cell::new(true)),
+            retiring: Cell::new(0),
+        });
+        entries.push(entry.clone());
+        entry
+    })
+}
+
+struct RetiringPlugins(Rc<ApplicationPlugins>);
+
+impl ApplicationPlugins {
+    fn retire(self: &Rc<Self>) -> RetiringPlugins {
+        self.retiring.set(self.retiring.get().saturating_add(1));
+        self.starts_allowed.set(false);
+        RetiringPlugins(self.clone())
+    }
+}
+
+impl Drop for RetiringPlugins {
+    fn drop(&mut self) {
+        self.0.retiring.set(self.0.retiring.get().saturating_sub(1));
+        self.0.starts_allowed.set(self.0.retiring.get() == 0);
+    }
+}
+
 fn build_with_writer(
     app: &adw::Application,
     requested: Option<Action>,
     writer: fn(std::path::PathBuf) -> Result<crate::session::Writer, String>,
 ) -> Option<Window> {
-    if let Some(window) = app.active_window() {
+    if let Some(window) = app
+        .active_window()
+        .or_else(|| app.windows().into_iter().next())
+    {
         window.present();
         return None;
     }
@@ -416,7 +467,10 @@ fn build_with_writer(
         .build();
     crate::packaged::apply_window_identity(&window);
 
-    let state = Rc::new(RefCell::new(AppState::new()));
+    let admission = application_plugins(app);
+    let state = Rc::new(RefCell::new(AppState::new(
+        admission.starts_allowed.clone(),
+    )));
     {
         let mut state = state.borrow_mut();
         state.settings.load(crate::settings::Document::Plugins);
@@ -559,8 +613,48 @@ fn build_with_writer(
         sidebar_resize,
         state,
         paneds: Rc::new(RefCell::new(Vec::new())),
-        summary_requested: RefCell::new(Vec::new()),
+        summary_requested: Rc::new(RefCell::new(std::collections::BTreeMap::new())),
+        collection_cursor: Rc::new(Cell::new(0)),
     };
+
+    let removal_handler = Rc::new(RefCell::new(None));
+    let handler = app.connect_window_removed({
+        let state = ctx.state.clone();
+        let target = ctx.window.downgrade();
+        let removal_handler = removal_handler.clone();
+        move |app, removed| {
+            if target
+                .upgrade()
+                .is_none_or(|window| window.upcast_ref::<gtk::Window>() != removed)
+            {
+                return;
+            }
+            if let Some(handler) = removal_handler.borrow_mut().take() {
+                app.disconnect(handler);
+            }
+            // share admission across replacement windows, not just one host.
+            // terminals may reopen immediately; plugins wait for all old reapers.
+            let retiring = admission.retire();
+            state.borrow_mut().exiting = true;
+            state.borrow_mut().plugins.shutdown();
+            // destroying the last window would otherwise end the process before
+            // its detached supervisors could signal/reap the owned children.
+            let hold = app.hold();
+            let state = state.clone();
+            glib::timeout_add_local(Duration::from_millis(20), move || {
+                let _keep_application_alive = &hold;
+                let _keep_plugin_starts_closed = &retiring;
+                let mut state = state.borrow_mut();
+                state.plugins.poll();
+                if state.plugins.is_stopped() {
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
+                }
+            });
+        }
+    });
+    *removal_handler.borrow_mut() = Some(handler);
 
     install_shortcuts(&ctx);
     install_tick(&ctx);
@@ -2766,12 +2860,15 @@ fn open_preferences(ctx: &Window) {
             let window = ctx.handle();
             move |name: &str| {
                 state.borrow_mut().plugins.disable(name);
-                // The plugin's content goes with it, rather than being left
-                // frozen on screen.
-                state.borrow_mut().store.remove_source(name);
+                // removing data here consumes poll's change signal too, so both
+                // slot widgets and the sidebar must be refreshed by this path.
+                let changed = state.borrow_mut().store.remove_source(name);
                 let result = state.borrow_mut().settings.plugin_changed(name, false);
                 report_settings_save(&window, result);
-                refresh_slots(&window);
+                if changed {
+                    refresh_slots(&window);
+                    rebuild_sidebar(&window, false);
+                }
             }
         }),
         bindings_changed: Rc::new({
@@ -3169,7 +3266,6 @@ fn finish_quit(ctx: &Window) {
     // instead of asking a second time.
     ctx.state.borrow_mut().exiting = true;
     ctx.state.borrow_mut().session_closing = false;
-    ctx.state.borrow_mut().plugins.shutdown();
     // Shutdown is already confirmed and its final snapshot committed (or the
     // user explicitly chose unsaved exit). A closing modal must not intercept
     // another close request and leave a blank application window alive.
@@ -3548,6 +3644,9 @@ fn has_running_terminals(ctx: &Window) -> bool {
 fn install_tick(ctx: &Window) {
     let tick = ctx.handle();
     glib::timeout_add_local(Duration::from_millis(TICK_MS.into()), move || {
+        if tick.state.borrow().exiting {
+            return glib::ControlFlow::Break;
+        }
         tick.on_tick();
         glib::ControlFlow::Continue
     });
@@ -3569,6 +3668,7 @@ impl Window {
             window: self.window.clone(),
             paneds: self.paneds.clone(),
             summary_requested: self.summary_requested.clone(),
+            collection_cursor: self.collection_cursor.clone(),
         }
     }
 
@@ -3589,6 +3689,9 @@ impl Window {
     }
 
     fn on_tick(&self) {
+        if self.state.borrow().exiting {
+            return;
+        }
         apply_sidebar_width(self);
         if !self.state.borrow().session_ready || self.state.borrow().session_closing {
             return;
@@ -3654,9 +3757,6 @@ fn log_plugin_notices(ctx: &Window) {
 /// Turn plugin answers into slot content.
 fn collect_plugin_results(ctx: &Window) {
     let results = ctx.state.borrow_mut().plugins.drain_results();
-    if results.is_empty() {
-        return;
-    }
     let mut changed = false;
     let now = slots::now_ms();
     {
@@ -3697,13 +3797,13 @@ fn collect_plugin_results(ctx: &Window) {
             // contribution's timestamp stays unset and every slot is considered
             // due on every tick, which turns one slow plugin into a request
             // storm that starves the others.
-            state.store.mark_collected(scope, now);
+            state.store.mark_collected(scope, &result.plugin, now);
             changed = true;
         }
         // Content from a plugin that has stopped working is withdrawn, so a
         // stale fragment is never left frozen on screen.
         for source in state.plugins.faulted_sources() {
-            state.store.remove_source(&source);
+            changed |= state.store.remove_source(&source);
         }
     }
     if changed {
@@ -3714,52 +3814,71 @@ fn collect_plugin_results(ctx: &Window) {
 
 /// Ask healthy plugins for the slots that are due.
 fn request_plugin_status(ctx: &Window) {
+    #[derive(Clone, Copy)]
+    enum Target {
+        Slot(Scope),
+        Summary(usize),
+    }
     let now = slots::now_ms();
     let mut state = ctx.state.borrow_mut();
     let context = plugin_context(&state);
     let healthy = state.plugins.healthy();
 
-    let mut scopes = vec![Scope::WorkspaceHeader, Scope::AppHeader, Scope::AppFooter];
-    for workspace in state.workspaces.workspaces() {
+    let mut scopes = vec![
+        Target::Slot(Scope::WorkspaceHeader),
+        Target::Slot(Scope::AppHeader),
+        Target::Slot(Scope::AppFooter),
+    ];
+    for (index, workspace) in state.workspaces.workspaces().iter().enumerate() {
+        scopes.push(Target::Summary(index));
         for id in workspace.panes() {
-            scopes.push(Scope::PaneHeader(id));
-            scopes.push(Scope::PaneFooter(id));
+            scopes.push(Target::Slot(Scope::PaneHeader(id)));
+            scopes.push(Target::Slot(Scope::PaneFooter(id)));
         }
     }
 
-    // Workspace summaries live in the sidebar rather than in a slot, so they
-    // are requested on their own schedule.
-    for index in 0..state.workspaces.len() {
-        let last = ctx
-            .summary_requested
-            .borrow()
-            .get(index)
-            .copied()
-            .unwrap_or(0);
-        if now.saturating_sub(last) < SUMMARY_REFRESH_MS {
-            continue;
+    ctx.summary_requested
+        .borrow_mut()
+        .retain(|(index, name), _| *index < state.workspaces.len() && healthy.contains(name));
+    // rotate scopes as well as plugins: even an interval-zero early scope must
+    // not repeatedly take queue capacity from a deferred later pane or summary.
+    let first = ctx.collection_cursor.get() % scopes.len();
+    ctx.collection_cursor.set((first + 1) % scopes.len());
+    for offset in 0..scopes.len() {
+        match scopes[(first + offset) % scopes.len()] {
+            Target::Slot(scope) => {
+                let scope_name = crate::plugin::protocol::scope_name(&scope);
+                for name in &healthy {
+                    if state.store.needs_collection(scope, name, now)
+                        && state
+                            .plugins
+                            .request_status(name, &scope_name, &context)
+                            .is_some()
+                    {
+                        state.store.mark_collected(scope, name, now);
+                    }
+                }
+            }
+            Target::Summary(index) => {
+                let scope_name = crate::plugin::protocol::summary_scope(index);
+                for name in &healthy {
+                    let key = (index, name.clone());
+                    let due = ctx
+                        .summary_requested
+                        .borrow()
+                        .get(&key)
+                        .is_none_or(|last| now.saturating_sub(*last) >= SUMMARY_REFRESH_MS);
+                    if due
+                        && state
+                            .plugins
+                            .request_status(name, &scope_name, &context)
+                            .is_some()
+                    {
+                        ctx.summary_requested.borrow_mut().insert(key, now);
+                    }
+                }
+            }
         }
-        while ctx.summary_requested.borrow().len() <= index {
-            ctx.summary_requested.borrow_mut().push(0);
-        }
-        ctx.summary_requested.borrow_mut()[index] = now;
-        let scope_name = crate::plugin::protocol::summary_scope(index);
-        for name in &healthy {
-            state.plugins.request_status(name, &scope_name, &context);
-        }
-    }
-
-    for scope in scopes {
-        // Asking only when a slot is due keeps a slow plugin from being polled
-        // on every tick.
-        if !state.store.needs_collection(scope, now) {
-            continue;
-        }
-        let scope_name = crate::plugin::protocol::scope_name(&scope);
-        for name in &healthy {
-            state.plugins.request_status(name, &scope_name, &context);
-        }
-        state.store.mark_collected(scope, now);
     }
 }
 
@@ -3798,6 +3917,9 @@ fn reconcile_panes(ctx: &Window) {
         }
     }
 }
+
+#[cfg(test)]
+mod plugin_tests;
 
 #[cfg(test)]
 mod tests {

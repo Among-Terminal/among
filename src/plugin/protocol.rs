@@ -241,6 +241,12 @@ pub struct ValidStatus {
 /// from parsing so a malformed line and an out-of-range value report different
 /// causes.
 pub fn parse_response(line: &str) -> Result<Response, Rejection> {
+    if line.len() >= super::transport::MAX_FRAME_BYTES {
+        return Err(Rejection::OutOfRange("frame_bytes"));
+    }
+    if !super::transport::depth_is_bounded(line.as_bytes()) {
+        return Err(Rejection::OutOfRange("json_depth"));
+    }
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return Err(Rejection::Malformed);
@@ -322,6 +328,30 @@ pub fn summary_scope(workspace: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parser_checks_frame_and_nesting_bounds_before_deserializing() {
+        use super::*;
+        let oversized = " ".repeat(crate::plugin::transport::MAX_FRAME_BYTES);
+        assert_eq!(
+            parse_response(&oversized),
+            Err(Rejection::OutOfRange("frame_bytes"))
+        );
+        let deep = format!(
+            "{{\"type\":\"error\",\"message\":\"x\",\"extra\":{}0{}}}",
+            "[".repeat(crate::plugin::transport::MAX_JSON_DEPTH),
+            "]".repeat(crate::plugin::transport::MAX_JSON_DEPTH),
+        );
+        assert_eq!(
+            parse_response(&deep),
+            Err(Rejection::OutOfRange("json_depth"))
+        );
+        let quoted = serde_json::json!({"type":"error","message":"[".repeat(256)}).to_string();
+        assert!(matches!(
+            parse_response(&quoted),
+            Ok(Response::Error { .. })
+        ));
+    }
+
     #[test]
     fn meter_bounds_are_validated_and_legacy_fragments_remain_valid() {
         for value in [0.0, 0.5, 1.0] {
