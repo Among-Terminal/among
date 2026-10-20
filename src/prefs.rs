@@ -264,7 +264,8 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
         switch.set_valign(gtk::Align::Center);
         switch.set_active(matches!(
             state,
-            PluginState::Starting
+            PluginState::Waiting
+                | PluginState::Starting
                 | PluginState::Running
                 | PluginState::Faulted { .. }
                 | PluginState::Stopping { enabled: true, .. }
@@ -322,6 +323,7 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
 
 fn describe_state(state: &PluginState) -> String {
     match state {
+        PluginState::Waiting => "Waiting for previous plugins to stop".into(),
         PluginState::Starting => "Starting".into(),
         PluginState::Stopping { reason, .. } => format!("Stopping ({reason})"),
         PluginState::Running => "Running".into(),

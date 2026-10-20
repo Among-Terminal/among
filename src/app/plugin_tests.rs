@@ -48,6 +48,20 @@ fn has_label(widget: &gtk::Widget, text: &str) -> bool {
     false
 }
 
+fn mapped_labels(widget: &gtk::Widget, text: &str) -> usize {
+    let mut count = usize::from(
+        widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|label| label.text() == text && label.is_mapped()),
+    );
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        count += mapped_labels(&widget, text);
+        child = widget.next_sibling();
+    }
+    count
+}
+
 fn fixture(mode: &str) -> Vec<String> {
     let executable = std::env::current_exe().unwrap();
     let path = executable
@@ -215,4 +229,212 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
     println!(
         "PASS last-window destruction stays nonblocking and retains supervision until reaping"
     );
+}
+
+#[test]
+#[ignore = "requires an isolated graphical session, built fake-plugin and real keyboard input"]
+fn eight_pane_collection_is_fair_to_fast_slow_and_interval_zero_sources() {
+    use std::os::fd::AsRawFd;
+    let app = application("com.github.among-terminal.plugin-burst-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    for _ in 1..8 {
+        split_focused(&ctx);
+    }
+    let panes = ctx.state.borrow().workspaces.active().panes();
+    assert_eq!(panes.len(), 8);
+    wait_for(
+        || {
+            panes.iter().all(|id| {
+                ctx.state
+                    .borrow()
+                    .pane(*id)
+                    .unwrap()
+                    .terminal()
+                    .pty()
+                    .is_some_and(|pty| unsafe { libc::tcgetpgrp(pty.fd().as_raw_fd()) } > 0)
+            })
+        },
+        Duration::from_secs(5),
+    );
+    for (name, mode) in [("early", "echo"), ("late", "delayed"), ("hot", "rapid")] {
+        ctx.state.borrow_mut().plugins.register(PluginSpec {
+            name: name.into(),
+            command: fixture(mode),
+            enabled: true,
+        });
+    }
+    let ids = xdo(&[
+        "search",
+        "--onlyvisible",
+        "--pid",
+        &std::process::id().to_string(),
+        "--name",
+        "Among Terminal",
+    ]);
+    let id = ids.lines().last().unwrap();
+    xdo(&["windowactivate", "--sync", id]);
+    xdo(&["windowfocus", "--sync", id]);
+    xdo(&[
+        "type",
+        "--clearmodifiers",
+        "--delay",
+        "0",
+        "printf collected > \"$HOME/burst-input\"",
+    ]);
+    xdo(&["key", "--clearmodifiers", "Return"]);
+    let input = std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join("burst-input");
+    wait_for(|| input.exists(), Duration::from_secs(2));
+    assert_eq!(std::fs::read_to_string(input).unwrap(), "collected");
+    let mut scopes = vec![Scope::AppHeader, Scope::WorkspaceHeader, Scope::AppFooter];
+    for id in &panes {
+        scopes.push(Scope::PaneHeader(*id));
+        scopes.push(Scope::PaneFooter(*id));
+    }
+    wait_for(
+        || {
+            let state = ctx.state.borrow();
+            assert!(
+                state.plugins.listing().iter().all(|(_, state)| matches!(
+                    state,
+                    PluginState::Starting | PluginState::Running
+                )),
+                "{:?}",
+                state.plugins.listing()
+            );
+            scopes
+                .iter()
+                .all(|scope| state.store.sources_in(*scope).len() == 3)
+                && state.store.summaries(0).len() == 3
+        },
+        Duration::from_secs(8),
+    );
+    for id in &panes {
+        let widget = ctx.state.borrow().pane(*id).unwrap().widget().unwrap();
+        assert_eq!(
+            mapped_labels(widget.upcast_ref(), "ok"),
+            6,
+            "three sources must reach both actual pane slots"
+        );
+    }
+    println!("PASS eight panes: all 20 scopes collected from fast, delayed and interval-zero sources without faults; deferred siblings remain due, real input and all 48 pane fragments survive");
+    ctx.window.destroy();
+    wait_for(
+        || ctx.state.borrow().plugins.is_stopped(),
+        Duration::from_secs(2),
+    );
+}
+
+#[test]
+#[ignore = "requires an isolated graphical session and built fake-plugin"]
+fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
+    let app = application("com.github.among-terminal.plugin-reactivation-test");
+    let config =
+        std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap()).join("among");
+    let installed =
+        std::path::PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap()).join("among/plugins");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&installed).unwrap();
+    let executable = fixture("stubborn").remove(0);
+    let mut plugins = Vec::new();
+    for index in 0..32 {
+        let name = format!("retire-{index}");
+        std::os::unix::fs::symlink(&executable, installed.join(&name)).unwrap();
+        plugins.push(serde_json::json!({"name":name,"enabled":true}));
+    }
+    std::fs::write(
+        config.join("plugins.json"),
+        serde_json::json!({"plugins":plugins}).to_string(),
+    )
+    .unwrap();
+    std::env::set_var("AMONG_FAKE_PLUGIN_MODE", "stubborn");
+    let latest = Rc::new(RefCell::new(None));
+    app.connect_activate({
+        let latest = latest.clone();
+        move |app| {
+            if let Some(ctx) = build_with_writer(app, None, crate::session::Writer::new) {
+                *latest.borrow_mut() = Some(ctx);
+            }
+        }
+    });
+    app.activate();
+    let mut current = latest.borrow().as_ref().unwrap().handle();
+    wait_for(
+        || current.state.borrow().plugins.healthy().len() == 32,
+        Duration::from_secs(5),
+    );
+    let previous_pids = current.state.borrow().plugins.supervised_pids();
+    assert_eq!(previous_pids.len(), 32);
+    let mut retired = Vec::new();
+    for _ in 0..3 {
+        current.window.destroy();
+        app.activate();
+        let replacement = latest.borrow().as_ref().unwrap().handle();
+        assert_ne!(replacement.window, current.window);
+        assert!(replacement.window.is_visible());
+        assert_eq!(replacement.state.borrow().plugins.supervised_count(), 0);
+        assert!(replacement
+            .state
+            .borrow()
+            .plugins
+            .listing()
+            .iter()
+            .all(|(_, state)| *state == PluginState::Waiting));
+        retired.push(current);
+        assert!(
+            retired
+                .iter()
+                .map(|old| old.state.borrow().plugins.supervised_count())
+                .sum::<usize>()
+                <= 32
+        );
+        current = replacement;
+    }
+    if !current.state.borrow().session_ready {
+        let dialog = current
+            .window
+            .visible_dialog()
+            .unwrap()
+            .downcast::<adw::AlertDialog>()
+            .unwrap();
+        assert!(dialog
+            .heading()
+            .is_some_and(|heading| heading.contains("Restore")));
+        dialog.set_close_response("new");
+        dialog.force_close();
+    }
+    wait_for(
+        || {
+            let old_count = retired
+                .iter()
+                .map(|old| old.state.borrow().plugins.supervised_count())
+                .sum::<usize>();
+            let new_count = current.state.borrow().plugins.supervised_count();
+            assert!(
+                old_count + new_count <= 32,
+                "application supervision budget was exceeded"
+            );
+            if new_count > 0 {
+                assert_eq!(
+                    old_count, 0,
+                    "replacement overlapped an unreaped predecessor"
+                );
+            }
+            old_count == 0 && current.state.borrow().plugins.healthy().len() == 32
+        },
+        Duration::from_secs(5),
+    );
+    for pid in previous_pids {
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "old process {pid} was not reaped"
+        );
+    }
+    println!("PASS three real reactivations with 32 TERM-ignoring plugins: visible replacement windows wait without overlapping generations; old children are reaped before new startup");
+    current.window.destroy();
+    wait_for(
+        || current.state.borrow().plugins.is_stopped(),
+        Duration::from_secs(2),
+    );
+    std::env::remove_var("AMONG_FAKE_PLUGIN_MODE");
 }

@@ -1,9 +1,11 @@
 //! Launching plugins, talking to them, and surviving their failures.
 
-use super::process::{Failure, Process};
+use super::process::{Failure, Process, SendError};
 use super::transport::{MAX_POLL_FRAMES, MAX_QUEUE_FRAMES};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::process::Command;
+use std::rc::Rc;
 use std::time::Duration;
 
 use super::protocol::{
@@ -19,7 +21,9 @@ use crate::slots::{Contribution, Fragment, Refresh, SlotStore, Style, Summary};
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROCESSES: usize = 32;
 const MAX_RESTARTS: u32 = 3;
-const MAX_INFLIGHT: usize = 64;
+// one reply per accepted status request must fit the bounded stdout queue even
+// if the plugin answers every request before GTK next gets a chance to poll.
+const MAX_INFLIGHT: usize = MAX_QUEUE_FRAMES;
 
 /// A plugin's description as read from configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +38,7 @@ pub struct PluginSpec {
 /// Where a plugin currently stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginState {
+    Waiting,
     Starting,
     Stopping {
         reason: String,
@@ -103,6 +108,7 @@ pub struct PluginHost {
     /// Notifications raised since the last poll.
     notices: Vec<(String, String, Option<String>)>,
     next_poll: usize,
+    starts_allowed: Rc<Cell<bool>>,
 }
 
 /// One plugin's answer, ready to become slot content.
@@ -133,12 +139,17 @@ impl Default for PluginHost {
 
 impl PluginHost {
     pub fn new() -> Self {
+        Self::with_start_gate(Rc::new(Cell::new(true)))
+    }
+
+    pub fn with_start_gate(starts_allowed: Rc<Cell<bool>>) -> Self {
         Self {
             plugins: Vec::new(),
             last_rejections: Vec::new(),
             results: Vec::new(),
             notices: Vec::new(),
             next_poll: 0,
+            starts_allowed,
         }
     }
 
@@ -237,6 +248,24 @@ impl PluginHost {
         self.plugins.iter().all(|plugin| plugin.io.is_none())
     }
 
+    #[cfg(test)]
+    pub fn supervised_count(&self) -> usize {
+        self.plugins
+            .iter()
+            .filter(|plugin| plugin.io.is_some())
+            .count()
+    }
+
+    #[cfg(test)]
+    pub fn supervised_pids(&self) -> Vec<u32> {
+        self.plugins
+            .iter()
+            .filter_map(|plugin| plugin.io.as_ref())
+            .map(|io| io.process.pid())
+            .filter(|pid| *pid != 0)
+            .collect()
+    }
+
     /// Spawn a plugin process.
     ///
     /// Failure to start is not an error for the host: it is recorded as the
@@ -246,6 +275,11 @@ impl PluginHost {
             return;
         };
         if !self.plugins[index].spec.enabled || self.plugins[index].io.is_some() {
+            return;
+        }
+        if !self.starts_allowed.get() {
+            self.plugins[index].state = PluginState::Waiting;
+            self.plugins[index].restart_at = None;
             return;
         }
         if self
@@ -312,7 +346,11 @@ impl PluginHost {
         };
         match io.process.send(request) {
             Ok(()) => true,
-            Err(reason) => {
+            Err(error) => {
+                let reason = match error {
+                    SendError::Full => "plugin stdin queue exceeds 16 frames",
+                    SendError::Fault(reason) => reason,
+                };
                 self.fault(index, reason);
                 false
             }
@@ -366,21 +404,37 @@ impl PluginHost {
         {
             return None;
         }
+        let io = self.plugins[index].io.as_ref()?;
+        // backpressure is not a plugin fault. check before cloning a possibly
+        // large context, and acquire request authority only after queue acceptance.
+        if !io.process.has_capacity() {
+            return None;
+        }
         let request_id = self.plugins[index].next_request_id;
-        self.plugins[index].next_request_id = request_id.checked_add(1)?;
-        self.plugins[index]
-            .inflight
-            .insert(request_id, Instant::now());
-        self.plugins[index]
-            .scopes
-            .insert(request_id, scope.to_string());
+        let next_id = request_id.checked_add(1)?;
 
         let request = Request::Status {
             request_id,
             scope: scope.to_string(),
             context: context.clone(),
         };
-        self.send_to(index, &request).then_some(request_id)
+        match io.process.send(&request) {
+            Ok(()) => {
+                self.plugins[index].next_request_id = next_id;
+                self.plugins[index]
+                    .inflight
+                    .insert(request_id, Instant::now());
+                self.plugins[index]
+                    .scopes
+                    .insert(request_id, scope.to_string());
+                Some(request_id)
+            }
+            Err(SendError::Full) => None,
+            Err(SendError::Fault(reason)) => {
+                self.fault(index, reason);
+                None
+            }
+        }
     }
 
     /// Tell every healthy plugin about a terminal event.
@@ -458,7 +512,15 @@ impl PluginHost {
                 continue;
             }
             if self.plugins[index].io.is_none() {
-                self.restart_if_due(index, now);
+                if self.plugins[index].state == PluginState::Waiting
+                    && self.plugins[index].spec.enabled
+                    && self.starts_allowed.get()
+                {
+                    let name = self.plugins[index].spec.name.clone();
+                    self.start_by_name(name);
+                } else {
+                    self.restart_if_due(index, now);
+                }
                 continue;
             }
 
@@ -516,6 +578,7 @@ impl PluginHost {
             .unwrap_or(false);
         if due
             && self.plugins[index].spec.enabled
+            && self.starts_allowed.get()
             && self.plugins[index].restart_attempts < MAX_RESTARTS
         {
             self.plugins[index].restart_attempts += 1;
@@ -994,9 +1057,6 @@ mod tests {
                     .request_status("probe", &scope, &Context::default())
                     .is_none());
             }
-            // the real fixture reads; let the writer drain without exhausting
-            // the smaller pipe queue before testing the independent inflight cap.
-            std::thread::sleep(Duration::from_millis(25));
         }
         assert!(host
             .request_status("probe", "app_header", &Context::default())
@@ -1004,6 +1064,114 @@ mod tests {
         assert_eq!(host.plugins[0].inflight.len(), MAX_INFLIGHT);
         assert_eq!(host.plugins[0].scopes.len(), MAX_INFLIGHT);
         host.shutdown();
+    }
+
+    #[test]
+    fn ordinary_eight_pane_collection_bursts_defer_without_faulting() {
+        let mut host = PluginHost::new();
+        host.register(spec(fake_plugin("delayed")));
+        assert!(wait_for(&mut host, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        let mut scopes = vec![
+            "app_header".to_string(),
+            "app_footer".into(),
+            "workspace_header".into(),
+            "workspace_summary:0".into(),
+        ];
+        for pane in 1..=8 {
+            scopes.push(format!("pane_header:{pane}"));
+            scopes.push(format!("pane_footer:{pane}"));
+        }
+        let mut requested = std::collections::BTreeSet::new();
+        let mut answered = std::collections::BTreeSet::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while answered.len() < scopes.len() {
+            host.poll();
+            for result in host.drain_results() {
+                answered.insert(result.scope);
+            }
+            // no sleeps or polling between requests in this real GUI-sized burst.
+            for scope in &scopes {
+                if !requested.contains(scope)
+                    && host
+                        .request_status("probe", scope, &Context::default())
+                        .is_some()
+                {
+                    requested.insert(scope.clone());
+                }
+            }
+            assert!(
+                host.plugins[0].state.is_healthy(),
+                "{:?}",
+                host.plugins[0].state
+            );
+            assert_eq!(host.plugins[0].restart_attempts, 0);
+            assert!(host.plugins[0].inflight.len() <= MAX_INFLIGHT);
+            assert!(
+                Instant::now() < deadline,
+                "deferred scopes were never collected"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(answered.len(), 20);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_full_input_queue_creates_no_status_request_authority_or_fault() {
+        let mut host = PluginHost::new();
+        host.register(spec(fake_plugin("never-read")));
+        assert!(wait_for(&mut host, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        let event = Request::Event {
+            event: EventKind::WorkingDirectoryChanged,
+            pane: 1,
+            detail: Some("x".repeat(60 * 1024)),
+        };
+        let mut full = false;
+        for _ in 0..64 {
+            match host.plugins[0].io.as_ref().unwrap().process.send(&event) {
+                Ok(()) => {}
+                Err(SendError::Full) => {
+                    full = true;
+                    break;
+                }
+                Err(error) => panic!("unexpected fixture failure {error:?}"),
+            }
+        }
+        assert!(full);
+        let next_id = host.plugins[0].next_request_id;
+        assert!(host
+            .request_status("probe", "app_header", &Context::default())
+            .is_none());
+        assert_eq!(host.plugins[0].next_request_id, next_id);
+        assert!(host.plugins[0].inflight.is_empty());
+        assert!(host.plugins[0].scopes.is_empty());
+        assert!(host.plugins[0].state.is_healthy());
+        assert_eq!(host.plugins[0].restart_attempts, 0);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_closed_application_gate_preserves_desired_state_until_starts_are_safe() {
+        let gate = Rc::new(Cell::new(false));
+        let mut host = PluginHost::with_start_gate(gate.clone());
+        host.register(spec(echo_plugin()));
+        for _ in 0..20 {
+            host.poll();
+        }
+        assert_eq!(host.plugins[0].state, PluginState::Waiting);
+        assert!(host.plugins[0].spec.enabled);
+        assert!(host.is_stopped());
+        assert_eq!(host.plugins[0].restart_attempts, 0);
+        gate.set(true);
+        assert!(wait_for(&mut host, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        host.shutdown();
+        assert!(wait_for(&mut host, |host| host.is_stopped()));
     }
 
     #[test]

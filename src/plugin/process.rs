@@ -6,7 +6,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -20,6 +20,12 @@ const IO_INTERVAL_MS: i32 = 20;
 
 pub enum Failure {
     Missing(String),
+    Fault(&'static str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SendError {
+    Full,
     Fault(&'static str),
 }
 
@@ -114,31 +120,44 @@ impl Process {
         self.cancel.store(true, Ordering::Release);
     }
 
-    pub fn send(&self, request: &Request) -> Result<(), &'static str> {
+    pub fn has_capacity(&self) -> bool {
+        self.outstanding.load(Ordering::Acquire) < MAX_QUEUE_FRAMES
+    }
+
+    pub fn send(&self, request: &Request) -> Result<(), SendError> {
         if self.cancel.load(Ordering::Acquire) {
-            return Err("plugin is stopping");
+            return Err(SendError::Fault("plugin is stopping"));
+        }
+        if !self.has_capacity() {
+            return Err(SendError::Full);
         }
         let mut encoded = BoundedFrame(Vec::new());
-        serde_json::to_writer(&mut encoded, request).map_err(|_| "host request exceeds 64 KiB")?;
+        serde_json::to_writer(&mut encoded, request)
+            .map_err(|_| SendError::Fault("host request exceeds 64 KiB"))?;
         encoded
             .write_all(b"\n")
-            .map_err(|_| "host request exceeds 64 KiB")?;
+            .map_err(|_| SendError::Fault("host request exceeds 64 KiB"))?;
         // include the actively written frame in the 16-frame/1-MiB budget.
         self.outstanding
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_QUEUE_FRAMES).then_some(count + 1)
             })
-            .map_err(|_| "plugin stdin queue exceeds 16 frames")?;
+            .map_err(|_| SendError::Full)?;
         let frame = Outbound {
             bytes: encoded.0.into_boxed_slice(),
             queued: Instant::now(),
             written: 0,
         };
-        if self.input.try_send(frame).is_err() {
-            self.outstanding.fetch_sub(1, Ordering::AcqRel);
-            return Err("plugin stdin queue closed or full");
+        match self.input.try_send(frame) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.outstanding.fetch_sub(1, Ordering::AcqRel);
+                Err(match error {
+                    TrySendError::Full(_) => SendError::Full,
+                    TrySendError::Disconnected(_) => SendError::Fault("plugin stdin queue closed"),
+                })
+            }
         }
-        Ok(())
     }
 }
 
@@ -420,7 +439,15 @@ mod tests {
         if let Request::Event { detail, .. } = &mut frame {
             *detail = Some("x".repeat(MAX_FRAME_BYTES));
         }
-        assert_eq!(process.send(&frame), Err("host request exceeds 64 KiB"));
+        // use a fresh generation to test the independent encoder
+        // bound; temporary fullness must be distinguishable from a bad frame.
+        let healthy = fixture("echo");
+        assert_eq!(
+            healthy.send(&frame),
+            Err(SendError::Fault("host request exceeds 64 KiB"))
+        );
+        healthy.stop();
+        until(|| healthy.finished());
         process.stop();
         until(|| process.finished());
     }

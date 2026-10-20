@@ -206,7 +206,8 @@ and `workspace_activated`.
 
 `refresh_ms` is how often the data changes:
 
-- A number means the host will re-ask after at most that many milliseconds.
+- A number is the requested refresh interval; polling and transport backpressure
+  can delay the next request.
 - `null` means event-driven: the host asks when a terminal changes rather than on
   a timer.
 
@@ -218,6 +219,9 @@ The refresh clock restarts when an answer arrives, not when the question is sent
 Without that distinction one slow plugin gets asked on every tick — for `git
 state` that means forking a subprocess tens of times a second, which starves the
 other plugins of response time.
+Clocks are separate for each source and scope: collecting one plugin does not
+mark a deferred sibling as collected. Scope scheduling rotates so continuously
+due content cannot always take capacity ahead of later panes and summaries.
 
 ## Scopes
 
@@ -317,10 +321,18 @@ frame, with a two-second enqueue-to-write deadline. Serialization stops at the
 one cancellable worker per supervised process, not on the GUI thread. The host
 supervises at most 32 processes, including generations still stopping. A stopped
 generation cannot be replaced until its worker has actually reaped it.
+If the last window closes and the application is reactivated while old plugins
+are stopping, the replacement window opens immediately but its plugins show
+Waiting until all retiring hosts finish reaping. This preserves the same
+application-wide process budget across window replacement.
 
 Starting is separate from Running: a compatible handshake is required within
-five seconds. At most 64 status requests may be outstanding per plugin, with
-only one per scope; excess requests are deferred. Unmatched, duplicate and
+five seconds. At most 16 status requests may be outstanding per plugin, with
+only one per scope, so their replies fit the bounded output queue. A full input
+queue defers status collection without faulting the plugin or advancing its
+collection clock; accepted frames still have the write deadline. Other traffic
+that exceeds the input budget faults the plugin rather than growing a queue.
+Unmatched, duplicate and
 previous-generation replies cannot update slots. Both faults and disablement
 withdraw the last contribution even when there are no new results.
 

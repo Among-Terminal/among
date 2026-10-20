@@ -159,6 +159,17 @@ pub struct Contribution {
     pub last_asked_ms: Option<u64>,
 }
 
+impl Contribution {
+    fn is_due(&self, now_ms: u64) -> bool {
+        match self.refresh {
+            Refresh::OnEvent => self.last_asked_ms.is_none(),
+            Refresh::IntervalMs(interval) => self
+                .last_asked_ms
+                .is_none_or(|last| now_ms.saturating_sub(last) >= interval),
+        }
+    }
+}
+
 /// Everything plugins have contributed, keyed by scope.
 ///
 /// A `BTreeMap` keyed by scope keeps rendering order deterministic, which the
@@ -318,12 +329,13 @@ impl SlotStore {
     /// Distinct from [`Self::needs_refresh`]: a slot nobody has contributed to
     /// yet still has to be asked about, otherwise the first request would never
     /// be sent and the slot would stay empty forever.
-    pub fn needs_collection(&self, scope: Scope, now_ms: u64) -> bool {
-        match self.slots.get(&scope) {
-            None => true,
-            Some(contributions) if contributions.is_empty() => true,
-            Some(_) => self.needs_refresh(scope, now_ms),
-        }
+    pub fn needs_collection(&self, scope: Scope, source: &str, now_ms: u64) -> bool {
+        self.slots
+            .get(&scope)
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.source == source)
+            .is_none_or(|entry| entry.is_due(now_ms))
     }
 
     /// Whether a slot needs refreshing from its contributors.
@@ -332,19 +344,16 @@ impl SlotStore {
             .get(&scope)
             .into_iter()
             .flatten()
-            .any(|contribution| match contribution.refresh {
-                Refresh::OnEvent => contribution.last_asked_ms.is_none(),
-                Refresh::IntervalMs(interval) => match contribution.last_asked_ms {
-                    None => true,
-                    Some(last) => now_ms.saturating_sub(last) >= interval,
-                },
-            })
+            .any(|contribution| contribution.is_due(now_ms))
     }
 
     /// Mark a slot as freshly collected so the interval restarts.
-    pub fn mark_collected(&mut self, scope: Scope, now_ms: u64) {
+    pub fn mark_collected(&mut self, scope: Scope, source: &str, now_ms: u64) {
         if let Some(contributions) = self.slots.get_mut(&scope) {
-            for contribution in contributions.iter_mut() {
+            for contribution in contributions
+                .iter_mut()
+                .filter(|entry| entry.source == source)
+            {
                 contribution.last_asked_ms = Some(now_ms);
             }
         }
@@ -823,7 +832,7 @@ mod tests {
         let store = SlotStore::new();
         assert!(!store.needs_refresh(Scope::AppHeader, 0));
         // Nothing has contributed yet, so the host must still ask.
-        assert!(store.needs_collection(Scope::AppHeader, 0));
+        assert!(store.needs_collection(Scope::AppHeader, "p", 0));
     }
 
     #[test]
@@ -835,9 +844,38 @@ mod tests {
             "p",
             contribution("p", vec![Fragment::text("p", "x")]),
         );
-        store.mark_collected(scope, 1000);
-        assert!(!store.needs_collection(scope, 1500));
-        assert!(store.needs_collection(scope, 3000));
+        store.mark_collected(scope, "p", 1000);
+        assert!(!store.needs_collection(scope, "p", 1500));
+        assert!(store.needs_collection(scope, "p", 3000));
+    }
+
+    #[test]
+    fn source_clocks_do_not_acknowledge_a_missing_or_deferred_sibling() {
+        let mut store = SlotStore::new();
+        let scope = Scope::AppHeader;
+        let mut event_only = contribution("early", vec![Fragment::text("early", "ok")]);
+        event_only.refresh = Refresh::OnEvent;
+        store.set(scope, "early", event_only);
+        store.mark_collected(scope, "early", 1000);
+        assert!(!store.needs_collection(scope, "early", 2000));
+        assert!(store.needs_collection(scope, "late", 2000));
+        store.set(
+            scope,
+            "late",
+            contribution("late", vec![Fragment::text("late", "ok")]),
+        );
+        store.mark_collected(scope, "early", 3000);
+        assert!(store.needs_collection(scope, "late", 3000));
+        store.mark_collected(scope, "late", 3000);
+        assert!(!store.needs_collection(scope, "late", 3001));
+        assert_eq!(
+            store.slots[&scope]
+                .iter()
+                .find(|entry| entry.source == "early")
+                .unwrap()
+                .last_asked_ms,
+            Some(3000)
+        );
     }
 
     #[test]
@@ -850,7 +888,7 @@ mod tests {
             contribution("clock", vec![Fragment::text("clock", "now")]),
         );
         assert!(store.needs_refresh(scope, 0));
-        store.mark_collected(scope, 1000);
+        store.mark_collected(scope, "clock", 1000);
         assert!(!store.needs_refresh(scope, 1500));
         assert!(store.needs_refresh(scope, 2000));
     }
@@ -870,7 +908,7 @@ mod tests {
             },
         );
         assert!(store.needs_refresh(scope, 0));
-        store.mark_collected(scope, 1000);
+        store.mark_collected(scope, "git", 1000);
         assert!(!store.needs_refresh(scope, 1001));
     }
 
