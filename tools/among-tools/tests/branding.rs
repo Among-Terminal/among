@@ -83,7 +83,15 @@ fn artwork_gate_rejects_each_missing_or_changed_input() -> Result<()> {
     let root = storage::private_directory(&std::env::temp_dir(), "among-artwork-gate")?;
     fs::create_dir_all(root.join("docs/media"))?;
     fs::create_dir(root.join("data"))?;
-    let assets: [(&str, &[u8]); 3] = [
+    let assets: [(&str, &[u8]); 5] = [
+        (
+            "data/com.github.among-terminal-128.png",
+            include_bytes!("../../../data/com.github.among-terminal-128.png"),
+        ),
+        (
+            "data/com.github.among-terminal-256.png",
+            include_bytes!("../../../data/com.github.among-terminal-256.png"),
+        ),
         (
             "docs/media/logo-small.svg",
             include_bytes!("../../../docs/media/logo-small.svg"),

@@ -77,16 +77,21 @@ configuration. CI workflows set the root explicitly.
 
 `among-tools check-appimage-gnome APPIMAGE NEW_EVIDENCE_DIRECTORY` runs the real
 `ail-cli` integrator and an owned headless GNOME Shell. It needs Debian's GNOME
-Shell, AppImageLauncher, Bubblewrap, D-Bus tools and an available graphics backend.
+Shell, GJS/GdkPixbuf, AppImageLauncher, Bubblewrap, D-Bus tools and an available
+graphics backend.
 It creates a private HOME/XDG profile, PID/network/mount namespaces and two private
 buses; it never uses the personal display, session bus or application settings.
 The shell's native automation hook enables inspection only in that compositor.
 
 The runner integrates after the owned Shell has started, checks opening the
-registered file without GIO launch hints, menu activation, pin activation, normal close/confirmation and
+registered file without GIO launch hints, menu activation, pin activation, normal
+close/confirmation and
 fresh-process relaunch with session restore and real terminal input. It records
 the generated entry, versions, executable paths, window/shell IDs, icon bytes,
-child environment and a dock screenshot. It uses runtime extract-and-run because
+child environment and a dock screenshot. It also copies and decodes the actual
+128 px and 256 px file thumbnails written by AppImageLauncher, rejecting empty
+or fully transparent output and requiring the mark's gold and dark pixels.
+This is separate from checking the installed themed SVG. It uses runtime extract-and-run because
 setuid FUSE mounting is unavailable in the unprivileged namespace.
 `--native-present` additionally requires a configured native DEB and its system
 desktop entry, and leaves that entry visible in the namespace; without it, any

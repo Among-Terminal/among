@@ -38,6 +38,7 @@
           <li>Supply a public application screenshot and documentation link in AppStream metadata.</li>
           <li>Keep release notes bound to each package version, including release candidates.</li>
           <li>Resolve an existing AppImageLauncher entry when opening its registered file without desktop-launch hints.</li>
+          <li>Provide raster icon sizes for AppImageLauncher file thumbnails instead of relying on its SVG thumbnail renderer.</li>
         </ul>
       </description>
     </release>

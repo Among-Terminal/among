@@ -95,7 +95,14 @@ fn click_button(runner: &mut Runner, text: &str, name: &str) -> Result<()> {
 }
 
 pub fn run(image: &Path, output: &Path, scratch: &Path, native_present: bool) -> Result<()> {
-    for name in ["bwrap", "gnome-shell", "gdbus", "ail-cli", "dbus-daemon"] {
+    for name in [
+        "bwrap",
+        "gnome-shell",
+        "gdbus",
+        "gjs",
+        "ail-cli",
+        "dbus-daemon",
+    ] {
         if !Path::new("/usr/bin").join(name).is_file() {
             return Err(format!("isolated GNOME check needs {name}").into());
         }
@@ -283,6 +290,32 @@ pub fn run(image: &Path, output: &Path, scratch: &Path, native_present: bool) ->
         .and_then(|name| name.to_str())
         .ok_or("desktop ID missing")?;
     fs::copy(entry, base.join("integrated.desktop"))?;
+    // ail-cli writes thumbnails under HOME even with XDG_CACHE_HOME set.
+    // Correct themed SVG bytes do not prove these PNGs contain visible pixels.
+    let hash = id
+        .strip_prefix("appimagekit_")
+        .and_then(|value| value.strip_suffix("-Among_Terminal.desktop"))
+        .ok_or("unexpected AppImageLauncher desktop ID")?;
+    let mut thumbnail_paths = Vec::new();
+    for (kind, size) in [("normal", 128), ("large", 256)] {
+        let copy = base.join(format!("thumbnail-{size}.png"));
+        fs::copy(
+            base.join(format!("home/.cache/thumbnails/{kind}/{hash}.png")),
+            &copy,
+        )?;
+        thumbnail_paths.push(copy);
+    }
+    let decoded = runner.command("/usr/bin/gjs", &[
+        "-c",
+        "const P=imports.gi.GdkPixbuf; const result=ARGV.map((path,index)=>{const p=P.Pixbuf.new_from_file(path);const size=[128,256][index];if(p.width!==size||p.height!==size)throw Error('wrong thumbnail dimensions');const bytes=p.get_pixels(),stride=p.rowstride,c=p.n_channels;let visible=0,gold=0,dark=0;for(let y=0;y<size;y++)for(let x=0;x<size;x++){const i=y*stride+x*c,a=c===4?bytes[i+3]:255;if(a>128){visible++;const r=bytes[i],g=bytes[i+1],b=bytes[i+2];if(r>200&&g>80&&g<230&&b<80)gold++;if(r<80&&g<100&&b<120)dark++;}}if(gold<size*size/100||dark<size*size/100)throw Error('thumbnail lacks visible approved mark: '+path);return {size,visible,gold,dark};});print(JSON.stringify(result));",
+        thumbnail_paths[0].to_str().ok_or("thumbnail path is not UTF-8")?,
+        thumbnail_paths[1].to_str().ok_or("thumbnail path is not UTF-8")?,
+    ], 15)?;
+    let thumbnails = storage::parse_json(decoded.as_bytes())?;
+    fs::write(
+        base.join("thumbnails.json"),
+        serde_json::to_vec_pretty(&thumbnails)?,
+    )?;
     eval(&mut runner, "(async () => { const {default: Clutter} = await import('gi://Clutter'); const seat = global.stage.context.get_backend().get_default_seat(); global.ownedPointer = seat.create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE); global.ownedKeyboard = seat.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE); })()")?;
     let id_js = serde_json::to_string(id)?;
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -409,7 +442,7 @@ pub fn run(image: &Path, output: &Path, scratch: &Path, native_present: bool) ->
     fs::write(
         base.join("result.json"),
         serde_json::to_vec_pretty(
-            &json!({"image_sha256":digest,"desktop_id":id,"native_present":native_present,"matched":matched,"approved_artwork":approved_artwork,"clean_child_environment":clean_environment,"unhinted_file_launch":unhinted,"menu_launch":menu,"pin_activation":pin,"pin_relaunch":relaunch,"fuse_mode":"runtime extract-and-run inside owned namespace"}),
+            &json!({"image_sha256":digest,"desktop_id":id,"native_present":native_present,"matched":matched,"approved_artwork":approved_artwork,"thumbnails":thumbnails,"clean_child_environment":clean_environment,"unhinted_file_launch":unhinted,"menu_launch":menu,"pin_activation":pin,"pin_relaunch":relaunch,"fuse_mode":"runtime extract-and-run inside owned namespace"}),
         )?,
     )?;
     eval(&mut runner, "(async () => { const Main = await import('resource:///org/gnome/shell/ui/main.js'); Main.overview.show(); })()")?;

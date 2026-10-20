@@ -222,6 +222,13 @@ GApplication ID, configuration paths and native desktop entry remain unchanged.
 The `GIO_LAUNCHED_DESKTOP_FILE` hints used for this association are removed before
 terminal children start. Launches without a matching registration keep the normal identity.
 
+AppImages also include 128 px and 256 px PNG variants of the approved mark for
+AppImageLauncher's file thumbnails. On the tested alpha-4 consumer, the SVG-only
+path produces fully transparent thumbnails despite a valid themed SVG. The
+integration regression decodes the generated thumbnails, not just the installed
+icon. Existing RC.1 files do not gain this correction automatically; integrate
+the corrected image rather than clearing unrelated thumbnail or icon caches.
+
 The integration regression uses Debian 13 / GNOME Shell 48.7 / Wayland with
 AppImageLauncher `3.0.0-alpha-4-gha253~36951ec`. It integrates while Shell is
 already running, opens the integrated file without GIO launch hints, then checks

@@ -30,6 +30,21 @@ fn staging_preserves_attribution_selects_launcher_and_refuses_wrong_native_archi
         &destination,
     )?;
     assert_eq!(fs::read(destination.join("AppRun"))?, elf);
+    appimage::verify_raster_icons(&destination)?;
+    for size in [128u32, 256] {
+        let path = destination.join(format!(
+            "usr/share/icons/hicolor/{size}x{size}/apps/com.github.among-terminal.png"
+        ));
+        let bytes = fs::read(&path)?;
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(&bytes[16..20], &size.to_be_bytes());
+        assert_eq!(&bytes[20..24], &size.to_be_bytes());
+        fs::remove_file(&path)?;
+        assert!(appimage::verify_raster_icons(&destination).is_err());
+        fs::write(&path, b"wrong raster")?;
+        assert!(appimage::verify_raster_icons(&destination).is_err());
+        fs::write(&path, bytes)?;
+    }
     for path in [
         "com.github.among-terminal.svg",
         "usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg",

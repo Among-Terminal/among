@@ -119,7 +119,15 @@ fn deterministic_archive_excludes_private_and_compiled_state_preserves_modes_and
 #[test]
 fn square_artwork_and_packaged_copy_reach_the_source_archive_unchanged() -> Result<()> {
     let f = Fixture::new()?;
-    let assets: [(&str, &[u8]); 3] = [
+    let assets: [(&str, &[u8]); 5] = [
+        (
+            "data/com.github.among-terminal-128.png",
+            include_bytes!("../../../data/com.github.among-terminal-128.png"),
+        ),
+        (
+            "data/com.github.among-terminal-256.png",
+            include_bytes!("../../../data/com.github.among-terminal-256.png"),
+        ),
         (
             "docs/media/logo-small.svg",
             include_bytes!("../../../docs/media/logo-small.svg"),

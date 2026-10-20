@@ -82,7 +82,11 @@ pub fn artwork(root: &Path) -> Result<()> {
             == "9c6b334d1a60119e834681ffb95acc8707128756f2e74f440e8f1aa3fa9b0a01"
             && storage::sha256(raster.as_slice())?
                 == "941cd693d135e329344312e3466cded3a6294c951a7d640a9c8fe77141b2857a"
-            && read("data/com.github.among-terminal.svg")? == vector,
+            && read("data/com.github.among-terminal.svg")? == vector
+            && storage::sha256(read("data/com.github.among-terminal-128.png")?.as_slice())?
+                == "6c6c1f28d1c7dd19908ff2506d1bf4eba42c3444cfb045078b9a2f2c36108cac"
+            && storage::sha256(read("data/com.github.among-terminal-256.png")?.as_slice())?
+                == "6326c4ee5a1b7eff613e46e164759bf3a59afe90069566ab92e67d7d6f980cfd",
         "packaged artwork differs from the owner-approved square mark",
     )
 }

@@ -640,6 +640,7 @@ pub fn build(
         1800,
     )?;
     restore_launcher(&appdir, &launcher_sha256)?;
+    crate::appimage::verify_raster_icons(&appdir)?;
     remove_unreachable_modules(&appdir)?;
     require_runtime_data(&appdir)?;
     let libraries = bundled_libraries(&appdir)?;
@@ -701,6 +702,7 @@ pub fn build(
     )?;
     let final_root = extracted.join("squashfs-root");
     restore_launcher(&final_root, &launcher_sha256)?;
+    crate::appimage::verify_raster_icons(&final_root)?;
     require_runtime_data(&final_root)?;
     if bundled_libraries(&final_root)? != libraries {
         return Err("final AppImage libraries differ from the audited AppDir".into());
