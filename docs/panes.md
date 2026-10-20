@@ -136,6 +136,16 @@ every terminal's process goes with it.
 `Ctrl+Shift+X` expands the focused pane to fill its workspace, and pressing it
 again restores the layout.
 
+An expanded pane also shows a **Restore pane** button at the right edge of its
+header. Click it or focus it and press Enter/Space to return to the stored
+layout. An ordinary single-pane workspace has no Restore button unless it was
+explicitly expanded. The existing shortcut and context-menu actions still work.
+
+Restore returns keyboard focus to its originating terminal. Rebuilding the
+layout preserves independently managed header content rather than treating it
+as part of expansion state. Focus-driven indicators follow their usual
+per-terminal lifecycle; restoring a sibling does not acknowledge them.
+
 Only the rendering changes. The layout tree is untouched, so restoring brings
 back every pane at exactly the size and position it had, nested dividers
 included, and no terminal is restarted. Closing the expanded pane simply returns

@@ -384,17 +384,17 @@ fn install_styles() {
 
 /// Build the application window.
 pub fn build(app: &adw::Application, requested: Option<Action>) {
-    build_with_writer(app, requested, crate::session::Writer::new);
+    let _ = build_with_writer(app, requested, crate::session::Writer::new);
 }
 
 fn build_with_writer(
     app: &adw::Application,
     requested: Option<Action>,
     writer: fn(std::path::PathBuf) -> Result<crate::session::Writer, String>,
-) {
+) -> Option<Window> {
     if let Some(window) = app.active_window() {
         window.present();
-        return;
+        return None;
     }
     // Printing the bindings from the running registry is what keeps the
     // documentation honest: the list cannot drift from what is installed.
@@ -646,11 +646,12 @@ fn build_with_writer(
         // visible instead of unreachable.
         if report_unbound(&ctx, action) {
             selfcheck(&ctx, "unbound-action");
-            return;
+            return Some(ctx);
         }
         run_action(&ctx, action);
         selfcheck(&ctx, "named-action");
     }
+    Some(ctx)
 }
 
 /// Report the live state periodically when `AMONG_SELFCHECK` is set.
@@ -2114,8 +2115,12 @@ fn rebuild_panes(ctx: &Window) {
             if let Some(widget) = ctx.state.borrow().pane(pane) {
                 let store = ctx.state.borrow().store.clone();
                 let colour = ctx.state.borrow().workspaces.active().colour;
+                let restore = Rc::new({
+                    let ctx = ctx.handle();
+                    move || restore_expanded(&ctx, pane, generation)
+                });
                 ctx.pane_area
-                    .append(&widget.build_container(&store, colour));
+                    .append(&widget.build_container(&store, colour, Some(restore)));
                 return;
             }
         }
@@ -2380,7 +2385,7 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
         Node::Pane { id } => match ctx.state.borrow().pane(*id) {
             Some(pane) => {
                 let store = ctx.state.borrow().store.clone();
-                pane.build_container(&store, colour).upcast()
+                pane.build_container(&store, colour, None).upcast()
             }
             None => gtk::Box::new(gtk::Orientation::Vertical, 0).upcast(),
         },
@@ -2704,6 +2709,22 @@ fn toggle_fullscreen(ctx: &Window) {
 /// brings back every nested divider and ratio untouched.
 fn toggle_zoom(ctx: &Window) {
     ctx.state.borrow_mut().workspaces.active_mut().toggle_zoom();
+    rebuild_panes(ctx);
+    apply_focus(ctx);
+}
+
+fn restore_expanded(ctx: &Window, pane: PaneId, generation: u64) {
+    {
+        let mut state = ctx.state.borrow_mut();
+        // the same pane can have a newly rebuilt header: identity alone would
+        // leave the previous control live after a layout or workspace change.
+        if state.layout_generation != generation || state.exited.contains_key(&pane) {
+            return;
+        }
+        if !state.workspaces.active_mut().restore_expanded(pane) {
+            return;
+        }
+    }
     rebuild_panes(ctx);
     apply_focus(ctx);
 }
@@ -3781,6 +3802,385 @@ fn reconcile_panes(ctx: &Window) {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[ignore = "requires an isolated graphical session and real pointer/keyboard input"]
+    fn expanded_pane_restore_control_is_target_safe_and_keyboard_operable() {
+        use super::*;
+        use std::os::fd::AsRawFd;
+
+        fn pump() {
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            while std::time::Instant::now() < deadline {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+            let mut widgets = vec![widget.clone()];
+            let mut child = widget.first_child();
+            while let Some(node) = child {
+                widgets.extend(descendants(&node));
+                child = node.next_sibling();
+            }
+            widgets
+        }
+        fn terminals(window: &gtk::Window) -> Vec<vte::Terminal> {
+            descendants(window.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<vte::Terminal>().ok())
+                .collect()
+        }
+        fn controls(window: &gtk::Window) -> Vec<gtk::Button> {
+            descendants(window.upcast_ref())
+                .into_iter()
+                .filter(|widget| widget.has_css_class("pane-restore"))
+                .map(|widget| widget.downcast::<gtk::Button>().unwrap())
+                .collect()
+        }
+        fn layout(window: &gtk::Window) -> Vec<(gtk::Orientation, i32)> {
+            descendants(window.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Paned>().ok())
+                .map(|paned| (paned.orientation(), paned.position()))
+                .collect()
+        }
+        fn xdo(args: &[&str]) -> String {
+            let output = std::process::Command::new("xdotool")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        }
+        fn key(key: &str) {
+            xdo(&["key", "--clearmodifiers", key]);
+            pump();
+        }
+        fn action(window: &gtk::Window, action: Action) {
+            window
+                .activate_action(&format!("win.{}", shortcuts::action_name(action)), None)
+                .unwrap();
+            pump();
+        }
+        fn control(window: &gtk::Window) -> gtk::Button {
+            let controls = controls(window);
+            assert_eq!(controls.len(), 1);
+            let button = controls[0].clone();
+            assert!(button.is_mapped() && button.is_focusable());
+            assert_eq!(button.tooltip_text().as_deref(), Some("Restore pane"));
+            assert!(gtk::test_accessible_has_role(
+                &button,
+                gtk::AccessibleRole::Button
+            ));
+            let accessible = button.clone().upcast::<gtk::Accessible>();
+            // this checks the built accessible value, not just the setter call.
+            unsafe {
+                let error = gtk::ffi::gtk_test_accessible_check_property(
+                    accessible.as_ptr(),
+                    gtk::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL,
+                    c"Restore pane".as_ptr(),
+                );
+                if !error.is_null() {
+                    let message = std::ffi::CStr::from_ptr(error)
+                        .to_string_lossy()
+                        .into_owned();
+                    glib::ffi::g_free(error.cast());
+                    panic!("wrong accessible label: {message}");
+                }
+            }
+            assert!(button.width() >= 24 && button.height() >= 24);
+            button
+        }
+        std::env::set_var("GTK_A11Y", "test");
+        let config = std::env::var_os("XDG_CONFIG_HOME").unwrap();
+        crate::test_isolation::assert_below_check_root(std::path::Path::new(&config));
+        let project = std::path::Path::new(&config)
+            .parent()
+            .unwrap()
+            .join("demo-project");
+        std::fs::create_dir(&project).unwrap();
+        std::env::set_current_dir(&project).unwrap();
+        let app = adw::Application::builder()
+            .application_id("com.github.among-terminal.restore-test")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+        pump();
+        let window = app.active_window().unwrap();
+        let ids = xdo(&[
+            "search",
+            "--onlyvisible",
+            "--pid",
+            &std::process::id().to_string(),
+            "--name",
+            &window.title().unwrap(),
+        ]);
+        let id = ids.lines().last().unwrap();
+        xdo(&["windowactivate", "--sync", id]);
+        pump();
+        assert!(controls(&window).is_empty());
+        action(&window, Action::ToggleZoom);
+        control(&window).emit_clicked();
+        pump();
+        assert!(controls(&window).is_empty());
+        action(&window, Action::SplitPane);
+        action(&window, Action::SplitPane);
+        let original = terminals(&window);
+        assert_eq!(original.len(), 3);
+        let positions = layout(&window);
+        let process_groups = original
+            .iter()
+            .map(|terminal| unsafe { libc::tcgetpgrp(terminal.pty().unwrap().fd().as_raw_fd()) })
+            .collect::<Vec<_>>();
+        assert!(process_groups.iter().all(|pid| *pid > 0));
+        let source = original
+            .iter()
+            .find(|terminal| terminal.has_focus())
+            .unwrap();
+
+        action(&window, Action::ToggleZoom);
+        let pointer = control(&window);
+        let rect = pointer.compute_bounds(&window).unwrap();
+        let (surface_x, surface_y) = window.surface_transform();
+        xdo(&[
+            "mousemove",
+            "--window",
+            id,
+            &format!(
+                "{:.0}",
+                f64::from(rect.x() + rect.width() / 2.0) + surface_x
+            ),
+            &format!(
+                "{:.0}",
+                f64::from(rect.y() + rect.height() / 2.0) + surface_y
+            ),
+        ]);
+        xdo(&["click", "1"]);
+        pump();
+        assert!(controls(&window).is_empty());
+        assert!(source.has_focus());
+        assert_eq!(terminals(&window), original);
+        assert_eq!(layout(&window), positions);
+        pointer.emit_clicked();
+        pump();
+        assert!(
+            controls(&window).is_empty(),
+            "late click re-expanded the pane"
+        );
+        println!("PASS real pointer Restore preserves nested layout, terminals and source focus; repeated activation is inert");
+
+        for key_name in ["Return", "space"] {
+            key("ctrl+shift+x");
+            let button = control(&window);
+            assert!(button.grab_focus());
+            key(key_name);
+            assert!(controls(&window).is_empty());
+            assert!(source.has_focus());
+        }
+        assert_eq!(layout(&window), positions);
+        assert_eq!(
+            original
+                .iter()
+                .map(|terminal| unsafe {
+                    libc::tcgetpgrp(terminal.pty().unwrap().fd().as_raw_fd())
+                })
+                .collect::<Vec<_>>(),
+            process_groups
+        );
+        println!("PASS Enter and Space restore to the same running shell; built accessible role/name and hit area are valid");
+
+        action(&window, Action::ToggleZoom);
+        let stale = control(&window);
+        action(&window, Action::NewWorkspace);
+        let other = terminals(&window);
+        stale.emit_clicked();
+        pump();
+        assert!(controls(&window).is_empty());
+        assert_eq!(terminals(&window), other);
+        assert!(other[0].has_focus());
+        action(
+            &window,
+            Action::CycleWorkspace(crate::shortcuts::Cycle::Previous),
+        );
+        let current = control(&window);
+        stale.emit_clicked();
+        pump();
+        assert_eq!(control(&window), current, "old header survived a rebuild");
+        assert!(current.grab_focus());
+        key("Return");
+        assert_eq!(layout(&window), positions);
+        println!("PASS stale actions cannot restore another workspace or a newly rebuilt header");
+
+        action(&window, Action::ToggleZoom);
+        let button = control(&window);
+        let header = button.parent().unwrap();
+        let slot = descendants(&header)
+            .into_iter()
+            .find(|widget| widget.has_css_class("pane-slot"))
+            .unwrap()
+            .downcast::<gtk::Box>()
+            .unwrap();
+        let source_id = ctx.state.borrow().workspaces.active().focused;
+        ctx.state.borrow_mut().store.set(
+            Scope::PaneHeader(source_id),
+            "restore-layout-fixture",
+            crate::slots::Contribution {
+                source: "restore-layout-fixture".into(),
+                fragments: vec![crate::slots::Fragment::text(
+                    "restore-layout-fixture",
+                    "provider status",
+                )],
+                refresh: crate::slots::Refresh::OnEvent,
+                last_asked_ms: None,
+            },
+        );
+        refresh_slots(&ctx);
+        let output = std::path::PathBuf::from(config)
+            .parent()
+            .unwrap()
+            .join("restore-screenshots");
+        std::fs::create_dir(&output).unwrap();
+        let style = adw::StyleManager::default();
+        let contrast = gio::Settings::new("org.gnome.desktop.a11y.interface");
+        for (theme, scheme, high_contrast) in [
+            ("light", adw::ColorScheme::ForceLight, false),
+            ("dark", adw::ColorScheme::ForceDark, false),
+            ("high-contrast", adw::ColorScheme::ForceLight, true),
+        ] {
+            style.set_color_scheme(scheme);
+            contrast
+                .set_boolean("high-contrast", high_contrast)
+                .unwrap();
+            pump();
+            assert_eq!(style.is_high_contrast(), high_contrast);
+            for width in [1000, 620] {
+                window.unmaximize();
+                pump();
+                xdo(&["windowsize", "--sync", id, &width.to_string(), "650"]);
+                pump();
+                let button = control(&window);
+                let bounds = button.compute_bounds(&window).unwrap();
+                let header_bounds = header.compute_bounds(&window).unwrap();
+                assert!(bounds.x() >= header_bounds.x());
+                assert!(bounds.x() + bounds.width() <= header_bounds.x() + header_bounds.width());
+                assert!(descendants(slot.upcast_ref()).into_iter().any(|widget| {
+                    widget
+                        .downcast::<gtk::Label>()
+                        .is_ok_and(|label| label.text() == "provider status" && label.is_mapped())
+                }));
+                let screenshot = output.join(format!("{theme}-{width}.png"));
+                assert!(std::process::Command::new("import")
+                    .args(["-window", id])
+                    .arg(&screenshot)
+                    .status()
+                    .unwrap()
+                    .success());
+                println!("PASS Restore theme={theme} requested_width={width} actual_width={} allocated={bounds:?} accessible=Restore pane; host-rendered slot fixture remains visible; screenshot={}", window.width(), screenshot.display());
+            }
+        }
+        contrast.set_boolean("high-contrast", false).unwrap();
+        let (surface_x, surface_y) = window.surface_transform();
+        let rect = button.compute_bounds(&window).unwrap();
+        let start_x = (f64::from(rect.x() + rect.width() / 2.0) + surface_x).round() as i32;
+        let start_y = (f64::from(rect.y() + rect.height() / 2.0) + surface_y).round() as i32;
+        xdo(&[
+            "mousemove",
+            "--window",
+            id,
+            &start_x.to_string(),
+            &start_y.to_string(),
+        ]);
+        xdo(&["mousedown", "1"]);
+        xdo(&[
+            "mousemove",
+            "--window",
+            id,
+            &(start_x - 100).to_string(),
+            &(start_y + 100).to_string(),
+        ]);
+        pump();
+        xdo(&["mouseup", "1"]);
+        pump();
+        assert_eq!(
+            control(&window),
+            button,
+            "button gesture started a pane drag"
+        );
+        assert_eq!(terminals(&window).len(), 1);
+        assert!(descendants(window.upcast_ref()).iter().all(|widget| {
+            !["drop-left", "drop-right", "drop-top", "drop-bottom"]
+                .iter()
+                .any(|class| widget.has_css_class(class))
+        }));
+        button.emit_clicked();
+        pump();
+        assert_eq!(terminals(&window).len(), 3);
+        assert!(descendants(window.upcast_ref()).into_iter().any(|widget| {
+            widget
+                .downcast::<gtk::Label>()
+                .is_ok_and(|label| label.text() == "provider status" && label.is_mapped())
+        }));
+        println!("PASS a drag gesture on Restore does not become a pane drag");
+
+        let frames = descendants(window.upcast_ref())
+            .into_iter()
+            .filter(|widget| widget.has_css_class("pane-frame"))
+            .collect::<Vec<_>>();
+        let drag_header = descendants(&frames[0])
+            .into_iter()
+            .find(|widget| widget.has_css_class("pane-header"))
+            .unwrap();
+        let from = drag_header.compute_bounds(&window).unwrap();
+        let to = frames[2].compute_bounds(&window).unwrap();
+        let (surface_x, surface_y) = window.surface_transform();
+        let x = (f64::from(from.x() + from.width() / 2.0) + surface_x).round() as i32;
+        let y = (f64::from(from.y() + from.height() / 2.0) + surface_y).round() as i32;
+        let end_x = (f64::from(to.x() + to.width() / 2.0) + surface_x).round() as i32;
+        let end_y = (f64::from(to.y() + to.height() - 8.0) + surface_y).round() as i32;
+        let before_drag = layout(&window);
+        xdo(&["mousemove", "--window", id, &x.to_string(), &y.to_string()]);
+        xdo(&["mousedown", "1"]);
+        for step in 1..=12 {
+            xdo(&[
+                "mousemove",
+                "--window",
+                id,
+                &(x + (end_x - x) * step / 12).to_string(),
+                &(y + (end_y - y) * step / 12).to_string(),
+            ]);
+            std::thread::sleep(Duration::from_millis(40));
+            while glib::MainContext::default().pending() {
+                glib::MainContext::default().iteration(false);
+            }
+        }
+        xdo(&["mouseup", "1"]);
+        pump();
+        assert_ne!(
+            layout(&window),
+            before_drag,
+            "normal header drag stopped working"
+        );
+        assert_eq!(terminals(&window).len(), 3);
+        println!(
+            "PASS real pane header drag still rearranges the layout outside the Restore button"
+        );
+
+        action(&window, Action::ToggleZoom);
+        let closed = control(&window);
+        action(&window, Action::ClosePane);
+        assert_eq!(terminals(&window).len(), 2);
+        closed.emit_clicked();
+        pump();
+        assert!(controls(&window).is_empty());
+        assert_eq!(terminals(&window).len(), 2);
+        println!("PASS a closed target's old Restore control cannot change the surviving panes");
+        window.destroy();
+        pump();
+    }
+
+    #[test]
     #[ignore = "requires an isolated graphical session and real keyboard input"]
     fn menu_hints_follow_live_preferences_and_unbound_actions_still_run() {
         use super::*;
@@ -3964,7 +4364,9 @@ mod tests {
             .application_id("com.github.among-terminal.slow-session-test")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
-        app.connect_activate(|app| build_with_writer(app, None, slow_writer));
+        app.connect_activate(|app| {
+            let _ = build_with_writer(app, None, slow_writer);
+        });
         app.register(None::<&gio::Cancellable>).unwrap();
         app.activate();
         let session = base.join("data/among/session.json");

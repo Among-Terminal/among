@@ -116,6 +116,14 @@ struct Container {
     footer: gtk::Box,
 }
 
+fn button_at(widget: &gtk::Widget, x: f64, y: f64) -> bool {
+    widget
+        .pick(x, y, gtk::PickFlags::DEFAULT)
+        .is_some_and(|target| {
+            target.is::<gtk::Button>() || target.ancestor(gtk::Button::static_type()).is_some()
+        })
+}
+
 impl Pane {
     /// Build a pane with a live shell in it.
     pub fn new(
@@ -182,7 +190,12 @@ impl Pane {
     /// `colour` is the palette index of the workspace the pane belongs to; the
     /// header marks itself with it so the colour is recognisable between the
     /// sidebar and the terminal area.
-    pub fn build_container(&self, store: &SlotStore, colour: usize) -> gtk::Box {
+    pub fn build_container(
+        &self,
+        store: &SlotStore,
+        colour: usize,
+        restore: Option<Rc<dyn Fn()>>,
+    ) -> gtk::Box {
         let self_id = self.id;
         // GTK rejects a widget that already has a parent, so the terminal is
         // detached before being placed in its new container.
@@ -223,6 +236,21 @@ impl Pane {
         header_slot.add_css_class("pane-slot");
         header.append(&title);
         header.append(&header_slot);
+        if let Some(callback) = restore {
+            let theme = gtk::IconTheme::for_display(&header.display());
+            let button = if theme.has_icon("view-restore-symbolic") {
+                gtk::Button::from_icon_name("view-restore-symbolic")
+            } else {
+                gtk::Button::with_label("Restore")
+            };
+            button.add_css_class("flat");
+            button.add_css_class("pane-restore");
+            button.set_tooltip_text(Some("Restore pane"));
+            button.update_property(&[gtk::accessible::Property::Label("Restore pane")]);
+            button.set_valign(gtk::Align::Center);
+            button.connect_clicked(move |_| callback());
+            header.append(&button);
+        }
 
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         footer.add_css_class("pane-slot");
@@ -238,7 +266,17 @@ impl Pane {
         if let Some(callback) = self.focus_callback.borrow().as_ref().map(Rc::clone) {
             let controller = gtk::GestureClick::new();
             controller.set_propagation_phase(gtk::PropagationPhase::Capture);
-            controller.connect_pressed(move |_, _, _, _| callback(self_id));
+            controller.connect_pressed(move |controller, _, x, y| {
+                // header controls need their own keyboard focus, not a capture-
+                // phase grab that redirects their activation into the terminal.
+                if controller
+                    .widget()
+                    .is_some_and(|widget| button_at(&widget, x, y))
+                {
+                    return;
+                }
+                callback(self_id);
+            });
             frame.add_controller(controller);
         }
         self.attach_drag(&frame, &header);
@@ -447,7 +485,13 @@ impl Pane {
         let source = gtk::DragSource::new();
         source.set_actions(gdk::DragAction::MOVE);
         let id = self.id;
-        source.connect_prepare(move |_, _, _| {
+        source.connect_prepare(move |source, x, y| {
+            if source
+                .widget()
+                .is_some_and(|widget| button_at(&widget, x, y))
+            {
+                return None;
+            }
             // The dragged pane's identity travels with the drag, so the target
             // does not need the application to remember what is in flight.
             let value = (id.0).to_value();
