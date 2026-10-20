@@ -3,6 +3,75 @@ use serde_json::{json, Value};
 
 const XML:&str="<component><id>com.github.among-terminal</id><name>Among Terminal</name><project_license>Apache-2.0</project_license><launchable type=\"desktop-id\">com.github.among-terminal.desktop</launchable><releases><release version=\"0.1.0\"/></releases></component>";
 const DESKTOP:&str="[Desktop Entry]\nName=Among Terminal\nExec=among\nIcon=com.github.among-terminal\nTerminal=false\n";
+
+#[test]
+fn actual_package_metainfo_cli_writes_rc_notes_and_refuses_mismatched_source() -> Result<()> {
+    use std::{fs, process::Command};
+    let base =
+        among_tools::storage::private_directory(&std::env::temp_dir(), "among-metainfo-cli")?;
+    let source = base.join("source.xml");
+    let output = base.join("packaged.xml");
+    fs::write(&source, XML)?;
+    let result = Command::new(env!("CARGO_BIN_EXE_among-tools"))
+        .arg("package-metainfo")
+        .arg(&source)
+        .arg("0.1.0~rc.2")
+        .arg(&output)
+        .output()?;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::read_to_string(&source)?, XML);
+    assert!(fs::read_to_string(&output)?.contains("version=\"0.1.0~rc.2\""));
+    let refused = base.join("refused.xml");
+    assert!(!Command::new(env!("CARGO_BIN_EXE_among-tools"))
+        .arg("package-metainfo")
+        .arg(&source)
+        .arg("0.2.0~rc.2")
+        .arg(&refused)
+        .output()?
+        .status
+        .success());
+    assert!(!refused.exists());
+    Ok(())
+}
+
+#[test]
+fn packaged_release_version_matches_rc_without_rewriting_history() -> Result<()> {
+    let source = XML.replace("<release version=\"0.1.0\"/>", "<release version=\"0.1.0\"><description><p>Current notes</p></description></release><release version=\"0.0.9\"><description><p>Old notes</p></description></release>");
+    for version in ["0.1.0", "0.1.0~rc.2", "0.1.0-rc.2"] {
+        let rendered = release_metadata::package_metainfo(&source, version)?;
+        assert_eq!(
+            rendered,
+            source.replacen("version=\"0.1.0\"", &format!("version=\"{version}\""), 1)
+        );
+        let doc = roxmltree::Document::parse(&rendered)?;
+        let release = doc
+            .descendants()
+            .find(|n| n.has_tag_name("release"))
+            .ok_or("current release missing")?;
+        assert_eq!(release.attribute("version"), Some(version));
+        assert!(rendered.contains("Current notes"));
+        assert!(rendered.contains("version=\"0.0.9\""));
+    }
+    for version in [
+        "0.2.0~rc.2",
+        "0.1.0~rc.0",
+        "0.1.0-rc.02",
+        "0.1.0\" injected=\"yes",
+        "",
+    ] {
+        assert!(release_metadata::package_metainfo(&source, version).is_err());
+    }
+    assert!(release_metadata::package_metainfo(
+        &source.replace("com.github.among-terminal", "other"),
+        "0.1.0~rc.2"
+    )
+    .is_err());
+    Ok(())
+}
 fn fixture() -> Value {
     json!({"name":"among","base":"core24","confinement":"classic","grade":"devel","license":"Apache-2.0","platforms":{"amd64":{"build-on":["amd64"],"build-for":["amd64"]},"arm64":{"build-on":["arm64"],"build-for":["arm64"]}},"apps":{"among":{"command":"bin/among"}},"adopt-info":"among","parts":{"among":{"rust-channel":"1.98.1","rust-path":[".","examples/plugins"],"rust-inherit-ldflags":true,"build-environment":[{"LDFLAGS":"-L/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR"}],"stage-packages":["librsvg2-common"],"build-attributes":["enable-patchelf"],"override-build":"true\n","override-stage":"glib-compile-schemas --strict \"$CRAFT_PART_INSTALL/usr/share/glib-2.0/schemas\"\n"}}})
 }

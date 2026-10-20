@@ -8,6 +8,25 @@ use std::{
 
 const ID: &str = "com.github.among-terminal";
 
+pub fn verify_raster_icons(appdir: &Path) -> Result<()> {
+    for (size, expected) in [
+        (
+            128,
+            include_bytes!("../../../data/com.github.among-terminal-128.png").as_slice(),
+        ),
+        (
+            256,
+            include_bytes!("../../../data/com.github.among-terminal-256.png").as_slice(),
+        ),
+    ] {
+        let relative = format!("usr/share/icons/hicolor/{size}x{size}/apps/{ID}.png");
+        if fs::read(storage::safe_path(appdir, Path::new(&relative))?)? != expected {
+            return Err(format!("AppImage raster artwork differs at {relative}").into());
+        }
+    }
+    Ok(())
+}
+
 fn launcher_desktop(contents: &str) -> Result<String> {
     if contents
         .lines()
@@ -38,6 +57,7 @@ pub fn stage(
     architecture: &str,
     destination: &Path,
 ) -> Result<()> {
+    crate::release_metadata::artwork(root)?;
     for name in ["among", "clock", "system-status", "pane-pwd"] {
         deb::elf_architecture(
             &storage::safe_path(binaries, Path::new(name))?,
@@ -68,6 +88,15 @@ pub fn stage(
     let icon =
         fs::read(destination.join(format!("usr/share/icons/hicolor/scalable/apps/{ID}.svg")))?;
     storage::atomic_write(destination, Path::new(&format!("{ID}.svg")), &icon, 0o644)?;
+    // libappimage's thumbnailer prefers these exact-size paths over scalable
+    // SVGs, whose bundled renderer can silently produce fully transparent PNGs.
+    for size in [128, 256] {
+        let icon = fs::read(root.join(format!("data/{ID}-{size}.png")))?;
+        let directory = destination.join(format!("usr/share/icons/hicolor/{size}x{size}/apps"));
+        fs::create_dir_all(&directory)?;
+        storage::atomic_write(&directory, Path::new(&format!("{ID}.png")), &icon, 0o644)?;
+    }
+    verify_raster_icons(destination)?;
     let document = json!({"schema":1,"architecture":architecture,
         "app_sha256":storage::sha256(File::open(destination.join("usr/bin/among"))?)?,
         "launcher_sha256":storage::sha256(File::open(destination.join("AppRun"))?)?,

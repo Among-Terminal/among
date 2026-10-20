@@ -54,6 +54,7 @@ Usage:
   among-tools prepare-stable-build <source-root> <new-output> <tag>
   among-tools check-stable-build <tree>
   among-tools check-release-metadata <source-root>
+  among-tools package-metainfo <source.xml> <package-version> <output.xml>
   among-tools check-stable-source <repository> <record.json> <bundle.tar>
   among-tools third-party-notices <source-root> <destination> <generate|check>
   among-tools check-source-snapshot <archive.tar>
@@ -87,6 +88,13 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
+        [command, source, version, output] if command == "package-metainfo" => {
+            among_tools::release_metadata::write_package_metainfo(
+                Path::new(source),
+                version,
+                Path::new(output),
+            )?;
+        }
         [command, architecture, destination] if command == "fetch-appimage-tools" => {
             among_tools::appimage_tools::fetch(architecture, Path::new(destination))?;
         }

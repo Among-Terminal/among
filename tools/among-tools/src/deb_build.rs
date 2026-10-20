@@ -301,6 +301,17 @@ pub fn run(
         return Err("packaged desktop is not bound to system binary".into());
     }
     let metainfo = extracted.join(format!("usr/share/metainfo/{}.metainfo.xml", deb::APP_ID));
+    let packaged_xml = fs::read_to_string(&metainfo)?;
+    let document = roxmltree::Document::parse(&packaged_xml)?;
+    let (_, expected_version) = deb::release_version(&tag)?;
+    if document
+        .descendants()
+        .find(|node| node.has_tag_name("release"))
+        .and_then(|node| node.attribute("version"))
+        != Some(expected_version.as_str())
+    {
+        return Err("packaged AppStream release differs from native package version".into());
+    }
     execute(
         "/usr/bin/appstreamcli",
         &[

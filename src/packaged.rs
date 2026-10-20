@@ -44,6 +44,25 @@ fn integrated_desktop(desktop: &Path, image: &Path) -> Option<String> {
     Some(stem.to_string())
 }
 
+fn launch_desktop(desktop: Option<&Path>, applications: &Path, image: &Path) -> Option<String> {
+    if let Some(id) = desktop.and_then(|desktop| integrated_desktop(desktop, image)) {
+        return Some(id);
+    }
+    // File-manager/terminal launches have no GIO hint. Read an existing owned
+    // registration, never create one or guess among duplicate integrations.
+    let mut matched = None;
+    for entry in std::fs::read_dir(applications).ok()? {
+        let path = entry.ok()?.path();
+        if let Some(id) = integrated_desktop(&path, image) {
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(id);
+        }
+    }
+    matched
+}
+
 pub fn apply_window_identity(window: &impl gtk::prelude::IsA<gtk::Window>) {
     use gtk::prelude::*;
     let Some(Some(id)) = APPIMAGE_DESKTOP.get() else {
@@ -119,8 +138,12 @@ pub fn initialize() -> Result<(), String> {
         )?;
         let desktop = std::env::var_os("GIO_LAUNCHED_DESKTOP_FILE");
         let image = std::env::var_os("APPIMAGE");
-        let id = desktop.zip(image).and_then(|(desktop, image)| {
-            integrated_desktop(Path::new(&desktop), Path::new(&image))
+        let id = image.as_deref().and_then(|image| {
+            launch_desktop(
+                desktop.as_deref().map(Path::new),
+                &glib::user_data_dir().join("applications"),
+                Path::new(image),
+            )
         });
         if std::env::var_os("AMONG_SELFCHECK").is_some() {
             eprintln!("among: appimage_desktop_context={id:?}");
@@ -147,6 +170,38 @@ pub fn root() -> Option<&'static Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unhinted_launch_requires_one_existing_exact_image_registration() {
+        let root =
+            std::env::temp_dir().join(format!("among-unhinted-desktop-{}", std::process::id()));
+        std::fs::create_dir(&root).expect("new owned fixture");
+        let image = root.join("candidate.AppImage");
+        std::fs::write(&image, b"fixture; never executed").expect("image");
+        assert_eq!(launch_desktop(None, &root, &image), None);
+        let entry = |hash: &str| root.join(format!("appimagekit_{hash}-Among_Terminal.desktop"));
+        let contents = |hash: &str| {
+            format!("[Desktop Entry]\nExec={}\nX-AppImage-Identifier={hash}\nX-AppImage-Old-Icon=com.github.among-terminal\n", image.display())
+        };
+        let hash = "0123456789abcdef0123456789abcdef";
+        let desktop = entry(hash);
+        std::fs::write(&desktop, contents(hash)).expect("desktop");
+        let expected = desktop
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_owned);
+        assert_eq!(launch_desktop(None, &root, &image), expected);
+        let missing = root.join("missing.desktop");
+        assert_eq!(launch_desktop(Some(&missing), &root, &image), expected);
+        let other = root.join("other.AppImage");
+        std::fs::write(&other, b"another image").expect("other");
+        assert_eq!(launch_desktop(None, &root, &other), None);
+        let second = "fedcba9876543210fedcba9876543210";
+        std::fs::write(entry(second), contents(second)).expect("duplicate");
+        assert_eq!(launch_desktop(None, &root, &image), None);
+        assert_eq!(launch_desktop(Some(&missing), &root, &image), None);
+        assert_eq!(launch_desktop(Some(&desktop), &root, &image), expected);
+        std::fs::remove_dir_all(root).expect("owned fixture cleanup");
+    }
     #[test]
     fn only_a_matching_appimagelauncher_entry_can_supply_a_surface_id() {
         let root =
