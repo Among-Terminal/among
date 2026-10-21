@@ -5,7 +5,8 @@
 //! a dequeued job is permission to attempt delivery, never a delivery receipt.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const PULSE: Duration = Duration::from_secs(1);
@@ -15,6 +16,8 @@ pub const MAX_PENDING_PER_CHANNEL: usize = 16;
 pub const MAX_DIAGNOSTICS: usize = 32;
 
 static SESSION: AtomicU64 = AtomicU64::new(0);
+
+pub mod commands;
 
 /// tokens are minted by the host, not reconstructed from a pane number by a
 /// producer. reusing a pane number cannot revive an old callback.
@@ -175,6 +178,7 @@ pub enum DiagnosticKind {
     Coalesced,
     GlobalQueueFull,
     ChannelQueueFull,
+    CommandCompletion(commands::Completion),
 }
 
 /// diagnostics contain no terminal content, executable settings or event text.
@@ -187,6 +191,7 @@ pub struct Diagnostic {
 #[derive(Debug)]
 struct LiveSource {
     token: Source,
+    live: Arc<AtomicBool>,
     unread: bool,
     pulse_until: Option<Instant>,
     next_pulse: Option<Instant>,
@@ -196,12 +201,15 @@ struct LiveSource {
 struct DeliveryChannel {
     policy: Policy,
     revision: u64,
+    live: Arc<AtomicBool>,
+    registered: Arc<AtomicBool>,
     next_delivery: BTreeMap<Option<Source>, Instant>,
 }
 
 #[derive(Debug)]
 pub struct Host {
     session: u64,
+    live: Arc<AtomicBool>,
     next_source: u64,
     next_channel: u64,
     last_event: u64,
@@ -221,6 +229,7 @@ impl Host {
             .map_err(|_| Failure::Exhausted)?;
         Ok(Self {
             session: previous + 1,
+            live: Arc::new(AtomicBool::new(true)),
             next_source: 0,
             next_channel: 0,
             last_event: 0,
@@ -246,6 +255,7 @@ impl Host {
             pane,
             LiveSource {
                 token,
+                live: Arc::new(AtomicBool::new(true)),
                 unread: false,
                 pulse_until: None,
                 next_pulse: None,
@@ -266,7 +276,9 @@ impl Host {
         if !self.is_live(source) {
             return;
         }
-        self.sources.remove(&source.pane);
+        if let Some(source) = self.sources.remove(&source.pane) {
+            source.live.store(false, Ordering::Release);
+        }
         self.pending.retain(|job| job.event.source != Some(source));
         for channel in self.channels.values_mut() {
             channel.next_delivery.remove(&Some(source));
@@ -346,6 +358,7 @@ impl Host {
         focus: Focus,
         now: Instant,
     ) -> Result<Event, Failure> {
+        self.prune_revoked_channels();
         self.last_event = self.last_event.checked_add(1).ok_or(Failure::Exhausted)?;
         let event = Event {
             session: self.session,
@@ -371,7 +384,9 @@ impl Host {
         let channels: Vec<_> = self
             .channels
             .iter()
-            .filter(|(_, channel)| channel.policy.permits(source, focus))
+            .filter(|(_, channel)| {
+                channel.live.load(Ordering::Acquire) && channel.policy.permits(source, focus)
+            })
             .map(|(id, channel)| (*id, channel.revision))
             .collect();
         for (channel, revision) in channels {
@@ -389,6 +404,7 @@ impl Host {
     }
 
     pub fn register_channel(&mut self, policy: Policy) -> Result<Channel, Failure> {
+        self.prune_revoked_channels();
         self.next_channel = self.next_channel.checked_add(1).ok_or(Failure::Exhausted)?;
         let id = Channel {
             session: self.session,
@@ -399,6 +415,8 @@ impl Host {
             DeliveryChannel {
                 policy,
                 revision: 0,
+                live: Arc::new(AtomicBool::new(true)),
+                registered: Arc::new(AtomicBool::new(true)),
                 next_delivery: BTreeMap::new(),
             },
         );
@@ -408,19 +426,32 @@ impl Host {
     /// a settings change revokes in-flight tokens as well as queued work.
     /// adapters must also cancel their owned active operations on revocation.
     pub fn set_channel_policy(&mut self, id: Channel, policy: Policy) -> Result<(), Failure> {
+        self.prune_revoked_channels();
         let channel = self.channels.get_mut(&id).ok_or(Failure::StaleChannel)?;
         if channel.policy == policy {
             return Ok(());
         }
-        channel.revision = channel.revision.checked_add(1).ok_or(Failure::Exhausted)?;
         channel.policy = policy;
+        self.cancel_channel_work(id)
+    }
+
+    /// configuration replacement must revoke old work even if policy is unchanged.
+    pub fn cancel_channel_work(&mut self, id: Channel) -> Result<(), Failure> {
+        self.prune_revoked_channels();
+        let channel = self.channels.get_mut(&id).ok_or(Failure::StaleChannel)?;
+        channel.live.store(false, Ordering::Release);
+        channel.revision = channel.revision.checked_add(1).ok_or(Failure::Exhausted)?;
+        channel.live = Arc::new(AtomicBool::new(true));
         channel.next_delivery.clear();
         self.pending.retain(|job| job.channel != id);
         Ok(())
     }
 
     pub fn remove_channel(&mut self, id: Channel) {
-        self.channels.remove(&id);
+        if let Some(channel) = self.channels.remove(&id) {
+            channel.live.store(false, Ordering::Release);
+            channel.registered.store(false, Ordering::Release);
+        }
         self.pending.retain(|job| job.channel != id);
     }
 
@@ -470,13 +501,16 @@ impl Host {
     pub fn pending_count(&self, channel: Option<Channel>) -> usize {
         self.pending
             .iter()
-            .filter(|job| channel.is_none_or(|channel| job.channel == channel))
+            .filter(|job| {
+                self.is_current(**job) && channel.is_none_or(|channel| job.channel == channel)
+            })
             .count()
     }
 
     /// skipping cooling sources allows a quiet sibling to progress. a repeated
     /// bell replaces one queued event, but cannot extend the source deadline.
     pub fn take_ready(&mut self, id: Channel, now: Instant) -> Option<Job> {
+        self.prune_revoked_channels();
         let channel = self.channels.get_mut(&id)?;
         let index = self.pending.iter().position(|job| {
             job.channel == id
@@ -495,14 +529,55 @@ impl Host {
     pub fn is_current(&self, job: Job) -> bool {
         job.event.session == self.session
             && job.event.source.is_none_or(|source| self.is_live(source))
-            && self
-                .channels
-                .get(&job.channel)
-                .is_some_and(|channel| channel.policy.enabled && channel.revision == job.revision)
+            && self.channels.get(&job.channel).is_some_and(|channel| {
+                channel.policy.enabled
+                    && channel.revision == job.revision
+                    && channel.live.load(Ordering::Acquire)
+                    && channel.registered.load(Ordering::Acquire)
+            })
+    }
+
+    /// workers revalidate these flags before granting execution and throughout
+    /// an active attempt; no worker needs access to GTK or a borrowed Host.
+    pub fn authorization(&self, job: Job) -> Option<Authorization> {
+        if !self.is_current(job) {
+            return None;
+        }
+        Some(Authorization {
+            session: self.live.clone(),
+            channel: self.channels.get(&job.channel)?.live.clone(),
+            registration: self.channels.get(&job.channel)?.registered.clone(),
+            source: job.event.source.and_then(|source| {
+                self.sources
+                    .get(&source.pane)
+                    .map(|state| state.live.clone())
+            }),
+        })
+    }
+
+    fn registration(&self, channel: Channel) -> Option<Arc<AtomicBool>> {
+        Some(self.channels.get(&channel)?.registered.clone())
+    }
+
+    fn prune_revoked_channels(&mut self) {
+        self.channels
+            .retain(|_, channel| channel.registered.load(Ordering::Acquire));
+        let channels = &self.channels;
+        self.pending
+            .retain(|job| channels.contains_key(&job.channel));
     }
 
     pub fn diagnostics(&self) -> &VecDeque<Diagnostic> {
         &self.diagnostics
+    }
+
+    pub fn command_completions(&self) -> impl DoubleEndedIterator<Item = &commands::Completion> {
+        self.diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                DiagnosticKind::CommandCompletion(completion) => Some(completion),
+                _ => None,
+            })
     }
 
     fn diagnose(&mut self, kind: DiagnosticKind) {
@@ -517,6 +592,32 @@ impl Host {
                 occurrences: 1,
             });
         }
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        self.live.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Clone)]
+pub struct Authorization {
+    session: Arc<AtomicBool>,
+    channel: Arc<AtomicBool>,
+    registration: Arc<AtomicBool>,
+    source: Option<Arc<AtomicBool>>,
+}
+
+impl Authorization {
+    pub fn is_current(&self) -> bool {
+        self.session.load(Ordering::Acquire)
+            && self.channel.load(Ordering::Acquire)
+            && self.registration.load(Ordering::Acquire)
+            && self
+                .source
+                .as_ref()
+                .is_none_or(|source| source.load(Ordering::Acquire))
     }
 }
 

@@ -268,3 +268,179 @@ fn live_bells_follow_terminal_focus_lifetime_and_owned_windows() {
     );
     println!("PASS destroying the owning main window drops session-local state and rejects callbacks after shutdown");
 }
+
+#[test]
+#[ignore = "requires isolated X11/xdotool; run notification_commands first to build its Rust fixture"]
+fn hostile_command_backend_preserves_real_terminal_input_and_nonblocking_shutdown() {
+    use among::notifications::commands::{self, Configuration, OwnedDirectory, Runtime};
+    use among::notifications::{Eligibility, Policy};
+    use std::os::unix::fs::DirBuilderExt;
+
+    fn pids(root: &std::path::Path) -> Vec<u32> {
+        std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("started-")
+                    || path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("child-")
+            })
+            .map(|path| std::fs::read_to_string(path).unwrap().parse().unwrap())
+            .collect()
+    }
+    let config = std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap());
+    crate::test_isolation::assert_below_check_root(&config);
+    let root =
+        crate::test_isolation::check_root().join(format!("native-command-{}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    let cwd = root.join("owned-cwd");
+    let output = root.join("hostile-tree");
+    std::fs::DirBuilder::new().mode(0o700).create(&cwd).unwrap();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&output)
+        .unwrap();
+    let target = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let fixture = target.join("notification-command-fixture");
+    assert!(
+        fixture.is_file(),
+        "run cargo test --test notification_commands before this native check"
+    );
+    let app = adw::Application::builder()
+        .application_id("com.github.among-terminal.command-backend-test")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    pump_for(Duration::from_millis(300));
+    activate(&ctx.window);
+    let origin = ctx.state.borrow().workspaces.active().focused;
+    let backend = ctx.state.borrow().bells.clone().unwrap();
+    split_focused(&ctx);
+    pump_for(Duration::from_millis(200));
+    let focused = ctx.state.borrow().workspaces.active().focused;
+    assert_ne!(origin, focused);
+    wait(
+        || terminal(&ctx, focused).has_focus(),
+        "sibling terminal focus",
+    );
+    let mut runtime =
+        Runtime::new(&target.join("among"), OwnedDirectory::open(&cwd).unwrap()).unwrap();
+    let channel = backend
+        .with_host(|host| {
+            runtime.register(
+                host,
+                Configuration::new(
+                    &fixture,
+                    vec!["tree".into(), output.to_str().unwrap().into()],
+                )
+                .unwrap(),
+            )
+        })
+        .unwrap()
+        .unwrap();
+    backend
+        .with_host(|host| {
+            runtime.set_policy(
+                host,
+                channel,
+                Policy {
+                    enabled: true,
+                    eligibility: Eligibility::Always,
+                },
+            )
+        })
+        .unwrap()
+        .unwrap();
+    let state = Rc::new(RefCell::new(runtime));
+    let stopped = Rc::new(Cell::new(false));
+    glib::timeout_add_local(Duration::from_millis(10), {
+        let state = state.clone();
+        let backend = backend.clone();
+        let stopped = stopped.clone();
+        move || {
+            if stopped.get() {
+                return glib::ControlFlow::Break;
+            }
+            let _ =
+                backend.with_host(|host| state.borrow_mut().poll(host, std::time::Instant::now()));
+            glib::ControlFlow::Continue
+        }
+    });
+    real_bell(&ctx, &backend, origin);
+    wait(|| pids(&output).len() >= 3, "real stubborn command tree");
+    assert!(backend.attention(origin.0).unread);
+    let events = backend.event_count();
+    let began = std::time::Instant::now();
+    xdo(&[
+        "type",
+        "--clearmodifiers",
+        "--delay",
+        "1",
+        "printf '\\033]0;command-input-alive\\007'",
+    ]);
+    xdo(&["key", "--clearmodifiers", "Return"]);
+    wait(
+        || terminal(&ctx, focused).window_title().as_deref() == Some("command-input-alive"),
+        "real terminal keyboard input during hostile command",
+    );
+    assert!(began.elapsed() < Duration::from_secs(1));
+    assert_eq!(commands::active_count(), 1);
+    assert_eq!(
+        backend.event_count(),
+        events,
+        "sibling OSC title terminator became another command event"
+    );
+    assert!(backend
+        .with_host(|host| host.command_completions().next().is_none())
+        .unwrap());
+    let began = std::time::Instant::now();
+    {
+        backend
+            .with_host(|host| state.borrow_mut().shutdown(host))
+            .unwrap();
+    }
+    assert!(
+        began.elapsed() < Duration::from_millis(50),
+        "shutdown blocked the GTK caller"
+    );
+    ctx.window.destroy();
+    wait(
+        || commands::active_count() == 0,
+        "off-loop shutdown/reaping",
+    );
+    assert!(pids(&output)
+        .into_iter()
+        .all(|pid| !std::path::Path::new(&format!("/proc/{pid}")).exists()));
+    let supervisors = std::fs::read_dir(&output)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("supervisor-")
+        });
+    for path in supervisors {
+        let pid: u32 = std::fs::read_to_string(path).unwrap().parse().unwrap();
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+    stopped.set(true);
+    println!("PASS real semantic VTE bell from one pane dispatches the configured command through the actual host; hostile leader/child/grandchild run with production limits while real sibling VTE keyboard input responds within one second; shutdown returns within 50ms and supervisor/leader/descendants reap off-loop");
+    println!("NOTE channel registration/polling uses test-only access to the real host and the reusable command API, not a not-yet-implemented General control or default live channel registration");
+}
