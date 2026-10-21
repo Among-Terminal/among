@@ -128,6 +128,15 @@ pub(super) fn add_actions(
             ),
         );
         detail_row(&package, "Package SHA-256", &current.receipt.package_sha256);
+        detail_row(&package, "Manifest SHA-256", &current.receipt.manifest_sha256);
+        detail_row(&package, "Selected generation", &current.receipt.generation);
+        if let Some(receipt) = &current.receipt.source {
+            detail_row(&source, "Numeric publisher identity", &receipt.publisher_id.to_string());
+            detail_row(&package, "Catalogue revision", &receipt.catalogue_revision);
+            detail_row(&package, "Catalogue SHA-256", &receipt.catalogue_sha256);
+        } else {
+            detail_row(&source, "Numeric publisher identity", "Unconfirmed in this pre-installer receipt; an update requires renewed review");
+        }
         if let Ok(inspected) = &current.inspected {
             detail_row(
                 &package,

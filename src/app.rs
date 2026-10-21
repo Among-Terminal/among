@@ -443,6 +443,7 @@ struct ApplicationPlugins {
     app: glib::WeakRef<adw::Application>,
     starts_allowed: Rc<Cell<bool>>,
     retiring: Cell<usize>,
+    current: RefCell<std::rc::Weak<RefCell<AppState>>>,
 }
 
 thread_local! {
@@ -463,6 +464,7 @@ fn application_plugins(app: &adw::Application) -> Rc<ApplicationPlugins> {
             app: app.downgrade(),
             starts_allowed: Rc::new(Cell::new(true)),
             retiring: Cell::new(0),
+            current: RefCell::new(std::rc::Weak::new()),
         });
         entries.push(entry.clone());
         entry
@@ -522,6 +524,7 @@ fn build_with_writer(
     let state = Rc::new(RefCell::new(AppState::new(
         admission.starts_allowed.clone(),
     )));
+    admission.current.replace(Rc::downgrade(&state));
     match bell::Backend::new(&window) {
         Ok(backend) => state.borrow_mut().bells = Some(backend),
         Err(_) => eprintln!("among: bell session identity exhausted; backend unavailable"),
@@ -3029,10 +3032,7 @@ fn open_preferences(ctx: &Window) {
             let state = ctx.state.clone();
             move || state.borrow().plugins.overview()
         }),
-        installations_changed: Rc::new({
-            let state = ctx.state.clone();
-            move || reconcile_managed_installations(&state)
-        }),
+        installations_changed: installation_observer(ctx),
         plugin_details: Rc::new({
             let state = ctx.state.clone();
             move |name| state.borrow().plugins.managed_details(name)
@@ -3222,7 +3222,30 @@ fn persist_general(
     durability
 }
 
+fn installation_observer(ctx: &Window) -> Rc<dyn Fn()> {
+    let admission = ctx
+        .window
+        .application()
+        .and_then(|app| app.downcast::<adw::Application>().ok())
+        .map(|app| application_plugins(&app));
+    let fallback = Rc::downgrade(&ctx.state);
+    Rc::new(move || {
+        // installer completions belong to the application, not the window which
+        // opened their view. never register code into an exiting/retiring host.
+        let current = admission
+            .as_ref()
+            .and_then(|entry| entry.current.borrow().upgrade())
+            .or_else(|| fallback.upgrade());
+        if let Some(current) = current.filter(|state| !state.borrow().exiting) {
+            reconcile_managed_installations(&current);
+        }
+    })
+}
+
 fn reconcile_managed_installations(state: &Rc<RefCell<AppState>>) {
+    if state.borrow().exiting {
+        return;
+    }
     let Some(root) = crate::plugin::inventory::root() else {
         return;
     };
@@ -3386,26 +3409,68 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
     let window = ctx.handle();
     let key = name.to_string();
     let weak_parent = parent.downgrade();
-    dialog.connect_response(None,move |_,response| {
-        if response!="enable" {return;}
-        if window.state.borrow().exiting {return;}
-        let Some(parent)=weak_parent.upgrade().filter(|parent|parent.is_visible()) else{return};
-        let current=window.state.borrow().plugins.managed_details(&key)
-            .filter(|(current,_)|current.receipt.generation==entry.receipt.generation && current.receipt==entry.receipt);
-        let Some((current,_))=current else{return};
-        let review=serde_json::json!({"owner":current.receipt.owner,"repository":current.receipt.repository,
-            "features":features.iter().filter(|(_,control)|control.is_active()).map(|(feature,_)|feature.clone()).collect::<Vec<_>>()});
-        let valid=current.inspected.as_ref().map_err(|problem|*problem)
-            .and_then(|inspected|crate::plugin::managed::granted_features(&inspected.manifest,&current.receipt,Some(&serde_json::json!({"review":review}))))
-            .and_then(|_|window.state.borrow_mut().plugins.review_access(&key,review.clone()));
-        if let Err(problem)=valid {
-            let explanation=adw::AlertDialog::builder().heading("Plugin access was not accepted").body(problem.to_string()).build();
-            explanation.add_response("close","Close");explanation.present(Some(&parent));return;
+    dialog.connect_response(None, move |_, response| {
+        if response != "enable" {
+            return;
         }
-        let result=window.state.borrow_mut().settings.managed_review_for_installation(&key,review,current.receipt.installation.as_deref());
+        if window.state.borrow().exiting {
+            return;
+        }
+        let Some(parent) = weak_parent.upgrade().filter(|parent| parent.is_visible()) else {
+            return;
+        };
+        let current = window
+            .state
+            .borrow()
+            .plugins
+            .managed_details(&key)
+            .filter(|(current, _)| {
+                current.receipt.generation == entry.receipt.generation
+                    && current.receipt == entry.receipt
+            });
+        let Some((current, _)) = current else { return };
+        let review = current.receipt.review(
+            features
+                .iter()
+                .filter(|(_, control)| control.is_active())
+                .map(|(feature, _)| feature.clone())
+                .collect::<Vec<_>>(),
+        );
+        let valid = current
+            .inspected
+            .as_ref()
+            .map_err(|problem| *problem)
+            .and_then(|inspected| {
+                crate::plugin::managed::granted_features(
+                    &inspected.manifest,
+                    &current.receipt,
+                    Some(&serde_json::json!({"review":review})),
+                )
+            })
+            .and_then(|_| {
+                window
+                    .state
+                    .borrow_mut()
+                    .plugins
+                    .review_access(&key, review.clone())
+            });
+        if let Err(problem) = valid {
+            let explanation = adw::AlertDialog::builder()
+                .heading("Plugin access was not accepted")
+                .body(problem.to_string())
+                .build();
+            explanation.add_response("close", "Close");
+            explanation.present(Some(&parent));
+            return;
+        }
+        let result = window
+            .state
+            .borrow_mut()
+            .settings
+            .managed_review_for_installation(&key, review, current.receipt.installation.as_deref());
         // consent was accepted by the stopped runtime above; a persistence
         // failure is reported separately without revoking this session's consent.
-        report_settings_save(&window,result);
+        report_settings_save(&window, result);
         window.state.borrow_mut().plugins.enable(&key);
     });
     dialog.present(Some(&parent));

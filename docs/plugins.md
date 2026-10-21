@@ -167,7 +167,9 @@ replaced package rather than silently retargeting an old action. The separate
 Plugin sources section opens repository inspection with a separate explicit
 Install disabled action for each compatible version; the search field filters
 only installed/configured plugins. Merely inspecting metadata never installs or
-enables code. Updates, uninstall and persistent source registrations remain unfinished.
+enables code. Registered sources have explicit Cached, Refresh and Remove source
+actions; source removal does not uninstall anything. Updates and uninstall remain
+unfinished.
 
 ### Updating an installed example
 
@@ -387,6 +389,11 @@ a fresh `installation` token. Explicit managed enable/review saves that token wi
 consent; retained enabled settings for a different/missing token cannot start a new
 installation. Pre-installer receipts without tokens keep their previous startup
 semantics. New installs do not rewrite settings merely to force their switch off.
+New receipts also bind the numeric GitHub publisher ID, exact catalogue revision
+and catalogue SHA-256. Access review for these receipts binds numeric repository
+and publisher IDs: renaming keeps authority, but transfer or deleting/recreating a
+name cannot inherit consent. Old label-only receipts keep startup compatibility;
+upgrading their unconfirmed publisher boundary requires renewed review.
 Local state lives separately in `managed-plugins.json` in the XDG config directory.
 Retained preferences alone are not evidence of installation. Repository browsing,
 download, update and uninstall are separate installer operations, not implemented
@@ -694,8 +701,44 @@ panel. Editing the address hides the previous preview without sending a request.
 After inspecting a catalogue, each compatible version has an explicit **Install
 disabled** action. Only the selected identity is installed, with no executable
 admission or automatic enablement. An existing selected identity is refused rather
-than overwritten: updates, uninstall, persistent source registrations/cache and
-generation cleanup/recovery are still unfinished. This is not full installer acceptance.
+than overwritten: updates, uninstall and generation cleanup/recovery are still
+unfinished. This is not full installer acceptance.
+
+**Add source** explicitly saves the inspected numeric repository/publisher identity
+and validated snapshot. Inspection or address edits alone never register it.
+Registered sources reopen from bounded local storage without network access.
+**Cached** displays the actual retrieval timestamp, whether the snapshot is at least
+24 hours old, and that it is not an online check. A future timestamp/clock rollback
+is stale/uncertain, not fresh. No cache is a promise of network availability.
+
+**Refresh** requests the registered numeric GitHub repository ID, never the old
+owner/name alias. A rename retains identity. A changed numeric publisher requires
+the explicit **Approve publisher change** action; refresh does not silently approve
+it or grant installed code any access. Reusing an owner/repository spelling with a
+different numeric repository ID is a separate explicit addition, not an update.
+Failed/rate-limited/cancelled refresh keeps the committed cache and installed
+selection/switch/settings unchanged. **Remove source** removes discovery and its
+cache only; it neither disables nor uninstalls a selected package.
+
+Registrations and exact raw catalogue bytes live in the owned data directory
+`among/plugin-sources/sources.json`, separate from managed selections and config.
+The total metadata storage budget is 16 MiB: the committed document is capped at
+8 MiB, reserving the other half for its flushed atomic replacement. There are at
+most 32 repositories and four snapshots per repository. Old snapshots can be evicted for cache quota without deleting
+registrations, settings or installed generations. A refreshed duplicate revision/
+digest replaces its retrieval observation rather than consuming another slot.
+Publisher reapproval drops the previous publisher's cached snapshots.
+
+Source edits use no-follow owned storage, a bounded worker/shared two-credit
+budget, advisory serialization, flushed atomic replacement and an exact previous
+document/root-inode check. Written-but-unconfirmed durability is reported separately.
+Only safe files in the reserved `sources-<64-hex>` temporary namespace are recovered;
+links/unsafe entries refuse cleanup, unrelated files remain untouched. Directory
+enumeration is capped at 256 entries; one active atomic temporary is bounded by
+the same 8-MiB document cap. Each registration has a fresh token and edit revision;
+late refresh/remove callbacks cannot resurrect a removed/re-added source or target
+another source with the same label. Cached metadata is revalidated before display
+and compatibility checks run off the GUI thread without probes.
 
 The metadata client uses real HTTPS, resolves repository identity, pins catalogue
 content to a revision and accepts only constrained public-GitHub redirects.
@@ -762,7 +805,11 @@ not reported rolled back. Its completion reconciles disabled live inventory even
 if the repository view has closed. Selected files/settings/legacy executables are
 never replaced in place by this first-install path.
 
-Outstanding consumers still require 32 registrations/four snapshots per source/
-16 MiB metadata cache, identity-generation invalidation for update/uninstall,
+Install jobs have identity/operation-generation-bound coalesced progress and retain
+their per-identity slot until the worker actually stops, including cancellation.
+Application-wide completion dispatch targets the current live window's host, not
+a retiring host captured by an old view. It cannot implicitly start the new plugin.
+This is groundwork, not complete update/uninstall invalidation: those operations,
 retention of selected/running plus one previous verified generation and lease-aware
-recovery/cleanup. These limits are engineering constants, not user-facing options.
+recovery/cleanup still require their actual consumers and tests. Limits are
+engineering constants, not user-facing options.

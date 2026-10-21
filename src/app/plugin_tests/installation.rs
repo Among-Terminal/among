@@ -4,6 +4,360 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
+#[ignore = "requires an isolated display and actual Rust HTTPS installation worker"]
+fn active_installer_completion_targets_replacement_window_not_the_retiring_host() {
+    use crate::plugin::install::source::tests::package_route;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let app = application("com.github.among-terminal.installer-window-replacement-test");
+    let first = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(
+        || first.state.borrow().session_ready,
+        Duration::from_secs(5),
+    );
+    let observer = installation_observer(&first);
+    let root = crate::plugin::inventory::root().unwrap();
+    let (metadata, archive) = crate::plugin::install::test_package("sample");
+    let release = Arc::new(AtomicBool::new(false));
+    let server = Server::new({
+        let release = release.clone();
+        move |request| {
+            if request.starts_with("GET /repositories/12/releases/assets/11 ") {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !release.load(Ordering::Acquire) {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            package_route(metadata.clone(), archive.clone(), request)
+        }
+    });
+    let selected = server
+        .inspect(true)
+        .unwrap()
+        .select("sample", "1.0")
+        .unwrap();
+    let job = server.install(selected, root.clone()).unwrap();
+    wait_for(
+        || {
+            server
+                .requests()
+                .iter()
+                .any(|request| request.starts_with("GET /repositories/12/releases/assets/11 "))
+        },
+        Duration::from_secs(5),
+    );
+    first.window.destroy();
+    assert!(first.state.borrow().exiting);
+    let second = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(
+        || second.state.borrow().session_ready,
+        Duration::from_secs(5),
+    );
+    assert!(second.state.borrow().plugins.listing().is_empty());
+    release.store(true, Ordering::Release);
+    let outcome = RefCell::new(None);
+    wait_for(
+        || {
+            let result = job.poll();
+            if result.is_some() {
+                outcome.replace(result);
+                true
+            } else {
+                false
+            }
+        },
+        Duration::from_secs(5),
+    );
+    assert!(outcome.into_inner().unwrap().is_ok());
+    observer();
+    assert!(
+        first.state.borrow().plugins.listing().is_empty(),
+        "a retiring host cannot receive a late installation"
+    );
+    assert_eq!(second.state.borrow().plugins.listing().len(), 1);
+    assert!(!second
+        .state
+        .borrow()
+        .plugins
+        .desired_enabled("github:12/sample"));
+    assert_eq!(second.state.borrow().plugins.supervised_count(), 0);
+    assert_eq!(crate::plugin::inventory::read(&root).unwrap().len(), 1);
+    second.window.destroy();
+    println!("PASS a real pending HTTPS installation survives owned window replacement; its committed outcome reconciles only the current live host, disabled, without registering into the retiring host.");
+}
+
+#[test]
+#[ignore = "requires isolated native windows, xdotool and controlled Rust HTTPS"]
+fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from_installation() {
+    use serde_json::json;
+    use std::sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    };
+    let installed = crate::plugin::inventory::root().unwrap();
+    crate::plugin::inventory::tests::fixture(&installed);
+    let selected = std::fs::read(installed.join("installed.json")).unwrap();
+    let source_root = crate::plugin::install::registry::root().unwrap();
+    let app = application("com.github.among-terminal.source-cache-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    let directory = crate::settings::directory().unwrap();
+    let preferences_before = ["managed-plugins.json", "plugins.json", "shortcuts.json"]
+        .map(|name| std::fs::read(directory.join(name)).ok());
+    let mode = Arc::new(AtomicU8::new(0));
+    let server = Rc::new(Server::new({
+        let mode = mode.clone();
+        move |request| {
+            let path = request.split_whitespace().nth(1).unwrap();
+            let mode = mode.load(Ordering::Acquire);
+            if path == "/repos/example/sample" || path == "/repositories/12" {
+                if mode == 3 {
+                    return Reply::rate_limited();
+                }
+                if mode == 4 {
+                    return Reply::held();
+                }
+                Reply::json(
+                    json!({"id":12,"owner":{"login":if mode==2 {"new-publisher"}else{"example"},"id":if mode==2 {99}else{34}},"name":if mode==0 {"sample"}else{"renamed"},"private":false,"default_branch":"main"}),
+                )
+            } else if path == "/repositories/12/commits/main" {
+                Reply::json(json!({"sha":"a".repeat(40)}))
+            } else if path.ends_with("/among-plugins.json") {
+                Reply::json(crate::plugin::install::test_package("sample").0)
+            } else {
+                panic!("unexpected source fixture path: {path}");
+            }
+        }
+    }));
+    let present = || {
+        crate::prefs::repositories::present_sources_for_test(
+            ctx.window.upcast_ref(),
+            Rc::new({
+                let server = server.clone();
+                move |repository| server.job(repository)
+            }),
+            Rc::new({
+                let server = server.clone();
+                move |id| server.refresh(id)
+            }),
+            Rc::new({
+                let server = server.clone();
+                let installed = installed.clone();
+                move |selection| server.install(selection, installed.clone())
+            }),
+            Rc::new({
+                let state = ctx.state.clone();
+                move || reconcile_managed_installations(&state)
+            }),
+            source_root.clone(),
+        )
+    };
+    present();
+    let view = inspector();
+    focus(&view);
+    let entry = widgets(view.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .unwrap();
+    assert!(entry.grab_focus());
+    xdo(&["type", "--clearmodifiers", "--delay", "0", "example/sample"]);
+    press(&button(&view, "Inspect"));
+    wait_for(
+        || has_label(view.upcast_ref(), "Metadata preview ready"),
+        Duration::from_secs(5),
+    );
+    assert!(
+        !source_root.join("sources.json").exists(),
+        "opening/editing/inspection must not register a source"
+    );
+    press(&button(&view, "Add source"));
+    wait_for(
+        || has_label(view.upcast_ref(), "Source change saved"),
+        Duration::from_secs(5),
+    );
+    assert_eq!(server.requests().len(), 3);
+    let source = || {
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(source_root.join("sources.json")).unwrap(),
+        )
+        .unwrap()
+    };
+    let initial = source();
+    assert_eq!(initial["registrations"][0]["origin"]["repository_id"], 12);
+    assert_eq!(initial["registrations"][0]["origin"]["publisher_id"], 34);
+    assert!(
+        initial["registrations"][0]["snapshots"][0]["retrieved_at"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    screenshot(&view, "source-registered");
+    view.destroy();
+    present();
+    let view = inspector();
+    focus(&view);
+    wait_for(
+        || has_label(view.upcast_ref(), "Cached source registrations loaded"),
+        Duration::from_secs(5),
+    );
+    press(&button(&view, "Cached"));
+    wait_for(
+        || has_label(view.upcast_ref(), "Cached metadata; not an online check"),
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        server.requests().len(),
+        3,
+        "cache reopen must make no network request"
+    );
+    let mut stale = source();
+    stale["registrations"][0]["snapshots"][0]["retrieved_at"] =
+        json!(crate::plugin::install::registry::now().unwrap() - 24 * 60 * 60);
+    std::fs::write(source_root.join("sources.json"), stale.to_string()).unwrap();
+    view.destroy();
+    present();
+    let view = inspector();
+    focus(&view);
+    wait_for(
+        || has_label(view.upcast_ref(), "Cached source registrations loaded"),
+        Duration::from_secs(5),
+    );
+    press(&button(&view, "Cached"));
+    wait_for(
+        || {
+            has_label(
+                view.upcast_ref(),
+                "Cached metadata is stale or its clock is uncertain",
+            )
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        server.requests().len(),
+        3,
+        "stale cached inspection is still offline and does not imply a successful refresh"
+    );
+    screenshot(&view, "source-stale-offline");
+    mode.store(1, Ordering::Release);
+    press(&button(&view, "Refresh"));
+    wait_for(
+        || {
+            source()["registrations"][0]["origin"]["repository"] == "renamed"
+                && has_label(view.upcast_ref(), "Source change saved")
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        source()["registrations"][0]["origin"]["repository"],
+        "renamed"
+    );
+    assert_eq!(
+        source()["registrations"][0]["token"],
+        initial["registrations"][0]["token"]
+    );
+    assert!(
+        server.requests()[3].starts_with("GET /repositories/12 "),
+        "refresh must target the registered numeric ID, not a reused repository name"
+    );
+    let renamed = std::fs::read(source_root.join("sources.json")).unwrap();
+    mode.store(2, Ordering::Release);
+    press(&button(&view, "Refresh"));
+    wait_for(
+        || has_label(view.upcast_ref(), "Source approval was not changed"),
+        Duration::from_secs(5),
+    );
+    screenshot(&view, "source-transfer-review");
+    assert_eq!(
+        std::fs::read(source_root.join("sources.json")).unwrap(),
+        renamed,
+        "publisher transfer is not implicitly approved by refresh"
+    );
+    press(&button(&view, "Approve publisher change"));
+    wait_for(
+        || {
+            source()["registrations"][0]["origin"]["publisher_id"] == 99
+                && has_label(view.upcast_ref(), "Source change saved")
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(source()["registrations"][0]["origin"]["publisher_id"], 99);
+    assert_ne!(
+        source()["registrations"][0]["token"],
+        initial["registrations"][0]["token"]
+    );
+    let transferred = std::fs::read(source_root.join("sources.json")).unwrap();
+    mode.store(3, Ordering::Release);
+    press(&button(&view, "Refresh"));
+    wait_for(
+        || {
+            has_label(
+                view.upcast_ref(),
+                "Refresh failed; retained metadata remains available offline",
+            )
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        std::fs::read(source_root.join("sources.json")).unwrap(),
+        transferred
+    );
+    press(&button(&view, "Cached"));
+    wait_for(
+        || has_label(view.upcast_ref(), "Cached metadata; not an online check"),
+        Duration::from_secs(5),
+    );
+    mode.store(4, Ordering::Release);
+    let before = server.requests().len();
+    press(&button(&view, "Refresh"));
+    wait_for(|| server.requests().len() > before, Duration::from_secs(5));
+    assert!(!button(&view, "Cached").is_sensitive());
+    assert!(!button(&view, "Refresh").is_sensitive());
+    assert!(!button(&view, "Remove source").is_sensitive());
+    screenshot(&view, "source-refresh-cancellable");
+    press(&button(&view, "Cancel source request"));
+    wait_for(
+        || {
+            has_label(
+                view.upcast_ref(),
+                "Refresh failed; retained metadata remains available offline",
+            )
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        std::fs::read(source_root.join("sources.json")).unwrap(),
+        transferred
+    );
+    press(&button(&view, "Remove source"));
+    wait_for(
+        || {
+            source()["registrations"].as_array().unwrap().is_empty()
+                && has_label(view.upcast_ref(), "Source change saved")
+        },
+        Duration::from_secs(5),
+    );
+    assert!(source()["registrations"].as_array().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read(installed.join("installed.json")).unwrap(),
+        selected
+    );
+    assert_eq!(
+        ["managed-plugins.json", "plugins.json", "shortcuts.json"]
+            .map(|name| std::fs::read(directory.join(name)).ok()),
+        preferences_before
+    );
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
+    assert!(!installed.join("executed").exists());
+    screenshot(&view, "source-removed-installed-preserved");
+    view.destroy();
+    ctx.window.destroy();
+    println!("PASS actual source Add, fresh-view offline cache, numeric Refresh/rename, explicit transferred publisher approval, actual rate-limit/cancellation and Remove without changing selected installation, enablement or settings. Native modality unchanged; simultaneous terminal input remains open.");
+}
+
+#[test]
 #[ignore = "requires an isolated display, xdotool, ImageMagick and real Rust HTTPS fixtures"]
 fn selected_ready_built_package_commits_disabled_into_the_live_native_manager() {
     native_install(false);
@@ -545,7 +899,7 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
             &output.buffer().end_iter(),
             false
         )
-        .contains("example/sample (repository 12)"));
+        .contains("example/sample (repository 12, publisher 34)"));
     assert_eq!(requests.get(), 2);
     assert_eq!(ready.requests().len(), 3);
     screenshot(&view, "repository-result");
@@ -738,7 +1092,7 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
         },
         Duration::from_secs(6),
     );
-    assert!(text().contains("example/sample (repository 12)"));
+    assert!(text().contains("example/sample (repository 12, publisher 34)"));
     assert!(text().contains("inspection does not install or enable plugins"));
     assert_eq!(ready.requests().len(), 3);
     assert!(ready.requests()[2].starts_with(&format!(
