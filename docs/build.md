@@ -11,6 +11,11 @@ behavior; Wayland, Snap and Flatpak runtime acceptance remains unexecuted.
 sudo apt install libgtk-4-dev libvte-2.91-gtk4-dev libadwaita-1-dev
 ```
 
+The selectable-audio adapter additionally needs the runtime media/codec route:
+`libgtk-4-media-gstreamer` and `gstreamer1.0-plugins-good` on Debian/Ubuntu.
+GTK's optional recommendations are not sufficient on a no-recommends host.
+See [audio ownership and testing boundaries](audio.md).
+
 Verify:
 
 ```sh

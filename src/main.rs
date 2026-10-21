@@ -31,6 +31,15 @@ fn main() -> glib::ExitCode {
     if let Err(error) = packaged::initialize()
         .and_then(|()| initialize_packaged_schemas())
         .and_then(|()| initialize_packaged_images())
+        .and_then(|()| {
+            if let Some(root) = packaged::root() {
+                // Startup only: no application workers or host processes exist
+                // yet; the adapter restores all temporary discovery overrides.
+                unsafe { among::audio::runtime::initialize_packaged(root) }
+            } else {
+                Ok(())
+            }
+        })
     {
         eprintln!("among: {error}");
         return glib::ExitCode::FAILURE;
