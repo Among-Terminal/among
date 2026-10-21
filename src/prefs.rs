@@ -445,17 +445,30 @@ mod tests {
         let observed = state.clone();
         let enabled = state.clone();
         let disabled = state.clone();
+        let desired = Rc::new(std::cell::Cell::new(true));
         let page = plugins_page(&PreferencesContext {
             on_closed: Rc::new(|| {}),
             storage_status: gtk::StringList::new(&[]),
             bindings: Rc::new(RefCell::new(Bindings::defaults())),
             plugin_listing: Rc::new(move || vec![("clock".into(), observed.borrow().clone())]),
-            plugin_enabled: Rc::new(|_| true),
+            plugin_enabled: Rc::new({
+                let desired = desired.clone();
+                move |_| desired.get()
+            }),
             plugin_details: Rc::new(|_| None),
             save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
             plugin_configuration: Rc::new(|_| Configuration::NotApplied),
-            enable_plugin: Rc::new(move |_, _| *enabled.borrow_mut() = PluginState::Running),
-            disable_plugin: Rc::new(move |_| *disabled.borrow_mut() = PluginState::Disabled),
+            enable_plugin: Rc::new({
+                let desired = desired.clone();
+                move |_, _| {
+                    desired.set(true);
+                    *enabled.borrow_mut() = PluginState::Running;
+                }
+            }),
+            disable_plugin: Rc::new(move |_| {
+                desired.set(false);
+                *disabled.borrow_mut() = PluginState::Disabled;
+            }),
             bindings_changed: Rc::new(|| {}),
         });
         fn find<T: IsA<gtk::Widget> + gtk::glib::object::IsClass>(

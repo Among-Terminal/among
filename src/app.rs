@@ -5384,6 +5384,7 @@ mod tests {
         pump();
 
         let toggled = Rc::new(std::cell::Cell::new(0));
+        let desired = Rc::new(std::cell::Cell::new(true));
         prefs::present(
             &window,
             prefs::PreferencesContext {
@@ -5396,14 +5397,24 @@ mod tests {
                         crate::plugin::host::PluginState::Running,
                     )]
                 }),
-                plugin_enabled: Rc::new(|_| true),
+                plugin_enabled: Rc::new({
+                    let desired = desired.clone();
+                    move |_| desired.get()
+                }),
                 plugin_details: Rc::new(|_| None),
                 save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
                 plugin_configuration: Rc::new(|_| crate::plugin::host::Configuration::NotApplied),
-                enable_plugin: Rc::new(|_, _| {}),
+                enable_plugin: Rc::new({
+                    let desired = desired.clone();
+                    move |_, _| desired.set(true)
+                }),
                 disable_plugin: Rc::new({
                     let toggled = toggled.clone();
-                    move |_| toggled.set(toggled.get() + 1)
+                    let desired = desired.clone();
+                    move |_| {
+                        desired.set(false);
+                        toggled.set(toggled.get() + 1);
+                    }
                 }),
                 bindings_changed: Rc::new(|| {}),
             },
