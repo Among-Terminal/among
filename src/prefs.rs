@@ -388,6 +388,71 @@ mod tests {
         assert!(row.subtitle().is_some_and(|text| text.contains("Disabled")));
         switch.set_active(true);
         assert!(row.subtitle().is_some_and(|text| text.contains("Running")));
+        // force inventory refresh throughout a real keyboard animation. an
+        // unchanged set_active(true) used to cancel Space before notify fired.
+        gtk::Settings::default()
+            .unwrap()
+            .set_gtk_enable_animations(true);
+        let window = gtk::Window::builder()
+            .title("Among plugin refresh regression")
+            .child(&page)
+            .build();
+        window.present();
+        let pump_until = |condition: &dyn Fn() -> bool| {
+            let limit = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !condition() {
+                assert!(std::time::Instant::now() < limit);
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        pump_until(&|| switch.is_mapped());
+        let xdo = |args: &[&str]| {
+            let output = std::process::Command::new("xdotool")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let ids = xdo(&[
+            "search",
+            "--onlyvisible",
+            "--pid",
+            &std::process::id().to_string(),
+            "--name",
+            "^Among plugin refresh regression$",
+        ]);
+        let id = ids.lines().last().unwrap();
+        xdo(&["windowactivate", "--sync", id]);
+        xdo(&["windowfocus", "--sync", id]);
+        assert!(switch.grab_focus());
+        pump_until(&|| switch.has_focus());
+        xdo(&["key", "--clearmodifiers", "space"]);
+        let search = find::<gtk::SearchEntry>(page.upcast_ref()).unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(400);
+        while std::time::Instant::now() < until {
+            while glib::MainContext::default().pending() {
+                glib::MainContext::default().iteration(false);
+            }
+            search.emit_by_name::<()>("search-changed", &[]);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !switch.is_active(),
+            "refresh must not cancel a real pending keyboard toggle"
+        );
+        assert!(row.subtitle().is_some_and(|text| text.contains("Disabled")));
+        println!("PASS real Space completes despite overlapping inventory refreshes during GTK animation");
+        window.set_child(None::<&gtk::Widget>);
+        window.destroy();
+        drop(window);
+        drop(search);
+        switch.set_active(true);
         *state.borrow_mut() = PluginState::Faulted {
             reason: "fixture fault".into(),
         };
