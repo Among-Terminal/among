@@ -44,6 +44,9 @@ parts:
       - shared-mime-info
     stage-packages:
       - libgtk-4-1
+      - libgtk-4-media-gstreamer
+      - gstreamer1.0-plugins-base
+      - gstreamer1.0-plugins-good
       - libadwaita-1-0
       - libvte-2.91-gtk4-0
       - adwaita-icon-theme

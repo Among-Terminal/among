@@ -5,6 +5,7 @@ pub mod appimage_sources;
 pub mod appimage_tools;
 pub mod apt_collect;
 pub mod apt_provenance;
+pub mod audio_payload;
 pub mod binary_archive;
 pub mod deb;
 pub mod deb822;

@@ -107,7 +107,7 @@ the DEB of the same build depends on; on Debian 13 and Ubuntu 24.04 this
 installs them:
 
 ```sh
-sudo apt-get install --no-install-recommends libgtk-4-1 libadwaita-1-0 libvte-2.91-gtk4-0 librsvg2-common
+sudo apt-get install --no-install-recommends libgtk-4-1 libadwaita-1-0 libvte-2.91-gtk4-0 librsvg2-common libgtk-4-media-gstreamer gstreamer1.0-plugins-good
 ```
 
 Extract into a new directory and start Among:

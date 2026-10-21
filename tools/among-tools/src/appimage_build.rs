@@ -101,6 +101,7 @@ fn is_elf(path: &Path) -> Result<bool> {
 /// symlinks, and the pixbuf loader cache must name the SVG loader: without it
 /// GTK draws missing-icon placeholders instead of the symbolic header icons.
 pub fn require_runtime_data(appdir: &Path) -> Result<()> {
+    crate::audio_payload::require(&appdir.join("usr/lib"))?;
     for relative in RUNTIME_DATA {
         let path = storage::safe_path(appdir, Path::new(relative))?;
         if !path
@@ -162,14 +163,13 @@ pub fn restore_launcher(appdir: &Path, launcher_sha256: &str) -> Result<()> {
     Ok(())
 }
 
-/// The GTK plugin also copies GTK print backends and GObject introspection
-/// typelibs. Only the plugin's hook (removed above) would point GTK and
-/// GObject at them, so the bundled GTK never loads them; the print backends
-/// cannot even resolve `libgtk-4.so.1` from their directory, which the
-/// clean-host linkage check reported on every host. Shipping them would add
-/// unreachable code whose licences and sources still had to be delivered.
+/// Printing/typelibs remain unused, but media is deliberately discovered by
+/// the application's private audio initialization. Never remove its whole tree.
 pub fn remove_unreachable_modules(appdir: &Path) -> Result<()> {
-    for relative in ["usr/lib/gtk-4.0", "usr/lib/girepository-1.0"] {
+    for relative in [
+        "usr/lib/gtk-4.0/4.0.0/printbackends",
+        "usr/lib/girepository-1.0",
+    ] {
         let path = storage::safe_path(appdir, Path::new(relative))?;
         match path.symlink_metadata() {
             Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&path)?,
@@ -313,6 +313,9 @@ fn dpkg_owner(
     for candidate in [
         format!("/usr/lib/{triplet}/{relative}"),
         format!("/lib/{triplet}/{relative}"),
+        // linuxdeploy flattens this private DT_NEEDED dependency. Its original
+        // package path, not a fabricated owner, attributes the copied library.
+        format!("/usr/lib/{triplet}/pulseaudio/{relative}"),
     ] {
         if Path::new(&candidate).symlink_metadata().is_err() {
             continue;
@@ -631,7 +634,7 @@ pub fn build(
     deploy.insert("APPIMAGE_EXTRACT_AND_RUN".into(), "1".into());
     deploy.insert("DEPLOY_GTK_VERSION".into(), "4".into());
     let appdir_text = appdir.to_str().ok_or("AppDir path is not UTF-8")?;
-    let deployment = commands.run(
+    let mut deployment = commands.run(
         "linuxdeploy",
         &helpers.join("linuxdeploy.AppImage"),
         &["--appdir", appdir_text, "--plugin", "gtk"],
@@ -642,6 +645,26 @@ pub fn build(
     restore_launcher(&appdir, &launcher_sha256)?;
     crate::appimage::verify_raster_icons(&appdir)?;
     remove_unreachable_modules(&appdir)?;
+    let audio = crate::audio_payload::stage(
+        Path::new(&format!("/usr/lib/{triplet}")),
+        &appdir.join("usr/lib"),
+    )?;
+    let mut arguments = vec!["--appdir".to_string(), appdir_text.to_string()];
+    for member in audio {
+        arguments.push(format!(
+            "--deploy-deps-only={}",
+            member.to_str().ok_or("audio member path is not UTF-8")?
+        ));
+    }
+    deployment.push_str(&commands.run(
+        "linuxdeploy-audio-dependencies",
+        &helpers.join("linuxdeploy.AppImage"),
+        &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
+        &deploy,
+        &base,
+        1800,
+    )?);
+    restore_launcher(&appdir, &launcher_sha256)?;
     require_runtime_data(&appdir)?;
     let libraries = bundled_libraries(&appdir)?;
     let audit_env = system.clone();
