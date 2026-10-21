@@ -327,6 +327,10 @@ impl Artifact {
         let mut expanded = 0u64;
         for member in &self.members {
             if !data::relative_path(&member.path)
+                || member
+                    .path
+                    .split('/')
+                    .any(|component| component.starts_with(".among-"))
                 || !hex(&member.sha256, 64)
                 || !paths.insert(member.path.as_str())
                 || member.size > MAX_PACKAGE_BYTES

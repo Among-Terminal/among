@@ -24,6 +24,11 @@ type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
 type ConfigurationQuery = dyn Fn(&str) -> Configuration;
 type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
 type RestartPlugin = dyn Fn(&str, &str, Option<gtk::Window>);
+type PackageAction = dyn Fn(
+    crate::plugin::inventory::Receipt,
+    crate::plugin::install::mutation::Action,
+    Option<gtk::Window>,
+);
 type SavePluginSettings = dyn Fn(
     &str,
     &str,
@@ -47,6 +52,7 @@ pub struct PreferencesContext {
     pub enable_plugin: Rc<EnablePlugin>,
     pub disable_plugin: Rc<dyn Fn(&str)>,
     pub installations_changed: Rc<dyn Fn()>,
+    pub package_action: Rc<PackageAction>,
     /// Rebuilds the window's shortcut controller after a rebind.
     pub bindings_changed: Rc<dyn Fn()>,
 }
@@ -340,6 +346,7 @@ mod tests {
         let disabled = state.clone();
         let desired = Rc::new(std::cell::Cell::new(true));
         let page = plugins_page(&PreferencesContext {
+            package_action: Rc::new(|_, _, _| {}),
             installations_changed: Rc::new(|| {}),
             on_closed: Rc::new(|| {}),
             storage_status: gtk::StringList::new(&[]),

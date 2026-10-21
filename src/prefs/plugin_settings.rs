@@ -14,9 +14,10 @@ pub(super) fn add_actions(
     save: Rc<SavePluginSettings>,
     load: Rc<PluginDetailsQuery>,
     status: Rc<ConfigurationQuery>,
-    restart: Rc<RestartPlugin>,
+    operations: (Rc<RestartPlugin>, Rc<PackageAction>),
     inventory: Rc<dyn Fn() -> Vec<crate::plugin::host::Overview>>,
 ) {
+    let (restart, package_action) = operations;
     let details = gtk::Button::with_label("Details…");
     details.add_css_class("flat");
     details.set_tooltip_text(Some("Plugin details"));
@@ -63,6 +64,7 @@ pub(super) fn add_actions(
         if let Some(info) = info {
             detail_row(&summary, "Description", &info.description);
             detail_row(&summary, "Runtime state", &describe_state(&info.state));
+            if let Some(version)=&info.running_version {detail_row(&summary,"Running package version",version);}
             detail_row(&summary, "API compatibility", &info.declared);
             detail_row(
                 &summary,
@@ -148,6 +150,18 @@ pub(super) fn add_actions(
         page.add(&source);
         page.add(&package);
         window.add(&page);
+        let actions=adw::PreferencesGroup::new();actions.set_title("Package actions");
+        for (label,action,available) in [("Recover previous…",crate::plugin::install::mutation::Action::RestorePrevious,current.previous.is_some()),("Uninstall…",crate::plugin::install::mutation::Action::Uninstall,true)] {
+            if !available{continue;}
+            let row=adw::ActionRow::builder().title(label).build();
+            let button=gtk::Button::with_label(label);button.set_valign(gtk::Align::Center);
+            button.update_property(&[gtk::accessible::Property::Label(&format!("{label} {}",current.key()))]);
+            button.connect_clicked({let package_action=package_action.clone();let receipt=current.receipt.clone();move |button| {
+                package_action(receipt.clone(),action,button.root().and_then(|root|root.downcast::<gtk::Window>().ok()));
+            }});
+            row.add_suffix(&button);row.set_activatable_widget(Some(&button));actions.add(&row);
+        }
+        page.add(&actions);
         window.present();
     });
     row.add_suffix(&details);

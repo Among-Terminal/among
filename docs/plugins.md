@@ -168,8 +168,9 @@ Plugin sources section opens repository inspection with a separate explicit
 Install disabled action for each compatible version; the search field filters
 only installed/configured plugins. Merely inspecting metadata never installs or
 enables code. Registered sources have explicit Cached, Refresh and Remove source
-actions; source removal does not uninstall anything. Updates and uninstall remain
-unfinished.
+actions; source removal does not uninstall anything. Existing identities have a
+separate Apply update action. Managed Details exposes explicit recovery/removal;
+these do not modify legacy executables.
 
 ### Updating an installed example
 
@@ -699,10 +700,13 @@ GitHub URL, then use the adjacent Inspect button or press Enter. Loading exposes
 a Cancel request action; empty/error/cancelled states do not show a blank result
 panel. Editing the address hides the previous preview without sending a request.
 After inspecting a catalogue, each compatible version has an explicit **Install
-disabled** action. Only the selected identity is installed, with no executable
-admission or automatic enablement. An existing selected identity is refused rather
-than overwritten: updates, uninstall and generation cleanup/recovery are still
-unfinished. This is not full installer acceptance.
+disabled** action for new identities, or **Apply update…** for a currently installed
+identity. Ordinary installation still refuses replacement. Updates have separate
+confirmation disclosing the exact version, access and target-only restart. Source
+inspection alone cannot install, update, enable or grant execution access. This is
+not full installer acceptance: integrated notification providers, separate settings
+deletion, independent security review, supported-platform observations and CI gates
+remain separate from the local managed-process workflows.
 
 **Add source** explicitly saves the inspected numeric repository/publisher identity
 and validated snapshot. Inspection or address edits alone never register it.
@@ -771,13 +775,13 @@ Platform selection never guesses from filenames or falls back to another CPU.
 An installed runtime file does not prove its minimum version: an unmeasured
 minimum is reported unavailable instead of executing a probe.
 
-The first-install consumer requests the exact numeric repository/release, checks
+The install/update consumer requests the exact numeric repository/release, checks
 selected asset membership/size and any supplied GitHub digest, then streams that
 exact numeric asset. It never refetches mutable latest. Signed CDN redirects must
 use GitHub's release-asset hosts and the selected numeric repository path. Tokens
 are not logged or stored in receipts. Size and SHA-256 must match selected metadata.
 The same connect/idle/operation deadlines and two worker credits cover inspection
-and installation; overflow is refused, not put in an unbounded pending queue.
+and package mutations/recovery; overflow is refused, not put in an unbounded queue.
 
 Extraction uses fresh owned descriptor-relative staging. Regular files must match
 the declared size, executable mode and digest. Links, special/extended headers,
@@ -791,25 +795,60 @@ The store bounds selection to 128 identities/256 KiB, package/staging bytes to
 2 GiB total/512 MiB staging, directory depth to 24, per-directory entries to 131,072
 and a measured traversal to 1,048,576 entries. Normal staging cleanup is bounded
 to 65,536 entries/five seconds; unsafe entries leave a diagnostic/deferred staging
-directory, never a followed link. A nonblocking advisory store lock serializes
-cooperating first-install writers. It does not protect against arbitrary same-user
+directory, never a followed link. Advisory serialization has cancellable off-loop
+waiting bounded to five seconds. It serializes cooperating package writers,
+including updates/removal and recovery. It does not protect against arbitrary same-user
 filesystem modification and is not an OS sandbox.
 
 Complete flushed payloads move to fresh generations with no-replace rename before
 an atomic `installed.json` selection rename. Pre-selection failure leaves at most
 an inert unselected generation; it does not report Installed. A changed selection
-snapshot is refused rather than overwriting an observed external edit. Final
+snapshot/root or published-generation inode is refused rather than overwriting an
+observed external edit or selecting a hidden generation. Final
 directory-confirmation failure reports written-but-uncertain, not durable success.
 Cancellation is accepted only before commitment starts; a committed operation is
 not reported rolled back. Its completion reconciles disabled live inventory even
 if the repository view has closed. Selected files/settings/legacy executables are
-never replaced in place by this first-install path.
+never replaced in place by package installation/update.
 
 Install jobs have identity/operation-generation-bound coalesced progress and retain
 their per-identity slot until the worker actually stops, including cancellation.
 Application-wide completion dispatch targets the current live window's host, not
 a retiring host captured by an old view. It cannot implicitly start the new plugin.
-This is groundwork, not complete update/uninstall invalidation: those operations,
-retention of selected/running plus one previous verified generation and lease-aware
-recovery/cleanup still require their actual consumers and tests. Limits are
-engineering constants, not user-facing options.
+An update preserves the installation token, rereads the exact expected receipt
+under store authority and retains the previous verified receipt/generation in the
+same selection document. Live reconciliation uses the host's current desired
+choice, never the download's earlier snapshot: a later accepted disable wins.
+Selected and actually running package versions are observed separately while the
+old supervisor stops. Numeric publisher/access changes and incompatible local
+settings can refuse activation; no downloaded migration code runs. Details →
+**Recover previous…** explicitly reselects the retained verified generation with
+normal access/settings/API admission, without claiming rollback of external effects.
+
+Details → **Uninstall…** is separate from source deregistration. Confirmation
+invalidates the identity's pending package worker, blocks stale enable/restart
+controls, withdraws contributions and stops its supervised process. Removal waits
+up to five seconds for actual stop acknowledgement, then commits absence and a new
+store revision. Only that committed result removes the Installed entry. Failed
+stop/commit remains partial, and uncertain directory durability is not ordinary
+success. A reinstall uses a new token and stays disabled despite retained enabled
+preferences. Unknown/local values and grants remain stored; separately consented
+settings deletion is not yet implemented.
+
+New generations contain reserved `.among-receipt.json` and `.among-lease` files;
+packages cannot declare `.among-*` members. The receipt seal must agree with the
+selected record. Inventory snapshots/resources hold shared advisory leases, and
+the actual supervisor command retains its lease through kill/reap even after host
+teardown. Cleanup needs an exclusive lease and never removes selected/previous
+generations. Only owned sealed unreferenced generations and the reserved owned
+staging/selection-temporary namespaces are recovered. Unsealed legacy directories,
+unrelated files, external executables and local settings are not garbage-collected.
+Unsafe entries defer cleanup rather than following links.
+
+Startup schedules bounded recovery off the GUI thread, and later package operations
+retry it under the same store lock. Recovery reads complete selection records; an
+orphan is never inferred installed. It caps generation enumeration at 4,096 and
+uses the existing bounded tree cleanup. A per-operation 256-KiB reservation covers
+the added receipt/lease overhead in admission quotas. Limits are engineering
+constants, not user-facing options. The full update/uninstall/lease task marks still
+require their adversarial and combined-application coverage, not just these paths.

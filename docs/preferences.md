@@ -79,8 +79,12 @@ selected identities are refused rather than overwritten. Add source explicitly
 saves discovery metadata; Cached reports its retrieval time/offline/stale state,
 Refresh resolves the numeric registered repository, and Remove source affects
 discovery only. Publisher transfer requires explicit renewed source approval and
-cannot grant installed code new runtime access. Updates and uninstall remain
-unfinished.
+cannot grant installed code new runtime access. Existing identities expose
+**Apply update…** with explicit target-only restart consent. Managed Details adds
+**Recover previous…** and **Uninstall…**; the latter waits for supervised stop and
+committed removal, retains local settings and invalidates stale package work.
+Neither action updates or removes legacy executables. Separate settings deletion
+and combined notification-provider acceptance remain unfinished.
 Equal names show separate origins, missing configured files stay inspectable,
 and a desired-on unavailable entry remains switchable off. Details opens a native
 view; Settings appears only for a declared settings schema. The form's Save action

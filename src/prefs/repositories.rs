@@ -8,8 +8,20 @@ use crate::plugin::install::source::{Inspection, InstallJob, Job, Repository, Se
 type Start = dyn Fn(Repository) -> Result<Job, Problem>;
 type Install = dyn Fn(Selection) -> Result<InstallJob, Problem>;
 
-pub(super) fn present(parent: &gtk::Window, changed: Rc<dyn Fn()>) {
-    present_with(parent, Rc::new(Job::start), installer(), changed);
+pub(super) fn present(
+    parent: &gtk::Window,
+    changed: Rc<dyn Fn()>,
+    details: Rc<super::PluginDetailsQuery>,
+) {
+    present_complete(
+        parent,
+        Rc::new(Job::start),
+        installer(),
+        changed,
+        crate::plugin::install::registry::root(),
+        Rc::new(Job::refresh),
+        details,
+    );
 }
 
 #[cfg(test)]
@@ -37,6 +49,7 @@ fn installer() -> Rc<Install> {
     })
 }
 
+#[cfg(test)]
 fn present_with(
     parent: &gtk::Window,
     start: Rc<Start>,
@@ -50,6 +63,7 @@ fn present_with(
         changed,
         crate::plugin::install::registry::root(),
         Rc::new(Job::refresh),
+        Rc::new(|_| None),
     );
 }
 
@@ -62,7 +76,34 @@ pub(crate) fn present_sources_for_test(
     changed: Rc<dyn Fn()>,
     root: std::path::PathBuf,
 ) {
-    present_complete(parent, start, install, changed, Some(root), refresh);
+    present_complete(
+        parent,
+        start,
+        install,
+        changed,
+        Some(root),
+        refresh,
+        Rc::new(|_| None),
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn present_updates_for_test(
+    parent: &gtk::Window,
+    start: Rc<Start>,
+    install: Rc<Install>,
+    changed: Rc<dyn Fn()>,
+    details: Rc<super::PluginDetailsQuery>,
+) {
+    present_complete(
+        parent,
+        start,
+        install,
+        changed,
+        crate::plugin::install::registry::root(),
+        Rc::new(Job::refresh),
+        details,
+    );
 }
 
 fn present_complete(
@@ -72,6 +113,7 @@ fn present_complete(
     changed: Rc<dyn Fn()>,
     source_root: Option<std::path::PathBuf>,
     refresh: Rc<super::repository_sources::Refresh>,
+    details: Rc<super::PluginDetailsQuery>,
 ) {
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
@@ -143,8 +185,8 @@ fn present_complete(
     scroll.add_css_class("card");
     preview.add(&scroll);
     let packages = adw::PreferencesGroup::new();
-    packages.set_title("Install one ready-built version");
-    packages.set_description(Some("Installation only stores verified files. Enable the plugin separately after reviewing its access. Existing identities are not replaced by Install."));
+    packages.set_title("Select one ready-built version");
+    packages.set_description(Some("New installations stay disabled. Applying an update is separate explicit consent to restart only that plugin; publisher/access changes still require runtime review."));
     packages.set_visible(false);
     page.add(&group);
     let package_rows = Rc::new(RefCell::new(Vec::new()));
@@ -178,6 +220,7 @@ fn present_complete(
                 install.clone(),
                 changed.clone(),
                 &window,
+                details.clone(),
             );
             packages.set_visible(true);
         }
@@ -390,6 +433,7 @@ fn installation_rows(
     install: Rc<Install>,
     changed: Rc<dyn Fn()>,
     window: &adw::PreferencesWindow,
+    details: Rc<super::PluginDetailsQuery>,
 ) -> Vec<adw::ActionRow> {
     let mut rows = Vec::new();
     for plugin in &inspection.catalogue.plugins {
@@ -415,61 +459,42 @@ fn installation_rows(
                     button.set_sensitive(false);
                 }
                 Ok(selection) => {
+                    let expected = details(&selection.identity()).map(|(entry, _)| entry.receipt);
+                    if expected.is_some() {
+                        button.set_label("Apply update…");
+                        button.update_property(&[gtk::accessible::Property::Label(&format!(
+                            "Apply {} version {} update",
+                            plugin.id, version.manifest.version
+                        ))]);
+                    }
                     row.set_subtitle(&escape_display(&selection.description()));
                     let install = install.clone();
                     let changed = changed.clone();
                     let row = row.downgrade();
                     let window = window.downgrade();
+                    let details = details.clone();
                     button.connect_clicked(move |button| {
                         let Some(row) = row.upgrade() else { return; };
-                        match install(selection.clone()) {
-                            Err(problem) => row.set_subtitle(problem.0),
-                            Ok(job) => {
-                                button.set_sensitive(false);
-                                row.set_subtitle(job.phase());
-                                let (identity,generation)=job.operation();
-                                row.set_tooltip_text(Some(&format!("Identity: {identity}\nOperation generation: {generation}")));
-                                let cancel = gtk::Button::with_label("Cancel install");
-                                cancel.set_valign(gtk::Align::Center);
-                                row.add_suffix(&cancel);
-                                cancel.grab_focus();
-                                let job = Rc::new(job);
-                                cancel.connect_clicked({ let job = job.clone(); move |button| { button.set_sensitive(false); job.cancel(); } });
-                                let mut destroy_handler = window.upgrade().map(|window| {
-                                    let handler = window.connect_destroy({ let job = job.clone(); move |_| { job.cancel(); } });
-                                    (window.downgrade(), handler)
-                                });
-                                let changed = changed.clone();
-                                let row = row.downgrade();
-                                let button = button.downgrade();
-                                let cancel = cancel.downgrade();
-                                // do not tie authoritative reconciliation to a surviving view:
-                                // a committed selection still reaches the host after close.
-                                glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-                                    if let Some(outcome) = job.poll() {
-                                        if let Some((window, handler)) = destroy_handler.take() {
-                                            if let Some(window) = window.upgrade() { window.disconnect(handler); }
-                                        }
-                                        let committed = outcome.is_ok();
-                                        if outcome.is_ok() { changed(); }
-                                        if let Some(row) = row.upgrade() {
-                                            if let Some(cancel) = cancel.upgrade() { row.remove(&cancel); }
-                                            row.set_subtitle(&match outcome {
-                                                Ok(commit) => match commit.durability {
-                                                    crate::settings::Durability::Durable => format!("Installed github:{}/{} disabled. Enable separately in Your plugins.", commit.receipt.repository_id, commit.receipt.plugin_id),
-                                                    _ => "Selection written; durability uncertain. Disabled; inspect the installed inventory before retrying.".into(),
-                                                },
-                                                Err(problem) => problem.to_string(),
-                                            });
-                                        }
-                                        if let Some(button) = button.upgrade() { button.set_sensitive(!committed); }
-                                        return glib::ControlFlow::Break;
+                        if let Some(expected)=&expected {
+                            let Some((entry,stored))=details(&selection.identity()).filter(|(entry,_)|&entry.receipt==expected) else {row.set_subtitle("Installed generation changed; reopen current metadata before applying an update.");return;};
+                            let selection=match selection.clone().for_update(&entry,stored.as_ref()){Ok(selection)=>selection,Err(problem)=>{row.set_subtitle(problem.0);return;}};
+                            let Some(parent)=window.upgrade() else {return;};
+                            let dialog=adw::AlertDialog::builder().heading("Apply this plugin update?").body(selection.review_description()).build();
+                            dialog.add_response("cancel","Cancel");dialog.add_response("apply","Apply update");dialog.set_default_response(Some("cancel"));dialog.set_close_response("cancel");
+                            dialog.connect_response(None,{
+                                let button=button.downgrade();let row=row.downgrade();let install=install.clone();let changed=changed.clone();let window=window.clone();let details=details.clone();let expected=expected.clone();let selection=selection.clone();
+                                move |_,response| {
+                                    if response!="apply" {return;}
+                                    let (Some(button),Some(row),Some(parent))=(button.upgrade(),row.upgrade(),window.upgrade().filter(|window|window.is_visible())) else {return;};
+                                    let Some((entry,stored))=details(&selection.identity()).filter(|(entry,_)|entry.receipt==expected) else {row.set_subtitle("Update confirmation is stale; installed generation changed.");return;};
+                                    match selection.clone().for_update(&entry,stored.as_ref()) {
+                                        Ok(selection)=>run_install(&button,&row,selection,install.clone(),changed.clone(),&parent),
+                                        Err(problem)=>row.set_subtitle(problem.0),
                                     }
-                                    if let Some(row) = row.upgrade() { row.set_subtitle(job.phase()); }
-                                    glib::ControlFlow::Continue
-                                });
-                            }
-                        }
+                                }
+                            });
+                            dialog.present(Some(&parent));
+                        }else if let Some(parent)=window.upgrade().filter(|window|window.is_visible()){run_install(button,&row,selection.clone(),install.clone(),changed.clone(),&parent);}
                     });
                 }
             }
@@ -478,4 +503,88 @@ fn installation_rows(
         }
     }
     rows
+}
+
+fn run_install(
+    button: &gtk::Button,
+    row: &adw::ActionRow,
+    selection: Selection,
+    install: Rc<Install>,
+    changed: Rc<dyn Fn()>,
+    window: &adw::PreferencesWindow,
+) {
+    let updating = selection.is_update();
+    let window = window.downgrade();
+    match install(selection) {
+        Err(problem) => row.set_subtitle(problem.0),
+        Ok(job) => {
+            button.set_sensitive(false);
+            row.set_subtitle(job.phase());
+            let (identity, generation) = job.operation();
+            row.set_tooltip_text(Some(&format!(
+                "Identity: {identity}\nOperation generation: {generation}"
+            )));
+            let cancel = gtk::Button::with_label("Cancel install");
+            cancel.set_valign(gtk::Align::Center);
+            row.add_suffix(&cancel);
+            cancel.grab_focus();
+            let job = Rc::new(job);
+            cancel.connect_clicked({
+                let job = job.clone();
+                move |button| {
+                    button.set_sensitive(false);
+                    job.cancel();
+                }
+            });
+            let mut destroy_handler = window.upgrade().map(|window| {
+                let handler = window.connect_destroy({
+                    let job = job.clone();
+                    move |_| {
+                        job.cancel();
+                    }
+                });
+                (window.downgrade(), handler)
+            });
+            let changed = changed.clone();
+            let row = row.downgrade();
+            let button = button.downgrade();
+            let cancel = cancel.downgrade();
+            // do not tie authoritative reconciliation to a surviving view:
+            // a committed selection still reaches the host after close.
+            glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                if let Some(outcome) = job.poll() {
+                    if let Some((window, handler)) = destroy_handler.take() {
+                        if let Some(window) = window.upgrade() {
+                            window.disconnect(handler);
+                        }
+                    }
+                    let committed = outcome.is_ok();
+                    if outcome.is_ok() {
+                        changed();
+                    }
+                    if let Some(row) = row.upgrade() {
+                        if let Some(cancel) = cancel.upgrade() {
+                            row.remove(&cancel);
+                        }
+                        row.set_subtitle(&match outcome {
+                                                Ok(commit) => match commit.durability {
+                                                    crate::settings::Durability::Durable if updating => "Update selected; previous verified generation retained. Current enabled choice is preserved; publisher/access and runtime admission can still refuse execution.".into(),
+                                                    crate::settings::Durability::Durable => format!("Installed github:{}/{} disabled. Enable separately in Your plugins.", commit.receipt.repository_id, commit.receipt.plugin_id),
+                                                    _ => "Selection written; durability uncertain. Inspect the installed inventory before retrying.".into(),
+                                                },
+                                                Err(problem) => problem.to_string(),
+                                            });
+                    }
+                    if let Some(button) = button.upgrade() {
+                        button.set_sensitive(!committed);
+                    }
+                    return glib::ControlFlow::Break;
+                }
+                if let Some(row) = row.upgrade() {
+                    row.set_subtitle(job.phase());
+                }
+                glib::ControlFlow::Continue
+            });
+        }
+    }
 }

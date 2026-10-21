@@ -33,7 +33,11 @@ pub enum SendError {
     Fault(&'static str),
 }
 
-pub fn pinned_program(directory: std::fs::File, executable: std::fs::File) -> Command {
+pub fn pinned_program(
+    directory: std::fs::File,
+    executable: std::fs::File,
+    lease: Option<Arc<std::fs::File>>,
+) -> Command {
     let mut program = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()));
     program.current_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()));
     // pin both descriptors through fork/exec. only the child's executable fd
@@ -41,6 +45,9 @@ pub fn pinned_program(directory: std::fs::File, executable: std::fs::File) -> Co
     // changing descriptor flags in pre_exec does not leak it from the host.
     unsafe {
         program.pre_exec(move || {
+            // command lives in the supervisor through reaping, including host
+            // teardown. a detached stopping worker must still retain its lease.
+            let _held = &lease;
             let _keep_package_open = &directory;
             if libc::fcntl(executable.as_raw_fd(), libc::F_SETFD, 0) < 0 {
                 return Err(io::Error::last_os_error());
@@ -560,7 +567,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         let directory = super::super::data::owned_directory(&root).unwrap();
         let executable = super::super::data::contained_file(&directory, "plugin").unwrap();
-        let program = pinned_program(directory, executable);
+        let program = pinned_program(directory, executable, None);
         std::fs::rename(&path, root.join("admitted")).unwrap();
         std::os::unix::fs::symlink("/bin/false", &path).unwrap();
         let process = Process::start(program).unwrap();
