@@ -1244,6 +1244,12 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(4);
         while answered.len() < scopes.len() {
             fixture.host.poll();
+            // mirror the application's invalidated-source consumer: admission
+            // may apply configuration after these first status requests queued.
+            if !fixture.host.drain_invalidated_sources().is_empty() {
+                sent.clear();
+                answered.clear();
+            }
             for result in fixture.host.drain_results() {
                 answered.insert(result.scope);
             }
