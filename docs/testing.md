@@ -64,6 +64,14 @@ PTY bells and OSC terminators, native Preferences/menu focus, hidden terminals,
 Restore, unrelated-window activation and stale source callbacks. It checks
 backend state and real focus, not notification rendering or audio output.
 
+The command integration test `cargo test --locked --test notification_commands`
+compiles its synthetic Rust executable and retains process/stdin/environment
+evidence under `AMONG_COMMAND_TEST_ROOT` (or `target/notification-command-tests`).
+It uses the production ten-second deadline and 32-KiB combined output budget.
+Run it before the ignored native command-input test described in the
+[command backend contract](notification-commands.md), so the isolated display
+can use the cached fixture without needing a compiler in its stripped environment.
+
 See [contributor checks](../CONTRIBUTING.md#checking-changes) for isolated X11 tests.
 
 ## Where checks keep their evidence
