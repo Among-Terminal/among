@@ -324,6 +324,35 @@ impl SlotStore {
         self.summaries.retain(|(index, _), _| *index < live_count);
     }
 
+    // managed content follows stable targets even after it has left the wire.
+    // legacy index-based sources keep their existing adapter semantics.
+    pub fn remap_workspace_source(
+        &mut self,
+        source: &str,
+        previous: &[u64],
+        current: &[u64],
+        active_changed: bool,
+    ) {
+        if previous != current {
+            self.summaries = std::mem::take(&mut self.summaries)
+                .into_iter()
+                .filter_map(|((index, owner), summary)| {
+                    if owner != source {
+                        return Some(((index, owner), summary));
+                    }
+                    let reference = previous.get(index)?;
+                    let index = current.iter().position(|current| current == reference)?;
+                    Some(((index, owner), summary))
+                })
+                .collect();
+        }
+        if active_changed {
+            if let Some(contributions) = self.slots.get_mut(&Scope::WorkspaceHeader) {
+                contributions.retain(|contribution| contribution.source != source);
+            }
+        }
+    }
+
     /// Whether a slot needs collecting from plugins.
     ///
     /// Distinct from [`Self::needs_refresh`]: a slot nobody has contributed to

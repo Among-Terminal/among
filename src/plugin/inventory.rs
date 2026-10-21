@@ -80,6 +80,7 @@ struct Selection {
 pub struct Entry {
     pub receipt: Receipt,
     pub inspected: Result<Inspected, Problem>,
+    store: PathBuf,
 }
 
 impl Entry {
@@ -88,6 +89,37 @@ impl Entry {
             "github:{}/{}",
             self.receipt.repository_id, self.receipt.plugin_id
         )
+    }
+
+    pub fn executable_files(&self) -> Result<(std::fs::File, std::fs::File), Problem> {
+        use std::os::unix::fs::MetadataExt;
+        let inspected = self.inspected.as_ref().map_err(|problem| *problem)?;
+        let root = data::owned_directory(&self.store)?;
+        let directory = data::contained_directory(
+            &root,
+            &format!(
+                "generations/{}/{}/{}",
+                self.receipt.repository_id, self.receipt.plugin_id, self.receipt.generation
+            ),
+        )?;
+        let bytes = data::read_bounded(
+            &data::contained_file(&directory, "among-plugin.json")?,
+            manifest::MAX_MANIFEST_BYTES,
+        )?;
+        if checksum(&bytes)? != self.receipt.manifest_sha256 {
+            return Err(Problem("selected manifest changed before execution"));
+        }
+        let executable = data::contained_file(&directory, &inspected.manifest.entrypoint)?;
+        if executable
+            .metadata()
+            .map_err(|_| Problem("cannot inspect entrypoint"))?
+            .mode()
+            & 0o111
+            == 0
+        {
+            return Err(Problem("plugin entrypoint is not executable"));
+        }
+        Ok((directory, executable))
     }
 }
 
@@ -151,7 +183,11 @@ pub fn read(root: &Path) -> Result<Vec<Entry>, Problem> {
             }
             manifest::inspect(&package, &receipt.package_path(root), identity)
         })();
-        entries.push(Entry { receipt, inspected });
+        entries.push(Entry {
+            receipt,
+            inspected,
+            store: root.into(),
+        });
     }
     Ok(entries)
 }

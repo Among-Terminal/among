@@ -242,6 +242,7 @@ impl Snapshot {
                     last = last.max(pane.0);
                 }
                 Workspace {
+                    reference: saved.focused,
                     name: saved.name.clone(),
                     colour: saved.colour,
                     focused: PaneId(saved.focused),

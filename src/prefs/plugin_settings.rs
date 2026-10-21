@@ -13,6 +13,7 @@ pub(super) fn add_actions(
     entry: Entry,
     save: Rc<SavePluginSettings>,
     load: Rc<PluginDetailsQuery>,
+    status: Rc<ConfigurationQuery>,
 ) {
     let details = gtk::Button::with_label("Details…");
     details.set_valign(gtk::Align::Center);
@@ -21,9 +22,9 @@ pub(super) fn add_actions(
             let manifest = &inspected.manifest;
             let compatibility = manifest
                 .compatibility(
-                    crate::plugin::protocol::PROTOCOL_MAJOR,
-                    crate::plugin::protocol::PROTOCOL_MINOR,
-                    &[],
+                    crate::plugin::managed::MAJOR,
+                    crate::plugin::managed::MINOR,
+                    crate::plugin::managed::FEATURES,
                 )
                 .map_or_else(
                     |problem| problem.to_string(),
@@ -185,7 +186,21 @@ pub(super) fn add_actions(
             editors.push((field.key.clone(), read));
         }
         let result = adw::ActionRow::new();
-        result.set_title("Not applied to a running process");
+        result.set_title("Local changes");
+        let runtime = adw::ActionRow::new();
+        runtime.set_title("Runtime application");
+        runtime.set_subtitle(status(&entry.key()).description());
+        group.add(&runtime);
+        let weak_runtime = runtime.downgrade();
+        let status = status.clone();
+        let status_key = entry.key();
+        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+            let Some(row) = weak_runtime.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            row.set_subtitle(status(&status_key).description());
+            glib::ControlFlow::Continue
+        });
         let commit = gtk::Button::with_label("Save");
         commit.set_sensitive(schema.supported());
         commit.set_valign(gtk::Align::Center);
@@ -210,7 +225,7 @@ pub(super) fn add_actions(
                 save(&key, &generation, &changes)
             });
             result.set_subtitle(&escape_display(match &outcome {
-                Ok(()) => "Saved locally; not applied to a running process",
+                Ok(()) => "Saved locally",
                 Err(problem) => problem,
             }));
         });

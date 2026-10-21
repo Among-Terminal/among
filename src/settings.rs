@@ -139,6 +139,22 @@ impl PreferencesStorage {
         result
     }
 
+    pub fn managed_review_changed(&mut self, key: &str, review: Value) -> Result<(), StorageError> {
+        let result = self.path(Document::ManagedPlugins).and_then(|path| {
+            update(&path, Document::ManagedPlugins, |document| {
+                let entry = &mut document["plugins"][key];
+                if entry.is_null() {
+                    *entry = json!({});
+                }
+                entry["review"] = review.clone();
+                entry["enabled"] = json!(true);
+                Ok(())
+            })
+        });
+        self.record(Document::ManagedPlugins, &result);
+        result
+    }
+
     pub fn sidebar_width_changed(&mut self, width: f64) -> Result<(), StorageError> {
         let result = self.path(Document::Window).and_then(|path| {
             if !width.is_finite() || width <= 0.0 {

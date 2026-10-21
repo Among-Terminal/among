@@ -23,6 +23,9 @@ pub const PALETTE_SIZE: usize = 8;
 /// tree can stay free of widget and process types.
 #[derive(Debug, Clone)]
 pub struct Workspace {
+    /// minted once from the globally unique birth-pane id, never recalculated
+    /// from surviving leaves or list position. session snapshots do not save it.
+    pub reference: u64,
     pub name: String,
     /// Index into the palette; stable for the workspace's lifetime.
     pub colour: usize,
@@ -49,6 +52,7 @@ impl Workspace {
     /// the set of open workspaces knows which colours are already taken.
     pub fn new(name: String, first_pane: PaneId, colour: usize) -> Self {
         Self {
+            reference: first_pane.0,
             name,
             colour: colour % PALETTE_SIZE,
             nodes: Node::single_pane(first_pane),
@@ -359,6 +363,34 @@ mod tests {
     fn a_new_workspace_has_a_colour_from_the_palette() {
         let ws = workspace();
         assert!(ws.colour < PALETTE_SIZE);
+    }
+
+    #[test]
+    fn workspace_references_survive_birth_pane_closure_reorder_and_index_reuse() {
+        let mut set = three();
+        let reference = set.workspaces()[1].reference;
+        let born = set.workspaces()[1].focused;
+        set.get_mut(1)
+            .unwrap()
+            .split_focused(600, 300, PaneId(40))
+            .unwrap();
+        set.get_mut(1).unwrap().close(born).unwrap();
+        assert_eq!(set.workspaces()[1].reference, reference);
+        set.workspaces_mut().swap(0, 1);
+        assert_eq!(set.workspaces()[0].reference, reference);
+        let closed = set.remove(0).unwrap();
+        assert_eq!(closed.reference, reference);
+        assert!(set
+            .workspaces()
+            .iter()
+            .all(|workspace| workspace.reference != reference));
+        let replacement = Workspace::new("replacement".into(), PaneId(41), 0);
+        assert_ne!(replacement.reference, reference);
+        set.push_active(replacement);
+        assert!(set
+            .workspaces()
+            .iter()
+            .all(|workspace| workspace.reference != reference));
     }
 
     /// A set of three workspaces named `first`, `second`, `third`.

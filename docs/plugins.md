@@ -168,7 +168,7 @@ Every message has a `type` field.
 
 ```jsonc
 // Sent once when the plugin starts.
-{"type": "hello", "major": 1, "minor": 0}
+{"type": "hello", "major": 1, "minor": 2}
 
 // Collect data now. Answer with a status message carrying the same request_id.
 {"type": "status", "request_id": 7, "scope": "pane_header:1", "context": {
@@ -291,8 +291,8 @@ application's version.
 
 - The **major** version must match exactly. A plugin whose major differs is
   reported as incompatible and its data is ignored — the host does not guess.
-- The **minor** version may be lower, so the host can add fields additively
-  without breaking existing plugins.
+- Legacy **minor** versions may be lower or higher: the legacy profile checks
+  major equality only. Managed admission separately checks its API and features.
 
 ### Static managed metadata and settings
 
@@ -300,9 +300,10 @@ Managed packages use a separate static `among-plugin.json`, schema version 1.
 The [complete vocabulary example](../examples/managed-manifest.json) is parsed
 by the production parser in tests. It is data, not a ready-built plugin package.
 Static metadata and local settings can be inspected without executing code.
-The runtime still speaks legacy 1.1; a package requiring managed API 1.2 is
-reported unavailable, not executed through the legacy adapter. No managed
-notification, delivery or permission-negotiation support is implied here.
+API 1.2 adds the distinct managed profile below; legacy executables still use
+`hello` and the existing major-1 messages. Managed packages never fall back to
+legacy execution. Notification production, notification UI and delivery features
+remain unsupported and are not advertised.
 
 Manifest `id` is lowercase ASCII letters/digits/hyphens, at most 64 bytes.
 `version`, `name` and `description` are bounded display metadata, not authority.
@@ -350,6 +351,99 @@ download, update and uninstall are separate installer operations, not implemente
 by static inspection. Existing manifestless discovery/configuration and all three
 bundled examples keep their legacy identities and enablement.
 
+### Managed admission, context and settings (API 1.2)
+
+The first enable opens an access review identifying the authoritative repository
+and required/optional API features. Optional access starts off. Cancel does not
+write grants or start code. Required access must be accepted; unsupported required
+features refuse startup before execution. Retained review is scoped to publisher,
+repository and declared grants. A publisher change or newly required access needs
+renewed review. Changing grants requires stopping/reaping the current generation.
+These controls limit host-mediated exposure, not the process's OS authority.
+
+The host rechecks the selected manifest digest and contained executable and pins
+open package/executable descriptors through spawn. It clears the child environment,
+sets `PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C.UTF-8`, and copies only `HOME` and
+`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` when present.
+Tokens, display/session-bus variables and other parent environment values are not
+implicitly inherited. This is not protection against the plugin independently
+reading files or contacting services as the same user.
+
+The host starts with:
+
+```json
+{"type":"managed_hello","major":1,"minor":2,"identity":"github:12/sample","session":"session-id","generation":"process-id","features":["context.terminals","settings","status"]}
+```
+
+Reply with `managed_hello`, matching identity, session, generation and API 1.2,
+and a feature subset of the offered grants that still includes every manifest
+requirement. Only then does Starting become Running. The deadline is five seconds;
+pre-admission output has no authority. Optional features can be omitted by the
+plugin. Each new process gets a fresh generation; each host session gets a fresh
+session ID. Old replies cannot establish admission or acknowledge new settings.
+
+| Feature | Actual host-mediated exposure |
+| --- | --- |
+| `status` | Answer status requests with validated legacy fragment data |
+| `settings` | Receive declared, validated configuration snapshots |
+| `context.terminals` | Scoped terminal/workspace references and enumeration |
+| `context.cwd` | Known working directory, or null |
+| `context.title` | Known terminal title, or null |
+| `context.process` | Running state and process-exit events |
+| `events.terminal` | Subscribe to terminal/workspace lifecycle events |
+
+The last four require `context.terminals`. Missing grants omit fields rather than
+fill them with fake values. Without terminal context, status is application-only
+and its context contains only the session. Events require both terminal context
+and `events.terminal`; process-exit events additionally require `context.process`.
+Working-directory events carry a path only with `context.cwd`. Lifecycle events
+carry canonical string pane/workspace references, not mutable list positions.
+
+Managed status uses an explicit target rather than a legacy index scope:
+
+```json
+{"type":"status","session":"session-id","generation":"process-id","request_id":7,"scope":{"slot":"workspace_summary","target":{"kind":"workspace","reference":"10"}},"context":{"session":"session-id","terminals":[{"pane":"1","workspace":"10"}],"next_cursor":null}}
+```
+
+Reply with `type`, `session`, `generation`, `request_id`, `fragments` and optional
+`refresh_ms`. Application targets use `{"kind":"application"}`; pane targets use
+`{"kind":"pane","reference":"1"}`. Slot names otherwise match the existing scope
+table without colon suffixes. References are canonical decimal strings, never JSON
+numbers, leading-zero aliases or display names. Workspace references survive the
+birth pane closing and workspace reorder; closed targets expire. They are not
+saved as replay authority in session files. Responses are resolved against the
+current target, so a delayed sidebar reply cannot attach to a reused list index.
+
+Context pages contain at most 32 terminals and roughly 28 KiB of terminal data.
+When `next_cursor` is non-null, send `enumerate` with session, generation, your
+request ID, the same scoped target and that string cursor. The host replies with
+`context_page`, echoing those identifiers and carrying `context`. Only one
+enumeration request may await host enqueue at a time; page requests need terminal
+context and valid live targets. Pages reflect current state, not a frozen snapshot;
+terminal creation/removal between pages can change the enumeration. Authorized
+text over 4096 UTF-8 bytes or 8192 JSON bytes is null with its field name in
+`unavailable`; paths are never silently truncated. Unauthorized fields are absent.
+
+Settings use `configure`/`configured`:
+
+```json
+{"type":"configure","session":"session-id","generation":"process-id","revision":3,"version":1,"values":{"label":"current"}}
+```
+
+Reply with matching session, generation, revision and `outcome`: `applied`,
+`rejected` or `restart_required`. Optional `reason` is one of
+`invalid_configuration`, `unsupported_version`, `unavailable`, `internal_error`.
+Free-form acknowledgement text is not displayed or logged. Unknown stored keys
+are preserved locally but never included in declared `values`.
+
+The editor distinguishes Saved locally, awaiting acknowledgement, Applied,
+Rejected and Restart required. A configuration unanswered for five seconds is
+reported unavailable, not applied; its eventual late reply cannot change that
+state. A manifest's `apply: restart` saves without sending live changes, and the
+next process receives them. Superseded revisions and stopped generations cannot
+mark a newer revision applied. Managed `notify` remains a generic, payload-omitted
+diagnostic; it never triggers notification routing or external delivery.
+
 ## Failure handling
 
 Plugins are untrusted input. Everything below is discarded and the application
@@ -383,8 +477,11 @@ Waiting until all retiring hosts finish reaping. This preserves the same
 application-wide process budget across window replacement.
 
 Starting is separate from Running: a compatible handshake is required within
-five seconds. At most 16 status requests may be outstanding per plugin, with
-only one per scope, so their replies fit the bounded output queue. A full input
+five seconds. Legacy plugins allow at most 16 outstanding statuses, one per scope.
+Managed statuses and configuration revisions share 15 reply credits, including
+superseded/expired revisions and revoked targets whose replies have not arrived;
+one output slot is reserved for the single enumeration request. Reply consumption
+or generation shutdown releases credit. A full input
 queue defers status collection without faulting the plugin or advancing its
 collection clock; accepted frames still have the write deadline. Other traffic
 that exceeds the input budget faults the plugin rather than growing a queue.

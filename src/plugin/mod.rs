@@ -11,6 +11,7 @@
 pub(crate) mod data;
 pub mod host;
 pub mod inventory;
+pub mod managed;
 pub mod manifest;
 mod process;
 pub mod protocol;

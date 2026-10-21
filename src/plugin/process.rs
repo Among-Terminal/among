@@ -29,6 +29,24 @@ pub enum SendError {
     Fault(&'static str),
 }
 
+pub fn pinned_program(directory: std::fs::File, executable: std::fs::File) -> Command {
+    let mut program = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()));
+    program.current_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    // pin both descriptors through fork/exec. only the child's executable fd
+    // loses CLOEXEC so a shebang interpreter can open that exact admitted file;
+    // changing descriptor flags in pre_exec does not leak it from the host.
+    unsafe {
+        program.pre_exec(move || {
+            let _keep_package_open = &directory;
+            if libc::fcntl(executable.as_raw_fd(), libc::F_SETFD, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    program
+}
+
 struct Outbound {
     bytes: Box<[u8]>,
     queued: Instant,
@@ -124,7 +142,7 @@ impl Process {
         self.outstanding.load(Ordering::Acquire) < MAX_QUEUE_FRAMES
     }
 
-    pub fn send(&self, request: &Request) -> Result<(), SendError> {
+    pub fn send(&self, request: &impl serde::Serialize) -> Result<(), SendError> {
         if self.cancel.load(Ordering::Acquire) {
             return Err(SendError::Fault("plugin is stopping"));
         }
@@ -450,5 +468,40 @@ mod tests {
         until(|| healthy.finished());
         process.stop();
         until(|| process.finished());
+    }
+
+    #[test]
+    fn pinned_shebang_execution_keeps_the_admitted_inode_after_a_path_is_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir()
+            .join("opencode")
+            .join(format!("among-pinned-{}", glib::uuid_string_random()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("plugin");
+        std::fs::write(
+            &path,
+            b"#!/bin/sh\nprintf '{\"type\":\"hello\",\"major\":1,\"minor\":0}\\n'\nread keep\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let directory = super::super::data::owned_directory(&root).unwrap();
+        let executable = super::super::data::contained_file(&directory, "plugin").unwrap();
+        let program = pinned_program(directory, executable);
+        std::fs::rename(&path, root.join("admitted")).unwrap();
+        std::os::unix::fs::symlink("/bin/false", &path).unwrap();
+        let process = Process::start(program).unwrap();
+        let mut frame = None;
+        until(|| {
+            frame = process.frames.try_recv().ok().or(frame.take());
+            frame.is_some()
+        });
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&frame.unwrap()).unwrap()["type"],
+            "hello"
+        );
+        process.stop();
+        until(|| process.finished());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

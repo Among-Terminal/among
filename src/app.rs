@@ -299,8 +299,8 @@ fn plugin_context(state: &AppState) -> Context {
                 pane: pane.0,
                 workspace: index,
                 cwd: state.pane(pane).and_then(|p| p.cwd()),
-                title: None,
-                running: true,
+                title: state.pane(pane).and_then(|pane| pane.title()),
+                running: !state.exited.contains_key(&pane),
             })
         })
         .collect();
@@ -310,6 +310,32 @@ fn plugin_context(state: &AppState) -> Context {
         terminals,
         focused_pane: Some(state.workspaces.active().focused.0),
     }
+}
+
+fn update_plugin_context(state: &mut AppState) {
+    let context = plugin_context(state);
+    let workspaces: Vec<_> = state
+        .workspaces
+        .workspaces()
+        .iter()
+        .map(|workspace| workspace.reference)
+        .collect();
+    state.plugins.reconcile_workspace_content(
+        &mut state.store,
+        &workspaces,
+        context.active_workspace,
+    );
+    state.plugins.update_context(workspaces, context);
+}
+
+fn broadcast_plugin_event(
+    state: &mut AppState,
+    event: EventKind,
+    pane: u64,
+    detail: Option<String>,
+) {
+    update_plugin_context(state);
+    state.plugins.broadcast_event(event, pane, detail);
 }
 
 /// Rebuild everything derived from the model.
@@ -1674,6 +1700,7 @@ fn type_into_focused_pane(ctx: &Window, command: String, step: &str) {
 }
 
 fn rebuild(ctx: &Window) {
+    update_plugin_context(&mut ctx.state.borrow_mut());
     invalidate_terminal_menus(ctx);
     rebuild_sidebar(ctx, false);
     rebuild_panes(ctx);
@@ -1916,6 +1943,7 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
 /// Only the marked row and the pane area change; the sidebar's widgets are left
 /// alone so a click sequence on an entry is not interrupted.
 fn switch_workspace(ctx: &Window) {
+    update_plugin_context(&mut ctx.state.borrow_mut());
     mark_active_row(ctx);
     rebuild_panes(ctx);
     apply_focus(ctx);
@@ -2397,7 +2425,8 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                 {
                     let mut borrowed = state.borrow_mut();
                     borrowed.exited.insert(pane, status);
-                    borrowed.plugins.broadcast_event(
+                    broadcast_plugin_event(
+                        &mut borrowed,
                         EventKind::ProcessExited { status },
                         pane.0,
                         None,
@@ -2427,7 +2456,8 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                         break;
                     }
                 }
-                state.borrow_mut().plugins.broadcast_event(
+                broadcast_plugin_event(
+                    &mut state.borrow_mut(),
                     EventKind::WorkingDirectoryChanged,
                     pane.0,
                     dir,
@@ -2488,9 +2518,7 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
     };
     let mut state = ctx.state.borrow_mut();
     state.panes.insert(id, pane);
-    state
-        .plugins
-        .broadcast_event(EventKind::PaneOpened, id.0, None);
+    broadcast_plugin_event(&mut state, EventKind::PaneOpened, id.0, None);
 }
 
 /// Build the widget for one node, carrying the path used to write ratios back.
@@ -2877,6 +2905,10 @@ fn open_preferences(ctx: &Window) {
             let state = ctx.state.clone();
             move |name| state.borrow().plugins.managed_details(name)
         }),
+        plugin_configuration: Rc::new({
+            let state = ctx.state.clone();
+            move |name| state.borrow().plugins.configuration(name)
+        }),
         save_plugin_settings: Rc::new({
             let window = ctx.handle();
             move |name, generation, changes| {
@@ -2914,7 +2946,13 @@ fn open_preferences(ctx: &Window) {
         enable_plugin: Rc::new({
             let state = ctx.state.clone();
             let window = ctx.handle();
-            move |name: &str| {
+            move |name: &str, parent| {
+                if state.borrow().plugins.managed_details(name).is_some()
+                    && state.borrow().plugins.access_review(name).is_err()
+                {
+                    review_managed_access(&window, name, parent.as_ref());
+                    return;
+                }
                 state.borrow_mut().plugins.enable(name);
                 let result = state.borrow_mut().settings.plugin_changed(name, true);
                 report_settings_save(&window, result);
@@ -2965,6 +3003,101 @@ fn report_settings_save(ctx: &Window, result: Result<(), crate::settings::Storag
     if let Err(error) = result {
         eprintln!("among: settings save failed: {error}");
     }
+}
+
+fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>) {
+    let Some((entry, _)) = ctx.state.borrow().plugins.managed_details(name) else {
+        return;
+    };
+    let parent = parent
+        .cloned()
+        .unwrap_or_else(|| ctx.window.clone().upcast());
+    let dialog=adw::AlertDialog::builder().heading("Review plugin access")
+        .body("This executable runs as your user, not in an OS sandbox. These controls limit only data and actions supplied by Among. Required access must be accepted; optional access starts off.").build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.set_close_response("cancel");
+    let Ok(inspected) = entry.inspected.as_ref() else {
+        dialog.set_body("The selected package is invalid or unavailable. No code will run.");
+        dialog.present(Some(&parent));
+        return;
+    };
+    if let Err(problem) = inspected.manifest.compatibility(
+        crate::plugin::managed::MAJOR,
+        crate::plugin::managed::MINOR,
+        crate::plugin::managed::FEATURES,
+    ) {
+        dialog.set_body(&problem.to_string());
+        dialog.present(Some(&parent));
+        return;
+    }
+    let controls = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let origin = gtk::Label::new(Some(&format!(
+        "{}/{} · {}",
+        entry.receipt.owner,
+        entry.receipt.repository,
+        entry.key()
+    )));
+    origin.set_wrap(true);
+    controls.append(&origin);
+    let mut features = Vec::new();
+    for (feature, required) in inspected
+        .manifest
+        .required_features
+        .iter()
+        .map(|feature| (feature, true))
+        .chain(
+            inspected
+                .manifest
+                .optional_features
+                .iter()
+                .map(|feature| (feature, false)),
+        )
+    {
+        let available = crate::plugin::managed::FEATURES.contains(&feature.as_str());
+        let label = if required {
+            format!("{feature} (required)")
+        } else if available {
+            feature.clone()
+        } else {
+            format!("{feature} (unavailable)")
+        };
+        let control = gtk::CheckButton::with_label(&label);
+        control.set_active(required);
+        control.set_sensitive(available && !required);
+        controls.append(&control);
+        features.push((feature.clone(), control));
+    }
+    dialog.set_extra_child(Some(&controls));
+    dialog.add_response("enable", "Accept and enable");
+    dialog.set_response_appearance("enable", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("cancel"));
+    let window = ctx.handle();
+    let key = name.to_string();
+    let weak_parent = parent.downgrade();
+    dialog.connect_response(None,move |_,response| {
+        if response!="enable" {return;}
+        if window.state.borrow().exiting {return;}
+        let Some(parent)=weak_parent.upgrade().filter(|parent|parent.is_visible()) else{return};
+        let current=window.state.borrow().plugins.managed_details(&key)
+            .filter(|(current,_)|current.receipt.generation==entry.receipt.generation && current.receipt==entry.receipt);
+        let Some((current,_))=current else{return};
+        let review=serde_json::json!({"owner":current.receipt.owner,"repository":current.receipt.repository,
+            "features":features.iter().filter(|(_,control)|control.is_active()).map(|(feature,_)|feature.clone()).collect::<Vec<_>>()});
+        let valid=current.inspected.as_ref().map_err(|problem|*problem)
+            .and_then(|inspected|crate::plugin::managed::granted_features(&inspected.manifest,&current.receipt,Some(&serde_json::json!({"review":review}))));
+        if let Err(problem)=valid {
+            let explanation=adw::AlertDialog::builder().heading("Plugin access was not accepted").body(problem.to_string()).build();
+            explanation.add_response("close","Close");explanation.present(Some(&parent));return;
+        }
+        let result=window.state.borrow_mut().settings.managed_review_changed(&key,review.clone());
+        let saved=result.is_ok();report_settings_save(&window,result);
+        if !saved {return;}
+        let reviewed=window.state.borrow_mut().plugins.review_access(&key,review).is_ok();
+        if reviewed {
+            window.state.borrow_mut().plugins.enable(&key);
+        }
+    });
+    dialog.present(Some(&parent));
 }
 
 /// Rebuild the shortcut controller so a rebind takes effect without a restart.
@@ -3155,6 +3288,7 @@ fn close_pane(ctx: &Window, pane: PaneId) {
 
     let was_last_pane = {
         let mut state = ctx.state.borrow_mut();
+        update_plugin_context(&mut state);
         let Some(workspace) = state.workspaces.get_mut(owner) else {
             return;
         };
@@ -3183,6 +3317,12 @@ fn close_pane(ctx: &Window, pane: PaneId) {
 
     // It was the workspace's last pane, so the workspace goes with it.
     if ctx.state.borrow().workspaces.len() > 1 {
+        broadcast_plugin_event(
+            &mut ctx.state.borrow_mut(),
+            EventKind::PaneClosed,
+            pane.0,
+            None,
+        );
         if ctx.state.borrow_mut().workspaces.remove(owner).is_some() {
             prune_panes(ctx);
             rebuild(ctx);
@@ -3208,6 +3348,7 @@ fn prune_panes(ctx: &Window) {
     };
     let mut state = ctx.state.borrow_mut();
     state.panes.retain(|id, _| live.contains(id));
+    update_plugin_context(&mut state);
     let count = state.workspaces.len();
     state.store.retain_panes(&live);
     state.store.retain_workspaces(count);
@@ -3766,6 +3907,7 @@ impl Window {
         //    output and every slot stays empty.
         {
             let mut state = self.state.borrow_mut();
+            update_plugin_context(&mut state);
             state.plugins.poll();
         }
         log_plugin_notices(self);
@@ -3886,6 +4028,7 @@ fn request_plugin_status(ctx: &Window) {
     }
     let now = slots::now_ms();
     let mut state = ctx.state.borrow_mut();
+    update_plugin_context(&mut state);
     let context = plugin_context(&state);
     let healthy = state.plugins.healthy();
 
@@ -5256,7 +5399,8 @@ mod tests {
                 plugin_enabled: Rc::new(|_| true),
                 plugin_details: Rc::new(|_| None),
                 save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
-                enable_plugin: Rc::new(|_| {}),
+                plugin_configuration: Rc::new(|_| crate::plugin::host::Configuration::NotApplied),
+                enable_plugin: Rc::new(|_, _| {}),
                 disable_plugin: Rc::new({
                     let toggled = toggled.clone();
                     move |_| toggled.set(toggled.get() + 1)

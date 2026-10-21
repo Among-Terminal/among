@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// The major component must match exactly for a plugin to be loaded; the minor
 /// component may be lower, allowing the host to evolve additively.
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 1;
+pub const PROTOCOL_MINOR: u32 = 2;
 
 /// Upper bound on text a plugin may send in one fragment.
 ///
