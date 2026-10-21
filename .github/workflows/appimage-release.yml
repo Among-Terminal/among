@@ -205,12 +205,14 @@ jobs:
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates \
               fuse3 xvfb xauth openbox dbus-x11 xdotool x11-utils procps imagemagick \
               libwayland-client0 libx11-6 libxcb1 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
-              libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core
+              libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core \
+              libgl1 libegl1 libgles2 libgbm1 libdrm2 libx11-xcb1
           else
             dnf install -y git ca-certificates fuse3 xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo \
               xwininfo openbox dbus-x11 xdotool procps-ng ImageMagick util-linux shadow-utils glibc-common \
               libwayland-client libX11 libxcb fontconfig freetype harfbuzz fribidi expat gmp libgpg-error \
-              libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts
+              libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts \
+              libglvnd-glx libglvnd-egl libglvnd-gles mesa-libgbm libdrm libX11-xcb
           fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

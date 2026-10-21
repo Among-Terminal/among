@@ -83,7 +83,7 @@ fn distribution_recipes_explicitly_supply_dynamic_audio_requirements() -> Result
         assert!(stage.iter().any(|value| value.as_str() == Some(package)));
     }
     let rpm = fs::read_to_string(root.join("packaging/rpm/among.spec"))?;
-    for package in ["gtk4 >= 4.12", "gstreamer1-plugins-good", "mesa-libGLES"] {
+    for package in ["gtk4 >= 4.12", "gstreamer1-plugins-good", "libglvnd-gles"] {
         assert!(rpm.lines().any(|line| line
             .strip_prefix("Requires:")
             .is_some_and(|value| value.trim() == package)));
@@ -103,5 +103,27 @@ fn distribution_recipes_explicitly_supply_dynamic_audio_requirements() -> Result
                 .find("apt-get install")
                 .ok_or("dependency installation missing")?
     );
+    let host_setup = workflow["jobs"]["clean-host"]["steps"][0]["run"]
+        .as_str()
+        .ok_or("AppImage host setup missing")?;
+    for package in [
+        "libgl1",
+        "libegl1",
+        "libgles2",
+        "libgbm1",
+        "libdrm2",
+        "libx11-xcb1",
+        "libglvnd-glx",
+        "libglvnd-egl",
+        "libglvnd-gles",
+        "mesa-libgbm",
+        "libdrm",
+        "libX11-xcb",
+    ] {
+        assert!(
+            host_setup.split_whitespace().any(|word| word == package),
+            "host graphics dependency {package} missing"
+        );
+    }
     Ok(())
 }
