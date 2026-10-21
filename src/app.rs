@@ -4683,8 +4683,11 @@ mod tests {
         }
         // This test replaces XDG_CONFIG_HOME itself, so its private
         // configuration must also live below the harness check root.
-        let base = crate::test_isolation::check_root()
-            .join(format!("among-session-slow-{}", std::process::id()));
+        let base = crate::test_isolation::check_root().join(format!(
+            "among-session-slow-{}-{}",
+            std::process::id(),
+            glib::uuid_string_random()
+        ));
         std::fs::create_dir_all(base.join("data/among")).unwrap();
         std::fs::create_dir_all(base.join("config/among")).unwrap();
         std::env::set_var("XDG_DATA_HOME", base.join("data"));
