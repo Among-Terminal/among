@@ -22,6 +22,8 @@ use crate::slots::{self, Scope, SlotStore};
 use crate::tree::{Node, Orientation, PaneId};
 use crate::workspace::{PaneAllocator, Workspace, WorkspaceSet};
 
+mod bell;
+
 /// How often the main loop pumps plugins and re-derives pane sizes.
 ///
 /// A single shared tick keeps GTK out of the hot path: plugin pipes are drained
@@ -39,6 +41,7 @@ const SLOT_MAX_CHARS: usize = 120;
 pub struct AppState {
     pub workspaces: WorkspaceSet,
     pub panes: std::collections::BTreeMap<PaneId, Pane>,
+    bells: Option<Rc<bell::Backend>>,
     /// Exit status of every process that has finished, per pane.
     ///
     /// Recorded rather than inferred, because a process that exited while its
@@ -102,6 +105,7 @@ impl AppState {
         Self {
             workspaces: WorkspaceSet::new(Workspace::new("project".into(), first, 0)),
             panes: std::collections::BTreeMap::new(),
+            bells: None,
             exited: std::collections::HashMap::new(),
             sidebar_collapsed: false,
             sidebar_width: None,
@@ -518,6 +522,10 @@ fn build_with_writer(
     let state = Rc::new(RefCell::new(AppState::new(
         admission.starts_allowed.clone(),
     )));
+    match bell::Backend::new(&window) {
+        Ok(backend) => state.borrow_mut().bells = Some(backend),
+        Err(_) => eprintln!("among: bell session identity exhausted; backend unavailable"),
+    }
     {
         let mut state = state.borrow_mut();
         state.settings.load(crate::settings::Document::Plugins);
@@ -706,6 +714,9 @@ fn build_with_writer(
             // terminals may reopen immediately; plugins wait for all old reapers.
             let retiring = admission.retire();
             state.borrow_mut().exiting = true;
+            if let Some(bells) = &state.borrow().bells {
+                bells.shutdown();
+            }
             state.borrow_mut().plugins.shutdown();
             // destroying the last window would otherwise end the process before
             // its detached supervisors could signal/reap the owned children.
@@ -957,6 +968,22 @@ fn selfcheck(ctx: &Window, label: &str) {
     );
     eprintln!("among[{label}]: session_buttons={responses:?}");
     let state = ctx.state.borrow();
+    if let Some(bells) = &state.bells {
+        let focus = bells.focus();
+        let panes: Vec<_> = state
+            .panes
+            .keys()
+            .map(|id| (id.0, bells.attention(id.0)))
+            .collect();
+        let workspaces: Vec<_> = state
+            .workspaces
+            .workspaces()
+            .iter()
+            .map(|workspace| bells.aggregate(workspace.panes().into_iter().map(|id| id.0)))
+            .collect();
+        eprintln!("among[{label}]: bell_events={} bell_application_active={} bell_viewed={:?} bell_panes={panes:?} bell_workspaces={workspaces:?} bell_diagnostics={:?}",
+            bells.event_count(), focus.application_active, focus.viewed.map(|source| source.pane()), bells.diagnostics());
+    }
     // X11 pointer input is surface-relative, including the client-side shadow.
     let (surface_x, surface_y) = ctx.window.surface_transform();
     let toggle = find_with_class(ctx.header_bar.upcast_ref(), "sidebar-toggle")
@@ -2538,6 +2565,9 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
         }
     };
     let mut state = ctx.state.borrow_mut();
+    if let Some(bells) = &state.bells {
+        bells.attach(id.0, pane.terminal());
+    }
     state.panes.insert(id, pane);
     broadcast_plugin_event(&mut state, EventKind::PaneOpened, id.0, None);
 }
@@ -3486,6 +3516,9 @@ fn prune_panes(ctx: &Window) {
             .collect()
     };
     let mut state = ctx.state.borrow_mut();
+    if let Some(bells) = &state.bells {
+        bells.retain(&live);
+    }
     state.panes.retain(|id, _| live.contains(id));
     update_plugin_context(&mut state);
     let count = state.workspaces.len();
@@ -4037,6 +4070,9 @@ impl Window {
         if self.state.borrow().exiting {
             return;
         }
+        if let Some(bells) = &self.state.borrow().bells {
+            bells.observe_focus();
+        }
         apply_sidebar_width(self);
         if !self.state.borrow().session_ready || self.state.borrow().session_closing {
             return;
@@ -4273,6 +4309,9 @@ fn reconcile_panes(ctx: &Window) {
 
 #[cfg(test)]
 mod plugin_tests;
+
+#[cfg(test)]
+mod bell_tests;
 
 #[cfg(test)]
 mod tests {
