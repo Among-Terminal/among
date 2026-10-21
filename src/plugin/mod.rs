@@ -10,6 +10,7 @@
 
 pub(crate) mod data;
 pub mod host;
+pub mod install;
 pub mod inventory;
 pub mod managed;
 pub mod manifest;

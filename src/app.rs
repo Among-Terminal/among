@@ -2918,6 +2918,10 @@ fn open_preferences(ctx: &Window) {
             let state = ctx.state.clone();
             move || state.borrow().plugins.overview()
         }),
+        installations_changed: Rc::new({
+            let state = ctx.state.clone();
+            move || reconcile_managed_installations(&state)
+        }),
         plugin_details: Rc::new({
             let state = ctx.state.clone();
             move |name| state.borrow().plugins.managed_details(name)
@@ -2993,7 +2997,20 @@ fn open_preferences(ctx: &Window) {
                     return;
                 }
                 state.borrow_mut().plugins.enable(name);
-                let result = state.borrow_mut().settings.plugin_changed(name, true);
+                let installation = state
+                    .borrow()
+                    .plugins
+                    .managed_details(name)
+                    .and_then(|(entry, _)| entry.receipt.installation);
+                let result = if name.starts_with("github:") {
+                    state.borrow_mut().settings.managed_enable_changed(
+                        name,
+                        true,
+                        installation.as_deref(),
+                    )
+                } else {
+                    state.borrow_mut().settings.plugin_changed(name, true)
+                };
                 report_settings_save(&window, result);
             }
         }),
@@ -3031,6 +3048,27 @@ fn open_preferences(ctx: &Window) {
     };
 
     prefs::present(&ctx.window, preferences);
+}
+
+fn reconcile_managed_installations(state: &Rc<RefCell<AppState>>) {
+    let Some(root) = crate::plugin::inventory::root() else {
+        return;
+    };
+    match crate::plugin::inventory::read(&root) {
+        Ok(entries) => {
+            let document = state
+                .borrow_mut()
+                .settings
+                .load(crate::settings::Document::ManagedPlugins);
+            for entry in entries {
+                let local = document
+                    .as_ref()
+                    .and_then(|document| crate::plugin::inventory::local(document, &entry.key()));
+                state.borrow_mut().plugins.register_managed(entry, local);
+            }
+        }
+        Err(problem) => eprintln!("among: committed installation reconciliation failed: {problem}"),
+    }
 }
 
 fn report_settings_save(ctx: &Window, result: Result<(), crate::settings::StorageError>) {
@@ -3192,7 +3230,7 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
             let explanation=adw::AlertDialog::builder().heading("Plugin access was not accepted").body(problem.to_string()).build();
             explanation.add_response("close","Close");explanation.present(Some(&parent));return;
         }
-        let result=window.state.borrow_mut().settings.managed_review_changed(&key,review);
+        let result=window.state.borrow_mut().settings.managed_review_for_installation(&key,review,current.receipt.installation.as_deref());
         // consent was accepted by the stopped runtime above; a persistence
         // failure is reported separately without revoking this session's consent.
         report_settings_save(&window,result);
@@ -5498,6 +5536,7 @@ mod tests {
         prefs::present(
             &window,
             prefs::PreferencesContext {
+                installations_changed: Rc::new(|| {}),
                 on_closed: Rc::new(|| {}),
                 storage_status: gtk::StringList::new(&[""]),
                 bindings: Rc::new(RefCell::new(Bindings::defaults())),

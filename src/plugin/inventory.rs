@@ -23,6 +23,10 @@ pub struct Receipt {
     pub release_id: u64,
     pub asset_id: u64,
     pub generation: String,
+    // fresh installs cannot inherit an earlier installation's persisted switch.
+    // absent tokens retain startup compatibility for pre-installer receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation: Option<String>,
 }
 
 impl Receipt {
@@ -30,7 +34,7 @@ impl Receipt {
         ManagedIdentity::new(self.repository_id, self.plugin_id.clone())
     }
 
-    fn validate(&self) -> Result<(), Problem> {
+    pub(super) fn validate(&self) -> Result<(), Problem> {
         self.identity()?;
         let github_component = |text: &str| {
             !text.is_empty()
@@ -46,6 +50,10 @@ impl Receipt {
             || !hex(&self.manifest_sha256, 64)
             || !hex(&self.package_sha256, 64)
             || !hex(&self.generation, 64)
+            || self
+                .installation
+                .as_ref()
+                .is_some_and(|token| !hex(token, 64))
             || self.release_id == 0
             || self.asset_id == 0
         {
@@ -69,11 +77,11 @@ fn hex(value: &str, length: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Selection {
-    version: u32,
-    installations: Vec<Receipt>,
+pub(super) struct Selection {
+    pub version: u32,
+    pub installations: Vec<Receipt>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +227,7 @@ pub(crate) mod tests {
             release_id: 1,
             asset_id: 2,
             generation: "c".repeat(64),
+            installation: None,
         };
         let package = receipt.package_path(root);
         std::fs::create_dir_all(&package).unwrap();

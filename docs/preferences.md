@@ -72,11 +72,17 @@ Developer checks are described in [the contributing guide](../CONTRIBUTING.md#ch
 
 The Plugins page has a labelled native search field. Match by name, description,
 identity or origin; clear it to return to the full installed/configured list.
+Repository inspection belongs to its own Plugin sources section, above and
+separate from search. Inspection only previews metadata; a separate Install disabled
+action selects one compatible ready-built version without enabling it. Existing
+selected identities are refused rather than overwritten. Updates, uninstall and
+persistent source registrations/cache remain unfinished.
 Equal names show separate origins, missing configured files stay inspectable,
 and a desired-on unavailable entry remains switchable off. Details opens a native
-dialog; Settings appears only for a declared settings schema. Use Tab/Shift+Tab
-to move between search, actions and switches, Space to operate a switch, and the
-dialog's dismiss action to return. The form's Save boundary is separate from
+view; Settings appears only for a declared settings schema. The form's Save action
+is above its fields; persistence feedback and runtime status have their own group.
+Use Tab/Shift+Tab to move between search, actions and switches, Space to operate
+a switch, and the view's close action or Escape to return. The form's Save boundary is separate from
 runtime applied/pending/rejected/restart-required acknowledgement.
 
 Background registration or process-state changes update rows by identity rather
