@@ -369,6 +369,16 @@ fn update_with_hook(
                 .map_err(|problem| invalid(path, problem))?;
         }
         let bytes = serde_json::to_vec_pretty(&value).map_err(|error| invalid(path, error))?;
+        // unknown data can expand under pretty formatting. protect the reader's
+        // actual byte budget before any replacement is prepared or published.
+        if matches!(kind, Document::ManagedPlugins)
+            && bytes.len() > crate::plugin::data::MAX_STATIC_BYTES
+        {
+            return Err(invalid(
+                path,
+                "encoded preferences exceed the managed document byte limit",
+            ));
+        }
         if matches!(kind, Document::ManagedPlugins) {
             std::fs::DirBuilder::new()
                 .recursive(true)
@@ -503,6 +513,82 @@ mod tests {
             load(&temp.0.join("shortcuts.json"), Document::Shortcuts).unwrap(),
             json!({"version":1,"overrides":{}})
         );
+    }
+
+    #[test]
+    fn managed_output_expansion_cannot_replace_a_readable_preference_document() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        let original =
+            serde_json::to_vec(&json!({"version":1,"plugins":{},"future":vec![0;60_000]})).unwrap();
+        assert!(original.len() < crate::plugin::data::MAX_STATIC_BYTES);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let prepared = std::cell::Cell::new(false);
+        let result = update_with_hook(
+            &path,
+            Document::ManagedPlugins,
+            |document| {
+                document["plugins"]["github:1/sample"] = json!({"enabled":true});
+                Ok(())
+            },
+            |_| {
+                prepared.set(true);
+                Ok(())
+            },
+        );
+        assert!(
+            result.is_err(),
+            "the actual pretty encoding exceeds the reader's byte budget"
+        );
+        assert!(!result.unwrap_err().replaced);
+        assert!(
+            !prepared.get(),
+            "oversized output must fail before preparing replacement bytes"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            load(&path, Document::ManagedPlugins).unwrap()["future"]
+                .as_array()
+                .unwrap()
+                .len(),
+            60_000
+        );
+        assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn managed_actual_output_limit_accepts_the_boundary_and_refuses_the_next_byte() {
+        let limit = crate::plugin::data::MAX_STATIC_BYTES;
+        for size in [limit - 1, limit, limit + 1] {
+            let temp = Temp::new();
+            std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = temp.0.join("managed-plugins.json");
+            let mut edited =
+                json!({"version":1,"plugins":{"github:1/sample":{"enabled":true}},"future":""});
+            let overhead = serde_json::to_vec_pretty(&edited).unwrap().len();
+            edited["future"] = json!("x".repeat(size - overhead));
+            assert_eq!(serde_json::to_vec_pretty(&edited).unwrap().len(), size);
+            let mut initial = edited.clone();
+            initial["plugins"]["github:1/sample"]["enabled"] = json!(false);
+            let original = serde_json::to_vec(&initial).unwrap();
+            assert!(original.len() < limit);
+            std::fs::write(&path, &original).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let result = update(&path, Document::ManagedPlugins, |document| {
+                document["plugins"]["github:1/sample"]["enabled"] = json!(true);
+                Ok(())
+            });
+            if size > limit {
+                assert!(!result.unwrap_err().replaced);
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+            } else {
+                result.unwrap();
+                assert_eq!(std::fs::metadata(&path).unwrap().len(), size as u64);
+                assert_eq!(load(&path, Document::ManagedPlugins).unwrap(), edited);
+            }
+        }
     }
 
     #[test]
