@@ -525,6 +525,7 @@ impl PluginHost {
                 {
                     return;
                 }
+                let applied = outcome == managed::Outcome::Applied;
                 if let Some(runtime) = self.plugins[index].runtime.as_mut() {
                     runtime.configure_sent = None;
                     runtime.configuration = match outcome {
@@ -534,6 +535,17 @@ impl PluginHost {
                         },
                         managed::Outcome::RestartRequired => Configuration::RestartRequired,
                     };
+                    if applied {
+                        runtime.scopes.clear();
+                    }
+                }
+                if applied {
+                    // old status replies keep their transport credits, but no
+                    // longer have authority to restore pre-configuration content.
+                    self.plugins[index].scopes.clear();
+                    let name = self.plugins[index].spec.name.clone();
+                    self.results.retain(|result| result.plugin != name);
+                    self.invalidated_sources.insert(name);
                 }
             }
             managed::Response::Enumerate {
@@ -798,6 +810,66 @@ mod tests {
             root,
             package,
         }
+    }
+
+    #[test]
+    fn applied_settings_invalidate_event_content_without_releasing_old_reply_credit() {
+        let mut fixture = fixture("managed-on-event-held", &[], Some(&["status", "settings"]));
+        fixture.wait(|host| host.configuration(KEY) == Configuration::Applied);
+        fixture.host.drain_invalidated_sources();
+        fixture
+            .host
+            .request_status(KEY, "app_header", &Context::default())
+            .unwrap();
+        fixture.wait(|host| !host.results.is_empty());
+        let initial = fixture.host.drain_results();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].refresh, Refresh::OnEvent);
+        assert_eq!(initial[0].fragments[0].text.as_deref(), Some("default"));
+        let old = fixture
+            .host
+            .request_status(KEY, "app_footer", &Context::default())
+            .unwrap();
+        let package = fixture.package.clone();
+        fixture.wait(|_| package.join("old-status-held").exists());
+        fixture.host.stored_settings_changed(
+            KEY,
+            json!({"version":1,"values":{"label":"new configured label"}}),
+        );
+        fixture.wait(|host| {
+            host.configuration(KEY) == Configuration::Applied
+                && package.join("new-settings-applied").exists()
+        });
+        assert_eq!(
+            fixture.host.drain_invalidated_sources(),
+            vec![KEY.to_string()]
+        );
+        assert!(
+            fixture.host.plugins[0].inflight.contains_key(&old),
+            "the child can still emit the old reply"
+        );
+        assert!(
+            !fixture.host.plugins[0].scopes.contains_key(&old),
+            "old content authority is revoked"
+        );
+        assert!(fixture.host.drain_results().is_empty());
+        let current = fixture
+            .host
+            .request_status(KEY, "app_footer", &Context::default())
+            .unwrap();
+        assert_ne!(current, old);
+        assert_eq!(fixture.host.plugins[0].inflight.len(), 2);
+        std::fs::write(package.join("release-old-status"), b"yes").unwrap();
+        fixture.wait(|host| !host.results.is_empty());
+        assert!(!fixture.host.plugins[0].inflight.contains_key(&old));
+        let results = fixture.host.drain_results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].scope, "app_footer");
+        assert_eq!(
+            results[0].fragments[0].text.as_deref(),
+            Some("new configured label")
+        );
+        assert_eq!(results[0].refresh, Refresh::OnEvent);
     }
 
     #[test]
@@ -1173,6 +1245,12 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(4);
         while answered.len() < scopes.len() {
             fixture.host.poll();
+            // mirror the application's invalidated-source consumer: admission
+            // may apply configuration after these first status requests queued.
+            if !fixture.host.drain_invalidated_sources().is_empty() {
+                sent.clear();
+                answered.clear();
+            }
             for result in fixture.host.drain_results() {
                 answered.insert(result.scope);
             }

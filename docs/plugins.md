@@ -464,6 +464,11 @@ next process receives them. Superseded revisions and stopped generations cannot
 mark a newer revision applied. Managed `notify` remains a generic, payload-omitted
 diagnostic; it never triggers notification routing or external delivery.
 
+A current `applied` acknowledgement invalidates that plugin's cached status and
+workspace summaries, including event-driven content. Pre-configuration status
+replies keep their transport credit until consumed or stopped, but cannot restore
+the old content after application; collection then requests the current values.
+
 ## Failure handling
 
 Plugins are untrusted input. Everything below is discarded and the application
