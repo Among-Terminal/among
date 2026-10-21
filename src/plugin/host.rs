@@ -89,6 +89,7 @@ struct PluginIo {
     handshake_done: bool,
     generation: String,
     notification_live: Option<among::plugin_notifications::OriginLease>,
+    package_version: Option<String>,
 }
 
 /// One plugin under management.
@@ -110,6 +111,8 @@ struct PluginEntry {
     settings: Option<serde_json::Value>,
     runtime: Option<managed_runtime::Runtime>,
     observed: Option<super::manifest::Api>,
+    removing: bool,
+    removed: bool,
 }
 
 use std::time::Instant;
@@ -252,6 +255,8 @@ impl PluginHost {
             settings: None,
             runtime: None,
             observed: None,
+            removing: false,
+            removed: false,
         });
         self.start_by_name(name);
     }
@@ -261,10 +266,12 @@ impl PluginHost {
         if self.find(&name).is_some() {
             return;
         }
-        let desired = local
-            .and_then(|local| local.get("enabled"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
+        let removing = entry.removal_pending();
+        let desired = !removing
+            && local
+                .and_then(|local| local.get("enabled"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
             && entry
                 .receipt
                 .installation
@@ -283,6 +290,7 @@ impl PluginHost {
             enabled: false,
         });
         if let Some(index) = self.find(&name) {
+            self.plugins[index].removing = removing;
             self.plugins[index].managed = Some(entry);
             self.plugins[index].settings = local.and_then(|local| local.get("settings")).cloned();
             self.plugins[index].runtime = Some(managed_runtime::Runtime::new(
@@ -294,9 +302,98 @@ impl PluginHost {
         }
     }
 
+    pub fn reconcile_managed(
+        &mut self,
+        entry: inventory::Entry,
+        local: Option<&serde_json::Value>,
+    ) {
+        let key = entry.key();
+        let Some(index) = self.find(&key) else {
+            self.register_managed(entry, local);
+            return;
+        };
+        if self.plugins[index].removing {
+            if entry.removal_pending() {
+                return;
+            }
+            self.plugins[index].removing = false;
+        }
+        let Some(current) = &self.plugins[index].managed else {
+            return;
+        };
+        if current.receipt == entry.receipt {
+            return;
+        }
+        // desired state is live, never copied from the downloading worker. an
+        // intervening disable stays disabled; this never restores a saved switch.
+        self.stop_as(
+            index,
+            PluginState::Disabled,
+            "applying explicitly approved package update; waiting for process exit",
+        );
+        self.plugins[index].managed = Some(entry);
+        self.plugins[index].observed = None;
+        self.plugins[index].restart_at = None;
+        self.plugins[index].restart_attempts = 0;
+        if self.plugins[index].io.is_none() {
+            self.start_by_name(key);
+        }
+    }
+
     pub fn desired_enabled(&self, name: &str) -> bool {
         self.find(name)
             .is_some_and(|index| self.plugins[index].spec.enabled)
+    }
+
+    pub fn begin_removal(
+        &mut self,
+        expected: &inventory::Receipt,
+    ) -> Result<(), super::data::Problem> {
+        let key = expected.identity()?.key();
+        let index = self
+            .find(&key)
+            .ok_or(super::data::Problem("plugin is no longer registered"))?;
+        if self.plugins[index]
+            .managed
+            .as_ref()
+            .is_none_or(|entry| entry.receipt != *expected)
+        {
+            return Err(super::data::Problem(
+                "uninstall confirmation is stale; selected generation changed",
+            ));
+        }
+        self.plugins[index].removing = true;
+        self.disable(&key);
+        Ok(())
+    }
+
+    pub fn supervised_stopped(&self, key: &str) -> bool {
+        self.find(key)
+            .is_none_or(|index| self.plugins[index].io.is_none())
+    }
+
+    pub fn removal_failed(&mut self, key: &str) {
+        if let Some(index) = self.find(key) {
+            self.plugins[index].removing = false;
+        }
+    }
+
+    pub fn reconcile_removed(&mut self, selected: &BTreeSet<String>) {
+        let absent = self
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.managed.is_some() && !selected.contains(&plugin.spec.name))
+            .map(|plugin| plugin.spec.name.clone())
+            .collect::<Vec<_>>();
+        for key in absent {
+            self.disable(&key);
+            if let Some(index) = self.find(&key) {
+                self.plugins[index].removing = true;
+                self.plugins[index].removed = true;
+            }
+        }
+        self.plugins
+            .retain(|plugin| !plugin.removed || plugin.io.is_some());
     }
 
     pub fn managed_details(
@@ -360,6 +457,9 @@ impl PluginHost {
     /// Switch a plugin on, starting it if necessary.
     pub fn enable(&mut self, name: &str) {
         let Some(index) = self.find(name) else { return };
+        if self.plugins[index].removing {
+            return;
+        }
         if self.plugins[index].spec.enabled {
             return;
         }
@@ -424,10 +524,24 @@ impl PluginHost {
         let Some(index) = self.find(&name) else {
             return;
         };
-        if !self.plugins[index].spec.enabled || self.plugins[index].io.is_some() {
+        if !self.plugins[index].spec.enabled
+            || self.plugins[index].io.is_some()
+            || self.plugins[index].removing
+        {
             return;
         }
         if self.plugins[index].managed.is_some() {
+            if self.plugins[index]
+                .managed
+                .as_ref()
+                .is_some_and(|entry| entry.removal_pending())
+            {
+                self.plugins[index].state = PluginState::Unavailable {
+                    reason: "uninstall is still active for this installation".into(),
+                };
+                self.plugins[index].restart_at = None;
+                return;
+            }
             if let Err(problem) = self.prepare_managed(index) {
                 self.plugins[index].state = PluginState::Unavailable {
                     reason: problem.to_string(),
@@ -473,7 +587,7 @@ impl PluginHost {
         let mut program = if let Some(entry) = &self.plugins[index].managed {
             match entry.executable_files() {
                 Ok((directory, executable)) => {
-                    super::process::pinned_program(directory, executable)
+                    super::process::pinned_program(directory, executable, entry.generation_lease())
                 }
                 Err(problem) => {
                     self.plugins[index].state = PluginState::Unavailable {
@@ -514,6 +628,11 @@ impl PluginHost {
                     handshake_done: false,
                     generation: glib::uuid_string_random().to_string(),
                     notification_live: None,
+                    package_version: self.plugins[index]
+                        .managed
+                        .as_ref()
+                        .and_then(|entry| entry.inspected.as_ref().ok())
+                        .map(|inspected| inspected.manifest.version.clone()),
                 });
                 self.plugins[index].restart_at = None;
                 self.plugins[index].after_stop = None;
@@ -784,6 +903,8 @@ impl PluginHost {
             self.enumerate_if_due(index);
         }
         self.poll_notifications();
+        self.plugins
+            .retain(|plugin| !plugin.removed || plugin.io.is_some());
     }
 
     fn restart_if_due(&mut self, index: usize, now: Instant) {

@@ -23,6 +23,23 @@ fn parse(value: &Value) -> Result<Catalogue, Problem> {
 }
 
 #[test]
+fn package_members_cannot_impersonate_reserved_store_receipts_or_leases() {
+    for path in [
+        ".among-receipt.json",
+        ".among-lease",
+        ".among-lease/child",
+        "data/.among-future",
+    ] {
+        let mut metadata = single();
+        metadata["artifacts"][0]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"path":path,"size":1,"sha256":"a".repeat(64),"executable":false}));
+        assert!(parse(&metadata).is_err(), "{path}");
+    }
+}
+
+#[test]
 fn single_root_normalizes_and_shared_settings_remain_independent_in_a_catalogue() {
     let single = parse(&single()).unwrap();
     assert_eq!(single.plugins.len(), 1);

@@ -131,16 +131,64 @@ fn hex(value: &str, length: usize) -> bool {
 pub(super) struct Selection {
     pub version: u32,
     pub installations: Vec<Receipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous: Vec<Receipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
+impl Selection {
+    pub fn validate(&self) -> Result<(), Problem> {
+        if self.version != 1
+            || self.installations.len() > MAX_INSTALLATIONS
+            || self.previous.len() > MAX_INSTALLATIONS
+            || self.revision.as_ref().is_some_and(|value| !hex(value, 64))
+        {
+            return Err(Problem(
+                "unsupported selection version or installation count",
+            ));
+        }
+        for receipts in [&self.installations, &self.previous] {
+            let mut identities = BTreeSet::new();
+            for receipt in receipts {
+                receipt.validate()?;
+                if !identities.insert(receipt.identity()?.key()) {
+                    return Err(Problem("duplicate committed plugin identity"));
+                }
+            }
+        }
+        for previous in &self.previous {
+            if !self.installations.iter().any(|current| {
+                current.identity().ok() == previous.identity().ok()
+                    && current.generation != previous.generation
+            }) {
+                return Err(Problem(
+                    "retained generation has no distinct selected identity",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub receipt: Receipt,
     pub inspected: Result<Inspected, Problem>,
+    pub previous: Option<Receipt>,
     store: PathBuf,
+    // clones, open detail views and supervised processes retain this shared
+    // lock. cleanup needs an exclusive lock before touching generation files.
+    _lease: Option<std::sync::Arc<std::fs::File>>,
 }
 
 impl Entry {
+    pub fn removal_pending(&self) -> bool {
+        super::install::store::removal_pending(&self.store, &self.key())
+    }
+    pub fn generation_lease(&self) -> Option<std::sync::Arc<std::fs::File>> {
+        self._lease.clone()
+    }
     pub fn key(&self) -> String {
         format!(
             "github:{}/{}",
@@ -151,7 +199,7 @@ impl Entry {
     pub fn executable_files(&self) -> Result<(std::fs::File, std::fs::File), Problem> {
         use std::os::unix::fs::MetadataExt;
         let inspected = self.inspected.as_ref().map_err(|problem| *problem)?;
-        let root = data::owned_directory(&self.store)?;
+        let root = super::install::store::open_existing_root(&self.store)?;
         let directory = data::contained_directory(
             &root,
             &format!(
@@ -200,7 +248,7 @@ pub fn read(root: &Path) -> Result<Vec<Entry>, Problem> {
     {
         return Ok(Vec::new());
     }
-    let directory = data::owned_directory(root)?;
+    let directory = super::install::store::open_existing_root(root)?;
     if matches!(std::fs::symlink_metadata(root.join("installed.json")), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
     {
         return Ok(Vec::new());
@@ -212,11 +260,7 @@ pub fn read(root: &Path) -> Result<Vec<Entry>, Problem> {
     let selection: Selection =
         serde_json::from_value(data::parse_unique(&bytes, data::MAX_STATIC_BYTES)?)
             .map_err(|_| Problem("invalid managed selection document"))?;
-    if selection.version != 1 || selection.installations.len() > MAX_INSTALLATIONS {
-        return Err(Problem(
-            "unsupported selection version or installation count",
-        ));
-    }
+    selection.validate()?;
     let mut identities = BTreeSet::new();
     let mut entries = Vec::new();
     for receipt in selection.installations {
@@ -240,10 +284,20 @@ pub fn read(root: &Path) -> Result<Vec<Entry>, Problem> {
             }
             manifest::inspect(&package, &receipt.package_path(root), identity)
         })();
+        let (inspected, lease) = match super::install::store::lease(&directory, &receipt) {
+            Ok(lease) => (inspected, lease),
+            Err(problem) => (Err(problem), None),
+        };
         entries.push(Entry {
+            previous: selection
+                .previous
+                .iter()
+                .find(|old| old.identity().ok() == receipt.identity().ok())
+                .cloned(),
             receipt,
             inspected,
             store: root.into(),
+            _lease: lease,
         });
     }
     Ok(entries)

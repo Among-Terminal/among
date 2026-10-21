@@ -31,7 +31,7 @@ fn busy_executable() -> (PathBuf, Command, std::fs::File) {
     );
     let directory = super::super::data::owned_directory(&root).unwrap();
     let executable = super::super::data::contained_file(&directory, "plugin").unwrap();
-    let mut command = pinned_program(directory, executable);
+    let mut command = pinned_program(directory, executable, None);
     command.arg("echo");
     (root, command, writer)
 }
