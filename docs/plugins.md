@@ -595,7 +595,7 @@ cargo build --release --locked
 install -m 755 target/release/my-status "$plugin_dir/my-status"
 ```
 
-Add `{"name": "my-status", "enabled": false}` to the `plugins` array in
+To retain an explicit choice, add `{"name": "my-status", "enabled": false}` to the `plugins` array in
 `${XDG_CONFIG_HOME:-$HOME/.config}/among/plugins.json`, preserving other entries
 and fields. If the file does not exist, create it with:
 
@@ -604,10 +604,11 @@ and fields. If the file does not exist, create it with:
 ```
 
 The configuration name is the installed filename, not a path or display title.
-The host reads registered names at startup and lists only those whose files
-exist in the plugin directory. Merely copying a file there does **not** add it
-to Settings. Restart Among Terminal when it is safe to close its terminal
-sessions, then open Settings → Plugins and enable `my-status`; `Hello` will
+At startup the host retains configured names even when their files are missing,
+and discovers unconfigured executable files in the legacy plugin directory as
+disabled entries. Copying a new file does not trigger live legacy discovery.
+Restart Among Terminal when it is safe to close its terminal sessions, then open
+Settings → Plugins and enable `my-status`; `Hello` will
 appear in the application header. A protocol or launch failure is shown as
 Faulted rather than Running. For an already registered plugin update, disable
 it, replace its file, then re-enable it; no host restart is needed.
