@@ -30,6 +30,13 @@ fn write(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
 }
 
 fn complete_runtime_data(root: &Path) -> Result<()> {
+    for relative in among_tools::audio_payload::MEMBERS {
+        let relative = format!("usr/lib/{relative}");
+        write(root, &relative, ELF)?;
+        if relative.ends_with("gst-plugin-scanner") {
+            fs::set_permissions(root.join(relative), fs::Permissions::from_mode(0o755))?;
+        }
+    }
     for relative in [
         "usr/share/glib-2.0/schemas/gschemas.compiled",
         "usr/share/glib-2.0/schemas/org.gnome.desktop.interface.gschema.xml",
@@ -255,10 +262,10 @@ fn real_pinned_helpers_build_an_audited_appimage_and_refuse_existing_output() ->
         .as_array()
         .is_some_and(|names| names.iter().any(|name| name == "libc.so.6")));
     assert!(
-        libraries.iter().all(|record| record["path"]
-            .as_str()
-            .is_some_and(|path| !path.starts_with("usr/lib/gtk-4.0/"))),
-        "unreachable GTK modules were bundled"
+        libraries
+            .iter()
+            .any(|record| record["path"] == "usr/lib/gtk-4.0/4.0.0/media/libmedia-gstreamer.so"),
+        "the required GTK media backend was not bundled"
     );
     let sha = Command::new("/usr/bin/sha256sum")
         .args(["--check", "SHA256SUMS"])
@@ -287,12 +294,21 @@ fn unreachable_gtk_modules_and_typelibs_are_removed_and_odd_entries_refused() ->
         "usr/lib/girepository-1.0/Gtk-4.0.typelib",
         b"typelib",
     )?;
+    write(
+        &root,
+        "usr/lib/gtk-4.0/4.0.0/media/libmedia-gstreamer.so",
+        ELF,
+    )?;
     write(&root, "usr/lib/libgtk-4.so.1", ELF)?;
     appimage_build::remove_unreachable_modules(&root)?;
-    assert!(!root.join("usr/lib/gtk-4.0").exists());
+    assert!(!root.join("usr/lib/gtk-4.0/4.0.0/printbackends").exists());
+    assert!(root
+        .join("usr/lib/gtk-4.0/4.0.0/media/libmedia-gstreamer.so")
+        .is_file());
     assert!(!root.join("usr/lib/girepository-1.0").exists());
     assert!(root.join("usr/lib/libgtk-4.so.1").is_file());
     // A file or a link in place of the module directory is an unknown layout.
+    fs::remove_dir_all(root.join("usr/lib/gtk-4.0"))?;
     write(&root, "usr/lib/gtk-4.0", b"not a directory")?;
     assert!(appimage_build::remove_unreachable_modules(&root).is_err());
     fs::remove_file(root.join("usr/lib/gtk-4.0"))?;
