@@ -3186,17 +3186,17 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
         let review=serde_json::json!({"owner":current.receipt.owner,"repository":current.receipt.repository,
             "features":features.iter().filter(|(_,control)|control.is_active()).map(|(feature,_)|feature.clone()).collect::<Vec<_>>()});
         let valid=current.inspected.as_ref().map_err(|problem|*problem)
-            .and_then(|inspected|crate::plugin::managed::granted_features(&inspected.manifest,&current.receipt,Some(&serde_json::json!({"review":review}))));
+            .and_then(|inspected|crate::plugin::managed::granted_features(&inspected.manifest,&current.receipt,Some(&serde_json::json!({"review":review}))))
+            .and_then(|_|window.state.borrow_mut().plugins.review_access(&key,review.clone()));
         if let Err(problem)=valid {
             let explanation=adw::AlertDialog::builder().heading("Plugin access was not accepted").body(problem.to_string()).build();
             explanation.add_response("close","Close");explanation.present(Some(&parent));return;
         }
-        let result=window.state.borrow_mut().settings.managed_review_changed(&key,review.clone());
+        let result=window.state.borrow_mut().settings.managed_review_changed(&key,review);
+        // consent was accepted by the stopped runtime above; a persistence
+        // failure is reported separately without revoking this session's consent.
         report_settings_save(&window,result);
-        let reviewed=window.state.borrow_mut().plugins.review_access(&key,review).is_ok();
-        if reviewed {
-            window.state.borrow_mut().plugins.enable(&key);
-        }
+        window.state.borrow_mut().plugins.enable(&key);
     });
     dialog.present(Some(&parent));
 }
@@ -4069,6 +4069,12 @@ fn collect_plugin_results(ctx: &Window) {
     let now = slots::now_ms();
     {
         let mut state = ctx.state.borrow_mut();
+        for source in state.plugins.drain_invalidated_sources() {
+            changed |= state.store.remove_source(&source);
+            ctx.summary_requested
+                .borrow_mut()
+                .retain(|(_, name), _| name != &source);
+        }
         for result in results {
             if let Some(index) = parse_summary_scope(&result.scope) {
                 // A summary is the compact content shown beside a workspace's

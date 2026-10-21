@@ -3,7 +3,7 @@
 use super::process::{Failure, Process, SendError};
 use super::transport::{MAX_POLL_FRAMES, MAX_QUEUE_FRAMES};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
@@ -122,6 +122,7 @@ pub struct PluginHost {
     results: Vec<PluginResult>,
     /// Notifications raised since the last poll.
     notices: Vec<(String, String, Option<String>)>,
+    invalidated_sources: BTreeSet<String>,
     next_poll: usize,
     starts_allowed: Rc<Cell<bool>>,
     world: managed::World,
@@ -167,6 +168,7 @@ impl PluginHost {
             last_rejections: Vec::new(),
             results: Vec::new(),
             notices: Vec::new(),
+            invalidated_sources: Default::default(),
             next_poll: 0,
             starts_allowed,
             world: managed::World {
@@ -174,6 +176,12 @@ impl PluginHost {
                 ..Default::default()
             },
         }
+    }
+
+    pub fn drain_invalidated_sources(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.invalidated_sources)
+            .into_iter()
+            .collect()
     }
 
     /// Take the notifications raised since the last poll.
