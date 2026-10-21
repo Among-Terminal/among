@@ -162,3 +162,11 @@ MIME cache or SVG pixbuf loader, audits the bundled libraries and extracts the
 finished image to repeat those checks. Every output directory must be new.
 `collect-appimage-sources` changes the container's APT configuration, so it
 refuses to run outside a root container.
+
+Refresh the disposable build container's base runtime packages after APT update,
+before installing build dependencies. An older library can satisfy a new
+dependency's SONAME/minimum version while its exact source version has already
+left the current source index. The workflow upgrades those container packages;
+the audit still records every actual binary/source version. This is not a
+hermetic base-image rebuild, and source collection must still fail rather than
+substitute a different version when an exact source is unavailable.
