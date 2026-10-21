@@ -2,8 +2,10 @@
 
 This is a backend integration boundary, **not a finished notification UI**.
 The host receives VTE's semantic bell signal, retains session-local attention,
-and acknowledges actual terminal viewing. It does not yet render unread stripes
-or play sound, run notification commands, or invoke managed notification providers.
+and acknowledges actual terminal viewing. It does not yet render unread stripes,
+play sound or invoke managed notification providers. A reusable optional
+[command executor](notification-commands.md) is implemented separately; the normal
+application bell path does not register a command channel yet.
 There are no notification Preferences controls or saved notification settings in
 this implementation. VTE's independent audible bell is explicitly disabled for
 attached terminals; no fallback beep bypasses the future host audio policy.
@@ -83,10 +85,10 @@ channel never replays old work. The core cannot undo a completed external effect
 - Audio needs validated immutable WAV inputs, a single owned asynchronous player
   and observed packaged output. Explicit preview must be a separate operation,
   usable while event-driven audio is off, not an event sent through this host.
-- Commands need actual supervised off-loop execution, bounded JSON stdin/EOF,
-  literal argv, allowlisted environment/owned cwd, concurrency, deadline/output
-  budgets and group cleanup. There is no command configuration or executor here.
-  Process supervision must not be described as an OS sandbox.
+- Commands have a real reusable executor with bounded JSON stdin/EOF, literal
+  argv, an allowlisted environment/owned cwd and supervised cleanup. Sequential
+  UI/storage/channel-registration and graceful application-hold integration are
+  still required; see its contract and limitations above. It is not an OS sandbox.
 - Managed provider/producer authorization and real delivery belong to the separate
   plugin API/runtime integration, not this host core. No provider success is faked.
 

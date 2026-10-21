@@ -140,6 +140,11 @@ impl Backend {
         self.host.borrow().as_ref().map_or(0, Host::event_count)
     }
 
+    #[cfg(test)]
+    pub(super) fn with_host<T>(&self, operation: impl FnOnce(&mut Host) -> T) -> Option<T> {
+        self.host.borrow_mut().as_mut().map(operation)
+    }
+
     pub(super) fn diagnostics(&self) -> Vec<Diagnostic> {
         self.host
             .borrow()

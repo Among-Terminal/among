@@ -464,3 +464,24 @@ fn counter_exhaustion_fails_closed_instead_of_reusing_identity() {
         Err(Failure::Exhausted)
     );
 }
+
+#[test]
+fn worker_authorization_revokes_independently_of_the_borrowed_host() {
+    let now = Instant::now();
+    for operation in 0..4 {
+        let mut host = Host::new().unwrap();
+        let source = host.attach(1).unwrap();
+        let channel = host.register_channel(enabled(Eligibility::Always)).unwrap();
+        host.bell(source, Focus::default(), now).unwrap();
+        let job = host.take_ready(channel, now).unwrap();
+        let authorization = host.authorization(job).unwrap();
+        assert!(authorization.is_current());
+        match operation {
+            0 => host.detach(source),
+            1 => host.cancel_channel_work(channel).unwrap(),
+            2 => host.remove_channel(channel),
+            _ => drop(host),
+        }
+        assert!(!authorization.is_current());
+    }
+}

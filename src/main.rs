@@ -25,6 +25,9 @@ use gtk::{gio, glib};
 use vte::prelude::*;
 
 fn main() -> glib::ExitCode {
+    if let Some(code) = among::notifications::commands::supervisor_entry() {
+        return glib::ExitCode::from(code);
+    }
     if let Err(error) = packaged::initialize()
         .and_then(|()| initialize_packaged_schemas())
         .and_then(|()| initialize_packaged_images())
