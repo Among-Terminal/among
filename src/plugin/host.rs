@@ -238,7 +238,17 @@ impl PluginHost {
         let desired = local
             .and_then(|local| local.get("enabled"))
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+            .unwrap_or(false)
+            && entry
+                .receipt
+                .installation
+                .as_ref()
+                .is_none_or(|installation| {
+                    local
+                        .and_then(|local| local.get("installation"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(installation.as_str())
+                });
         // never pass a managed receipt through legacy registration: its static
         // compatibility must be checked before any executable can start.
         self.register(PluginSpec {

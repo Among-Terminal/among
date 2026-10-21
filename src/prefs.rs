@@ -16,6 +16,7 @@ use crate::shortcuts::{self, Action, Bindings};
 
 mod plugin_manager;
 mod plugin_settings;
+pub(crate) mod repositories;
 
 type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
 type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
@@ -44,6 +45,7 @@ pub struct PreferencesContext {
     pub restart_plugin: Rc<RestartPlugin>,
     pub enable_plugin: Rc<EnablePlugin>,
     pub disable_plugin: Rc<dyn Fn(&str)>,
+    pub installations_changed: Rc<dyn Fn()>,
     /// Rebuilds the window's shortcut controller after a rebind.
     pub bindings_changed: Rc<dyn Fn()>,
 }
@@ -337,6 +339,7 @@ mod tests {
         let disabled = state.clone();
         let desired = Rc::new(std::cell::Cell::new(true));
         let page = plugins_page(&PreferencesContext {
+            installations_changed: Rc::new(|| {}),
             on_closed: Rc::new(|| {}),
             storage_status: gtk::StringList::new(&[]),
             bindings: Rc::new(RefCell::new(Bindings::defaults())),
@@ -389,7 +392,7 @@ mod tests {
             .expect("live plugin row containing the switch");
         assert!(row
             .subtitle()
-            .is_some_and(|text| text.contains("Running") && text.contains("Declared API unknown")));
+            .is_some_and(|text| text.contains("Running") && text.contains("Local test fixture")));
         switch.set_active(false);
         assert!(row.subtitle().is_some_and(|text| text.contains("Disabled")));
         switch.set_active(true);

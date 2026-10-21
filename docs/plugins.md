@@ -152,18 +152,22 @@ application from starting:
 ### Native inventory
 
 Preferences → Plugins joins configured legacy entries, committed managed receipts
-and runtime observations by identity. Cards show description (or its absence),
-origin/version, declared compatibility and last observed wire API separately from
-desired enablement and Starting/Running/Stopping/fault state. A never-run plugin
-does not receive an observed-compatible badge. Equal display names retain separate
+and runtime observations by identity. Cards show origin/version and runtime state
+beside the desired enablement switch. Details shows the description (or its
+absence), declared compatibility, last observed wire API and package provenance;
+managed details use labelled, selectable rows rather than a single long alert.
+A never-run plugin does not receive an observed-compatible badge. Equal display names retain separate
 origin-scoped settings and switches; invalid selected packages remain visible.
 
 Search matches name, description, identity and origin. Clearing search restores
 the same rows rather than redirecting an action to a sorted position. Background
 state changes update existing controls; they do not replace an open editor or
 discard unfinished settings text. Details/settings callbacks reject a removed or
-replaced package rather than silently retargeting an old action. This inventory
-does not itself implement repository browsing, download or uninstall.
+replaced package rather than silently retargeting an old action. The separate
+Plugin sources section opens repository inspection with a separate explicit
+Install disabled action for each compatible version; the search field filters
+only installed/configured plugins. Merely inspecting metadata never installs or
+enables code. Updates, uninstall and persistent source registrations remain unfinished.
 
 ### Updating an installed example
 
@@ -378,7 +382,11 @@ binds GitHub's repository ID, owner/name, repository-local ID, exact revision,
 manifest/package SHA-256, release/asset IDs and immutable generation. A matching
 hash establishes content consistency, not an independently verified publisher.
 Identity is `github:<repository-id>/<local-id>`; a bare filename/display name
-cannot inherit another origin's settings or switch. New records default disabled.
+cannot inherit another origin's settings or switch. Installer receipts also carry
+a fresh `installation` token. Explicit managed enable/review saves that token with
+consent; retained enabled settings for a different/missing token cannot start a new
+installation. Pre-installer receipts without tokens keep their previous startup
+semantics. New installs do not rewrite settings merely to force their switch off.
 Local state lives separately in `managed-plugins.json` in the XDG config directory.
 Retained preferences alone are not evidence of installation. Repository browsing,
 download, update and uninstall are separate installer operations, not implemented
@@ -675,3 +683,86 @@ Test the binaries and their real stdio replies with:
 ```sh
 cargo test --locked --manifest-path examples/plugins/Cargo.toml
 ```
+
+## Repository package metadata — implementation in progress
+
+Preferences → Plugins → Plugin sources → Inspect repository opens a
+public-GitHub catalogue preview. Enter `owner/repository` or its public HTTPS
+GitHub URL, then use the adjacent Inspect button or press Enter. Loading exposes
+a Cancel request action; empty/error/cancelled states do not show a blank result
+panel. Editing the address hides the previous preview without sending a request.
+After inspecting a catalogue, each compatible version has an explicit **Install
+disabled** action. Only the selected identity is installed, with no executable
+admission or automatic enablement. An existing selected identity is refused rather
+than overwritten: updates, uninstall, persistent source registrations/cache and
+generation cleanup/recovery are still unfinished. This is not full installer acceptance.
+
+The metadata client uses real HTTPS, resolves repository identity, pins catalogue
+content to a revision and accepts only constrained public-GitHub redirects.
+It has 5-second connect, 10-second idle-read and 60-second operation limits,
+bounded streamed responses, cancellation and at most two retained network workers.
+It neither builds nor executes downloaded code.
+
+The preflight parser defines `among-plugins.json` schema 1. A root version
+envelope normalizes to one plugin/version; a multi-plugin root has
+`schema_version: 1` and a `plugins` list of independent `id`/`versions` entries.
+Each version embeds the existing shared plugin `manifest`, an exact 40-hex commit
+`revision`, `manifest_sha256`, numeric GitHub `release_id` and `artifacts`.
+Unknown fields, duplicate keys/IDs/version labels and executable hooks are refused.
+
+Artifacts declare `os: linux`, `architecture: amd64` or `arm64`, a `runtime`
+(`native` with `libc` and numeric `minimum`, or `script` with an explicit installed
+`/usr/bin/<name>` executable), `dependencies`, `format: tar.gz`, numeric `asset_id`,
+exact `size`/`sha256` and `members`. Each regular-file member declares `path`,
+`size`, `sha256` and `executable`; the shared manifest and executable entrypoint
+must be present. This metadata selects ready-built packages, not DEB/RPM installers
+or a build command. Digest consistency is not independent publisher authentication.
+
+Preflight bounds catalogue bytes to 1 MiB, 32 plugins, 16 versions per plugin,
+8 artifacts per version and 16 dependencies per artifact. Shared manifests retain
+their 256-KiB limit. Package declarations are bounded to 64 MiB downloaded,
+256 MiB expanded, 2,048 regular files and 64 MiB per file. Paths use the shared
+256-byte/16-component relative-path rules; duplicate or conflicting file paths,
+absolute paths, empty/dot/parent components and inconsistent manifest digests fail.
+Platform selection never guesses from filenames or falls back to another CPU.
+An installed runtime file does not prove its minimum version: an unmeasured
+minimum is reported unavailable instead of executing a probe.
+
+The first-install consumer requests the exact numeric repository/release, checks
+selected asset membership/size and any supplied GitHub digest, then streams that
+exact numeric asset. It never refetches mutable latest. Signed CDN redirects must
+use GitHub's release-asset hosts and the selected numeric repository path. Tokens
+are not logged or stored in receipts. Size and SHA-256 must match selected metadata.
+The same connect/idle/operation deadlines and two worker credits cover inspection
+and installation; overflow is refused, not put in an unbounded pending queue.
+
+Extraction uses fresh owned descriptor-relative staging. Regular files must match
+the declared size, executable mode and digest. Links, special/extended headers,
+duplicate/unsafe paths, unexpected members, trailing compressed streams and invalid
+gzip trailers are refused. The packaged manifest must match both its exact digest
+and the shared parsed preview. Shared icon inspection stays inert. Extraction has
+a ten-second read deadline, checks cancellation per member/128 KiB and bounds tar
+headers/padding in addition to declared expanded bytes.
+
+The store bounds selection to 128 identities/256 KiB, package/staging bytes to
+2 GiB total/512 MiB staging, directory depth to 24, per-directory entries to 131,072
+and a measured traversal to 1,048,576 entries. Normal staging cleanup is bounded
+to 65,536 entries/five seconds; unsafe entries leave a diagnostic/deferred staging
+directory, never a followed link. A nonblocking advisory store lock serializes
+cooperating first-install writers. It does not protect against arbitrary same-user
+filesystem modification and is not an OS sandbox.
+
+Complete flushed payloads move to fresh generations with no-replace rename before
+an atomic `installed.json` selection rename. Pre-selection failure leaves at most
+an inert unselected generation; it does not report Installed. A changed selection
+snapshot is refused rather than overwriting an observed external edit. Final
+directory-confirmation failure reports written-but-uncertain, not durable success.
+Cancellation is accepted only before commitment starts; a committed operation is
+not reported rolled back. Its completion reconciles disabled live inventory even
+if the repository view has closed. Selected files/settings/legacy executables are
+never replaced in place by this first-install path.
+
+Outstanding consumers still require 32 registrations/four snapshots per source/
+16 MiB metadata cache, identity-generation invalidation for update/uninstall,
+retention of selected/running plus one previous verified generation and lease-aware
+recovery/cleanup. These limits are engineering constants, not user-facing options.
