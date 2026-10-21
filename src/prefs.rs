@@ -17,6 +17,7 @@ use crate::shortcuts::{self, Action, Bindings};
 mod plugin_manager;
 mod plugin_settings;
 pub(crate) mod repositories;
+mod repository_sources;
 
 type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
 type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;

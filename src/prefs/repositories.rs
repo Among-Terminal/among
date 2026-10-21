@@ -43,6 +43,36 @@ fn present_with(
     install: Rc<Install>,
     changed: Rc<dyn Fn()>,
 ) {
+    present_complete(
+        parent,
+        start,
+        install,
+        changed,
+        crate::plugin::install::registry::root(),
+        Rc::new(Job::refresh),
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn present_sources_for_test(
+    parent: &gtk::Window,
+    start: Rc<Start>,
+    refresh: Rc<super::repository_sources::Refresh>,
+    install: Rc<Install>,
+    changed: Rc<dyn Fn()>,
+    root: std::path::PathBuf,
+) {
+    present_complete(parent, start, install, changed, Some(root), refresh);
+}
+
+fn present_complete(
+    parent: &gtk::Window,
+    start: Rc<Start>,
+    install: Rc<Install>,
+    changed: Rc<dyn Fn()>,
+    source_root: Option<std::path::PathBuf>,
+    refresh: Rc<super::repository_sources::Refresh>,
+) {
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
         .title("Inspect public GitHub repository")
@@ -117,6 +147,43 @@ fn present_with(
     packages.set_description(Some("Installation only stores verified files. Enable the plugin separately after reviewing its access. Existing identities are not replaced by Install."));
     packages.set_visible(false);
     page.add(&group);
+    let package_rows = Rc::new(RefCell::new(Vec::new()));
+    let show: Rc<dyn Fn(Inspection)> = Rc::new({
+        let preview = preview.downgrade();
+        let result = result.downgrade();
+        let packages = packages.downgrade();
+        let window = window.downgrade();
+        let package_rows = package_rows.clone();
+        move |inspection| {
+            let (Some(preview), Some(result), Some(packages), Some(window)) = (
+                preview.upgrade(),
+                result.upgrade(),
+                packages.upgrade(),
+                window.upgrade(),
+            ) else {
+                return;
+            };
+            result.buffer().set_text(
+                &inspection
+                    .summary(|| Ok(()))
+                    .unwrap_or_else(|problem| problem.to_string()),
+            );
+            preview.set_visible(true);
+            for row in package_rows.borrow_mut().drain(..) {
+                packages.remove(&row);
+            }
+            *package_rows.borrow_mut() = installation_rows(
+                &packages,
+                &inspection,
+                install.clone(),
+                changed.clone(),
+                &window,
+            );
+            packages.set_visible(true);
+        }
+    });
+    let sources =
+        super::repository_sources::Panel::new(&page, &preview, source_root, refresh, show.clone());
     page.add(&feedback);
     page.add(&preview);
     page.add(&packages);
@@ -143,11 +210,13 @@ fn present_with(
         let status = status.downgrade();
         let preview = preview.downgrade();
         let packages = packages.downgrade();
+        let sources = sources.clone();
         move |entry| {
             if job.borrow().is_some() {
                 return;
             }
             entry.remove_css_class("error");
+            sources.clear();
             if let Some(inspect) = inspect.upgrade() {
                 inspect.set_sensitive(!entry.text().trim().is_empty());
             }
@@ -172,6 +241,7 @@ fn present_with(
         let spinner = spinner.downgrade();
         let preview = preview.downgrade();
         let packages = packages.downgrade();
+        let sources = sources.clone();
         move |inspect| {
             let (
                 Some(entry),
@@ -195,6 +265,7 @@ fn present_with(
                 return;
             }
             result.buffer().set_text("");
+            sources.clear();
             preview.set_visible(false);
             if let Some(packages) = packages.upgrade() {
                 packages.set_visible(false);
@@ -257,11 +328,8 @@ fn present_with(
         let inspect = inspect.downgrade();
         let cancel = cancel.downgrade();
         let status = status.downgrade();
-        let result = result.downgrade();
-        let preview = preview.downgrade();
         let spinner = spinner.downgrade();
-        let packages = packages.downgrade();
-        let package_rows = RefCell::new(Vec::new());
+        let sources = sources.clone();
         move || {
             let (
                 Some(window),
@@ -269,8 +337,6 @@ fn present_with(
                 Some(inspect),
                 Some(cancel),
                 Some(status),
-                Some(result),
-                Some(preview),
                 Some(spinner),
             ) = (
                 window.upgrade(),
@@ -278,8 +344,6 @@ fn present_with(
                 inspect.upgrade(),
                 cancel.upgrade(),
                 status.upgrade(),
-                result.upgrade(),
-                preview.upgrade(),
                 spinner.upgrade(),
             )
             else {
@@ -301,26 +365,10 @@ fn present_with(
                 spinner.set_visible(false);
                 match outcome {
                     Ok(inspection) => {
-                        let summary = inspection
-                            .summary(|| Ok(()))
-                            .unwrap_or_else(|problem| problem.to_string());
-                        result.buffer().set_text(&summary);
-                        preview.set_visible(true);
+                        show(inspection.clone());
+                        sources.inspected(inspection);
                         status.set_title("Metadata preview ready");
                         status.set_subtitle("Metadata inspected. No installation, registration or activation was performed.");
-                        if let Some(packages) = packages.upgrade() {
-                            for row in package_rows.borrow_mut().drain(..) {
-                                packages.remove(&row);
-                            }
-                            *package_rows.borrow_mut() = installation_rows(
-                                &packages,
-                                &inspection,
-                                install.clone(),
-                                changed.clone(),
-                                &window,
-                            );
-                            packages.set_visible(true);
-                        }
                     }
                     Err(problem) => {
                         status.set_title("No metadata preview");
@@ -379,6 +427,8 @@ fn installation_rows(
                             Ok(job) => {
                                 button.set_sensitive(false);
                                 row.set_subtitle(job.phase());
+                                let (identity,generation)=job.operation();
+                                row.set_tooltip_text(Some(&format!("Identity: {identity}\nOperation generation: {generation}")));
                                 let cancel = gtk::Button::with_label("Cancel install");
                                 cancel.set_valign(gtk::Align::Center);
                                 row.add_suffix(&cancel);

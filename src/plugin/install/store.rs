@@ -92,7 +92,7 @@ pub(super) fn directory(parent: &File, component: &str) -> Result<File, Problem>
     owned(unsafe { File::from_raw_fd(fd) }, true)
 }
 
-fn open_root(path: &Path) -> Result<File, Problem> {
+pub(super) fn open_root(path: &Path) -> Result<File, Problem> {
     if !path.is_absolute() {
         return Err(Problem("managed-store root must be absolute"));
     }
@@ -389,10 +389,27 @@ impl Transaction {
     }
 
     pub fn refuse_existing(&self, receipt: &Receipt) -> Result<(), Problem> {
-        if selection(&self.root)?
+        if let Some(previous) = selection(&self.root)?
             .iter()
-            .any(|old| old.identity().ok() == receipt.identity().ok())
+            .find(|old| old.identity().ok() == receipt.identity().ok())
         {
+            if let Some(source) = &receipt.source {
+                let change = previous.origin_change(
+                    &crate::plugin::origin::Origin {
+                        repository_id: receipt.repository_id,
+                        publisher_id: source.publisher_id,
+                        owner: receipt.owner.clone(),
+                        repository: receipt.repository.clone(),
+                    },
+                    &receipt.plugin_id,
+                );
+                if change == crate::plugin::origin::Change::PublisherChanged {
+                    return Err(Problem("identity already installed; changed or unconfirmed publisher requires explicit update/access review, not first-install replacement"));
+                }
+                if change == crate::plugin::origin::Change::Renamed {
+                    return Err(Problem("repository renamed but this numeric identity is already installed; use an explicit update, not a second installation"));
+                }
+            }
             return Err(Problem("this identity is already installed; installation never overwrites a selected generation"));
         }
         Ok(())
