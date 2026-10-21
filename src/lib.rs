@@ -1,3 +1,4 @@
-//! Host-owned notification state, independent of GTK and plugin admission.
+//! Independently testable host adapters; the binary owns their UI integration.
 
+pub mod audio;
 pub mod notifications;
