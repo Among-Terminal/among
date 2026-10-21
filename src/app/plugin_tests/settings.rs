@@ -85,10 +85,12 @@ fn open_editor(
 }
 
 fn transcript(package: &Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(package.join("transcript.jsonl"))
+    // generation separators and a killed writer's partial diagnostic tail are
+    // not wire messages; require the asserted real configure frames separately.
+    std::fs::read(package.join("transcript.jsonl"))
         .unwrap_or_default()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice(line).ok())
         .collect()
 }
 
