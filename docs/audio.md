@@ -55,7 +55,7 @@ back to VTE's independent beep.
 Debian/Ubuntu explicitly require `libgtk-4-media-gstreamer` and
 `gstreamer1.0-plugins-good` (which requires base). Fedora's `gtk4` supplies its
 media implementation; `gstreamer1-plugins-good` supplies WAV parsing/pulsesink,
-and `mesa-libGLES` supplies the media paintable's dynamically opened GLES library.
+and `libglvnd-gles` supplies the media paintable's dynamically opened GLES library.
 
 Snap stages the Ubuntu media/base/good route. AppImage preserves the GTK media
 module, ten declared GStreamer plugins and plugin scanner in their nested paths;

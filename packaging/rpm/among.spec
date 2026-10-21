@@ -33,7 +33,7 @@ Requires:       gtk4 >= 4.12
 Requires:       gstreamer1-plugins-good
 # The media paintable uses GLES even for audio-only input; this dlopen is not a
 # DT_NEEDED dependency and minimal Fedora installs otherwise abort in libepoxy.
-Requires:       mesa-libGLES
+Requires:       libglvnd-gles
 
 %description
 Organize live terminals in resizable panes and persistent project workspaces.
