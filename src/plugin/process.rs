@@ -17,6 +17,10 @@ use super::transport::{FrameDecoder, MAX_FRAME_BYTES, MAX_QUEUE_FRAMES};
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_GRACE: Duration = Duration::from_millis(500);
 const IO_INTERVAL_MS: i32 = 20;
+const SPAWN_BUSY_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(test)]
+mod spawn_tests;
 
 pub enum Failure {
     Missing(String),
@@ -87,10 +91,11 @@ impl Process {
                 if worker_cancel.load(Ordering::Acquire) {
                     return;
                 }
-                let mut child = match command.spawn() {
-                    Ok(child) => child,
-                    Err(err) => {
-                        let _ = failure_sender.try_send(Failure::Missing(err.to_string()));
+                let mut child = match start_child(&mut command, &worker_cancel) {
+                    Ok(Some(child)) => child,
+                    Ok(None) => return,
+                    Err(failure) => {
+                        let _ = failure_sender.try_send(failure);
                         return;
                     }
                 };
@@ -188,6 +193,27 @@ impl Drop for Process {
 }
 
 struct BoundedFrame(Vec<u8>);
+
+fn start_child(command: &mut Command, cancel: &AtomicBool) -> Result<Option<Child>, Failure> {
+    let started = Instant::now();
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        match command.spawn() {
+            Ok(child) => return Ok(Some(child)),
+            // exec refuses an inode still open for writing. retry only ETXTBSY,
+            // off-loop and within the existing admission deadline.
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY)
+                    && started.elapsed() < SPAWN_BUSY_TIMEOUT =>
+            {
+                std::thread::sleep(Duration::from_millis(IO_INTERVAL_MS as u64))
+            }
+            Err(error) => return Err(Failure::Missing(error.to_string())),
+        }
+    }
+}
 
 impl Write for BoundedFrame {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
