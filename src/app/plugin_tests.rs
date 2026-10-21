@@ -635,18 +635,18 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
     std::fs::write(package.join("target-labels"), b"yes").unwrap();
     let original_label = format!("workspace-{original}");
     let survivor_label = format!("workspace-{survivor}");
+    // a summary can have just refreshed before the fixture changes. waiting
+    // exactly one interval races the next production tick and child I/O.
+    let summary_wait = Duration::from_millis(SUMMARY_REFRESH_MS + 2_000);
     wait_for(
         || {
             has_label(ctx.workspace_list.upcast_ref(), &original_label)
                 && has_label(ctx.workspace_list.upcast_ref(), &survivor_label)
         },
-        Duration::from_secs(3),
+        summary_wait,
     );
     std::fs::write(package.join("hold-summary"), original.to_string()).unwrap();
-    wait_for(
-        || package.join("status-held").exists(),
-        Duration::from_secs(3),
-    );
+    wait_for(|| package.join("status-held").exists(), summary_wait);
     xdo(&["key", "--clearmodifiers", "alt+1"]);
     wait_for(
         || ctx.state.borrow().workspaces.active().reference == original,
@@ -688,7 +688,7 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
                         == Some(survivor_reference.as_str())
             }) && has_label(ctx.workspace_list.upcast_ref(), &survivor_label)
         },
-        Duration::from_secs(3),
+        summary_wait,
     );
     observation.remove();
     std::fs::remove_file(package.join("hold-summary")).unwrap();
