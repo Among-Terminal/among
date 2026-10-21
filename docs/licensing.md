@@ -16,17 +16,33 @@ require a provenance review, and copied or adapted code must retain attribution.
 
 Run `among-tools third-party-notices . THIRD_PARTY generate` after an intentional
 lockfile update; run `among-tools third-party-notices . THIRD_PARTY check` before
-distribution, using the prebuilt Rust tooling in an isolated container.
+distribution, using the prebuilt Rust tooling in an isolated container. Metadata
+resolution is locked and offline; populate the registry cache or authenticated
+vendor sources before running either command.
 [The inventory](../THIRD_PARTY/inventory.json) covers all three locked Cargo graphs
 (application, example plugins and independent tools),
 including build-time and platform-specific packages. It preserves the declared
 SPDX expressions and byte-for-byte upstream license/notice texts with SHA-256
 digests; no synthetic attribution or blanket Apache label is applied.
 
-The audited declarations permit MIT/Apache branches, with Unicode-3.0 and
-LLVM-exception obligations retained where present. Ship `LICENSE`, `NOTICE` and
-the complete `THIRD_PARTY` directory with source/binary artifacts. Inclusion in
-the conservative inventory does not mean every package is linked on Linux.
+Some published crates omit their workspace's license files. The checked-in
+[supplemental inputs](../THIRD_PARTY/inputs/README.md) retain the
+actual upstream texts and source manifests at the commit recorded in each crate.
+The generator validates exact versions, locked archive checksums, VCS metadata,
+published/upstream manifest equality and input hashes before writing any output.
+Missing, changed, unsafe or unused inputs fail; it never fetches mutable upstream
+content or treats an SPDX declaration alone as a grant. Generated supplemental
+source manifests and immutable-origin references live in `THIRD_PARTY/provenance`
+and the inventory. Preserve those alongside the verbatim texts.
+
+Declared alternatives remain alternatives, not a fabricated universal license
+choice. In particular, `r-efi`'s `AUTHORS` contains its actual MIT grant and
+copyrights plus Apache/LGPL alternative notices; all are retained verbatim.
+Unicode-3.0, LLVM-exception and other upstream terms remain in the inventory.
+Ship `LICENSE`, `NOTICE` and the complete `THIRD_PARTY` directory with source/binary
+artifacts. Inclusion in this conservative inventory does not mean every package
+is linked on Linux, select every alternative license, or establish native payload
+or legal sign-off.
 
 ## Native libraries are not relicensed
 

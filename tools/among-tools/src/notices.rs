@@ -5,12 +5,18 @@ use std::fs::{self, File};
 use std::path::Path;
 use std::time::Duration;
 
+mod supplemental;
+
 pub const MANIFESTS: [&str; 3] = [
     "Cargo.toml",
     "examples/plugins/Cargo.toml",
     "tools/among-tools/Cargo.toml",
 ];
-pub fn inventory(graphs: &[(&str, Value)]) -> Result<(BTreeMap<String, Vec<u8>>, usize)> {
+pub fn inventory(
+    graphs: &[(&str, Value)],
+    root: &Path,
+) -> Result<(BTreeMap<String, Vec<u8>>, usize)> {
+    let mut supplemental = supplemental::Inputs::load(root)?;
     let mut packages: BTreeMap<String, (Value, BTreeSet<String>)> = BTreeMap::new();
     for (manifest, graph) in graphs {
         if !MANIFESTS.contains(manifest) {
@@ -81,10 +87,9 @@ pub fn inventory(graphs: &[(&str, Value)]) -> Result<(BTreeMap<String, Vec<u8>>,
         if let Some(relative) = package["license_file"].as_str() {
             files.insert(storage::safe_path(source, Path::new(relative))?);
         }
-        if files.is_empty()
-            || !package["license"]
-                .as_str()
-                .is_some_and(|license| !license.is_empty())
+        if !package["license"]
+            .as_str()
+            .is_some_and(|license| !license.is_empty())
         {
             return Err(format!("missing authentic license evidence: {name}").into());
         }
@@ -110,8 +115,19 @@ pub fn inventory(graphs: &[(&str, Value)]) -> Result<(BTreeMap<String, Vec<u8>>,
             outputs.insert(relative.clone(), bytes);
             texts.push(json!({"path":relative,"sha256":digest}));
         }
-        records.push(json!({"name":name,"version":version,"source":package["source"],"license":package["license"],"trees":trees,"texts":texts}));
+        let provenance = supplemental.apply(&package, source, &mut outputs, &mut texts)?;
+        if texts.is_empty() {
+            return Err(format!("missing authentic license evidence: {name}").into());
+        }
+        texts.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+        texts.dedup();
+        let mut record = json!({"name":name,"version":version,"source":package["source"],"license":package["license"],"trees":trees,"texts":texts});
+        if let Some(provenance) = provenance {
+            record["supplemental"] = provenance;
+        }
+        records.push(record);
     }
+    supplemental.finish()?;
     let count = records.len();
     let mut bytes = serde_json::to_vec_pretty(
         &json!({"schema":1,"scope":"all three locked Cargo graphs, including build and target-specific dependencies","packages":records}),
@@ -151,6 +167,7 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
             &[
                 "metadata",
                 "--locked",
+                "--offline",
                 "--format-version",
                 "1",
                 "--manifest-path",
@@ -168,7 +185,7 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
         }
         graphs.push((*manifest, storage::parse_json(&fs::read(output)?)?));
     }
-    let (outputs, count) = inventory(&graphs)?;
+    let (outputs, count) = inventory(&graphs, root)?;
     for (relative, bytes) in &outputs {
         let path = storage::safe_path(destination, Path::new(relative))?;
         if check {
@@ -183,7 +200,10 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
     println!(
         "{} {count} dependency records and {} verbatim texts from three locked graphs",
         if check { "Checked" } else { "Generated" },
-        outputs.len() - 1
+        outputs
+            .keys()
+            .filter(|path| path.starts_with("texts/"))
+            .count()
     );
     Ok(())
 }
