@@ -462,6 +462,7 @@ struct ApplicationPlugins {
     starts_allowed: Rc<Cell<bool>>,
     retiring: Cell<usize>,
     current: RefCell<std::rc::Weak<RefCell<AppState>>>,
+    recovery_started: Cell<bool>,
 }
 
 thread_local! {
@@ -483,6 +484,7 @@ fn application_plugins(app: &adw::Application) -> Rc<ApplicationPlugins> {
             starts_allowed: Rc::new(Cell::new(true)),
             retiring: Cell::new(0),
             current: RefCell::new(std::rc::Weak::new()),
+            recovery_started: Cell::new(false),
         });
         entries.push(entry.clone());
         entry
@@ -643,6 +645,24 @@ fn build_with_writer(
         }
     }
     apply_env_plugin_switches(&state);
+    if !admission.recovery_started.replace(true) {
+        if let Some(root) = crate::plugin::inventory::root() {
+            match crate::plugin::install::store::RecoveryJob::start(root) {
+                Ok(job) => {
+                    glib::timeout_add_local(Duration::from_millis(100), move || {
+                        let Some(outcome) = job.poll() else {
+                            return glib::ControlFlow::Continue;
+                        };
+                        if let Err(problem) = outcome {
+                            eprintln!("among: managed-store recovery deferred: {problem}");
+                        }
+                        glib::ControlFlow::Break
+                    });
+                }
+                Err(problem) => eprintln!("among: managed-store recovery deferred: {problem}"),
+            }
+        }
+    }
 
     let app_header = slot_area("app-slot-header");
     let workspace_header = slot_area("app-slot-workspace");
@@ -3067,6 +3087,12 @@ fn open_preferences(ctx: &Window) {
             move || state.borrow().plugins.overview()
         }),
         installations_changed: installation_observer(ctx),
+        package_action: Rc::new({
+            let window = ctx.handle();
+            move |receipt, action, parent| {
+                confirm_package_action(&window, receipt, action, parent.as_ref())
+            }
+        }),
         plugin_details: Rc::new({
             let state = ctx.state.clone();
             move |name| state.borrow().plugins.managed_details(name)
@@ -3323,6 +3349,8 @@ fn reconcile_managed_installations(state: &Rc<RefCell<AppState>>) {
     };
     match crate::plugin::inventory::read(&root) {
         Ok(entries) => {
+            let selected = entries.iter().map(|entry| entry.key()).collect();
+            state.borrow_mut().plugins.reconcile_removed(&selected);
             let document = state
                 .borrow_mut()
                 .settings
@@ -3331,7 +3359,7 @@ fn reconcile_managed_installations(state: &Rc<RefCell<AppState>>) {
                 let local = document
                     .as_ref()
                     .and_then(|document| crate::plugin::inventory::local(document, &entry.key()));
-                state.borrow_mut().plugins.register_managed(entry, local);
+                state.borrow_mut().plugins.reconcile_managed(entry, local);
             }
         }
         Err(problem) => eprintln!("among: committed installation reconciliation failed: {problem}"),
@@ -3346,6 +3374,102 @@ fn report_settings_save(ctx: &Window, result: Result<(), crate::settings::Storag
     model.splice(0, 1, &[&status]);
     if let Err(error) = result {
         eprintln!("among: settings save failed: {error}");
+    }
+}
+
+fn confirm_package_action(
+    ctx: &Window,
+    expected: crate::plugin::inventory::Receipt,
+    action: crate::plugin::install::mutation::Action,
+    parent: Option<&gtk::Window>,
+) {
+    use crate::plugin::install::mutation::{Action, Job};
+    let key = match expected.identity() {
+        Ok(identity) => identity.key(),
+        Err(_) => return,
+    };
+    if ctx.state.borrow().exiting
+        || ctx
+            .state
+            .borrow()
+            .plugins
+            .managed_details(&key)
+            .is_none_or(|(entry, _)| entry.receipt != expected)
+    {
+        return;
+    }
+    let parent = parent
+        .cloned()
+        .unwrap_or_else(|| ctx.window.clone().upcast());
+    let uninstall = action == Action::Uninstall;
+    let dialog=adw::AlertDialog::builder().heading(if uninstall {"Uninstall this plugin?"}else{"Recover the previous package?"})
+        .body(if uninstall {format!("{key}\nOnly this plugin will stop. Pending installs/updates, restarts, host actions and subscriptions are revoked before bounded supervised shutdown. Local settings are retained. Only committed removal removes its Installed entry; occupied owned generations are cleaned later. No uninstall hook runs.")}else{format!("{key}\nReselect the retained previous verified generation and restart only this plugin if it is still enabled. Local settings are retained; unsupported migrations are refused. Publisher/access review and runtime admission still apply. Independent filesystem/network effects cannot be rolled back.")}).build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response(
+        "apply",
+        if uninstall {
+            "Uninstall"
+        } else {
+            "Recover previous"
+        },
+    );
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    if uninstall {
+        dialog.set_response_appearance("apply", adw::ResponseAppearance::Destructive);
+    }
+    dialog.connect_response(None,{
+        let window=ctx.handle();let parent=parent.downgrade();let observer=installation_observer(ctx);
+        move |_,response| {
+            if response!="apply" || window.state.borrow().exiting{return;}
+            let Some(parent)=parent.upgrade().filter(|parent|parent.is_visible()) else {return;};
+            let Some((entry,stored))=window.state.borrow().plugins.managed_details(&key).filter(|(entry,_)|entry.receipt==expected) else {return;};
+            let status=adw::AlertDialog::builder().heading("Package operation").body("Starting bounded package operation").build();status.add_response("close","Close");status.set_close_response("close");status.present(Some(&parent));
+            let job=crate::plugin::inventory::root().ok_or(crate::plugin::data::Problem("managed data directory is unavailable")).and_then(|root|Job::start(root,entry.receipt.clone(),action,stored));
+            let job=match job {Ok(job)=>job,Err(problem)=>{status.set_heading(Some("Package operation was not started"));status.set_body(problem.0);return;}};
+            if uninstall {
+                if let Err(problem)=window.state.borrow_mut().plugins.begin_removal(&expected){status.set_body(problem.0);return;}
+                let result=window.state.borrow_mut().settings.plugin_changed(&key,false);report_settings_save(&window,result);
+                window.state.borrow_mut().store.remove_source(&key);refresh_slots(&window);rebuild_sidebar(&window,false);
+            }
+            status.set_body(&format!("{}\nIdentity {} · operation {}",job.phase(),job.identity,job.generation));
+            let state=window.state.clone();let key=key.clone();let observer=observer.clone();
+            glib::timeout_add_local(Duration::from_millis(50),move || {
+                if uninstall && state.borrow().plugins.supervised_stopped(&key){job.supervised_stopped();}
+                let Some(outcome)=job.poll() else {status.set_body(job.phase());return glib::ControlFlow::Continue;};
+                match outcome {
+                    Ok(commit)=>{
+                        observer();
+                        status.set_heading(Some(if commit.durability!=crate::settings::Durability::Durable {"Selection written; durability uncertain"}else if uninstall {"Plugin uninstalled"}else{"Previous package selected"}));
+                        status.set_body(if uninstall {"The removed selection is authoritative. Local settings are retained. Only owned unreferenced generations may be cleaned after leases are released; cleanup can remain deferred."}else{"Current enabled choice is preserved. Previous package selection does not bypass publisher/access review, settings compatibility or runtime admission. Independent external effects are not rolled back."});
+                        if let Some(root)=crate::plugin::inventory::root(){start_store_recovery(root);}
+                    },
+                    Err(problem)=>{
+                        if uninstall{state.borrow_mut().plugins.removal_failed(&key);}
+                        observer();status.set_heading(Some("Package operation failed or remained partial"));status.set_body(problem.0);
+                    }
+                }
+                glib::ControlFlow::Break
+            });
+        }
+    });
+    dialog.present(Some(&parent));
+}
+
+fn start_store_recovery(root: std::path::PathBuf) {
+    match crate::plugin::install::store::RecoveryJob::start(root) {
+        Ok(job) => {
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                let Some(outcome) = job.poll() else {
+                    return glib::ControlFlow::Continue;
+                };
+                if let Err(problem) = outcome {
+                    eprintln!("among: managed-store recovery deferred: {problem}");
+                }
+                glib::ControlFlow::Break
+            });
+        }
+        Err(problem) => eprintln!("among: managed-store recovery deferred: {problem}"),
     }
 }
 
@@ -6026,6 +6150,7 @@ mod tests {
                 save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
                 plugin_configuration: Rc::new(|_| crate::plugin::host::Configuration::NotApplied),
                 restart_plugin: Rc::new(|_, _, _| {}),
+                package_action: Rc::new(|_, _, _| {}),
                 enable_plugin: Rc::new({
                     let desired = desired.clone();
                     move |_, _| desired.set(true)

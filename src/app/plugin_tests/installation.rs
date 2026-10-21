@@ -4,6 +4,569 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
+#[ignore = "requires isolated native keyboard input, Rust HTTPS and built managed processes"]
+fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins() {
+    use crate::plugin::install::{
+        source::tests::{install_at, package_route},
+        test_managed_package,
+    };
+    use serde_json::json;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    const KEY: &str = "github:12/sample";
+    if std::env::var("AMONG_NATIVE_LIFECYCLE_PHASE").as_deref() == Ok("offline") {
+        let root = crate::plugin::inventory::root().unwrap();
+        let document: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                crate::settings::directory()
+                    .unwrap()
+                    .join("managed-plugins.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut host = crate::plugin::host::PluginHost::new();
+        for entry in crate::plugin::inventory::read(&root).unwrap() {
+            let local = crate::plugin::inventory::local(&document, &entry.key());
+            host.register_managed(entry, local);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while host.running_generation(KEY).is_none() {
+            host.poll();
+            assert!(std::time::Instant::now() < deadline, "{:?}", host.listing());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let receipt = host.managed_details(KEY).unwrap().0.receipt;
+        host.request_status(KEY, "app_header", &Context::default());
+        while !receipt
+            .package_path(&root)
+            .join("resource-observed")
+            .exists()
+        {
+            host.poll();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            std::fs::read_to_string(receipt.package_path(&root).join("resource-observed")).unwrap(),
+            "4.0"
+        );
+        host.shutdown();
+        while !host.is_stopped() {
+            host.poll();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        println!("PASS fresh-process offline inventory and explicitly enabled exact installed generation with retained settings, no catalogue request or probe");
+        return;
+    }
+    let root = crate::plugin::inventory::root().unwrap();
+    let (first_meta, first_bytes) = test_managed_package("1.0", "managed-resource", |_| {});
+    let first_server =
+        Server::new(move |request| package_route(first_meta.clone(), first_bytes.clone(), request));
+    let first = install_at(
+        &first_server,
+        first_server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap(),
+        &root,
+    )
+    .unwrap()
+    .receipt;
+    let config = crate::settings::directory().unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let local=json!({"version":1,"future":"preserved","plugins":{KEY:{"enabled":true,"installation":first.installation,"review":first.review(vec!["status".into(),"settings".into()]),"future":"keep","settings":{"version":1,"values":{"label":"retained","opaque":"preserve"}}}}}).to_string();
+    let config = config.join("managed-plugins.json");
+    std::fs::write(&config, &local).unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let app = application("com.github.among-terminal.explicit-update-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(
+        || {
+            ctx.state.borrow().session_ready
+                && ctx.state.borrow().plugins.running_generation(KEY).is_some()
+        },
+        Duration::from_secs(5),
+    );
+    ctx.window.set_title(Some("Update fixture terminal"));
+    let terminal = ctx
+        .state
+        .borrow()
+        .pane(PaneId(1))
+        .unwrap()
+        .terminal()
+        .clone();
+    let pty = terminal.pty().unwrap().fd().as_raw_fd();
+    let first_pid = std::fs::read_to_string(first.package_path(&root).join("executed")).unwrap();
+    ctx.state.borrow_mut().plugins.register(PluginSpec {
+        name: "sibling".into(),
+        command: fixture("echo"),
+        enabled: true,
+    });
+    wait_for(
+        || {
+            ctx.state
+                .borrow()
+                .plugins
+                .listing()
+                .iter()
+                .any(|(key, state)| key == "sibling" && state == &PluginState::Running)
+        },
+        Duration::from_secs(5),
+    );
+    let sibling_pid = ctx
+        .state
+        .borrow()
+        .plugins
+        .supervised_pids()
+        .into_iter()
+        .find(|pid| pid.to_string() != first_pid)
+        .unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let (metadata, archive) = test_managed_package("2.0", "managed-resource", |_| {});
+    let server = Rc::new(Server::new({
+        let release = release.clone();
+        move |request| {
+            if request.contains("/github-production-release-asset/12/") {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !release.load(Ordering::Acquire) {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            package_route(metadata.clone(), archive.clone(), request)
+        }
+    }));
+    crate::prefs::repositories::present_updates_for_test(
+        ctx.window.upcast_ref(),
+        Rc::new({
+            let server = server.clone();
+            move |repository| server.job(repository)
+        }),
+        Rc::new({
+            let server = server.clone();
+            let root = root.clone();
+            move |selection| server.install(selection, root.clone())
+        }),
+        installation_observer(&ctx),
+        Rc::new({
+            let state = ctx.state.clone();
+            move |key| state.borrow().plugins.managed_details(key)
+        }),
+    );
+    let view = inspector();
+    focus(&view);
+    let address = widgets(view.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .unwrap();
+    assert!(address.grab_focus());
+    xdo(&["type", "--clearmodifiers", "--delay", "0", "example/sample"]);
+    press(&button(&view, "Inspect"));
+    wait_for(
+        || has_label(view.upcast_ref(), "Metadata preview ready"),
+        Duration::from_secs(5),
+    );
+    press(&button(&view, "Apply update…"));
+    wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
+    let dialog = view.visible_dialog().unwrap();
+    assert!(widgets(dialog.upcast_ref())
+        .iter()
+        .filter_map(|widget| widget.downcast_ref::<gtk::Label>())
+        .any(|label| label.text().contains("Only this plugin may restart")));
+    press(&button(&dialog, "Cancel"));
+    wait_for(|| view.visible_dialog().is_none(), Duration::from_secs(2));
+    assert_eq!(server.requests().len(), 3);
+    assert_eq!(
+        crate::plugin::inventory::read(&root).unwrap()[0].receipt,
+        first
+    );
+    press(&button(&view, "Apply update…"));
+    wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
+    screenshot_dialog(&view.visible_dialog().unwrap(), "update-consent");
+    press(&button(&view.visible_dialog().unwrap(), "Apply update"));
+    wait_for(|| server.requests().len() == 6, Duration::from_secs(5));
+    let old_path = first.package_path(&root);
+    std::fs::remove_file(old_path.join("resource-observed")).unwrap();
+    wait_for(
+        || old_path.join("resource-observed").exists(),
+        Duration::from_secs(3),
+    );
+    assert_eq!(
+        std::fs::read_to_string(old_path.join("resource-observed")).unwrap(),
+        "1.0",
+        "real old process opens its own immutable resources during pending download"
+    );
+    assert_eq!(
+        crate::plugin::inventory::read(&root).unwrap()[0].receipt,
+        first
+    );
+    release.store(true, Ordering::Release);
+    wait_for(
+        || {
+            ctx.state.borrow().plugins.overview().iter().any(|info| {
+                info.key == KEY
+                    && info.version.as_deref() == Some("2.0")
+                    && info.running_version.as_deref() == Some("2.0")
+                    && info.state == PluginState::Running
+            })
+        },
+        Duration::from_secs(8),
+    );
+    let second = crate::plugin::inventory::read(&root)
+        .unwrap()
+        .remove(0)
+        .receipt;
+    assert_eq!(second.installation, first.installation);
+    assert_ne!(second.generation, first.generation);
+    assert_ne!(
+        std::fs::read_to_string(second.package_path(&root).join("executed")).unwrap(),
+        first_pid
+    );
+    assert_eq!(std::fs::read(&config).unwrap(), local.as_bytes());
+    assert_eq!(terminal.pty().unwrap().fd().as_raw_fd(), pty);
+    assert!(ctx
+        .state
+        .borrow()
+        .plugins
+        .supervised_pids()
+        .contains(&sibling_pid));
+    assert!(old_path.join("version-resource").exists());
+    screenshot(&view, "updated-selected-and-running");
+    view.destroy();
+    let (metadata, archive) = test_managed_package("3.0", "managed-wrong-version", |_| {});
+    let release = Arc::new(AtomicBool::new(false));
+    let server = Server::new({
+        let release = release.clone();
+        move |request| {
+            if request.contains("/github-production-release-asset/12/") {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !release.load(Ordering::Acquire) {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            package_route(metadata.clone(), archive.clone(), request)
+        }
+    });
+    let (entry, stored) = ctx.state.borrow().plugins.managed_details(KEY).unwrap();
+    let selected = server
+        .inspect(true)
+        .unwrap()
+        .select("sample", "3.0")
+        .unwrap()
+        .for_update(&entry, stored.as_ref())
+        .unwrap();
+    let job = server.install(selected, root.clone()).unwrap();
+    wait_for(|| server.requests().len() == 6, Duration::from_secs(5));
+    ctx.state.borrow_mut().plugins.disable(KEY);
+    ctx.state
+        .borrow_mut()
+        .settings
+        .plugin_changed(KEY, false)
+        .unwrap();
+    release.store(true, Ordering::Release);
+    let outcome = RefCell::new(None);
+    wait_for(
+        || {
+            let result = job.poll();
+            if result.is_some() {
+                outcome.replace(result);
+                true
+            } else {
+                false
+            }
+        },
+        Duration::from_secs(5),
+    );
+    outcome.into_inner().unwrap().unwrap();
+    reconcile_managed_installations(&ctx.state);
+    wait_for(
+        || {
+            ctx.state
+                .borrow()
+                .plugins
+                .listing()
+                .iter()
+                .any(|(key, state)| key == KEY && state == &PluginState::Disabled)
+        },
+        Duration::from_secs(5),
+    );
+    assert!(!ctx.state.borrow().plugins.desired_enabled(KEY));
+    let third = crate::plugin::inventory::read(&root)
+        .unwrap()
+        .remove(0)
+        .receipt;
+    assert!(!third.package_path(&root).join("executed").exists());
+    assert!(ctx
+        .state
+        .borrow()
+        .plugins
+        .supervised_pids()
+        .contains(&sibling_pid));
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(saved["plugins"][KEY]["future"], "keep");
+    assert_eq!(
+        saved["plugins"][KEY]["settings"]["values"]["opaque"],
+        "preserve"
+    );
+    assert_eq!(saved["plugins"][KEY]["enabled"], false);
+    assert_eq!(terminal.pty().unwrap().fd().as_raw_fd(), pty);
+    ctx.state.borrow_mut().plugins.enable(KEY);
+    ctx.state
+        .borrow_mut()
+        .settings
+        .managed_enable_changed(KEY, true, third.installation.as_deref())
+        .unwrap();
+    wait_for(
+        || {
+            third.package_path(&root).join("executed").exists()
+                && ctx.state.borrow().plugins.running_generation(KEY).is_none()
+        },
+        Duration::from_secs(5),
+    );
+    open_preferences(&ctx);
+    let preferences = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .find(|window| window.title().as_deref() == Some("Preferences"))
+        .unwrap();
+    let page = widgets(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::PreferencesPage>().ok())
+        .find(|page| page.title() == "Plugins")
+        .unwrap();
+    preferences.set_visible_page(&page);
+    let open_details = || {
+        focus(&preferences);
+        let row = widgets(preferences.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+            .find(|row| row.title() == "Equal display name")
+            .unwrap();
+        press(&button(&row, "Details…"));
+        wait_for(
+            || {
+                gtk::Window::list_toplevels().iter().any(|window| {
+                    window
+                        .downcast_ref::<adw::PreferencesWindow>()
+                        .is_some_and(|window| {
+                            window.title().as_deref() == Some("Plugin details")
+                                && window.is_visible()
+                        })
+                })
+            },
+            Duration::from_secs(3),
+        );
+        let details = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+            .find(|window| {
+                window.title().as_deref() == Some("Plugin details") && window.is_visible()
+            })
+            .unwrap();
+        focus(&details);
+        details
+    };
+    let details = open_details();
+    press(&button(&details, "Recover previous…"));
+    wait_for(
+        || details.visible_dialog().is_some(),
+        Duration::from_secs(2),
+    );
+    screenshot_dialog(
+        &details.visible_dialog().unwrap(),
+        "recover-previous-consent",
+    );
+    press(&button(
+        &details.visible_dialog().unwrap(),
+        "Recover previous",
+    ));
+    wait_for(
+        || {
+            details
+                .visible_dialog()
+                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Previous package selected"))
+        },
+        Duration::from_secs(5),
+    );
+    wait_for(
+        || {
+            ctx.state.borrow().plugins.overview().iter().any(|info| {
+                info.key == KEY
+                    && info.version.as_deref() == Some("2.0")
+                    && info.running_version.as_deref() == Some("2.0")
+                    && info.state == PluginState::Running
+            })
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        crate::plugin::inventory::read(&root).unwrap()[0].receipt,
+        second
+    );
+    assert!(
+        third.package_path(&root).join("executed").exists(),
+        "recovery does not claim to reverse independently written effects"
+    );
+    press(&button(&details.visible_dialog().unwrap(), "Close"));
+    details.destroy();
+    wait_for(
+        || {
+            ctx.state
+                .borrow()
+                .plugins
+                .supervised_pids()
+                .contains(&sibling_pid)
+        },
+        Duration::from_secs(2),
+    );
+    let (metadata, archive) = test_managed_package("4.0", "managed-resource", |_| {});
+    let release = Arc::new(AtomicBool::new(false));
+    let late_server = Server::new({
+        let release = release.clone();
+        move |request| {
+            if request.contains("/github-production-release-asset/12/") {
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                while !release.load(Ordering::Acquire) {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            package_route(metadata.clone(), archive.clone(), request)
+        }
+    });
+    let (entry, stored) = ctx.state.borrow().plugins.managed_details(KEY).unwrap();
+    let selected = late_server
+        .inspect(true)
+        .unwrap()
+        .select("sample", "4.0")
+        .unwrap();
+    let late_job = late_server
+        .install(
+            selected
+                .clone()
+                .for_update(&entry, stored.as_ref())
+                .unwrap(),
+            root.clone(),
+        )
+        .unwrap();
+    wait_for(|| late_server.requests().len() == 6, Duration::from_secs(5));
+    let details = open_details();
+    press(&button(&details, "Uninstall…"));
+    wait_for(
+        || details.visible_dialog().is_some(),
+        Duration::from_secs(2),
+    );
+    screenshot_dialog(&details.visible_dialog().unwrap(), "uninstall-consent");
+    press(&button(&details.visible_dialog().unwrap(), "Uninstall"));
+    wait_for(
+        || {
+            details
+                .visible_dialog()
+                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Plugin uninstalled"))
+        },
+        Duration::from_secs(8),
+    );
+    assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());
+    assert!(ctx.state.borrow().plugins.managed_details(KEY).is_none());
+    assert!(ctx
+        .state
+        .borrow()
+        .plugins
+        .supervised_pids()
+        .contains(&sibling_pid));
+    assert_eq!(terminal.pty().unwrap().fd().as_raw_fd(), pty);
+    release.store(true, Ordering::Release);
+    let late = RefCell::new(None);
+    wait_for(
+        || {
+            let result = late_job.poll();
+            if result.is_some() {
+                late.replace(result);
+                true
+            } else {
+                false
+            }
+        },
+        Duration::from_secs(5),
+    );
+    assert!(late.into_inner().unwrap().is_err());
+    reconcile_managed_installations(&ctx.state);
+    assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());
+    assert!(ctx.state.borrow().plugins.managed_details(KEY).is_none());
+    let retained: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(
+        retained["plugins"][KEY]["settings"]["values"]["opaque"],
+        "preserve"
+    );
+    assert_eq!(retained["plugins"][KEY]["enabled"], false);
+    assert!(
+        second.package_path(&root).exists(),
+        "held inventory/resource lease defers generation cleanup after removed selection"
+    );
+    ctx.state
+        .borrow_mut()
+        .settings
+        .managed_enable_changed(KEY, true, second.installation.as_deref())
+        .unwrap();
+    let fresh_job = late_server.install(selected, root.clone()).unwrap();
+    let fresh = RefCell::new(None);
+    wait_for(
+        || {
+            let result = fresh_job.poll();
+            if result.is_some() {
+                fresh.replace(result);
+                true
+            } else {
+                false
+            }
+        },
+        Duration::from_secs(5),
+    );
+    let fresh = fresh.into_inner().unwrap().unwrap().receipt;
+    reconcile_managed_installations(&ctx.state);
+    assert_ne!(fresh.installation, second.installation);
+    assert!(!ctx.state.borrow().plugins.desired_enabled(KEY));
+    assert!(!fresh.package_path(&root).join("executed").exists());
+    assert_eq!(
+        ctx.state
+            .borrow()
+            .plugins
+            .managed_details(KEY)
+            .unwrap()
+            .1
+            .unwrap()["values"]["opaque"],
+        "preserve"
+    );
+    screenshot(&details, "removed-then-disabled-reinstall");
+    details.destroy();
+    preferences.destroy();
+    ctx.window.destroy();
+    ctx.state
+        .borrow_mut()
+        .settings
+        .managed_enable_changed(KEY, true, fresh.installation.as_deref())
+        .unwrap();
+    let child=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","app::plugin_tests::installation::explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins","--ignored","--nocapture","--test-threads=1"]).env("AMONG_NATIVE_LIFECYCLE_PHASE","offline").output().unwrap();
+    assert!(
+        child.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&child.stdout));
+    println!("PASS native update consent/cancel, target-only restart and live old resource opens; later disable wins; real failed API admission recovers previous through explicit native action; uninstall invalidates pending HTTPS update, waits for supervised stop and commits removed selection; late callback cannot resurrect; leases defer cleanup and reinstall has fresh disabled token despite retained enabled preference/settings. Sibling and terminal PTY unchanged. Modal input and combined providers remain separate open gates.");
+}
+
+#[test]
 #[ignore = "requires an isolated display and actual Rust HTTPS installation worker"]
 fn active_installer_completion_targets_replacement_window_not_the_retiring_host() {
     use crate::plugin::install::source::tests::package_route;
@@ -652,11 +1215,31 @@ fn inspector() -> adw::PreferencesWindow {
         .unwrap()
 }
 
+fn screenshot_dialog(dialog: &adw::Dialog, name: &str) {
+    wait_for(
+        || dialog.is_mapped() && dialog.width() > 0,
+        Duration::from_secs(2),
+    );
+    let settled = std::time::Instant::now();
+    wait_for(
+        || settled.elapsed() >= Duration::from_millis(350),
+        Duration::from_secs(2),
+    );
+    let path = crate::test_isolation::check_root().join(format!("{name}.png"));
+    assert!(std::process::Command::new("import")
+        .args(["-window", "root"])
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+    println!("Native dialog scene screenshot: {}", path.display());
+}
+
 fn screenshot(window: &impl IsA<gtk::Window>, name: &str) {
     let id = focus(window);
     let path = crate::test_isolation::check_root().join(format!("{name}.png"));
     assert!(std::process::Command::new("import")
-        .args(["-window", &id])
+        .args(["-screen", "-window", &id])
         .arg(&path)
         .status()
         .unwrap()

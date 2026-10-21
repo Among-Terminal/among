@@ -475,7 +475,7 @@ pub(crate) fn package_route(metadata: Value, archive: Vec<u8>, request: &str) ->
     }
 }
 
-fn install_at(
+pub(crate) fn install_at(
     server: &Server,
     selected: Selection,
     root: &std::path::Path,
@@ -492,6 +492,117 @@ fn install_at(
         }
         .install(selected, root, &AtomicU8::new(DOWNLOADING)),
     )
+}
+
+#[test]
+fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_fail_before_download(
+) {
+    use crate::plugin::host::{PluginHost, PluginState};
+    use crate::plugin::inventory;
+    use serde_json::json;
+    const KEY: &str = "github:12/sample";
+    let root = super::super::package::tests::OwnedRoot::new();
+    let (metadata, archive) =
+        super::super::package::tests::managed_fixture("1.0", "managed-resource", |_| {});
+    let server =
+        Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+    let initial = install_at(
+        &server,
+        server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap(),
+        &root.0,
+    )
+    .unwrap()
+    .receipt;
+    let entry = inventory::read(&root.0).unwrap().remove(0);
+    let local = json!({"enabled":true,"installation":initial.installation,"review":initial.review(vec!["status".into(),"settings".into()]),"settings":{"version":1,"values":{"label":"retained"}}});
+    let mut host = PluginHost::new();
+    host.register_managed(entry.clone(), Some(&local));
+    let wait = |host: &mut PluginHost, predicate: &dyn Fn(&PluginHost) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            host.poll();
+            if predicate(host) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{:?}", host.listing());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    wait(&mut host, &|host| host.running_generation(KEY).is_some());
+    let (metadata, archive) =
+        super::super::package::tests::managed_fixture("2.0", "managed-resource", |metadata| {
+            metadata["manifest"]["settings"]["version"] = json!(2)
+        });
+    let migration =
+        Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+    let selected = migration
+        .inspect(true)
+        .unwrap()
+        .select("sample", "2.0")
+        .unwrap();
+    assert!(selected.for_update(&entry, local.get("settings")).is_err());
+    assert_eq!(migration.requests().len(), 3);
+    assert_eq!(inventory::read(&root.0).unwrap()[0].receipt, initial);
+    let (metadata, archive) =
+        super::super::package::tests::managed_fixture("2.0", "managed-resource", |metadata| {
+            metadata["manifest"]["required_features"] =
+                json!(["status", "settings", "context.terminals", "context.title"])
+        });
+    let transferred = Server::new(move |request| {
+        if request.starts_with("GET /repos/example/sample ") {
+            Reply::json(
+                json!({"id":12,"owner":{"login":"example","id":99},"name":"sample","private":false,"default_branch":"main"}),
+            )
+        } else {
+            package_route(metadata.clone(), archive.clone(), request)
+        }
+    });
+    let selected = transferred
+        .inspect(true)
+        .unwrap()
+        .select("sample", "2.0")
+        .unwrap()
+        .for_update(&entry, local.get("settings"))
+        .unwrap();
+    assert!(selected.review_description().contains("Publisher changed"));
+    let outcome = install_at(&transferred, selected, &root.0).unwrap();
+    let current = inventory::read(&root.0).unwrap().remove(0);
+    host.reconcile_managed(current.clone(), Some(&local));
+    wait(
+        &mut host,
+        &|host| matches!(&host.listing()[0].1,PluginState::Unavailable{reason} if reason.contains("publisher")),
+    );
+    assert!(!outcome
+        .receipt
+        .package_path(&root.0)
+        .join("executed")
+        .exists());
+    assert!(initial.package_path(&root.0).join("executed").exists());
+    host.disable(KEY);
+    host.review_access(
+        KEY,
+        outcome.receipt.review(vec![
+            "status".into(),
+            "settings".into(),
+            "context.terminals".into(),
+            "context.title".into(),
+        ]),
+    )
+    .unwrap();
+    host.enable(KEY);
+    wait(&mut host, &|host| host.running_generation(KEY).is_some());
+    assert!(outcome
+        .receipt
+        .package_path(&root.0)
+        .join("executed")
+        .exists());
+    host.shutdown();
+    wait(&mut host, &|host| host.is_stopped());
+    println!("PASS actual old/new managed processes, transfer plus expanded required access refused before execution until renewed numeric review; unsupported schema migration refused before asset request");
 }
 
 #[test]

@@ -74,6 +74,55 @@ pub(crate) fn fixture_for(id: &str) -> (Value, Vec<u8>) {
     (metadata, bytes)
 }
 
+pub(crate) fn managed_fixture(
+    version: &str,
+    mode: &str,
+    alter: impl FnOnce(&mut Value),
+) -> (Value, Vec<u8>) {
+    let (mut metadata, _) = fixture();
+    metadata["manifest"]["version"] = json!(version);
+    metadata["manifest"]["required_features"] = json!(["status", "settings"]);
+    metadata["artifacts"][0]["runtime"] = json!({"kind":"native","libc":"glibc","minimum":"2.35"});
+    alter(&mut metadata);
+    let executable = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/fake-plugin");
+    let files = vec![
+        (
+            "among-plugin.json",
+            metadata["manifest"].to_string().into_bytes(),
+            false,
+        ),
+        ("bin/plugin", std::fs::read(executable).unwrap(), true),
+        ("among-fake-mode", mode.as_bytes().to_vec(), false),
+        ("version-resource", version.as_bytes().to_vec(), false),
+    ];
+    metadata["manifest_sha256"] = json!(inventory::checksum(&files[0].1).unwrap());
+    let mut archive = Vec::new();
+    let mut members = Vec::new();
+    for (path, bytes, executable) in files {
+        members.push(json!({"path":path,"size":bytes.len(),"sha256":inventory::checksum(&bytes).unwrap(),"executable":executable}));
+        if !archive.is_empty() {
+            archive.truncate(archive.len() - 1024);
+        }
+        archive.extend(raw(
+            path,
+            b'0',
+            if executable { 0o755 } else { 0o644 },
+            &bytes,
+        ));
+    }
+    let bytes = compressed(&archive);
+    metadata["artifacts"][0]["members"] = json!(members);
+    metadata["artifacts"][0]["size"] = json!(bytes.len());
+    metadata["artifacts"][0]["sha256"] = json!(inventory::checksum(&bytes).unwrap());
+    (metadata, bytes)
+}
+
 pub(crate) fn extract_bytes(
     metadata: &Value,
     bytes: &[u8],

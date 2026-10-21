@@ -22,6 +22,9 @@ fn subtitle(info: &Overview) -> String {
             " · Files unavailable"
         }
     );
+    if let Some(running) = &info.running_version {
+        text.push_str(&format!("\nRunning package version {running}"));
+    }
     if !info.available || info.declared.starts_with("Declared API unavailable:") {
         text.push('\n');
         text.push_str(&info.declared);
@@ -76,12 +79,13 @@ pub(super) fn page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     repositories.set_valign(gtk::Align::Center);
     repositories.connect_clicked({
         let changed = ctx.installations_changed.clone();
+        let details = ctx.plugin_details.clone();
         move |button| {
             if let Some(parent) = button
                 .root()
                 .and_then(|root| root.downcast::<gtk::Window>().ok())
             {
-                super::repositories::present(&parent, changed.clone());
+                super::repositories::present(&parent, changed.clone(), details.clone());
             }
         }
     });
@@ -205,7 +209,7 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
             ctx.save_plugin_settings.clone(),
             ctx.plugin_details.clone(),
             ctx.plugin_configuration.clone(),
-            ctx.restart_plugin.clone(),
+            (ctx.restart_plugin.clone(), ctx.package_action.clone()),
             ctx.plugin_inventory.clone(),
         );
     } else {
@@ -255,9 +259,20 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
     let disable = ctx.disable_plugin.clone();
     let key = info.key.clone();
     let listing = ctx.plugin_inventory.clone();
+    let generation = info.generation.clone();
     let weak_row = row.downgrade();
     switch.connect_active_notify(move |switch| {
         if signal.get() {
+            return;
+        }
+        if listing()
+            .into_iter()
+            .find(|info| info.key == key)
+            .is_none_or(|info| info.generation != generation)
+        {
+            if let Some(row) = weak_row.upgrade() {
+                row.set_subtitle("Plugin changed or was removed; reopen its current controls.");
+            }
             return;
         }
         if switch.is_active() {

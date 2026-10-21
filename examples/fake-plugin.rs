@@ -56,8 +56,24 @@ fn serve_with_delay(
     Ok(())
 }
 
+fn write_owned(path: &str, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes.as_ref())
+}
+
 fn serve_managed(mode: &str) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
+    if mode == "managed-ignore-term" {
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        }
+    }
     let mut output = std::io::stdout().lock();
     let mut transcript = std::fs::OpenOptions::new()
         .create(true)
@@ -67,8 +83,8 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
     // a killed previous generation can leave an incomplete diagnostic record.
     // delimit it so it cannot absorb this generation's actual hello.
     transcript.write_all(b"\n")?;
-    std::fs::write("executed", std::process::id().to_string())?;
-    std::fs::write(
+    write_owned("executed", std::process::id().to_string())?;
+    write_owned(
         "credential-inherited",
         if std::env::var_os("AMONG_MANAGED_TEST_CREDENTIAL").is_some() {
             "yes"
@@ -79,7 +95,7 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
     let names: std::collections::BTreeSet<_> = std::env::vars_os()
         .map(|(name, _)| name.to_string_lossy().into_owned())
         .collect();
-    std::fs::write("environment-names.json", serde_json::to_vec(&names)?)?;
+    write_owned("environment-names.json", serde_json::to_vec(&names)?)?;
     let mut label = "managed".to_string();
     let mut enumerating = false;
     let mut enumeration_id = 1000u64;
@@ -201,6 +217,10 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
                 }
             }
             Some("status") => {
+                if mode == "managed-resource" {
+                    label = std::fs::read_to_string("version-resource")?;
+                    write_owned("resource-observed", &label)?;
+                }
                 let held_summary =
                     std::fs::read_to_string("hold-summary")
                         .ok()

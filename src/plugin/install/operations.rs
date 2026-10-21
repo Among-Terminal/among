@@ -4,7 +4,10 @@
 use crate::plugin::{data::Problem, manifest::ManagedIdentity};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, LazyLock, Mutex, Weak,
+};
 
 type Key = (PathBuf, String);
 static ACTIVE: LazyLock<Mutex<BTreeMap<Key, Weak<Ticket>>>> =
@@ -13,9 +16,19 @@ static ACTIVE: LazyLock<Mutex<BTreeMap<Key, Weak<Ticket>>>> =
 pub(super) struct Ticket {
     pub identity: String,
     pub generation: String,
+    pub cancelled: Arc<AtomicBool>,
+    removal: bool,
 }
 
 impl Ticket {
+    pub fn removal_pending(root: &Path, identity: &str) -> bool {
+        ACTIVE.lock().map_or(true, |active| {
+            active
+                .get(&(root.to_path_buf(), identity.into()))
+                .and_then(Weak::upgrade)
+                .is_some_and(|ticket| ticket.removal)
+        })
+    }
     pub fn acquire(root: &Path, identity: ManagedIdentity) -> Result<Arc<Self>, Problem> {
         if !root.is_absolute()
             || root
@@ -37,6 +50,41 @@ impl Ticket {
         let ticket = Arc::new(Self {
             identity: key.1.clone(),
             generation: super::store::token(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            removal: false,
+        });
+        active.insert(key, Arc::downgrade(&ticket));
+        Ok(ticket)
+    }
+
+    pub fn removal(root: &Path, identity: ManagedIdentity) -> Result<Arc<Self>, Problem> {
+        if !root.is_absolute()
+            || root
+                .components()
+                .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+        {
+            return Err(Problem(
+                "operation store root must be a plain absolute path",
+            ));
+        }
+        let key = (root.to_path_buf(), identity.key());
+        let mut active = ACTIVE
+            .lock()
+            .map_err(|_| Problem("installer operation authority is unavailable"))?;
+        active.retain(|_, ticket| ticket.strong_count() > 0);
+        if let Some(previous) = active.get(&key).and_then(Weak::upgrade) {
+            if previous.removal {
+                return Err(Problem(
+                    "this plugin already has an active uninstall operation",
+                ));
+            }
+            previous.cancelled.store(true, Ordering::Release);
+        }
+        let ticket = Arc::new(Self {
+            identity: key.1.clone(),
+            generation: super::store::token(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            removal: true,
         });
         active.insert(key, Arc::downgrade(&ticket));
         Ok(ticket)

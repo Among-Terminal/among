@@ -204,6 +204,7 @@ impl Inspection {
             repository: self.repository.clone(),
             version,
             artifact,
+            previous: None,
             source: SourceReceipt {
                 publisher_id: self.publisher_id,
                 catalogue_revision: self.catalogue_revision.clone(),
@@ -227,9 +228,51 @@ pub struct Selection {
     version: super::metadata::Version,
     artifact: super::metadata::Artifact,
     source: SourceReceipt,
+    previous: Option<Receipt>,
 }
 
 impl Selection {
+    pub fn for_update(
+        mut self,
+        entry: &crate::plugin::inventory::Entry,
+        stored: Option<&Value>,
+    ) -> Result<Self, Problem> {
+        if entry.receipt.repository_id != self.repository_id
+            || entry.receipt.plugin_id != self.version.manifest.id
+        {
+            return Err(Problem(
+                "selected update belongs to a different authoritative identity",
+            ));
+        }
+        if let Some(schema) = &self.version.manifest.settings {
+            schema.effective(stored)?;
+        }
+        self.previous = Some(entry.receipt.clone());
+        Ok(self)
+    }
+
+    pub fn is_update(&self) -> bool {
+        self.previous.is_some()
+    }
+
+    pub fn identity(&self) -> String {
+        format!("github:{}/{}", self.repository_id, self.version.manifest.id)
+    }
+
+    pub fn review_description(&self) -> String {
+        let change = self.previous.as_ref().map(|receipt| {
+            receipt.origin_change(
+                &Origin {
+                    repository_id: self.repository_id,
+                    publisher_id: self.source.publisher_id,
+                    owner: self.repository.owner.clone(),
+                    repository: self.repository.name.clone(),
+                },
+                &self.version.manifest.id,
+            )
+        });
+        format!("{}\nSelected version {} · revision {}\n{}\nRequired access: {}\nOptional access: {}\nOnly this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "))
+    }
     pub fn description(&self) -> String {
         format!(
             "github:{}/{} · asset {} · {} bytes",
@@ -378,7 +421,7 @@ impl InstallJob {
         let identity = ticket.identity.clone();
         let generation = ticket.generation.clone();
         let state = Arc::new(AtomicU8::new(DOWNLOADING));
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled = ticket.cancelled.clone();
         let worker_state = state.clone();
         let worker_cancelled = cancelled.clone();
         let (send, result) = mpsc::sync_channel(1);
@@ -411,7 +454,10 @@ impl InstallJob {
                 })();
                 if outcome.is_ok() {
                     worker_state.store(FINISHED, Ordering::Release);
-                } else if worker_state.load(Ordering::Acquire) == CANCELLED {
+                } else if worker_state.load(Ordering::Acquire) == CANCELLED
+                    || (_ticket.cancelled.load(Ordering::Acquire)
+                        && worker_state.load(Ordering::Acquire) < COMMITTING)
+                {
                     worker_state.store(CANCELLED_FINISHED, Ordering::Release);
                 } else {
                     worker_state.store(FAILED, Ordering::Release);
@@ -530,7 +576,10 @@ impl Operation {
             release_id: version.release_id,
             asset_id: artifact.asset_id,
             generation: store::token(),
-            installation: Some(store::token()),
+            installation: selected.previous.as_ref().map_or_else(
+                || Some(store::token()),
+                |previous| previous.installation.clone(),
+            ),
             source: Some(selected.source.clone()),
         };
         let anticipated = artifact
@@ -541,7 +590,11 @@ impl Operation {
             .checked_add(artifact.size)
             .ok_or(Problem("package staging size overflow"))?;
         let mut transaction = store::Transaction::new(root, anticipated, || self.check())?;
-        transaction.refuse_existing(&receipt)?;
+        if let Some(previous) = &selected.previous {
+            transaction.expect_current(previous)?;
+        } else {
+            transaction.refuse_existing(&receipt)?;
+        }
         self.download(&selected, &mut transaction.archive, state)
             .await?;
         transaction
@@ -559,11 +612,19 @@ impl Operation {
             artifact,
             || self.check(),
         )?;
-        transaction.commit(
-            receipt,
-            || self.check(),
-            || self.progress(state, STAGING, COMMITTING),
-        )
+        match &selected.previous {
+            Some(previous) => transaction.commit_update(
+                receipt,
+                previous,
+                || self.check(),
+                || self.progress(state, STAGING, COMMITTING),
+            ),
+            None => transaction.commit(
+                receipt,
+                || self.check(),
+                || self.progress(state, STAGING, COMMITTING),
+            ),
+        }
     }
 
     async fn download(
