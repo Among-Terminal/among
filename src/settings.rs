@@ -9,6 +9,33 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Default)]
+struct ManagedEdits {
+    enabled: Option<bool>,
+    review: Option<Value>,
+    settings: Option<(
+        crate::plugin::schema::SettingsSchema,
+        serde_json::Map<String, Value>,
+    )>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Durability {
+    Durable,
+    SessionOnly,
+    Uncertain,
+}
+
+impl Durability {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Durable => "Saved locally",
+            Self::SessionOnly => "Accepted for this session; not saved locally",
+            Self::Uncertain => "Written locally; durability not confirmed",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Document {
     Plugins,
@@ -21,6 +48,9 @@ pub struct PreferencesStorage {
     directory: Option<PathBuf>,
     pending_plugins: std::collections::BTreeMap<String, bool>,
     pending_shortcuts: std::collections::BTreeMap<String, Value>,
+    pending_managed: std::collections::BTreeMap<String, ManagedEdits>,
+    #[cfg(test)]
+    fail_next_managed_confirmation: bool,
     pub problems: std::collections::BTreeMap<String, String>,
 }
 
@@ -30,6 +60,9 @@ impl PreferencesStorage {
             directory,
             pending_plugins: Default::default(),
             pending_shortcuts: Default::default(),
+            pending_managed: Default::default(),
+            #[cfg(test)]
+            fail_next_managed_confirmation: false,
             problems: Default::default(),
         }
     }
@@ -60,18 +93,8 @@ impl PreferencesStorage {
 
     pub fn plugin_changed(&mut self, name: &str, enabled: bool) -> Result<(), StorageError> {
         if name.starts_with("github:") && name.contains('/') {
-            let result = self.path(Document::ManagedPlugins).and_then(|path| {
-                update(&path, Document::ManagedPlugins, |value| {
-                    let entry = &mut value["plugins"][name];
-                    if entry.is_null() {
-                        *entry = json!({});
-                    }
-                    entry["enabled"] = json!(enabled);
-                    Ok(())
-                })
-            });
-            self.record(Document::ManagedPlugins, &result);
-            return result;
+            self.pending_managed.entry(name.into()).or_default().enabled = Some(enabled);
+            return self.flush_managed().map(|_| ());
         }
         self.pending_plugins.insert(name.into(), enabled);
         let result = self.path(Document::Plugins).and_then(|path| {
@@ -117,42 +140,113 @@ impl PreferencesStorage {
         schema: &crate::plugin::schema::SettingsSchema,
         changes: &serde_json::Map<String, Value>,
     ) -> Result<Value, StorageError> {
-        let result = self.path(Document::ManagedPlugins).and_then(|path| {
-            update(&path, Document::ManagedPlugins, |value| {
-                let stored = value["plugins"][key].get("settings");
-                let merged = schema
-                    .merge_edit(stored, changes)
-                    .map_err(|problem| problem.to_string())?;
-                let entry = &mut value["plugins"][key];
-                if entry.is_null() {
-                    *entry = json!({});
-                }
-                entry["settings"] = merged;
+        let checked = schema.validate_edit(changes).and_then(|()| {
+            if self
+                .pending_managed
+                .get(key)
+                .and_then(|pending| pending.settings.as_ref())
+                .is_some_and(|(previous, _)| previous.version != schema.version)
+            {
+                Err(crate::plugin::data::Problem(
+                    "pending settings version requires explicit migration",
+                ))
+            } else {
                 Ok(())
-            })?;
-            load(&path, Document::ManagedPlugins)?["plugins"][key]
+            }
+        });
+        if let Err(problem) = checked {
+            let result = Err(invalid(
+                Path::new(Document::ManagedPlugins.filename()),
+                problem,
+            ));
+            self.record(Document::ManagedPlugins, &result);
+            return result;
+        }
+        let pending = self.pending_managed.entry(key.into()).or_default();
+        let (pending_schema, edits) = pending
+            .settings
+            .get_or_insert_with(|| (schema.clone(), Default::default()));
+        *pending_schema = schema.clone();
+        edits.extend(changes.clone());
+        self.flush_managed().and_then(|document| {
+            document["plugins"][key]
                 .get("settings")
                 .cloned()
-                .ok_or_else(|| invalid(&path, "saved settings could not be reloaded"))
+                .ok_or_else(|| {
+                    invalid(
+                        Path::new(Document::ManagedPlugins.filename()),
+                        "saved settings could not be reloaded",
+                    )
+                })
+        })
+    }
+
+    pub fn managed_review_changed(&mut self, key: &str, review: Value) -> Result<(), StorageError> {
+        let pending = self.pending_managed.entry(key.into()).or_default();
+        pending.review = Some(review);
+        pending.enabled = Some(true);
+        self.flush_managed().map(|_| ())
+    }
+
+    fn flush_managed(&mut self) -> Result<Value, StorageError> {
+        #[cfg(test)]
+        let fail_confirmation = std::mem::take(&mut self.fail_next_managed_confirmation);
+        let result = self.path(Document::ManagedPlugins).and_then(|path| {
+            let edit = |document: &mut Value| {
+                for (key, pending) in &self.pending_managed {
+                    let entry = &mut document["plugins"][key];
+                    if entry.is_null() {
+                        *entry = json!({});
+                    }
+                    if let Some(enabled) = pending.enabled {
+                        entry["enabled"] = json!(enabled);
+                    }
+                    if let Some(review) = &pending.review {
+                        entry["review"] = review.clone();
+                    }
+                    if let Some((schema, changes)) = &pending.settings {
+                        entry["settings"] = schema
+                            .merge_edit(entry.get("settings"), changes)
+                            .map_err(|problem| problem.to_string())?;
+                    }
+                }
+                Ok(())
+            };
+            #[cfg(not(test))]
+            update(&path, Document::ManagedPlugins, edit)?;
+            #[cfg(test)]
+            update_with_confirmation(
+                &path,
+                Document::ManagedPlugins,
+                edit,
+                |_| Ok(()),
+                |parent| {
+                    // the rename and bytes are real; only the final confirmation
+                    // fails so native tests can distinguish uncertain durability.
+                    if fail_confirmation {
+                        Err(io::Error::other(
+                            "controlled directory confirmation failure",
+                        ))
+                    } else {
+                        confirm_directory(parent)
+                    }
+                },
+            )?;
+            load(&path, Document::ManagedPlugins).map_err(|mut error| {
+                error.replaced = true;
+                error
+            })
         });
+        if result.is_ok() {
+            self.pending_managed.clear();
+        }
         self.record(Document::ManagedPlugins, &result);
         result
     }
 
-    pub fn managed_review_changed(&mut self, key: &str, review: Value) -> Result<(), StorageError> {
-        let result = self.path(Document::ManagedPlugins).and_then(|path| {
-            update(&path, Document::ManagedPlugins, |document| {
-                let entry = &mut document["plugins"][key];
-                if entry.is_null() {
-                    *entry = json!({});
-                }
-                entry["review"] = review.clone();
-                entry["enabled"] = json!(true);
-                Ok(())
-            })
-        });
-        self.record(Document::ManagedPlugins, &result);
-        result
+    #[cfg(test)]
+    pub(crate) fn fail_next_managed_confirmation(&mut self) {
+        self.fail_next_managed_confirmation = true;
     }
 
     pub fn sidebar_width_changed(&mut self, width: f64) -> Result<(), StorageError> {
@@ -370,7 +464,21 @@ fn update_with_hook(
     path: &Path,
     kind: Document,
     edit: impl Fn(&mut Value) -> Result<(), String>,
+    before_rename: impl FnMut(&Path) -> io::Result<()>,
+) -> Result<(), StorageError> {
+    update_with_confirmation(path, kind, edit, before_rename, confirm_directory)
+}
+
+fn confirm_directory(parent: &Path) -> io::Result<()> {
+    std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+}
+
+fn update_with_confirmation(
+    path: &Path,
+    kind: Document,
+    edit: impl Fn(&mut Value) -> Result<(), String>,
     mut before_rename: impl FnMut(&Path) -> io::Result<()>,
+    confirm: impl Fn(&Path) -> io::Result<()>,
 ) -> Result<(), StorageError> {
     let parent = path
         .parent()
@@ -432,13 +540,11 @@ fn update_with_hook(
             let _ = std::fs::remove_file(&temporary);
             return Err(invalid(path, error));
         }
-        return std::fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|error| StorageError {
-                path: path.into(),
-                message: format!("replacement written, durability uncertain: {error}"),
-                replaced: true,
-            });
+        return confirm(parent).map_err(|error| StorageError {
+            path: path.into(),
+            message: format!("replacement written, durability uncertain: {error}"),
+            replaced: true,
+        });
     }
     Err(invalid(
         path,
@@ -599,6 +705,96 @@ mod tests {
         std::fs::rename(&path, &target).unwrap();
         std::os::unix::fs::symlink(&target, &path).unwrap();
         assert!(load(&path, Document::ManagedPlugins).is_err());
+    }
+
+    #[test]
+    fn managed_pending_settings_switches_and_review_retry_together_without_erasing_other_data() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        std::fs::write(&path, b"damaged; never replace on inspection").unwrap();
+        let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+        let schema = crate::plugin::schema::SettingsSchema::parse(
+            json!({"version":1,"apply":"live","fields":[
+            {"key":"label","label":"Label","kind":"string","default":"default"}]}),
+        )
+        .unwrap();
+        let error = storage
+            .managed_settings_changed(
+                "github:1/sample",
+                &schema,
+                json!({"label":"session edit"}).as_object().unwrap(),
+            )
+            .unwrap_err();
+        assert!(!error.replaced);
+        assert!(!error.to_string().contains("session edit"));
+        assert!(storage.plugin_changed("github:2/sample", false).is_err());
+        let review = json!({"owner":"example","repository":"sample","features":["status"]});
+        assert!(storage
+            .managed_review_changed("github:3/sample", review.clone())
+            .is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"damaged; never replace on inspection"
+        );
+        assert!(storage.status().contains("session-only"));
+        std::fs::write(
+            &path,
+            json!({"version":1,"future":"preserved","plugins":{
+            "github:1/sample":{"settings":{"version":1,"values":{"future":"opaque"}},"custom":42},
+            "github:2/sample":{"enabled":true}}})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        storage.plugin_changed("github:2/sample", false).unwrap();
+        let saved = load(&path, Document::ManagedPlugins).unwrap();
+        assert_eq!(saved["future"], "preserved");
+        assert_eq!(saved["plugins"]["github:1/sample"]["custom"], 42);
+        assert_eq!(
+            saved["plugins"]["github:1/sample"]["settings"]["values"],
+            json!({"label":"session edit","future":"opaque"})
+        );
+        assert_eq!(saved["plugins"]["github:2/sample"]["enabled"], false);
+        assert_eq!(saved["plugins"]["github:3/sample"]["review"], review);
+        assert_eq!(saved["plugins"]["github:3/sample"]["enabled"], true);
+        assert!(storage.pending_managed.is_empty());
+        assert!(storage.status().is_empty());
+    }
+
+    #[test]
+    fn rejected_managed_values_do_not_replace_prior_pending_accepted_edits() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+        let schema = crate::plugin::schema::SettingsSchema::parse(
+            json!({"version":1,"apply":"live","fields":[
+            {"key":"count","label":"Count","kind":"integer","min":1,"max":10,"default":1}]}),
+        )
+        .unwrap();
+        assert!(storage
+            .managed_settings_changed(
+                "github:1/sample",
+                &schema,
+                json!({"count":3}).as_object().unwrap()
+            )
+            .is_err());
+        assert!(storage
+            .managed_settings_changed(
+                "github:1/sample",
+                &schema,
+                json!({"count":11}).as_object().unwrap()
+            )
+            .is_err());
+        std::fs::remove_dir(&path).unwrap();
+        storage.plugin_changed("github:1/sample", false).unwrap();
+        assert_eq!(
+            load(&path, Document::ManagedPlugins).unwrap()["plugins"]["github:1/sample"]
+                ["settings"]["values"]["count"],
+            3
+        );
     }
 
     #[test]

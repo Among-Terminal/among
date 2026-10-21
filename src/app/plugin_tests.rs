@@ -1,6 +1,8 @@
 use super::*;
 use crate::plugin::host::PluginState;
 
+mod settings;
+
 #[track_caller]
 fn wait_for(predicate: impl Fn() -> bool, timeout: Duration) {
     let deadline = std::time::Instant::now() + timeout;
@@ -170,7 +172,9 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
         Duration::from_secs(2),
     );
     let started = std::time::Instant::now();
-    for _ in 0..8 {
+    // two frames exceed even a 64-KiB page-rounded fixture pipe, without
+    // racing the separate 16-frame overflow boundary.
+    for _ in 0..2 {
         ctx.state.borrow_mut().plugins.broadcast_event(
             EventKind::WorkingDirectoryChanged,
             1,
@@ -199,7 +203,25 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
     );
     wait_for(
         || {
-            ctx.state.borrow().plugins.listing().iter().any(|(name,state)|name=="blocked"&&matches!(state,PluginState::Faulted{reason} if reason.contains("two seconds")))
+            ctx.state
+                .borrow()
+                .plugins
+                .listing()
+                .iter()
+                .any(|(name, state)| {
+                    if name != "blocked" {
+                        return false;
+                    }
+                    if let PluginState::Stopping { reason, .. } | PluginState::Faulted { reason } =
+                        state
+                    {
+                        assert!(
+                            reason.contains("two seconds"),
+                            "blocked child stopped for a different reason: {state:?}"
+                        );
+                    }
+                    matches!(state,PluginState::Faulted{reason} if reason.contains("two seconds"))
+                })
         },
         Duration::from_secs(4),
     );

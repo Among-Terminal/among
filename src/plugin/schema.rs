@@ -296,16 +296,8 @@ impl SettingsSchema {
         stored: Option<&Value>,
         changes: &Map<String, Value>,
     ) -> Result<Value, Problem> {
-        super::data::serialized_size(changes, MAX_VALUE_BYTES)?;
         self.stored_values(stored)?;
-        for (key, value) in changes {
-            let field = self
-                .fields
-                .iter()
-                .find(|field| &field.key == key)
-                .ok_or(Problem("cannot edit an undeclared setting"))?;
-            field.validate(value)?;
-        }
+        self.validate_edit(changes)?;
         let mut merged = stored
             .cloned()
             .unwrap_or_else(|| json!({"version":self.version,"values":{}}));
@@ -317,6 +309,19 @@ impl SettingsSchema {
         self.effective(Some(&merged))?;
         self.stored_values(Some(&merged))?;
         Ok(merged)
+    }
+
+    pub fn validate_edit(&self, changes: &Map<String, Value>) -> Result<(), Problem> {
+        super::data::serialized_size(changes, MAX_VALUE_BYTES)?;
+        for (key, value) in changes {
+            let field = self
+                .fields
+                .iter()
+                .find(|field| &field.key == key)
+                .ok_or(Problem("cannot edit an undeclared setting"))?;
+            field.validate(value)?;
+        }
+        Ok(())
     }
 }
 

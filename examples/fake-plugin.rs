@@ -301,6 +301,16 @@ fn main() -> std::io::Result<()> {
             serve(true)
         }
         "never-read" | "stubborn" | "group-tree" | "inherited" => {
+            if mode == "never-read" {
+                use std::os::fd::AsRawFd;
+                // make a single large request block on every Linux pipe size,
+                // without consuming the host's entire frame queue first.
+                if unsafe { libc::fcntl(std::io::stdin().as_raw_fd(), libc::F_SETPIPE_SZ, 4096) }
+                    < 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
             if mode != "never-read" {
                 // the supervisor must escalate rather than assume TERM worked.
                 unsafe {

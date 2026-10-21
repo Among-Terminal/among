@@ -79,6 +79,23 @@ impl Runtime {
 type EffectiveSettings = Option<(u32, Map<String, Value>)>;
 
 impl PluginHost {
+    pub fn running_generation(&self, name: &str) -> Option<String> {
+        let plugin = &self.plugins[self.find(name)?];
+        if !plugin.state.is_healthy() || !plugin.spec.enabled || plugin.managed.is_none() {
+            return None;
+        }
+        plugin.io.as_ref().map(|io| io.generation.clone())
+    }
+
+    pub fn restart_managed(&mut self, name: &str, generation: &str) -> bool {
+        if self.running_generation(name).as_deref() != Some(generation) {
+            return false;
+        }
+        self.disable(name);
+        self.enable(name);
+        true
+    }
+
     pub fn reconcile_workspace_content(
         &self,
         store: &mut SlotStore,
@@ -1364,10 +1381,10 @@ mod tests {
                 .count(),
             1
         );
-        declared.host.disable(KEY);
-        declared.wait(|host| host.is_stopped());
+        assert!(!declared.host.restart_managed(KEY, "retired-generation"));
+        assert!(declared.host.restart_managed(KEY, &generation));
+        assert!(declared.host.desired_enabled(KEY));
         assert_eq!(declared.host.configuration(KEY), Configuration::NotApplied);
-        declared.host.enable(KEY);
         declared.wait(|host| host.configuration(KEY) == Configuration::Applied);
         assert_ne!(
             declared.host.plugins[0].io.as_ref().unwrap().generation,

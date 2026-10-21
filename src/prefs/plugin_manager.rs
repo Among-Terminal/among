@@ -6,31 +6,38 @@ use crate::plugin::host::Overview;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
+// gtk owns the widgets; the refresh index must not prolong a closed page's life.
 struct Row {
-    widget: adw::ActionRow,
-    switch: gtk::Switch,
+    widget: glib::WeakRef<adw::ActionRow>,
+    switch: glib::WeakRef<gtk::Switch>,
     updating: Rc<Cell<bool>>,
     generation: Option<String>,
 }
 
 impl Row {
     fn refresh(&self, info: &Overview, query: &str) {
-        self.widget.set_title(&escape_display(&info.name));
-        self.widget.set_subtitle(&escape_display(&format!(
+        let (Some(widget), Some(switch)) = (self.widget.upgrade(), self.switch.upgrade()) else {
+            return;
+        };
+        widget.set_title(&escape_display(&info.name));
+        widget.set_subtitle(&escape_display(&format!(
             "{}\n{}",
             info.metadata(),
             describe_state(&info.state)
         )));
-        self.widget.set_visible(info.search_text().contains(query));
-        self.switch
-            .update_property(&[gtk::accessible::Property::Label(&format!(
-                "Enable {} ({})",
-                info.name, info.key
-            ))]);
-        self.switch.set_sensitive(info.enabled || info.available);
-        self.updating.set(true);
-        self.switch.set_active(info.enabled);
-        self.updating.set(false);
+        widget.set_visible(info.search_text().contains(query));
+        switch.update_property(&[gtk::accessible::Property::Label(&format!(
+            "Enable {} ({})",
+            info.name, info.key
+        ))]);
+        switch.set_sensitive(info.enabled || info.available);
+        // even setting the same active value cancels GTK's keyboard-toggle
+        // animation before its active-notify can commit the user's choice.
+        if switch.is_active() != info.enabled {
+            self.updating.set(true);
+            switch.set_active(info.enabled);
+            self.updating.set(false);
+        }
     }
 }
 
@@ -106,17 +113,21 @@ fn reconcile(
         if live.contains(key.as_str()) {
             true
         } else {
-            group.remove(&row.widget);
+            if let Some(widget) = row.widget.upgrade() {
+                group.remove(&widget);
+            }
             false
         }
     });
     for info in &inventory {
         if rows
             .get(&info.key)
-            .is_some_and(|row| row.generation != info.generation)
+            .is_some_and(|row| row.generation != info.generation || row.widget.upgrade().is_none())
         {
             if let Some(row) = rows.remove(&info.key) {
-                group.remove(&row.widget);
+                if let Some(widget) = row.widget.upgrade() {
+                    group.remove(&widget);
+                }
             }
         }
         let row = rows
@@ -124,7 +135,11 @@ fn reconcile(
             .or_insert_with(|| make_row(ctx, group, info));
         row.refresh(info, query);
     }
-    empty.set_visible(!rows.values().any(|row| row.widget.is_visible()));
+    empty.set_visible(!rows.values().any(|row| {
+        row.widget
+            .upgrade()
+            .is_some_and(|widget| widget.is_visible())
+    }));
 }
 
 fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Overview) -> Row {
@@ -138,6 +153,7 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
             ctx.save_plugin_settings.clone(),
             ctx.plugin_details.clone(),
             ctx.plugin_configuration.clone(),
+            ctx.restart_plugin.clone(),
         );
     } else {
         let icon = gtk::Image::from_icon_name("application-x-addon-symbolic");
@@ -214,8 +230,8 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
     row.set_activatable_widget(Some(&switch));
     group.add(&row);
     Row {
-        widget: row,
-        switch,
+        widget: row.downgrade(),
+        switch: switch.downgrade(),
         updating,
         generation: info.generation.clone(),
     }
