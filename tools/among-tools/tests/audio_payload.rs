@@ -88,5 +88,20 @@ fn distribution_recipes_explicitly_supply_dynamic_audio_requirements() -> Result
             .strip_prefix("Requires:")
             .is_some_and(|value| value.trim() == package)));
     }
+    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_slice(&fs::read(
+        root.join(".github/workflows/appimage-release.yml"),
+    )?)?;
+    let setup = workflow["jobs"]["build"]["steps"][0]["run"]
+        .as_str()
+        .ok_or("AppImage setup missing")?;
+    let refresh = setup
+        .find("apt-get upgrade -y --no-install-recommends")
+        .ok_or("base runtime refresh missing")?;
+    assert!(
+        refresh
+            < setup
+                .find("apt-get install")
+                .ok_or("dependency installation missing")?
+    );
     Ok(())
 }

@@ -41,8 +41,11 @@ jobs:
     steps:
       - name: Install the Ubuntu 24.04 build image packages
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates curl file build-essential \
+            apt-get update
+            # Refresh base runtimes too: an old SONAME-compatible dependency can
+            # satisfy installation while its exact source has left the index.
+            apt-get upgrade -y --no-install-recommends
+            apt-get install -y --no-install-recommends git ca-certificates curl file build-essential \
             pkg-config libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev desktop-file-utils \
               libglib2.0-bin librsvg2-common adwaita-icon-theme gsettings-desktop-schemas shared-mime-info \
               libgtk-4-media-gstreamer gstreamer1.0-plugins-base gstreamer1.0-plugins-good
