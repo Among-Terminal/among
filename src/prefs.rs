@@ -14,6 +14,13 @@ use gtk::gdk;
 use crate::plugin::host::PluginState;
 use crate::shortcuts::{self, Action, Bindings};
 
+mod plugin_settings;
+
+type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
+type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
+type SavePluginSettings =
+    dyn Fn(&str, &str, &serde_json::Map<String, serde_json::Value>) -> Result<(), String>;
+
 /// What the preferences window needs from the running application.
 ///
 /// Handed over as closures rather than a reference to the window so this module
@@ -23,6 +30,9 @@ pub struct PreferencesContext {
     pub storage_status: gtk::StringList,
     pub bindings: Rc<RefCell<Bindings>>,
     pub plugin_listing: Rc<dyn Fn() -> Vec<(String, PluginState)>>,
+    pub plugin_enabled: Rc<dyn Fn(&str) -> bool>,
+    pub plugin_details: Rc<PluginDetailsQuery>,
+    pub save_plugin_settings: Rc<SavePluginSettings>,
     pub enable_plugin: Rc<dyn Fn(&str)>,
     pub disable_plugin: Rc<dyn Fn(&str)>,
     /// Rebuilds the window's shortcut controller after a rebind.
@@ -257,25 +267,35 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
 
     for (name, state) in listing {
         let row = adw::ActionRow::new();
-        row.set_title(&name);
+        let details = (ctx.plugin_details)(&name);
+        row.set_title(&escape_display(
+            details
+                .as_ref()
+                .and_then(|(entry, _)| entry.inspected.as_ref().ok())
+                .map_or(name.as_str(), |inspected| inspected.manifest.name.as_str()),
+        ));
         row.set_subtitle(&describe_state(&state));
+        if let Some((entry, _)) = details {
+            plugin_settings::add_actions(
+                &row,
+                entry,
+                ctx.save_plugin_settings.clone(),
+                ctx.plugin_details.clone(),
+            );
+        }
 
         let switch = gtk::Switch::new();
         switch.set_valign(gtk::Align::Center);
-        switch.set_active(matches!(
-            state,
-            PluginState::Waiting
-                | PluginState::Starting
-                | PluginState::Running
-                | PluginState::Faulted { .. }
-                | PluginState::Stopping { enabled: true, .. }
-        ));
+        switch.set_active((ctx.plugin_enabled)(&name));
         // A plugin that is not installed cannot be switched on: there is
         // nothing to start, and pretending otherwise would be misleading.
         if matches!(
             state,
-            PluginState::Missing { .. } | PluginState::Incompatible { .. }
-        ) {
+            PluginState::Missing { .. }
+                | PluginState::Incompatible { .. }
+                | PluginState::Unavailable { .. }
+        ) && !switch.is_active()
+        {
             switch.set_sensitive(false);
         }
 
@@ -323,6 +343,7 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
 
 fn describe_state(state: &PluginState) -> String {
     match state {
+        PluginState::Unavailable { reason } => format!("Unavailable ({reason})"),
         PluginState::Waiting => "Waiting for previous plugins to stop".into(),
         PluginState::Starting => "Starting".into(),
         PluginState::Stopping { reason, .. } => format!("Stopping ({reason})"),
@@ -405,6 +426,9 @@ mod tests {
             storage_status: gtk::StringList::new(&[]),
             bindings: Rc::new(RefCell::new(Bindings::defaults())),
             plugin_listing: Rc::new(move || vec![("clock".into(), observed.borrow().clone())]),
+            plugin_enabled: Rc::new(|_| true),
+            plugin_details: Rc::new(|_| None),
+            save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
             enable_plugin: Rc::new(move |_| *enabled.borrow_mut() = PluginState::Running),
             disable_plugin: Rc::new(move |_| *disabled.borrow_mut() = PluginState::Disabled),
             bindings_changed: Rc::new(|| {}),

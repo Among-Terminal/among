@@ -1,6 +1,7 @@
 use super::*;
 use crate::plugin::host::PluginState;
 
+#[track_caller]
 fn wait_for(predicate: impl Fn() -> bool, timeout: Duration) {
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -12,7 +13,8 @@ fn wait_for(predicate: impl Fn() -> bool, timeout: Duration) {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "live plugin check timed out"
+            "live plugin check timed out at {}",
+            std::panic::Location::caller()
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -229,6 +231,201 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
     println!(
         "PASS last-window destruction stays nonblocking and retains supervision until reaping"
     );
+}
+
+#[test]
+#[ignore = "requires an isolated graphical session, built fake-plugin and real keyboard input"]
+fn managed_metadata_and_disabled_settings_are_inert_and_persist_real_edits() {
+    fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+        let mut result = vec![widget.clone()];
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            result.extend(descendants(&widget));
+            child = widget.next_sibling();
+        }
+        result
+    }
+    fn focus(window: &impl IsA<gtk::Window>) {
+        let ids = xdo(&[
+            "search",
+            "--onlyvisible",
+            "--pid",
+            &std::process::id().to_string(),
+            "--name",
+            &window.as_ref().title().unwrap(),
+        ]);
+        let id = ids.lines().last().unwrap();
+        xdo(&["windowactivate", "--sync", id]);
+        xdo(&["windowfocus", "--sync", id]);
+    }
+    fn press(button: &gtk::Button) {
+        assert!(button.grab_focus());
+        xdo(&["key", "--clearmodifiers", "space"]);
+        wait_for(
+            || !glib::MainContext::default().pending(),
+            Duration::from_secs(2),
+        );
+    }
+    fn settings_window() -> adw::PreferencesWindow {
+        gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+            .find(|window| window.title().as_deref() == Some("Plugin settings"))
+            .unwrap()
+    }
+    let root = crate::plugin::inventory::root().unwrap();
+    crate::test_isolation::assert_below_check_root(&root);
+    let receipt = crate::plugin::inventory::tests::fixture(&root);
+    let config = crate::settings::directory().unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::set_permissions(&config, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let legacy = b"{\"plugins\":[],\"unrelated\":\"preserved\"}";
+    std::fs::write(config.join("plugins.json"), legacy).unwrap();
+    let local = serde_json::json!({"version":1,"plugins":{"github:12/sample":{"enabled":true,"future":"keep",
+        "settings":{"version":1,"values":{"future":"opaque"}}}}});
+    let local_path = config.join("managed-plugins.json");
+    std::fs::write(&local_path, local.to_string()).unwrap();
+    std::fs::set_permissions(
+        &local_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+    let before = std::fs::read(&local_path).unwrap();
+    let manifest_before =
+        std::fs::read(receipt.package_path(&root).join("among-plugin.json")).unwrap();
+    let app = application("com.github.among-terminal.managed-inspection-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    assert!(ctx
+        .state
+        .borrow()
+        .plugins
+        .desired_enabled("github:12/sample"));
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
+    assert!(!root.join("executed").exists());
+    open_preferences(&ctx);
+    let preferences = gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .unwrap();
+    let row = descendants(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| row.title() == "Sample")
+        .unwrap();
+    let page = row
+        .ancestor(adw::PreferencesPage::static_type())
+        .unwrap()
+        .downcast::<adw::PreferencesPage>()
+        .unwrap();
+    preferences.set_visible_page(&page);
+    wait_for(|| row.is_mapped(), Duration::from_secs(2));
+    focus(&preferences);
+    let switch = descendants(row.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
+        .unwrap();
+    assert!(
+        switch.is_active() && switch.is_sensitive(),
+        "incompatible desired-on entries must always be switchable off"
+    );
+    assert_eq!(
+        before,
+        std::fs::read(&local_path).unwrap(),
+        "opening metadata must not materialize defaults"
+    );
+    assert!(switch.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait_for(
+        || {
+            !ctx.state
+                .borrow()
+                .plugins
+                .desired_enabled("github:12/sample")
+        },
+        Duration::from_secs(2),
+    );
+    let after_disable = std::fs::read(&local_path).unwrap();
+    let settings = descendants(row.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Settings…"))
+        .unwrap();
+    press(&settings);
+    let editor = settings_window();
+    wait_for(|| editor.is_mapped(), Duration::from_secs(2));
+    focus(&editor);
+    let field = descendants(editor.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .unwrap();
+    assert_eq!(field.text(), "default");
+    assert_eq!(after_disable, std::fs::read(&local_path).unwrap());
+    assert!(field.grab_focus());
+    xdo(&["key", "--clearmodifiers", "ctrl+a"]);
+    xdo(&["type", "--clearmodifiers", "--delay", "0", "offline value"]);
+    // X11 enqueue completion is not GTK dispatch completion. keep the editor's
+    // focus until real text events arrive before moving focus onto Save.
+    wait_for(|| field.text() == "offline value", Duration::from_secs(2));
+    let save = descendants(editor.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Save"))
+        .unwrap();
+    press(&save);
+    wait_for(
+        || {
+            std::fs::read_to_string(&local_path)
+                .unwrap()
+                .contains("offline value")
+        },
+        Duration::from_secs(2),
+    );
+    let saved =
+        crate::settings::load(&local_path, crate::settings::Document::ManagedPlugins).unwrap();
+    assert_eq!(
+        saved["plugins"]["github:12/sample"]["settings"]["values"]["label"],
+        "offline value"
+    );
+    assert_eq!(
+        saved["plugins"]["github:12/sample"]["settings"]["values"]["future"],
+        "opaque"
+    );
+    assert_eq!(saved["plugins"]["github:12/sample"]["future"], "keep");
+    assert_eq!(saved["plugins"]["github:12/sample"]["enabled"], false);
+    assert!(has_label(
+        editor.upcast_ref(),
+        "Saved locally; not applied to a running process"
+    ));
+    editor.destroy();
+    focus(&preferences);
+    press(&settings);
+    let editor = settings_window();
+    let field = descendants(editor.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .unwrap();
+    assert_eq!(
+        field.text(),
+        "offline value",
+        "reopening reads latest accepted values, not a row's old capture"
+    );
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
+    assert!(!root.join("executed").exists());
+    assert_eq!(
+        legacy,
+        std::fs::read(config.join("plugins.json"))
+            .unwrap()
+            .as_slice()
+    );
+    assert_eq!(
+        manifest_before,
+        std::fs::read(receipt.package_path(&root).join("among-plugin.json")).unwrap()
+    );
+    println!("PASS real managed Preferences: inert metadata/defaults, desired-on incompatible off via Space, disabled settings edited/saved/reopened, unknown values and legacy bytes preserved, no process or executable probe");
+    editor.destroy();
+    preferences.destroy();
+    ctx.window.destroy();
 }
 
 #[test]

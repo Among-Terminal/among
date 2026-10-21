@@ -8,9 +8,13 @@
 //! The cost is a process spawn per plugin and a messaging round trip, both of
 //! which are invisible next to the work a status plugin actually does.
 
+pub(crate) mod data;
 pub mod host;
+pub mod inventory;
+pub mod manifest;
 mod process;
 pub mod protocol;
+pub mod schema;
 mod transport;
 
 pub use protocol::{Context, EventKind, IncomingSummary, TerminalInfo};

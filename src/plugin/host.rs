@@ -8,6 +8,7 @@ use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
 
+use super::inventory;
 use super::protocol::{
     self, Context, EventKind, IncomingFragment, IncomingSummary, Rejection, Request, Response,
     PROTOCOL_MAJOR, PROTOCOL_MINOR,
@@ -38,6 +39,9 @@ pub struct PluginSpec {
 /// Where a plugin currently stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginState {
+    Unavailable {
+        reason: String,
+    },
     Waiting,
     Starting,
     Stopping {
@@ -93,6 +97,8 @@ struct PluginEntry {
     restart_at: Option<Instant>,
     restart_attempts: u32,
     after_stop: Option<PluginState>,
+    managed: Option<inventory::Entry>,
+    settings: Option<serde_json::Value>,
 }
 
 use std::time::Instant;
@@ -191,8 +197,56 @@ impl PluginHost {
             restart_at: None,
             restart_attempts: 0,
             after_stop: None,
+            managed: None,
+            settings: None,
         });
         self.start_by_name(name);
+    }
+
+    pub fn register_managed(&mut self, entry: inventory::Entry, local: Option<&serde_json::Value>) {
+        let name = entry.key();
+        if self.find(&name).is_some() {
+            return;
+        }
+        let desired = local
+            .and_then(|local| local.get("enabled"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        // never pass a managed receipt through legacy registration: its static
+        // compatibility must be checked before any executable can start.
+        self.register(PluginSpec {
+            name: name.clone(),
+            command: Vec::new(),
+            enabled: false,
+        });
+        if let Some(index) = self.find(&name) {
+            self.plugins[index].managed = Some(entry);
+            self.plugins[index].settings = local.and_then(|local| local.get("settings")).cloned();
+            self.plugins[index].spec.enabled = desired;
+            self.start_by_name(name);
+        }
+    }
+
+    pub fn desired_enabled(&self, name: &str) -> bool {
+        self.find(name)
+            .is_some_and(|index| self.plugins[index].spec.enabled)
+    }
+
+    pub fn managed_details(
+        &self,
+        name: &str,
+    ) -> Option<(inventory::Entry, Option<serde_json::Value>)> {
+        let entry = &self.plugins[self.find(name)?];
+        Some((entry.managed.clone()?, entry.settings.clone()))
+    }
+
+    pub fn stored_settings_changed(&mut self, name: &str, stored: serde_json::Value) {
+        if let Some(index) = self
+            .find(name)
+            .filter(|index| self.plugins[*index].managed.is_some())
+        {
+            self.plugins[index].settings = Some(stored);
+        }
     }
 
     fn find(&self, name: &str) -> Option<usize> {
@@ -276,6 +330,24 @@ impl PluginHost {
         };
         if !self.plugins[index].spec.enabled || self.plugins[index].io.is_some() {
             return;
+        }
+        if let Some(entry) = &self.plugins[index].managed {
+            let compatibility = entry
+                .inspected
+                .as_ref()
+                .map_err(|problem| *problem)
+                .and_then(|inspected| {
+                    inspected
+                        .manifest
+                        .compatibility(PROTOCOL_MAJOR, PROTOCOL_MINOR, &[])
+                });
+            if let Err(problem) = compatibility {
+                self.plugins[index].state = PluginState::Unavailable {
+                    reason: problem.to_string(),
+                };
+                self.plugins[index].restart_at = None;
+                return;
+            }
         }
         if !self.starts_allowed.get() {
             self.plugins[index].state = PluginState::Waiting;
