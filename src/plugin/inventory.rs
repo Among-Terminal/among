@@ -12,6 +12,14 @@ pub const MAX_INSTALLATIONS: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct SourceReceipt {
+    pub publisher_id: u64,
+    pub catalogue_revision: String,
+    pub catalogue_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub repository_id: u64,
     pub owner: String,
@@ -27,6 +35,8 @@ pub struct Receipt {
     // absent tokens retain startup compatibility for pre-installer receipts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceReceipt>,
 }
 
 impl Receipt {
@@ -36,16 +46,8 @@ impl Receipt {
 
     pub(super) fn validate(&self) -> Result<(), Problem> {
         self.identity()?;
-        let github_component = |text: &str| {
-            !text.is_empty()
-                && text.len() <= 100
-                && text
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-                && !matches!(text, "." | "..")
-        };
-        if !github_component(&self.owner)
-            || !github_component(&self.repository)
+        if !super::origin::component(&self.owner)
+            || !super::origin::component(&self.repository)
             || !hex(&self.revision, 40)
             || !hex(&self.manifest_sha256, 64)
             || !hex(&self.package_sha256, 64)
@@ -55,11 +57,58 @@ impl Receipt {
                 .as_ref()
                 .is_some_and(|token| !hex(token, 64))
             || self.release_id == 0
+            || self.source.as_ref().is_some_and(|source| {
+                source.publisher_id == 0
+                    || !hex(&source.catalogue_revision, 40)
+                    || !hex(&source.catalogue_sha256, 64)
+            })
             || self.asset_id == 0
         {
             return Err(Problem("invalid committed installation receipt"));
         }
         Ok(())
+    }
+
+    pub fn origin_change(
+        &self,
+        candidate: &super::origin::Origin,
+        plugin_id: &str,
+    ) -> super::origin::Change {
+        use super::origin::{Change, Origin};
+        if self.repository_id != candidate.repository_id || self.plugin_id != plugin_id {
+            return Change::IdentityChanged;
+        }
+        match &self.source {
+            Some(source) => candidate.compare(&Origin {
+                repository_id: self.repository_id,
+                publisher_id: source.publisher_id,
+                owner: self.owner.clone(),
+                repository: self.repository.clone(),
+            }),
+            None => Change::PublisherChanged,
+        }
+    }
+
+    pub fn review(&self, features: Vec<String>) -> Value {
+        let mut review = serde_json::json!({"owner":self.owner,"repository":self.repository,"features":features});
+        if let Some(source) = &self.source {
+            review["repository_id"] = self.repository_id.into();
+            review["publisher_id"] = source.publisher_id.into();
+        }
+        review
+    }
+
+    pub fn matches_review(&self, review: &Value) -> bool {
+        match &self.source {
+            Some(source) => {
+                review["repository_id"].as_u64() == Some(self.repository_id)
+                    && review["publisher_id"].as_u64() == Some(source.publisher_id)
+            }
+            None => {
+                review["owner"].as_str() == Some(&self.owner)
+                    && review["repository"].as_str() == Some(&self.repository)
+            }
+        }
     }
 
     pub fn package_path(&self, root: &Path) -> PathBuf {
@@ -228,6 +277,7 @@ pub(crate) mod tests {
             asset_id: 2,
             generation: "c".repeat(64),
             installation: None,
+            source: None,
         };
         let package = receipt.package_path(root);
         std::fs::create_dir_all(&package).unwrap();

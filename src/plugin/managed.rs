@@ -305,9 +305,7 @@ pub fn granted_features(
     let review = local
         .and_then(|local| local.get("review"))
         .ok_or(Problem("explicit plugin access review is required"))?;
-    if review.get("owner").and_then(Value::as_str) != Some(&receipt.owner)
-        || review.get("repository").and_then(Value::as_str) != Some(&receipt.repository)
-    {
+    if !receipt.matches_review(review) {
         return Err(Problem(
             "publisher or repository identity requires renewed review",
         ));

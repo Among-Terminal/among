@@ -14,6 +14,7 @@ pub mod install;
 pub mod inventory;
 pub mod managed;
 pub mod manifest;
+pub mod origin;
 mod process;
 pub mod protocol;
 pub mod schema;

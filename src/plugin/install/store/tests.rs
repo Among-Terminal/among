@@ -18,6 +18,7 @@ fn prepared(root: &Path) -> (Transaction, Receipt) {
         asset_id: 11,
         generation: token(),
         installation: Some(token()),
+        source: None,
     };
     (transaction, receipt)
 }

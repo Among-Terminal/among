@@ -1,7 +1,9 @@
 //! repository metadata is inert input, not permission to install or execute it.
 
 pub mod metadata;
+mod operations;
 mod package;
+pub mod registry;
 pub mod source;
 mod store;
 

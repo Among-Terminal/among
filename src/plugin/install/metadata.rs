@@ -18,18 +18,18 @@ pub const MAX_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_MEMBERS: usize = 2048;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Catalogue {
     pub plugins: Vec<Plugin>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Plugin {
     pub id: String,
     pub versions: Vec<Version>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Version {
     pub revision: String,
     pub manifest_sha256: String,
@@ -108,7 +108,7 @@ pub struct Member {
     pub executable: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
     pub os: String,

@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 
-static JOB_TESTS: Mutex<()> = Mutex::new(());
+pub(crate) static JOB_TESTS: Mutex<()> = Mutex::new(());
 
 pub(crate) struct Reply {
     status: u16,
@@ -18,7 +18,7 @@ impl Reply {
     pub(crate) fn set_json(&mut self, value: Value) {
         self.body = value.to_string().into_bytes();
     }
-    fn json(value: Value) -> Self {
+    pub(crate) fn json(value: Value) -> Self {
         Self {
             status: 200,
             headers: Vec::new(),
@@ -32,6 +32,13 @@ impl Reply {
     pub(crate) fn held() -> Self {
         Self {
             hold: true,
+            ..Self::json(Value::Null)
+        }
+    }
+
+    pub(crate) fn rate_limited() -> Self {
+        Self {
+            status: 429,
             ..Self::json(Value::Null)
         }
     }
@@ -176,6 +183,10 @@ impl Server {
         Job::start_with(repository, Some(self.client(true)))
     }
 
+    pub(crate) fn refresh(&self, repository_id: u64) -> Result<Job, Problem> {
+        Job::start_target(Target::Registered(repository_id), Some(self.client(true)))
+    }
+
     pub(crate) fn install(
         &self,
         selection: Selection,
@@ -188,7 +199,7 @@ impl Server {
         self.requests.lock().unwrap().clone()
     }
 
-    fn inspect(&self, trust: bool) -> Result<Inspection, Problem> {
+    pub(crate) fn inspect(&self, trust: bool) -> Result<Inspection, Problem> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -213,13 +224,42 @@ impl Drop for Server {
     }
 }
 
+#[test]
+fn actual_install_worker_failure_has_identity_generation_and_failed_terminal_progress_without_selection(
+) {
+    let _serial = JOB_TESTS.lock().unwrap();
+    let root = super::super::package::tests::OwnedRoot::new();
+    let (metadata, _) = super::super::package::tests::fixture();
+    let server = Server::new(|_| Reply::rate_limited());
+    let job = server.install(selected(&metadata), root.0.clone()).unwrap();
+    assert_eq!(job.operation().0, "github:12/sample");
+    assert_eq!(job.operation().1.len(), 64);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(outcome) = job.poll() {
+            assert!(outcome.is_err());
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(job.phase(), "Package installation failed");
+    assert!(!root.0.join("installed.json").exists());
+    while WORKERS.load(Ordering::Acquire) != 0 {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 pub(crate) fn normal(request: &str) -> Reply {
     let path = request.split_whitespace().nth(1).unwrap();
     if path == "/repos/example/sample" || path == "/repositories/12" {
         Reply::json(
-            serde_json::json!({"id":12,"owner":{"login":"example"},"name":"sample","private":false,"default_branch":"main"}),
+            serde_json::json!({"id":12,"owner":{"login":"example","id":34},"name":"sample","private":false,"default_branch":"main"}),
         )
-    } else if path == "/repos/example/sample/commits/main" {
+    } else if path == "/repos/example/sample/commits/main"
+        || path == "/repositories/12/commits/main"
+    {
         Reply::json(serde_json::json!({"sha":"a".repeat(40)}))
     } else if path == format!("/example/sample/{}/among-plugins.json", "a".repeat(40)) {
         Reply::json(crate::plugin::install::metadata::tests::single())
@@ -281,7 +321,7 @@ fn actual_https_requests_pin_the_catalogue_and_reject_hostile_transport_outcomes
             }
         } else {
             Reply::json(
-                serde_json::json!({"id":12,"owner":{"login":"example"},"name":"sample","private":false,"default_branch":"main"}),
+                serde_json::json!({"id":12,"owner":{"login":"example","id":34},"name":"sample","private":false,"default_branch":"main"}),
             )
         }
     });
@@ -407,12 +447,17 @@ fn owned_workers_cancel_real_pending_https_without_exceeding_two_credits() {
 }
 
 fn selected(metadata: &Value) -> Selection {
-    Inspection {
-        repository_id: 12,
-        repository: Repository::parse("example/sample").unwrap(),
-        catalogue_revision: "a".repeat(40),
-        catalogue: Catalogue::parse(metadata.to_string().as_bytes()).unwrap(),
-    }
+    Inspection::from_bytes(
+        Origin {
+            repository_id: 12,
+            publisher_id: 34,
+            owner: "example".into(),
+            repository: "sample".into(),
+        },
+        "a".repeat(40),
+        metadata.to_string().into_bytes(),
+    )
+    .unwrap()
     .select("sample", "1.0")
     .unwrap()
 }
@@ -454,6 +499,8 @@ fn actual_https_stream_commits_exact_selection_inert_and_loads_offline() {
     let root = crate::plugin::install::package::tests::OwnedRoot::new();
     let (metadata, archive) = crate::plugin::install::package::tests::fixture();
     let selection = selected(&metadata);
+    let catalogue_digest =
+        crate::plugin::inventory::checksum(metadata.to_string().as_bytes()).unwrap();
     let server =
         Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
     let outcome = install_at(&server, selection, &root.0).unwrap();
@@ -461,6 +508,15 @@ fn actual_https_stream_commits_exact_selection_inert_and_loads_offline() {
     assert_eq!(outcome.receipt.revision, "a".repeat(40));
     assert_eq!(outcome.receipt.release_id, 7);
     assert_eq!(outcome.receipt.asset_id, 11);
+    assert_eq!(outcome.receipt.source.as_ref().unwrap().publisher_id, 34);
+    assert_eq!(
+        outcome.receipt.source.as_ref().unwrap().catalogue_sha256,
+        catalogue_digest
+    );
+    assert_eq!(
+        outcome.receipt.source.as_ref().unwrap().catalogue_revision,
+        "a".repeat(40)
+    );
     assert!(outcome.receipt.installation.is_some());
     let requests = server.requests();
     assert_eq!(
@@ -644,4 +700,216 @@ fn source_inputs_do_not_accept_credentials_cross_origins_or_reference_paths() {
         Repository::parse("owner/repo").unwrap(),
         Repository::parse("https://github.com/owner/repo/").unwrap()
     );
+}
+
+#[test]
+fn actual_numeric_refresh_refuses_deleted_recreated_names_without_retargeting_saved_identity() {
+    let _serial = JOB_TESTS.lock().unwrap();
+    use super::super::registry::{self, Outcome, Request};
+    use serde_json::json;
+    let root = super::super::package::tests::OwnedRoot::new();
+    let recreated = Arc::new(AtomicBool::new(false));
+    let server = Server::new({
+        let recreated = recreated.clone();
+        move |request| {
+            let path = request.split_whitespace().nth(1).unwrap();
+            if path == "/repos/example/sample" || path == "/repositories/12" {
+                Reply::json(
+                    json!({"id":if recreated.load(Ordering::Acquire){55}else{12},"owner":{"login":"example","id":34},"name":"sample","private":false,"default_branch":"main"}),
+                )
+            } else if path == "/repositories/55/commits/main" {
+                Reply::json(json!({"sha":"a".repeat(40)}))
+            } else {
+                normal(request)
+            }
+        }
+    });
+    let first = server.inspect(true).unwrap();
+    registry::run(&root.0, Request::Add(Box::new(first)), || Ok(()), || Ok(())).unwrap();
+    let expected = match registry::run(&root.0, Request::List, || Ok(()), || Ok(())).unwrap() {
+        Outcome::List(mut entries) => entries.remove(0),
+        _ => panic!("expected registrations"),
+    };
+    let before = std::fs::read(root.0.join("sources.json")).unwrap();
+    recreated.store(true, Ordering::Release);
+    let job = server.refresh(12).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(outcome) = job.poll() {
+            assert!(matches!(
+                outcome,
+                Err(Problem(
+                    "registered numeric repository identity changed; refusing to retarget source"
+                ))
+            ));
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(std::fs::read(root.0.join("sources.json")).unwrap(), before);
+    let new = server.inspect(true).unwrap();
+    assert_eq!(
+        new.origin().compare(&expected.origin),
+        crate::plugin::origin::Change::IdentityChanged
+    );
+    assert!(registry::run(
+        &root.0,
+        Request::Refresh {
+            expected,
+            inspection: Box::new(new.clone())
+        },
+        || Ok(()),
+        || Ok(())
+    )
+    .is_err());
+    registry::run(&root.0, Request::Add(Box::new(new)), || Ok(()), || Ok(())).unwrap();
+    match registry::run(&root.0, Request::List, || Ok(()), || Ok(())).unwrap() {
+        Outcome::List(entries) => assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.origin.repository_id)
+                .collect::<Vec<_>>(),
+            vec![12, 55]
+        ),
+        _ => panic!("expected separate sources"),
+    };
+}
+
+#[test]
+fn actual_network_refresh_finishing_after_committed_source_removal_cannot_resurrect_registration() {
+    let _serial = JOB_TESTS.lock().unwrap();
+    use super::super::registry::{self, Outcome, Request};
+    let root = super::super::package::tests::OwnedRoot::new();
+    let release = Arc::new(AtomicBool::new(true));
+    let server = Server::new({
+        let release = release.clone();
+        move |request| {
+            if request
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .ends_with("/among-plugins.json")
+            {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !release.load(Ordering::Acquire) {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            normal(request)
+        }
+    });
+    let initial = server.inspect(true).unwrap();
+    registry::run(
+        &root.0,
+        Request::Add(Box::new(initial)),
+        || Ok(()),
+        || Ok(()),
+    )
+    .unwrap();
+    let expected = match registry::run(&root.0, Request::List, || Ok(()), || Ok(())).unwrap() {
+        Outcome::List(mut entries) => entries.remove(0),
+        _ => panic!("expected source"),
+    };
+    release.store(false, Ordering::Release);
+    let network = server.refresh(12).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while server.requests().len() < 6 {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let removal = registry::Job::start(root.0.clone(), Request::Remove(expected.clone())).unwrap();
+    loop {
+        if let Some(outcome) = removal.poll() {
+            assert!(matches!(outcome, Ok(Outcome::Changed { .. })));
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let removed = std::fs::read(root.0.join("sources.json")).unwrap();
+    release.store(true, Ordering::Release);
+    let inspection = loop {
+        if let Some(outcome) = network.poll() {
+            break outcome.unwrap();
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let late = registry::Job::start(
+        root.0.clone(),
+        Request::Refresh {
+            expected,
+            inspection: Box::new(inspection),
+        },
+    )
+    .unwrap();
+    loop {
+        if let Some(outcome) = late.poll() {
+            assert!(matches!(
+                outcome,
+                Err(Problem(
+                    "source was removed or changed; stale operation was refused"
+                ))
+            ));
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(std::fs::read(root.0.join("sources.json")).unwrap(), removed);
+    assert!(
+        matches!(registry::run(&root.0,Request::List,||Ok(()),||Ok(())).unwrap(),Outcome::List(entries) if entries.is_empty())
+    );
+}
+
+#[test]
+fn real_install_workers_serialize_identity_and_use_fresh_operation_generations_after_cancellation()
+{
+    let _serial = JOB_TESTS.lock().unwrap();
+    let root = super::super::package::tests::OwnedRoot::new();
+    let (metadata, archive) = super::super::package::tests::fixture();
+    let selection = selected(&metadata);
+    let server = Server::new(|_| Reply::held());
+    let first = server.install(selection.clone(), root.0.clone()).unwrap();
+    let generation = first.operation().1.to_string();
+    assert_eq!(first.operation().0, "github:12/sample");
+    assert!(
+        matches!(server.install(selection.clone(),root.0.clone()),Err(Problem(reason)) if reason.contains("identity still has an active"))
+    );
+    assert!(first.cancel());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(outcome) = first.poll() {
+            assert!(outcome.is_err());
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    while WORKERS.load(Ordering::Acquire) != 0 {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(first.phase(), "Installation cancelled before commitment");
+    drop(server);
+    assert!(!root.0.join("installed.json").exists());
+    let server =
+        Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+    let next = server.install(selection, root.0.clone()).unwrap();
+    assert_ne!(next.operation().1, generation);
+    loop {
+        if let Some(outcome) = next.poll() {
+            assert!(outcome.is_ok());
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        !next.cancel(),
+        "a committed operation must never report a cancelled rollback"
+    );
+    assert_eq!(crate::plugin::inventory::read(&root.0).unwrap().len(), 1);
 }

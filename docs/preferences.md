@@ -122,8 +122,12 @@ identity or origin; clear it to return to the full installed/configured list.
 Repository inspection belongs to its own Plugin sources section, above and
 separate from search. Inspection only previews metadata; a separate Install disabled
 action selects one compatible ready-built version without enabling it. Existing
-selected identities are refused rather than overwritten. Updates, uninstall and
-persistent source registrations/cache remain unfinished.
+selected identities are refused rather than overwritten. Add source explicitly
+saves discovery metadata; Cached reports its retrieval time/offline/stale state,
+Refresh resolves the numeric registered repository, and Remove source affects
+discovery only. Publisher transfer requires explicit renewed source approval and
+cannot grant installed code new runtime access. Updates and uninstall remain
+unfinished.
 Equal names show separate origins, missing configured files stay inspectable,
 and a desired-on unavailable entry remains switchable off. Details opens a native
 view; Settings appears only for a declared settings schema. The form's Save action
