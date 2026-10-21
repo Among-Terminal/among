@@ -284,19 +284,22 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
         result
     }
     fn focus(window: &impl IsA<gtk::Window>) {
+        let title = format!("^{}$", window.as_ref().title().unwrap());
         let ids = xdo(&[
             "search",
             "--onlyvisible",
             "--pid",
             &std::process::id().to_string(),
             "--name",
-            &window.as_ref().title().unwrap(),
+            &title,
         ]);
         let id = ids.lines().last().unwrap();
         xdo(&["windowactivate", "--sync", id]);
         xdo(&["windowfocus", "--sync", id]);
+        wait_for(|| window.as_ref().is_active(), Duration::from_secs(2));
     }
     fn press(button: &gtk::Button) {
+        wait_for(|| button.is_mapped(), Duration::from_secs(2));
         assert!(button.grab_focus());
         xdo(&["key", "--clearmodifiers", "space"]);
         wait_for(
@@ -325,7 +328,7 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
             std::os::unix::fs::PermissionsExt::from_mode(0o700),
         )
         .unwrap();
-        std::fs::write(package.join("among-fake-mode"), "managed-echo").unwrap();
+        std::fs::write(package.join("among-fake-mode"), "managed-on-event").unwrap();
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(package.join("among-plugin.json")).unwrap())
                 .unwrap();
@@ -419,6 +422,7 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
         .into_iter()
         .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
         .unwrap();
+    preferences.set_title(Some("Primary Preferences"));
     let row = widgets(preferences.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
@@ -531,6 +535,30 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
         Duration::from_secs(6),
     );
     assert!(package.join("executed").exists());
+    let accepted = std::fs::read(&config).unwrap();
+    // replay a retained native review's late callback; the first Cancel above
+    // and this generation's current Accept were driven by real keyboard input.
+    cancelled.emit_by_name::<()>("response", &[&"enable"]);
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        accepted,
+        "a stale review cannot persist grants that the running generation rejected"
+    );
+    let explanation = preferences
+        .visible_dialog()
+        .unwrap()
+        .downcast::<adw::AlertDialog>()
+        .unwrap();
+    assert!(explanation
+        .body()
+        .contains("stop the current plugin generation"));
+    let close = widgets(explanation.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Close"))
+        .unwrap();
+    press(&close);
+    println!("PASS a retained native access review cannot persist reduced grants through a late callback after real keyboard acceptance starts the current generation; rejection is visible and retained bytes stay unchanged");
     let terminal = ctx
         .state
         .borrow()
@@ -545,6 +573,16 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
         .unwrap();
     focus(&preferences);
     press(&settings);
+    wait_for(
+        || {
+            gtk::Window::list_toplevels().iter().any(|window| {
+                window
+                    .downcast_ref::<adw::PreferencesWindow>()
+                    .is_some_and(|window| window.title().as_deref() == Some("Plugin settings"))
+            })
+        },
+        Duration::from_secs(2),
+    );
     let editor = gtk::Window::list_toplevels()
         .into_iter()
         .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
@@ -586,6 +624,7 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
     preferences.destroy();
     focus(&ctx.window);
     apply_focus(&ctx);
+    wait_for(|| terminal.has_focus(), Duration::from_secs(2));
     xdo(&[
         "type",
         "--clearmodifiers",

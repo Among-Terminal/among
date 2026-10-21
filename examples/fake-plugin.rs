@@ -81,6 +81,7 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
     let mut enumerating = false;
     let mut enumeration_id = 1000u64;
     let mut previous_configuration: Option<Value> = None;
+    let mut previous_status: Option<Value> = None;
     for line in std::io::stdin().lock().lines() {
         let message: Value = serde_json::from_str(&line?)?;
         writeln!(transcript, "{message}")?;
@@ -176,6 +177,17 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
                     &mut output,
                     &json!({"type":"configured","session":message["session"],"generation":message["generation"],"revision":message["revision"],"outcome":outcome,"reason":"invalid_configuration","message":message["values"]}),
                 )?;
+                if let Some(previous) = previous_status.take() {
+                    std::fs::write("new-settings-applied", b"yes")?;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    while !std::path::Path::new("release-old-status").exists()
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    send(&mut output, &previous)?;
+                    std::fs::write("old-status-released", b"yes")?;
+                }
                 if mode == "managed-reject" {
                     send(
                         &mut output,
@@ -215,10 +227,21 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
                 } else {
                     label.clone()
                 };
-                send(
-                    &mut output,
-                    &json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":message["request_id"],"refresh_ms":1000,"fragments":[{"text":if held_summary {"retired-target-marker"} else {&target_label}}]}),
-                )?;
+                let refresh = if mode.starts_with("managed-on-event") {
+                    Value::Null
+                } else {
+                    json!(1000)
+                };
+                let response = json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":message["request_id"],"refresh_ms":refresh,"fragments":[{"text":if held_summary {"retired-target-marker"} else {&target_label}}]});
+                if mode == "managed-on-event-held"
+                    && message["scope"]["slot"] == "app_footer"
+                    && !std::path::Path::new("old-status-held").exists()
+                {
+                    previous_status = Some(response);
+                    std::fs::write("old-status-held", b"yes")?;
+                    continue;
+                }
+                send(&mut output, &response)?;
                 if held_summary {
                     std::fs::write("summary-released", b"yes")?;
                     std::thread::sleep(std::time::Duration::from_millis(300));
