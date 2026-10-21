@@ -14,6 +14,7 @@ use gtk::gdk;
 use crate::plugin::host::{Configuration, PluginState};
 use crate::shortcuts::{self, Action, Bindings};
 
+mod plugin_manager;
 mod plugin_settings;
 
 type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
@@ -27,12 +28,12 @@ type SavePluginSettings =
 ///
 /// Handed over as closures rather than a reference to the window so this module
 /// does not need to know how the application stores its state.
+#[derive(Clone)]
 pub struct PreferencesContext {
     pub on_closed: Rc<dyn Fn()>,
     pub storage_status: gtk::StringList,
     pub bindings: Rc<RefCell<Bindings>>,
-    pub plugin_listing: Rc<dyn Fn() -> Vec<(String, PluginState)>>,
-    pub plugin_enabled: Rc<dyn Fn(&str) -> bool>,
+    pub plugin_inventory: Rc<dyn Fn() -> Vec<crate::plugin::host::Overview>>,
     pub plugin_details: Rc<PluginDetailsQuery>,
     pub save_plugin_settings: Rc<SavePluginSettings>,
     pub plugin_configuration: Rc<ConfigurationQuery>,
@@ -246,123 +247,7 @@ fn attach_capture(
 }
 
 fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::new();
-    page.set_title("Plugins");
-    page.set_icon_name(Some("application-x-addon-symbolic"));
-    add_storage_status(&page, ctx);
-
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Plugins");
-    group.set_description(Some(
-        "Plugins run as separate processes, so one that crashes cannot take the \
-         terminals down with it.",
-    ));
-    page.add(&group);
-
-    let listing = (ctx.plugin_listing)();
-    if listing.is_empty() {
-        let row = adw::ActionRow::new();
-        row.set_title("No plugins configured");
-        row.set_subtitle("Add an entry to ~/.config/among/plugins.json");
-        group.add(&row);
-        return page;
-    }
-
-    for (name, state) in listing {
-        let row = adw::ActionRow::new();
-        let details = (ctx.plugin_details)(&name);
-        row.set_title(&escape_display(
-            details
-                .as_ref()
-                .and_then(|(entry, _)| entry.inspected.as_ref().ok())
-                .map_or(name.as_str(), |inspected| inspected.manifest.name.as_str()),
-        ));
-        row.set_subtitle(&describe_state(&state));
-        if let Some((entry, _)) = details {
-            plugin_settings::add_actions(
-                &row,
-                entry,
-                ctx.save_plugin_settings.clone(),
-                ctx.plugin_details.clone(),
-                ctx.plugin_configuration.clone(),
-            );
-        }
-
-        let switch = gtk::Switch::new();
-        switch.set_valign(gtk::Align::Center);
-        switch.set_active((ctx.plugin_enabled)(&name));
-        // A plugin that is not installed cannot be switched on: there is
-        // nothing to start, and pretending otherwise would be misleading.
-        if matches!(
-            state,
-            PluginState::Missing { .. }
-                | PluginState::Incompatible { .. }
-                | PluginState::Unavailable { .. }
-        ) && !switch.is_active()
-        {
-            switch.set_sensitive(false);
-        }
-
-        let enable = ctx.enable_plugin.clone();
-        let disable = ctx.disable_plugin.clone();
-        let plugin_name = name.clone();
-        let listing = ctx.plugin_listing.clone();
-        let weak_row = row.downgrade();
-        let updating = Rc::new(std::cell::Cell::new(false));
-        let signal_updating = updating.clone();
-        switch.connect_active_notify(move |switch| {
-            if signal_updating.get() {
-                return;
-            }
-            if switch.is_active() {
-                enable(
-                    &plugin_name,
-                    switch
-                        .root()
-                        .and_then(|root| root.downcast::<gtk::Window>().ok()),
-                );
-            } else {
-                disable(&plugin_name);
-            }
-            if let Some(row) = weak_row.upgrade() {
-                if let Some((_, state)) =
-                    listing().into_iter().find(|(name, _)| name == &plugin_name)
-                {
-                    row.set_subtitle(&describe_state(&state));
-                }
-            }
-        });
-        // faults and restarts can happen without a switch interaction; stop
-        // observing when the preferences row is destroyed.
-        let weak_row = row.downgrade();
-        let weak_switch = switch.downgrade();
-        let desired = ctx.plugin_enabled.clone();
-        let listing = ctx.plugin_listing.clone();
-        gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-            let Some(row) = weak_row.upgrade() else {
-                return gtk::glib::ControlFlow::Break;
-            };
-            if let Some((_, state)) = listing().into_iter().find(|(plugin, _)| plugin == &name) {
-                let text = describe_state(&state);
-                if row.subtitle().as_deref() != Some(text.as_str()) {
-                    row.set_subtitle(&text);
-                }
-            }
-            if let Some(switch) = weak_switch.upgrade() {
-                let enabled = desired(&name);
-                if switch.is_active() != enabled {
-                    updating.set(true);
-                    switch.set_active(enabled);
-                    updating.set(false);
-                }
-            }
-            gtk::glib::ControlFlow::Continue
-        });
-        row.add_suffix(&switch);
-        row.set_activatable_widget(Some(&switch));
-        group.add(&row);
-    }
-    page
+    plugin_manager::page(ctx)
 }
 
 fn describe_state(state: &PluginState) -> String {
@@ -450,10 +335,15 @@ mod tests {
             on_closed: Rc::new(|| {}),
             storage_status: gtk::StringList::new(&[]),
             bindings: Rc::new(RefCell::new(Bindings::defaults())),
-            plugin_listing: Rc::new(move || vec![("clock".into(), observed.borrow().clone())]),
-            plugin_enabled: Rc::new({
+            plugin_inventory: Rc::new({
                 let desired = desired.clone();
-                move |_| desired.get()
+                move || {
+                    vec![crate::plugin::host::Overview::fixture(
+                        "clock",
+                        observed.borrow().clone(),
+                        desired.get(),
+                    )]
+                }
             }),
             plugin_details: Rc::new(|_| None),
             save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
@@ -491,11 +381,13 @@ mod tests {
             .ancestor(adw::ActionRow::static_type())
             .and_then(|widget| widget.downcast::<adw::ActionRow>().ok())
             .expect("live plugin row containing the switch");
-        assert_eq!(row.subtitle().as_deref(), Some("Running"));
+        assert!(row
+            .subtitle()
+            .is_some_and(|text| text.contains("Running") && text.contains("Declared API unknown")));
         switch.set_active(false);
-        assert_eq!(row.subtitle().as_deref(), Some("Disabled"));
+        assert!(row.subtitle().is_some_and(|text| text.contains("Disabled")));
         switch.set_active(true);
-        assert_eq!(row.subtitle().as_deref(), Some("Running"));
+        assert!(row.subtitle().is_some_and(|text| text.contains("Running")));
         *state.borrow_mut() = PluginState::Faulted {
             reason: "fixture fault".into(),
         };
@@ -516,7 +408,7 @@ mod tests {
             "actual process fault must not change desired enablement"
         );
         *state.borrow_mut() = PluginState::Running;
-        while row.subtitle().as_deref() != Some("Running") {
+        while !row.subtitle().is_some_and(|text| text.contains("Running")) {
             assert!(
                 std::time::Instant::now() < deadline,
                 "restart description never reached the real row"

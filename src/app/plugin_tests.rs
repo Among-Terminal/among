@@ -235,6 +235,269 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
 
 #[test]
 #[ignore = "requires an isolated graphical session, built fake-plugin and real keyboard input"]
+fn manager_search_same_name_origins_and_background_refresh_preserve_real_controls() {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    fn widgets(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+        let mut result = vec![widget.clone()];
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            result.extend(widgets(&widget));
+            child = widget.next_sibling();
+        }
+        result
+    }
+    fn focus(window: &impl IsA<gtk::Window>) {
+        let ids = xdo(&[
+            "search",
+            "--onlyvisible",
+            "--pid",
+            &std::process::id().to_string(),
+            "--name",
+            &window.as_ref().title().unwrap(),
+        ]);
+        let id = ids.lines().last().unwrap();
+        xdo(&["windowactivate", "--sync", id]);
+        xdo(&["windowfocus", "--sync", id]);
+    }
+    let root = crate::plugin::inventory::root().unwrap();
+    crate::test_isolation::assert_below_check_root(&root);
+    let first = crate::plugin::inventory::tests::fixture(&root);
+    let mut second = first.clone();
+    second.repository_id = 13;
+    second.owner = "another".into();
+    let package = second.package_path(&root);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&package)
+        .unwrap();
+    for name in ["among-plugin.json", "plugin"] {
+        std::fs::copy(first.package_path(&root).join(name), package.join(name)).unwrap();
+    }
+    std::fs::set_permissions(
+        package.join("plugin"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("installed.json"),
+        serde_json::json!({"version":1,"installations":[first,second]}).to_string(),
+    )
+    .unwrap();
+    let config = crate::settings::directory().unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    let local=serde_json::json!({"version":1,"plugins":{"github:12/sample":{"enabled":false},"github:13/sample":{"enabled":false,"future":"keep"}}}).to_string();
+    std::fs::write(config.join("managed-plugins.json"), &local).unwrap();
+    let legacy = r#"{"plugins":[{"name":"Lost","enabled":true}],"future":"keep"}"#;
+    std::fs::write(config.join("plugins.json"), legacy).unwrap();
+    let app = application("com.github.among-terminal.manager-inventory-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(
+        || ctx.state.borrow().session_ready && ctx.state.borrow().plugins.supervised_count() == 0,
+        Duration::from_secs(4),
+    );
+    let terminal = ctx
+        .state
+        .borrow()
+        .pane(PaneId(1))
+        .unwrap()
+        .terminal()
+        .clone();
+    open_preferences(&ctx);
+    let preferences = gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .unwrap();
+    let rows: Vec<_> = widgets(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .filter(|row| row.title() == "Sample")
+        .collect();
+    assert_eq!(rows.len(), 2);
+    let selected = rows
+        .iter()
+        .find(|row| {
+            row.subtitle()
+                .is_some_and(|text| text.contains("github:13/sample"))
+        })
+        .unwrap()
+        .clone();
+    let page = selected
+        .ancestor(adw::PreferencesPage::static_type())
+        .unwrap()
+        .downcast::<adw::PreferencesPage>()
+        .unwrap();
+    preferences.set_visible_page(&page);
+    wait_for(|| selected.is_mapped(), Duration::from_secs(2));
+    focus(&preferences);
+    let switch = widgets(selected.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
+        .unwrap();
+    assert!(!switch.is_active());
+    assert!(selected.subtitle().is_some_and(
+        |text| text.contains("Declared API 1.2 supported") && text.contains("Not observed")
+    ));
+    let search = widgets(page.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::SearchEntry>().ok())
+        .unwrap();
+    assert!(search.grab_focus());
+    xdo(&["type", "--clearmodifiers", "--delay", "0", "13/sample"]);
+    wait_for(
+        || rows.iter().filter(|row| row.is_mapped()).count() == 1,
+        Duration::from_secs(2),
+    );
+    assert!(selected.is_mapped());
+    assert!(switch.grab_focus());
+    let settings = widgets(selected.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Settings…"))
+        .unwrap();
+    assert!(settings.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait_for(
+        || {
+            gtk::Window::list_toplevels().iter().any(|window| {
+                window
+                    .downcast_ref::<adw::PreferencesWindow>()
+                    .is_some_and(|window| window.title().as_deref() == Some("Plugin settings"))
+            })
+        },
+        Duration::from_secs(2),
+    );
+    let editor = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .find(|window| window.title().as_deref() == Some("Plugin settings"))
+        .unwrap();
+    wait_for(|| editor.is_mapped(), Duration::from_secs(2));
+    focus(&editor);
+    let field = widgets(editor.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .unwrap();
+    wait_for(|| field.is_mapped(), Duration::from_secs(2));
+    assert!(field.grab_focus());
+    xdo(&["key", "--clearmodifiers", "ctrl+a"]);
+    xdo(&[
+        "type",
+        "--clearmodifiers",
+        "--delay",
+        "0",
+        "unfinished edit",
+    ]);
+    wait_for(|| field.text() == "unfinished edit", Duration::from_secs(2));
+    ctx.state.borrow_mut().plugins.register(PluginSpec {
+        name: "controlled-crash".into(),
+        command: fixture("crashing"),
+        enabled: true,
+    });
+    wait_for(
+        || {
+            ctx.state
+                .borrow()
+                .plugins
+                .listing()
+                .iter()
+                .any(|(key, state)| {
+                    key == "controlled-crash"
+                        && matches!(
+                            state,
+                            PluginState::Stopping { .. } | PluginState::Faulted { .. }
+                        )
+                })
+        },
+        Duration::from_secs(3),
+    );
+    wait_for(
+        || {
+            widgets(page.upcast_ref()).iter().any(|widget| {
+                widget.downcast_ref::<adw::ActionRow>().is_some_and(|row| {
+                    row.title() == "controlled-crash"
+                        && row.subtitle().is_some_and(|text| {
+                            text.contains("Stopped") || text.contains("Stopping")
+                        })
+                })
+            })
+        },
+        Duration::from_secs(2),
+    );
+    assert_eq!(field.text(), "unfinished edit");
+    assert!(field
+        .root()
+        .and_then(|root| root.focus())
+        .is_some_and(
+            |focus| focus == field.clone().upcast::<gtk::Widget>() || focus.is_ancestor(&field)
+        ));
+    let retained_switch = widgets(selected.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
+        .unwrap();
+    assert_eq!(retained_switch, switch);
+    xdo(&["key", "--clearmodifiers", "alt+F4"]);
+    wait_for(|| !editor.is_visible(), Duration::from_secs(2));
+    focus(&preferences);
+    assert!(search.grab_focus());
+    xdo(&["key", "--clearmodifiers", "ctrl+a"]);
+    xdo(&["key", "--clearmodifiers", "BackSpace"]);
+    wait_for(
+        || rows.iter().filter(|row| row.is_mapped()).count() == 2,
+        Duration::from_secs(2),
+    );
+    let missing = widgets(page.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| row.title() == "Lost")
+        .unwrap();
+    assert!(missing
+        .subtitle()
+        .is_some_and(|text| text.contains("Files unavailable") && text.contains("Not installed")));
+    assert!(!root.join("executed").exists());
+    assert_eq!(
+        std::fs::read_to_string(config.join("managed-plugins.json")).unwrap(),
+        local
+    );
+    assert_eq!(
+        std::fs::read_to_string(config.join("plugins.json")).unwrap(),
+        legacy
+    );
+    assert_eq!(
+        ctx.state.borrow().pane(PaneId(1)).unwrap().terminal(),
+        &terminal
+    );
+    println!("PASS identity-scoped native search distinguishes two Sample origins; missing desired-on legacy entry remains visible; a real background process fault adds/updates its card without replacing the selected switch, stealing editor focus, losing unfinished text or writing inspected settings");
+    let missing_switch = widgets(missing.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
+        .unwrap();
+    assert!(missing_switch.is_active() && missing_switch.is_sensitive());
+    assert!(missing_switch.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait_for(
+        || !ctx.state.borrow().plugins.desired_enabled("Lost"),
+        Duration::from_secs(2),
+    );
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(config.join("plugins.json")).unwrap()).unwrap();
+    assert_eq!(saved["plugins"][0]["enabled"], false);
+    assert_eq!(saved["future"], "keep");
+    assert_eq!(
+        std::fs::read_to_string(config.join("managed-plugins.json")).unwrap(),
+        local
+    );
+    println!("PASS real Space disables and durably saves the unavailable desired-on legacy entry without changing either equal-name managed identity or unrelated fields");
+    preferences.destroy();
+    ctx.window.destroy();
+    wait_for(
+        || ctx.state.borrow().plugins.is_stopped(),
+        Duration::from_secs(2),
+    );
+}
+
+#[test]
+#[ignore = "requires an isolated graphical session, built fake-plugin and real keyboard input"]
 fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_controls() {
     const PHASE: &str = "AMONG_MANAGED_RUNTIME_TEST_PHASE";
     let phase = std::env::var(PHASE).ok();

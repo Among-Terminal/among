@@ -17,6 +17,13 @@ pub(super) fn add_actions(
 ) {
     let details = gtk::Button::with_label("Details…");
     details.set_valign(gtk::Align::Center);
+    details.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Details for {}",
+        entry.key()
+    ))]);
+    let details_receipt = entry.receipt.clone();
+    let details_key = entry.key();
+    let current_details = load.clone();
     let description = match &entry.inspected {
         Ok(inspected) => {
             let manifest = &inspected.manifest;
@@ -49,7 +56,15 @@ pub(super) fn add_actions(
     details.connect_clicked(move |button| {
         let dialog = adw::AlertDialog::builder()
             .heading("Plugin details")
-            .body(&description)
+            .body(
+                if current_details(&details_key)
+                    .is_some_and(|(current, _)| current.receipt == details_receipt)
+                {
+                    description.as_str()
+                } else {
+                    "The selected package changed or was removed. Reopen its current details."
+                },
+            )
             .build();
         dialog.add_response("close", "Close");
         dialog.present(
@@ -91,9 +106,12 @@ pub(super) fn add_actions(
     };
     let settings = gtk::Button::with_label("Settings…");
     settings.set_valign(gtk::Align::Center);
+    settings.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Settings for {}",
+        entry.key()
+    ))]);
     settings.connect_clicked(move |button| {
-        let current = load(&entry.key())
-            .filter(|(current, _)| current.receipt.generation == entry.receipt.generation);
+        let current = load(&entry.key()).filter(|(current, _)| current.receipt == entry.receipt);
         let Some((_, stored)) = current else { return };
         let window = adw::PreferencesWindow::builder()
             .title("Plugin settings")

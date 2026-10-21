@@ -43,8 +43,10 @@ simultaneous writes by external editors are not fully serialized.
 
 ## Changing preferences
 
-Accepted edits in both Preferences pages apply immediately and are saved without
-a Save button. Fresh launches restore plugin choices and shortcut overrides.
+Plugin switches and shortcut edits apply immediately and are saved without a Save
+button. Plugin-specific forms instead require an explicit Save after validation;
+closing without Save discards unfinished edits. Fresh launches restore plugin
+choices and shortcut overrides.
 Reassigning an occupied shortcut also saves the displaced action as unbound.
 Cancelled capture and rejected/no-op edits do not write new overrides.
 
@@ -59,3 +61,19 @@ Clock, resources and pane PWD remain optional and disabled by default. Only expl
 user changes enable them. No terminal contents or workspace layouts are saved here.
 
 Developer checks are described in [the contributing guide](../CONTRIBUTING.md#checking-changes).
+
+## Plugin inventory navigation
+
+The Plugins page has a labelled native search field. Match by name, description,
+identity or origin; clear it to return to the full installed/configured list.
+Equal names show separate origins, missing configured files stay inspectable,
+and a desired-on unavailable entry remains switchable off. Details opens a native
+dialog; Settings appears only for a declared settings schema. Use Tab/Shift+Tab
+to move between search, actions and switches, Space to operate a switch, and the
+dialog's dismiss action to return. The form's Save boundary is separate from
+runtime applied/pending/rejected/restart-required acknowledgement.
+
+Background registration or process-state changes update rows by identity rather
+than rebuilding focused controls every tick. Opening/searching these views does
+not enable code or save defaults. Repository/install operations are separate from
+this inventory; no download or uninstall is implied by a static card.

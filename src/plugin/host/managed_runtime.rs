@@ -440,6 +440,7 @@ impl PluginHost {
                     io.handshake_done = true;
                 }
                 self.plugins[index].state = PluginState::Running;
+                self.plugins[index].observed = Some(super::super::manifest::Api { major, minor });
                 if let Some(runtime) = self.plugins[index].runtime.as_mut() {
                     runtime.grants = features;
                     runtime.revision = runtime.revision.saturating_add(1);

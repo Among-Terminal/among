@@ -141,9 +141,29 @@ application from starting:
 
 - A missing file, unparsable JSON, or a file without a `plugins` key means no
   plugins are loaded.
-- A plugin named in the configuration that is not installed is reported and
-  skipped; the rest still load.
+- A configured plugin whose file is absent remains an inspectable missing entry,
+  with its desired switch retained. It can still be disabled.
 - An entry without a `name` is skipped.
+- Legacy names must be single filenames, not paths or managed identity strings.
+  Duplicate configured names are registered once; stored unrelated data is not
+  rewritten during discovery. Installed but unconfigured legacy files appear
+  disabled, without adding defaults to configuration merely by inspection.
+
+### Native inventory
+
+Preferences → Plugins joins configured legacy entries, committed managed receipts
+and runtime observations by identity. Cards show description (or its absence),
+origin/version, declared compatibility and last observed wire API separately from
+desired enablement and Starting/Running/Stopping/fault state. A never-run plugin
+does not receive an observed-compatible badge. Equal display names retain separate
+origin-scoped settings and switches; invalid selected packages remain visible.
+
+Search matches name, description, identity and origin. Clearing search restores
+the same rows rather than redirecting an action to a sorted position. Background
+state changes update existing controls; they do not replace an open editor or
+discard unfinished settings text. Details/settings callbacks reject a removed or
+replaced package rather than silently retargeting an old action. This inventory
+does not itself implement repository browsing, download or uninstall.
 
 ### Updating an installed example
 

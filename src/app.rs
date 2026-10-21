@@ -207,10 +207,30 @@ fn slot_area(class: &str) -> gtk::Box {
 
 /// Discover configured plugins. Any failure yields no plugins, never a crash.
 fn load_plugin_specs() -> Vec<PluginSpec> {
-    let Some(path) = plugin_config_path() else {
-        return Vec::new();
-    };
-    read_plugin_config(&path)
+    let mut specs = plugin_config_path()
+        .map(|path| read_plugin_config(&path))
+        .unwrap_or_default();
+    for name in installed_plugins() {
+        if legacy_plugin_name(&name) && !specs.iter().any(|spec| spec.name == name) {
+            if let Some(directory) = plugin_dir() {
+                specs.push(PluginSpec {
+                    command: vec![directory.join(&name).display().to_string()],
+                    name,
+                    enabled: false,
+                });
+            }
+        }
+    }
+    specs
+}
+
+fn legacy_plugin_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.chars().any(char::is_control)
 }
 
 fn plugin_config_path() -> Option<std::path::PathBuf> {
@@ -241,22 +261,23 @@ pub fn read_plugin_config(path: &std::path::Path) -> Vec<PluginSpec> {
         return Vec::new();
     };
 
-    let installed = installed_plugins();
+    let mut seen = std::collections::BTreeSet::new();
     entries
         .iter()
         .filter_map(|entry| {
             let name = entry.get("name")?.as_str()?.to_string();
-            // A configured plugin that is not installed is skipped so the rest
-            // of the configuration still takes effect.
-            if !installed.contains(&name) {
-                eprintln!("among: plugin `{name}` is configured but not installed");
+            // missing files remain inventory entries; a filename still cannot
+            // escape the legacy directory or impersonate a managed identity.
+            if !legacy_plugin_name(&name) || !seen.insert(name.clone()) {
                 return None;
             }
             let enabled = entry
                 .get("enabled")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let command = vec![plugin_dir()?.join(&name).display().to_string()];
+            let command = plugin_dir()
+                .map(|directory| vec![directory.join(&name).display().to_string()])
+                .unwrap_or_default();
             Some(PluginSpec {
                 name,
                 command,
@@ -2893,13 +2914,9 @@ fn open_preferences(ctx: &Window) {
         }),
         storage_status: ctx.state.borrow().settings_status.clone(),
         bindings: bindings.clone(),
-        plugin_listing: Rc::new({
+        plugin_inventory: Rc::new({
             let state = ctx.state.clone();
-            move || state.borrow().plugins.listing()
-        }),
-        plugin_enabled: Rc::new({
-            let state = ctx.state.clone();
-            move |name| state.borrow().plugins.desired_enabled(name)
+            move || state.borrow().plugins.overview()
         }),
         plugin_details: Rc::new({
             let state = ctx.state.clone();
@@ -5391,15 +5408,15 @@ mod tests {
                 on_closed: Rc::new(|| {}),
                 storage_status: gtk::StringList::new(&[""]),
                 bindings: Rc::new(RefCell::new(Bindings::defaults())),
-                plugin_listing: Rc::new(|| {
-                    vec![(
-                        "test-plugin".into(),
-                        crate::plugin::host::PluginState::Running,
-                    )]
-                }),
-                plugin_enabled: Rc::new({
+                plugin_inventory: Rc::new({
                     let desired = desired.clone();
-                    move |_| desired.get()
+                    move || {
+                        vec![crate::plugin::host::Overview::fixture(
+                            "test-plugin",
+                            crate::plugin::host::PluginState::Running,
+                            desired.get(),
+                        )]
+                    }
                 }),
                 plugin_details: Rc::new(|_| None),
                 save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
@@ -5496,7 +5513,9 @@ mod tests {
     use std::io::Write;
 
     fn write_config(body: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("among-test-config");
+        let dir = std::env::temp_dir()
+            .join("opencode")
+            .join(format!("among-test-config-{}", glib::uuid_string_random()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("plugins.json");
         let mut file = std::fs::File::create(&path).unwrap();
@@ -5523,10 +5542,15 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_that_is_not_installed_is_skipped() {
+    fn a_plugin_that_is_not_installed_retains_its_configured_identity_and_choice() {
         let path =
             write_config(r#"{"plugins":[{"name":"definitely-not-installed","enabled":true}]}"#);
-        assert!(read_plugin_config(&path).is_empty());
+        let before = std::fs::read(&path).unwrap();
+        let specs = read_plugin_config(&path);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "definitely-not-installed");
+        assert!(specs[0].enabled);
+        assert_eq!(before, std::fs::read(&path).unwrap());
     }
 
     #[test]
@@ -5537,11 +5561,21 @@ mod tests {
 
     #[test]
     fn a_disabled_entry_is_still_registered_but_off() {
-        // The installed set is what gates registration, so with nothing
-        // installed the entry is dropped either way; the important property is
-        // that configuration parsing does not fail the whole file.
         let path = write_config(r#"{"plugins":[{"name":"x","enabled":false}]}"#);
-        assert!(read_plugin_config(&path).is_empty());
+        let specs = read_plugin_config(&path);
+        assert_eq!(specs.len(), 1);
+        assert!(!specs[0].enabled);
+    }
+
+    #[test]
+    fn retained_legacy_names_cannot_escape_or_impersonate_managed_installations() {
+        let path = write_config(
+            r#"{"plugins":[{"name":"../other"},{"name":"/bin/sh"},{"name":"github:12/sample"},{"name":"."},{"name":".."},{"name":"valid_name","enabled":false},{"name":"valid_name","enabled":true}]}"#,
+        );
+        let specs = read_plugin_config(&path);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].name, "valid_name");
+        assert!(!specs[0].enabled);
     }
 
     #[test]
