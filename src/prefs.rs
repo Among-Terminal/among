@@ -57,6 +57,7 @@ pub struct PreferencesContext {
 pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
+        .modal(false)
         .search_enabled(false)
         .build();
     window.set_title(Some("Preferences"));
