@@ -4,36 +4,80 @@
 use among::notifications::{
     commands::{self, OwnedDirectory, Runtime},
     preferences::Preferences,
-    Channel, Host, Policy,
+    Authorization, Channel, Host, Policy,
 };
+use among::plugin_notifications::DeliveryAuthorization;
 use std::path::PathBuf;
 use std::sync::{
+    atomic::{AtomicBool, Ordering},
     mpsc::{sync_channel, Receiver, SyncSender},
-    OnceLock,
+    Arc, OnceLock,
 };
 use std::time::Instant;
 
 struct Preparation {
     path: PathBuf,
+    authorization: Authorization,
+    delivery: DeliveryAuthorization,
+    cancel: Arc<AtomicBool>,
     result: SyncSender<Result<OwnedDirectory, ()>>,
+}
+
+struct PendingPreparation {
+    result: Receiver<Result<OwnedDirectory, ()>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for PendingPreparation {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+}
+
+impl Preparation {
+    fn is_current(&self) -> bool {
+        !self.cancel.load(Ordering::Acquire)
+            && self.authorization.is_current()
+            && self.delivery.job().event().received_at().elapsed()
+                < among::plugin_notifications::EVENT_LIFETIME
+            && self
+                .delivery
+                .origin_lease()
+                .as_ref()
+                .is_none_or(|lease| lease.is_current())
+    }
+
+    fn run(&self) -> Result<OwnedDirectory, ()> {
+        use std::os::unix::fs::DirBuilderExt;
+        if !self.is_current() {
+            return Err(());
+        }
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.path)
+            .map_err(|_| ())?;
+        if !self.is_current() {
+            return Err(());
+        }
+        OwnedDirectory::open(&self.path).map_err(|_| ())
+    }
 }
 static PREPARER: OnceLock<Option<SyncSender<Preparation>>> = OnceLock::new();
 
-fn prepare(path: PathBuf) -> Option<Receiver<Result<OwnedDirectory, ()>>> {
+fn prepare(
+    path: PathBuf,
+    authorization: Authorization,
+    delivery: DeliveryAuthorization,
+) -> Option<PendingPreparation> {
     let sender = PREPARER
         .get_or_init(|| {
             let (send, receive) = sync_channel::<Preparation>(2);
             std::thread::Builder::new()
                 .name("among-command-directory".into())
                 .spawn(move || {
-                    use std::os::unix::fs::DirBuilderExt;
                     for request in receive {
-                        let result = std::fs::DirBuilder::new()
-                            .recursive(true)
-                            .mode(0o700)
-                            .create(&request.path)
-                            .map_err(|_| ())
-                            .and_then(|()| OwnedDirectory::open(&request.path).map_err(|_| ()));
+                        let result = request.run();
                         let _ = request.result.try_send(result);
                     }
                 })
@@ -42,15 +86,27 @@ fn prepare(path: PathBuf) -> Option<Receiver<Result<OwnedDirectory, ()>>> {
         })
         .as_ref()?;
     let (result, receive) = sync_channel(1);
-    sender.try_send(Preparation { path, result }).ok()?;
-    Some(receive)
+    let cancel = Arc::new(AtomicBool::new(false));
+    sender
+        .try_send(Preparation {
+            path,
+            authorization,
+            delivery,
+            cancel: cancel.clone(),
+            result,
+        })
+        .ok()?;
+    Some(PendingPreparation {
+        result: receive,
+        cancel,
+    })
 }
 
 pub(super) struct Adapter {
     runtime: Option<Runtime>,
     channel: Option<Channel>,
     path: Option<PathBuf>,
-    preparation: Option<Receiver<Result<OwnedDirectory, ()>>>,
+    preparation: Option<PendingPreparation>,
     attempted: bool,
     stopped: bool,
     problem: Option<&'static str>,
@@ -136,7 +192,7 @@ impl Adapter {
         bridge: &std::rc::Rc<std::cell::RefCell<among::plugin_notifications::Backend>>,
     ) {
         if let Some(receive) = &self.preparation {
-            match receive.try_recv() {
+            match receive.result.try_recv() {
                 Ok(Ok(directory)) => {
                     if !self.stopped {
                         if let Some(runtime) = &mut self.runtime {
@@ -155,17 +211,26 @@ impl Adapter {
         let Some(runtime) = &mut self.runtime else {
             return;
         };
-        if !self.stopped
-            && !self.attempted
-            && !runtime.is_prepared()
-            && self
-                .channel
-                .is_some_and(|channel| host.borrow().pending_count(Some(channel)) != 0)
-        {
-            self.attempted = true;
-            self.preparation = self.path.clone().and_then(prepare);
-            if self.preparation.is_none() {
-                self.problem = Some("Owned command directory preparation unavailable");
+        if !self.stopped && !self.attempted && !runtime.is_prepared() {
+            let now = Instant::now();
+            let authority = self.channel.and_then(|channel| {
+                let core = host.borrow();
+                let authority = core.pending_jobs(channel).find_map(|job| {
+                    let delivery = bridge.try_borrow().ok()?.authorize_delivery(job, now)?;
+                    let authorization = core.authorization(job)?;
+                    Some((authorization, delivery))
+                });
+                authority
+            });
+            if let Some((authorization, delivery)) = authority {
+                self.attempted = true;
+                self.preparation = self
+                    .path
+                    .clone()
+                    .and_then(|path| prepare(path, authorization, delivery));
+                if self.preparation.is_none() {
+                    self.problem = Some("Owned command directory preparation unavailable");
+                }
             }
         }
         if self.problem.is_some() {
@@ -174,18 +239,16 @@ impl Adapter {
             }
         }
         let now = Instant::now();
-        runtime.poll_guarded(host, now, |event| {
-            // The API author's typed-core join must precede managed command
-            // payloads. Never encode a managed event as an old terminal bell.
-            bridge
-                .borrow()
-                .envelope(event, now)
-                .is_some_and(|envelope| envelope.origin.is_none())
+        runtime.poll_authorized(host, now, |job| {
+            bridge.try_borrow().ok()?.authorize_delivery(job, now)
         });
     }
 
     pub fn shutdown(&mut self, host: &mut Host) {
         self.stopped = true;
+        if let Some(preparation) = &self.preparation {
+            preparation.cancel.store(true, Ordering::Release);
+        }
         if let Some(runtime) = &mut self.runtime {
             runtime.shutdown(host);
         }
@@ -202,7 +265,7 @@ impl Adapter {
         if self.preparation.is_some() {
             return "Preparing owned command directory off the UI loop".into();
         }
-        "Local process completion is not remote delivery. Cancellation cannot undo external effects. Managed-origin commands are withheld pending the typed-core integration.".into()
+        "Local process completion is not remote delivery. Cancellation cannot undo external effects. Event kind and origin require current delivery authority.".into()
     }
 }
 
@@ -221,4 +284,144 @@ fn helper() -> std::io::Result<PathBuf> {
         .and_then(|path| path.parent())
         .map(|path| path.join("among"))
         .ok_or_else(|| std::io::Error::other("test application executable unavailable"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use among::{
+        notifications::{Eligibility, Focus},
+        plugin_notifications::{Backend, EventInput, Owner, Target, EVENT_LIFETIME},
+    };
+    use std::{cell::RefCell, rc::Rc, time::Duration};
+
+    #[test]
+    fn preparation_reads_owned_authority_off_thread_before_creating_a_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "among-command-preparation-{}-{}",
+            std::process::id(),
+            glib::uuid_string_random()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        for revoked in [
+            "origin", "source", "channel", "session", "expiry", "cancel", "none",
+        ] {
+            let core = Rc::new(RefCell::new(Host::new().unwrap()));
+            let source = core.borrow_mut().attach(1).unwrap();
+            let channel = core
+                .borrow_mut()
+                .register_channel(Policy {
+                    enabled: true,
+                    eligibility: Eligibility::Always,
+                })
+                .unwrap();
+            let mut backend = Backend::new(core.clone(), Focus::default());
+            backend.bind("preparation-test");
+            let owner = Owner {
+                identity: "github:12/sample".into(),
+                generation: "producer".into(),
+            };
+            backend.register_identity(&owner.identity).unwrap();
+            let lease = backend.admit(owner.clone(), false, None).unwrap();
+            let now = if revoked == "expiry" {
+                Instant::now() - EVENT_LIFETIME
+            } else {
+                Instant::now()
+            };
+            backend
+                .produce(
+                    &owner,
+                    EventInput {
+                        sequence: 1,
+                        target: Target::Pane { reference: 1 },
+                        source_generation: Some(source.generation().to_string()),
+                        message: "Synthetic".into(),
+                        causal_job: None,
+                    },
+                    Some(1),
+                    now,
+                )
+                .unwrap();
+            let job = core.borrow_mut().take_ready(channel, now).unwrap();
+            let authorization = core.borrow().authorization(job).unwrap();
+            let delivery = backend.authorize_delivery(job, now).unwrap();
+            let (result, _) = sync_channel(1);
+            let path = root.join(revoked);
+            let request = Preparation {
+                path: path.clone(),
+                authorization,
+                delivery,
+                cancel: Arc::new(AtomicBool::new(false)),
+                result,
+            };
+            match revoked {
+                "origin" => lease.revoke(),
+                "source" => core.borrow_mut().detach(source),
+                "channel" => core.borrow_mut().remove_channel(channel),
+                "session" => *core.borrow_mut() = Host::new().unwrap(),
+                "cancel" => request.cancel.store(true, Ordering::Release),
+                _ => {}
+            }
+            let accepted = std::thread::spawn(move || request.run().is_ok())
+                .join()
+                .unwrap();
+            assert_eq!(accepted, revoked == "none", "{revoked}");
+            assert_eq!(
+                path.exists(),
+                revoked == "none",
+                "invalid authority created a filesystem effect: {revoked}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_or_expired_backend_metadata_cannot_trigger_lazy_preparation() {
+        for observed in [false, true] {
+            let core = Rc::new(RefCell::new(Host::new().unwrap()));
+            let bridge = Rc::new(RefCell::new(Backend::new(core.clone(), Focus::default())));
+            let mut adapter = Adapter::new();
+            let path = std::env::temp_dir().join(format!(
+                "among-command-no-preparation-{}-{}",
+                std::process::id(),
+                glib::uuid_string_random()
+            ));
+            adapter.path = Some(path.clone());
+            let preferences = Preferences {
+                configuration: Some(
+                    commands::Configuration::new(std::path::Path::new("/usr/bin/true"), Vec::new())
+                        .unwrap(),
+                ),
+                command: Policy {
+                    enabled: true,
+                    eligibility: Eligibility::Always,
+                },
+                ..Preferences::default()
+            };
+            adapter.configure(
+                &mut core.borrow_mut(),
+                &Preferences::default(),
+                &preferences,
+            );
+            let old = Instant::now() - EVENT_LIFETIME - Duration::from_secs(1);
+            let event = core
+                .borrow_mut()
+                .application_event(Focus::default(), old)
+                .unwrap();
+            if observed {
+                bridge
+                    .borrow_mut()
+                    .observe_host_event(event, None, Focus::default())
+                    .unwrap();
+            }
+            assert_eq!(core.borrow().pending_count(adapter.channel), 1);
+            adapter.poll(&core, &bridge);
+            assert!(!adapter.attempted && adapter.preparation.is_none());
+            assert!(
+                !path.exists(),
+                "missing/expired envelope prepared a directory"
+            );
+            adapter.shutdown(&mut core.borrow_mut());
+        }
+    }
 }

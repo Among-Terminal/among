@@ -633,7 +633,8 @@ fn shared_origin_lease_revokes_core_jobs_before_mutable_cleanup_and_cannot_reviv
         .unwrap();
     assert!(host.is_current(active));
     std::thread::spawn(move || lease.revoke()).join().unwrap();
-    assert_eq!(host.pending_count(None), 1); // no mutable cleanup has run
+    assert_eq!(host.pending.len(), 1); // no mutable cleanup has run
+    assert_eq!(host.pending_count(None), 0); // public count excludes revoked work
     assert!(!host.is_current(active));
     assert!(!host.is_event_current(queued));
     assert!(host.origin(origin).is_none());

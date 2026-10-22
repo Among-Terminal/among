@@ -76,6 +76,23 @@ fn app() -> (adw::Application, Window) {
     let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
     pump_for(Duration::from_millis(350));
     activate(&ctx.window);
+    if let Some(dialog) = ctx.window.visible_dialog() {
+        let dialog = dialog.downcast::<adw::AlertDialog>().unwrap();
+        assert_eq!(
+            dialog.heading().as_deref(),
+            Some("Restore the previous session?")
+        );
+        let restore = descendants(dialog.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .find(|button| button.label().as_deref() == Some("Restore"))
+            .unwrap();
+        key_button(&restore);
+        wait(
+            || ctx.state.borrow().session_ready,
+            "explicit native session restoration before provider admission",
+        );
+    }
     (app, ctx)
 }
 
@@ -131,6 +148,10 @@ fn ordinary_app_provider_controls_and_declarative_actions_use_one_live_core() {
         let general = crate::settings::directory().unwrap().join("general.json");
         let bytes = std::fs::read(&general).unwrap();
         let (_app, ctx) = app();
+        eprintln!(
+            "fresh provider startup inventory: {:?}",
+            ctx.state.borrow().plugins.overview()
+        );
         wait(
             || {
                 ctx.state.borrow().plugins.configuration("github:12/sample")
@@ -319,9 +340,15 @@ fn ordinary_app_provider_controls_and_declarative_actions_use_one_live_core() {
             },
             "ordinary application admission",
         );
-        ctx.state.borrow_mut().settings.managed_review_for_installation(
-            identity, json!({"owner":"example","repository":"sample","features":features}), None,
-        ).unwrap();
+        ctx.state
+            .borrow_mut()
+            .settings
+            .managed_review_for_installation(
+                identity,
+                json!({"owner":"example","repository":"sample","features":features}),
+                None,
+            )
+            .unwrap();
     }
     let frames = |package: &std::path::Path| -> Vec<Value> {
         std::fs::read_to_string(package.join("received.jsonl"))
@@ -501,6 +528,394 @@ fn ordinary_app_provider_controls_and_declarative_actions_use_one_live_core() {
         log.display()
     );
     println!("PASS ordinary app single core, four same-name identity/channel rows off by default, channel permission does not start plugins, real manager enable/provider/VTE delivery, all six allowed declarative areas, native accessible opaque keyboard actions with zero VTE misroute, stable focused widgets across slot refresh and live pane withdrawal, real fresh-process policy restoration. Typed core/origin command follow-up and broader acceptance remain open.");
+}
+
+#[test]
+#[ignore = "requires owned X11/WM/private XDG and the prebuilt notification-plugin; access review only, not independent backend acceptance"]
+fn native_role_review_is_explicit_reachable_and_restored_without_starting_code() {
+    use crate::plugin::managed::NotificationRole;
+    use serde_json::{json, Value};
+    use std::os::unix::fs::PermissionsExt;
+    let key = "github:12/sample";
+    let config = crate::settings::directory()
+        .unwrap()
+        .join("managed-plugins.json");
+    let root = crate::plugin::inventory::root().unwrap();
+    if std::env::var("AMONG_ROLE_UI_PHASE").as_deref() == Ok("restore") {
+        let before = std::fs::read(&config).unwrap();
+        let (_app, ctx) = app();
+        let prefs = preferences(&ctx);
+        assert_eq!(
+            ctx.state
+                .borrow()
+                .plugins
+                .reviewed_notification_role(key)
+                .unwrap(),
+            Some(NotificationRole::Producer)
+        );
+        assert_eq!(
+            ctx.state.borrow().plugins.admitted_notification_role(key),
+            None
+        );
+        let review: gtk::Button = named(&prefs, "notification-review-role:github:12/sample");
+        key_button(&review);
+        let dialog = prefs
+            .visible_dialog()
+            .unwrap()
+            .downcast::<adw::AlertDialog>()
+            .unwrap();
+        assert_eq!(
+            named::<adw::ComboRow>(&dialog, "notification-role-choice").selected(),
+            2
+        );
+        xdo(&["key", "--clearmodifiers", "Escape"]);
+        pump_for(Duration::from_millis(200));
+        assert_eq!(
+            std::fs::read(&config).unwrap(),
+            before,
+            "fresh role inspection wrote settings"
+        );
+        assert_eq!(
+            ctx.state.borrow().plugins.supervised_count(),
+            0,
+            "fresh saved review enabled code"
+        );
+        prefs.destroy();
+        ctx.window.destroy();
+        println!("PASS fresh ordinary process restores explicit producer review separately from admitted none without starting/restarting code or writing defaults");
+        return;
+    }
+    crate::test_isolation::assert_below_check_root(&root);
+    let mut receipt = crate::plugin::inventory::tests::fixture(&root);
+    let package = receipt.package_path(&root);
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/notification-plugin");
+    assert!(binary.is_file());
+    std::fs::copy(binary, package.join("plugin")).unwrap();
+    std::fs::set_permissions(
+        package.join("plugin"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(package.join("among-plugin.json")).unwrap()).unwrap();
+    manifest["required_features"] = json!(["status", "settings"]);
+    manifest["optional_features"] = json!([
+        "notifications.ui",
+        "notifications.produce",
+        "notifications.deliver"
+    ]);
+    manifest["delivery_channels"] =
+        json!([{"id":"first","name":"Synthetic","description":"Review does not enable delivery"}]);
+    let bytes = manifest.to_string();
+    std::fs::write(package.join("among-plugin.json"), &bytes).unwrap();
+    receipt.manifest_sha256 = crate::plugin::inventory::checksum(bytes.as_bytes()).unwrap();
+    let mut conflicting = receipt.clone();
+    conflicting.repository_id = 13;
+    let other = conflicting.package_path(&root);
+    std::fs::create_dir_all(&other).unwrap();
+    let mut path = other.as_path();
+    while path.starts_with(&root) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if path == root {
+            break;
+        }
+        path = path.parent().unwrap();
+    }
+    std::fs::copy(package.join("plugin"), other.join("plugin")).unwrap();
+    manifest["required_features"] = json!([
+        "status",
+        "settings",
+        "notifications.produce",
+        "notifications.deliver"
+    ]);
+    manifest["optional_features"] = json!(["notifications.ui"]);
+    let bytes = manifest.to_string();
+    std::fs::write(other.join("among-plugin.json"), &bytes).unwrap();
+    std::fs::set_permissions(
+        other.join("among-plugin.json"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    conflicting.manifest_sha256 = crate::plugin::inventory::checksum(bytes.as_bytes()).unwrap();
+    std::fs::write(
+        root.join("installed.json"),
+        json!({"version":1,"installations":[receipt,conflicting]}).to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::set_permissions(
+        config.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let inspected = crate::plugin::inventory::read(&root).unwrap();
+    assert_eq!(inspected.len(), 2);
+    for entry in &inspected {
+        assert!(
+            entry.inspected.is_ok(),
+            "role fixture {} is not inspected: {:?}",
+            entry.key(),
+            entry.inspected
+        );
+    }
+    let original = json!({"version":1,"future":"opaque","plugins":{
+        "github:12/sample":{"enabled":false,"settings":{"version":1,"values":{"future":"retained"}},"custom":42},
+        "github:13/sample":{"enabled":false,"custom":"other identity"}
+    }});
+    std::fs::write(&config, original.to_string()).unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let (_app, ctx) = app();
+    let prefs = preferences(&ctx);
+    let open = |identity: &str| {
+        eprintln!(
+            "role review startup inventory: {:?}",
+            ctx.state.borrow().plugins.overview()
+        );
+        let review: gtk::Button = named(&prefs, &format!("notification-review-role:{identity}"));
+        accessible_label(
+            &review,
+            &format!("Review notification role and access for {identity}"),
+        );
+        key_button(&review);
+        wait(
+            || prefs.visible_dialog().is_some(),
+            "native access review from General",
+        );
+        prefs
+            .visible_dialog()
+            .unwrap()
+            .downcast::<adw::AlertDialog>()
+            .unwrap()
+    };
+    let response = |dialog: &adw::AlertDialog, label: &str| {
+        descendants(dialog.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .find(|button| button.label().as_deref() == Some(label))
+            .unwrap()
+    };
+    let before = std::fs::read(&config).unwrap();
+    let dialog = open("github:13/sample");
+    assert!(dialog.body().contains("cannot both be required"));
+    assert!(!other.join("executed").exists());
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    pump_for(Duration::from_millis(200));
+    assert_eq!(std::fs::read(&config).unwrap(), before);
+    let dialog = open(key);
+    let picker: adw::ComboRow = named(&dialog, "notification-role-choice");
+    accessible_label(
+        picker.upcast_ref::<gtk::Widget>(),
+        "Notification role for this process",
+    );
+    assert_eq!(picker.selected(), 0);
+    assert!(
+        !response(&dialog, "Save reviewed access").is_sensitive(),
+        "ambiguous optional role accepted without a choice"
+    );
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    pump_for(Duration::from_millis(200));
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        before,
+        "Cancel wrote consent"
+    );
+    for (index, expected) in [
+        (2, Some(NotificationRole::Producer)),
+        (3, Some(NotificationRole::Delivery)),
+        (1, None),
+        (3, Some(NotificationRole::Delivery)),
+    ] {
+        let dialog = open(key);
+        let picker: adw::ComboRow = named(&dialog, "notification-role-choice");
+        assert!(picker.grab_focus());
+        xdo(&["key", "--clearmodifiers", "Return", "Home"]);
+        for _ in 0..index {
+            xdo(&["key", "--clearmodifiers", "Down"]);
+        }
+        xdo(&["key", "--clearmodifiers", "Return"]);
+        pump_for(Duration::from_millis(150));
+        assert_eq!(picker.selected(), index);
+        let ui = descendants(dialog.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::CheckButton>().ok())
+            .find(|control| control.label().as_deref() == Some("notifications.ui"))
+            .unwrap();
+        if !ui.is_active() {
+            assert!(ui.grab_focus());
+            xdo(&["key", "--clearmodifiers", "space"]);
+            pump_for(Duration::from_millis(100));
+        }
+        assert!(
+            ui.is_active(),
+            "UI must stay independent of the exclusive role"
+        );
+        key_button(&response(&dialog, "Save reviewed access"));
+        wait(
+            || prefs.visible_dialog().is_none(),
+            "native reviewed role save",
+        );
+        assert_eq!(
+            ctx.state
+                .borrow()
+                .plugins
+                .reviewed_notification_role(key)
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            ctx.state.borrow().plugins.admitted_notification_role(key),
+            None
+        );
+        assert!(
+            !package.join("executed").exists(),
+            "saving role started code"
+        );
+        let saved: Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert_eq!(saved["plugins"][key]["enabled"], false);
+        assert_eq!(saved["future"], original["future"]);
+        assert_eq!(saved["plugins"][key]["custom"], 42);
+        assert_eq!(
+            saved["plugins"][key]["settings"],
+            original["plugins"][key]["settings"]
+        );
+        assert_eq!(
+            saved["plugins"]["github:13/sample"],
+            original["plugins"]["github:13/sample"]
+        );
+        assert!(saved["plugins"][key]["review"]["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("notifications.ui")));
+    }
+    // Enable only through the existing native Plugins manager after the separate
+    // role save; its ordinary admission must reflect the reviewed role.
+    let page = descendants(prefs.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::PreferencesPage>().ok())
+        .find(|page| page.name().as_deref() == Some("plugins"))
+        .unwrap();
+    prefs.set_visible_page(&page);
+    let row = descendants(page.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| row.subtitle().is_some_and(|text| text.contains(key)))
+        .unwrap();
+    let switch = descendants(row.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
+        .unwrap();
+    assert!(switch.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait(
+        || {
+            ctx.state.borrow().plugins.admitted_notification_role(key)
+                == Some(NotificationRole::Delivery)
+        },
+        "real reviewed delivery admission",
+    );
+    assert!(ctx
+        .state
+        .borrow()
+        .bells
+        .as_ref()
+        .unwrap()
+        .provider_inventory()
+        .iter()
+        .all(|channel| !channel.policy.enabled));
+    prefs.set_visible_page_name("general");
+    wait(
+        || {
+            named::<adw::ActionRow>(&prefs, "notification-role-status:github:12/sample")
+                .subtitle()
+                .is_some_and(|text| text.contains("reviewed delivery · admitted delivery"))
+        },
+        "native reviewed/admitted delivery display",
+    );
+    let dialog = open(key);
+    assert!(dialog.body().contains("Stop this plugin"));
+    key_button(&response(&dialog, "Stop and disable plugin"));
+    wait(
+        || ctx.state.borrow().plugins.supervised_count() == 0,
+        "explicit role-review stop retires the generation",
+    );
+    let executed = std::fs::read(package.join("executed")).unwrap();
+    let dialog = open(key);
+    let picker: adw::ComboRow = named(&dialog, "notification-role-choice");
+    assert_eq!(
+        picker.selected(),
+        3,
+        "existing valid consent must be reachable for re-review"
+    );
+    assert!(picker.grab_focus());
+    xdo(&[
+        "key",
+        "--clearmodifiers",
+        "Return",
+        "Home",
+        "Down",
+        "Down",
+        "Return",
+    ]);
+    pump_for(Duration::from_millis(150));
+    key_button(&response(&dialog, "Save reviewed access"));
+    wait(
+        || prefs.visible_dialog().is_none(),
+        "save changed role while stopped",
+    );
+    assert_eq!(
+        ctx.state
+            .borrow()
+            .plugins
+            .reviewed_notification_role(key)
+            .unwrap(),
+        Some(NotificationRole::Producer)
+    );
+    wait(
+        || {
+            named::<adw::ActionRow>(&prefs, "notification-role-status:github:12/sample")
+                .subtitle()
+                .is_some_and(|text| text.contains("reviewed producer · admitted none"))
+        },
+        "native saved versus stopped admitted role display",
+    );
+    assert_eq!(
+        ctx.state.borrow().plugins.admitted_notification_role(key),
+        None
+    );
+    pump_for(Duration::from_millis(300));
+    assert_eq!(
+        std::fs::read(package.join("executed")).unwrap(),
+        executed,
+        "changed role restarted code"
+    );
+    prefs.destroy();
+    ctx.window.destroy();
+    wait(
+        || ctx.state.borrow().plugins.supervised_count() == 0,
+        "role-test parent retirement",
+    );
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["app::notification_ui_tests::native_role_review_is_explicit_reachable_and_restored_without_starting_code", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("AMONG_ROLE_UI_PHASE", "restore").output().unwrap();
+    let log = crate::test_isolation::check_root()
+        .join(format!("role-ui-fresh-{}.log", std::process::id()));
+    std::fs::write(
+        &log,
+        [child.stdout.as_slice(), child.stderr.as_slice()].concat(),
+    )
+    .unwrap();
+    assert!(
+        child.status.success(),
+        "fresh role process failed: {}",
+        log.display()
+    );
+    println!("PASS General role review is keyboard named/reachable with existing consent; required-both refuses, optional producer/delivery/neither is explicit, UI remains independent, reviewed/admitted roles differ honestly, no channel enablement/start/restart from save, explicit stop precedes role change, unknown settings/other identity survive and fresh process restores the stopped review");
 }
 
 #[test]

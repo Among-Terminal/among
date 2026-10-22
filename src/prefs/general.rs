@@ -29,6 +29,8 @@ pub(crate) struct Context {
     pub audio_state: Rc<dyn Fn() -> AudioState>,
     pub status: Rc<dyn Fn() -> (String, String)>,
     pub providers: Rc<dyn Fn() -> Vec<among::plugin_notifications::ChannelView>>,
+    pub roles: Rc<dyn Fn() -> Vec<crate::plugin::host::Overview>>,
+    pub review_role: Rc<EnablePlugin>,
 }
 
 fn row(group: &adw::PreferencesGroup, title: &str, subtitle: &str) -> adw::ActionRow {
@@ -259,16 +261,23 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
 
     let providers = adw::PreferencesGroup::new();
     providers.set_title("Provider channels");
-    row(&providers, "Managed integration under review", "Channels start off. Permission is separate from plugin enablement and access review. Opening or editing this page starts no provider. Active-envelope retention, origin fairness and role-separated admission still await reviewed repairs; results are local claims, not remote receipts.");
+    row(&providers, "Managed integration under review", "Channels start off. Permission is separate from plugin enablement and access review. Opening or editing this page starts no provider. Independent combined acceptance remains pending; results are local claims, not remote receipts.");
     let provider_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
     provider_rows_refresh(&providers, ctx, &result, &provider_rows);
     page.add(&providers);
+    let roles = adw::PreferencesGroup::new();
+    roles.set_title("Managed notification roles");
+    roles.set_description(Some("Review producer, delivery or neither for each process. UI contributions are independent. Stop a running plugin explicitly before changing access; saving a review here does not enable or restart it."));
+    let role_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
+    role_rows_refresh(&roles, ctx, &role_rows);
+    page.add(&roles);
     page.add(&feedback);
     let status = ctx.status.clone();
     let audio_state = ctx.audio_state.clone();
     let preview = preview.downgrade();
     let cancel = cancel.downgrade();
     let providers = providers.downgrade();
+    let roles = roles.downgrade();
     let provider_context = ctx.clone();
     let feedback_row = result.downgrade();
     let playback = playback.downgrade();
@@ -294,9 +303,59 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
         if let (Some(group), Some(result)) = (providers.upgrade(), feedback_row.upgrade()) {
             provider_rows_refresh(&group, &provider_context, &result, &provider_rows);
         }
+        if let Some(group) = roles.upgrade() {
+            role_rows_refresh(&group, &provider_context, &role_rows);
+        }
         glib::ControlFlow::Continue
     });
     page
+}
+
+fn role_rows_refresh(
+    group: &adw::PreferencesGroup,
+    ctx: &Context,
+    rows: &RefCell<std::collections::BTreeMap<String, adw::ActionRow>>,
+) {
+    let inventory = (ctx.roles)();
+    let mut rows = rows.borrow_mut();
+    rows.retain(|key, row| {
+        let retained = inventory.iter().any(|entry| entry.key == *key);
+        if !retained {
+            group.remove(row);
+        }
+        retained
+    });
+    for entry in inventory {
+        let row = rows.entry(entry.key.clone()).or_insert_with(|| {
+            let row = row(group, &entry.key, "");
+            row.set_widget_name(&format!("notification-role-status:{}", entry.key));
+            let review = gtk::Button::with_label("Review role / access");
+            review.set_widget_name(&format!("notification-review-role:{}", entry.key));
+            review.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Review notification role and access for {}",
+                entry.key
+            ))]);
+            review.set_valign(gtk::Align::Center);
+            review.connect_clicked({
+                let callback = ctx.review_role.clone();
+                let key = entry.key.clone();
+                move |button| {
+                    callback(
+                        &key,
+                        button
+                            .root()
+                            .and_then(|root| root.downcast::<gtk::Window>().ok()),
+                    )
+                }
+            });
+            row.add_suffix(&review);
+            row
+        });
+        row.set_subtitle(&escape_display(&format!(
+            "{} · {}",
+            entry.name, entry.declared
+        )));
+    }
 }
 
 fn provider_rows_refresh(

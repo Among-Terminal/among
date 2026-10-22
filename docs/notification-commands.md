@@ -32,7 +32,9 @@ path, combined UI acceptance or release readiness.
   HOME fallback). Explicit later edits can retry failed preparation, never the old
   event. Opening, inspecting, saving or enabling alone does not prepare it.
 - `set_policy` explicitly enables/adopts a policy. `poll(&mut Host, Instant)`
-  performs nonblocking admission and completion collection. Pending work remains
+  performs host-only nonblocking admission and completion collection; managed work
+  requires `poll_authorized` and an owned `Backend::authorize_delivery` snapshot.
+  Pending work remains
   in the core's globally bounded/fair queue; there is no second delivery backlog.
 - `replace`, `remove`, `shutdown`, runtime drop and source/session revocation
   invalidate old work. Re-enabling or replacing configuration never replays a
@@ -54,7 +56,13 @@ includes the newline. Its schema is fixed; there is no arbitrary metadata field:
 {"schema":1,"kind":"terminal-bell","event":{"session":1,"id":2},"source":{"session":1,"generation":1,"pane":3}}
 ```
 
-For an authorized targetless event, `kind` is `application` and `source` is `null`.
+For a host application event, `kind` is `application` and `source` is `null`.
+Managed events use `kind: "managed-notification"` (the local command wire spelling,
+not the provider profile's `managed_notification`) and add
+`origin: {"identity":"github:12/sample","generation":"producer-generation"}`.
+The origin is taken only from current backend delivery authority; missing authority
+is a refusal, never a host-origin fallback. Pane-targeted managed events retain
+their source; targetless managed events retain `source: null`.
 Identities are process/session-local host values, not saved addresses. No PTY text,
 typed input, title, cwd, process details, terminal command line, executable,
 arguments or environment is included in the event document.
@@ -135,7 +143,8 @@ The app's removal handler retains a GApplication hold and polls until ordinary
 the existing plugin retirement gate. GTK never waits for a child or joins a
 thread. Replacement windows do not abandon old reaping ownership.
 This describes command ownership only. The supervised audio teardown repair is
-joined but still requires independent re-review; the owner accepts discarded Busy
+joined: the original GTK-stall repair passed independent recheck, but a separate
+helper pre-play cancellation race remains open. The owner accepts discarded Busy
 requests with explicit retry after confirmed retirement. Command retirement and old ordinary audio captures do not
 establish app-wide stalled-media acceptance.
 
@@ -156,13 +165,13 @@ operations still need concrete packaging validation; no packaging changes or
 packaged-command delivery claims are made here. Managed provider delivery and
 broader lifecycle/platform acceptance remain separate boundaries.
 
-The ordinary application's command adapter additionally validates the managed
-backend envelope without holding a mutable core borrow. Missing, expired or
-managed-origin envelopes are currently refused before submission; refused work
-is consumed, not retained for replay. Managed-origin commands remain deliberately
-withheld pending the separately authored typed core kind/origin follow-up. That
-join must carry actual kind/origin metadata and a live OriginLease through the
-asynchronous service alongside core authorization, not merely change this guard.
+The ordinary application's command adapter consumes owned backend delivery
+authorization without holding a mutable core borrow. Missing/expired/mismatched
+authority is refused and consumed, not retained for replay. The asynchronous
+service retains the snapshot, reads its live OriginLease and expiry alongside the
+existing source/channel/session flags before spawn and supervisor grant, and
+repeats those checks during active work. This wiring does not establish independent
+combined review, packaged execution or release acceptance.
 
 ## Evidence boundary
 
@@ -173,6 +182,11 @@ generations, targetless policy, concurrency, finite queues/diagnostics, a real
 ten-second timeout, combined output overflow and descendant/supervisor reaping.
 `AMONG_COMMAND_TEST_ROOT` selects an explicit evidence directory; otherwise files
 remain under `target/notification-command-tests`.
+
+`tests/notification_origin_commands.rs` exercises actual managed pane/targetless
+stdin kind/origin, missing/expired authority and independent worker-side revocation.
+It is a separate executable so its attempts cannot distort the original suite's
+process-wide capacity assertions; the original suite remains parallel and unchanged.
 
 Pure cleanup regressions cover the reviewer's 9,005 mixed-width synthetic child
 identities across 64 KiB, framing/EOF/read-error boundaries and malformed tokens.

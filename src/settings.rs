@@ -217,6 +217,18 @@ impl PreferencesStorage {
         self.managed_review_changed(key, review)
     }
 
+    pub fn managed_access_review_for_installation(
+        &mut self,
+        key: &str,
+        review: Value,
+        installation: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let pending = self.pending_managed.entry(key.into()).or_default();
+        pending.installation = installation.map(str::to_string);
+        pending.review = Some(review);
+        self.flush_managed().map(|_| ())
+    }
+
     fn flush_managed(&mut self) -> Result<Value, StorageError> {
         #[cfg(test)]
         let fail_confirmation = std::mem::take(&mut self.fail_next_managed_confirmation);
@@ -884,6 +896,44 @@ mod tests {
         assert_eq!(saved["plugins"]["github:3/sample"]["enabled"], true);
         assert!(storage.pending_managed.is_empty());
         assert!(storage.status().is_empty());
+    }
+
+    #[test]
+    fn access_review_alone_preserves_enablement_settings_other_identity_and_unknown_data() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        let original = json!({"version":1,"future":"opaque","plugins":{
+            "github:12/sample":{"enabled":false,"custom":42,"settings":{"future":true}},
+            "github:13/sample":{"enabled":true,"review":{"features":["status"]}}
+        }});
+        std::fs::write(&path, original.to_string()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+        for feature in [
+            Some("notifications.produce"),
+            Some("notifications.deliver"),
+            None,
+        ] {
+            let review = json!({"owner":"example","repository":"sample","features":feature.into_iter().collect::<Vec<_>>()});
+            storage
+                .managed_access_review_for_installation("github:12/sample", review.clone(), None)
+                .unwrap();
+            let saved = load(&path, Document::ManagedPlugins).unwrap();
+            assert_eq!(saved["plugins"]["github:12/sample"]["review"], review);
+            assert_eq!(saved["plugins"]["github:12/sample"]["enabled"], false);
+            assert_eq!(
+                saved["plugins"]["github:12/sample"]["settings"],
+                original["plugins"]["github:12/sample"]["settings"]
+            );
+            assert_eq!(saved["plugins"]["github:12/sample"]["custom"], 42);
+            assert_eq!(
+                saved["plugins"]["github:13/sample"],
+                original["plugins"]["github:13/sample"]
+            );
+            assert_eq!(saved["future"], original["future"]);
+        }
+        assert!(storage.pending_managed.is_empty());
     }
 
     #[test]

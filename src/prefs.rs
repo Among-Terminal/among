@@ -15,6 +15,7 @@ use crate::plugin::host::{Configuration, PluginState};
 use crate::shortcuts::{self, Action, Bindings};
 
 pub(crate) mod general;
+pub(crate) mod notification_role;
 mod plugin_manager;
 mod plugin_settings;
 pub(crate) mod repositories;

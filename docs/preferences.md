@@ -45,10 +45,20 @@ the managed backend to the same live core and displays declared channel metadata
 plugin enablement and admitted-owner state without starting code on inspection.
 New channels default off. This is an integration under review, not acceptance:
 active-envelope retention, targetless origin fairness and owner-chosen strict
-producer/delivery role separation still need their reviewed follow-ups. The
-access-review role-choice consumer awaits its exact typed backend handoff; existing
-review/grant/settings layout is not replaced speculatively. Managed-origin command
-attempts are withheld until the typed-core/origin integration is supplied.
+producer/delivery role separation are joined but still require independent review
+of the combined source. Managed-origin command consumers retain owned backend
+authority; the audio owner retains/rechecks it on the shared tick, but off-thread
+audio revocation still awaits the compatible helper admission seam.
+
+**Managed notification roles** makes access review reachable even with valid
+existing consent. A process may have producer, delivery or neither authority;
+both required roles refuse without execution. Optional roles require an explicit
+selection, while declarative UI remains independent. General shows reviewed and
+actually admitted roles separately. **Save reviewed access** stores the existing
+identity/publisher-scoped `review.features` without enabling code or channels.
+A running plugin must first be explicitly stopped and disabled; after retirement,
+open the review again. Changing a stopped role never restarts it. The Plugins
+manager retains its separate **Accept and enable** path for initial enablement.
 
 Replacing active Preview first cancels and retires the old decoder. A real Busy
 response retains no replacement: wait for confirmation and press Preview again.

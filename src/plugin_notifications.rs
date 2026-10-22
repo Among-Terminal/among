@@ -1,5 +1,5 @@
-//! explicit managed-plugin backend; ordinary application startup does not attach
-//! this bridge. the caller supplies the same core used by semantic bell ingress.
+//! managed-plugin bridge; the ordinary application supplies the same core used
+//! by semantic bell ingress, never a parallel notification queue.
 
 pub use crate::notifications::OriginLease;
 use crate::notifications::{
@@ -25,7 +25,7 @@ pub const MAX_CONTRIBUTIONS_PER_PLUGIN: usize = 8;
 const MAX_CHANNELS: usize = 128 * 32;
 const MAX_ACTIONS: usize = 16;
 const MAX_EVENTS: usize = core::MAX_PENDING;
-const EVENT_LIFETIME: Duration = Duration::from_secs(10);
+pub const EVENT_LIFETIME: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

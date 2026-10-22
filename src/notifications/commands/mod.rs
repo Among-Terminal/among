@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::{Channel, DiagnosticKind, Event, Host, Job, Policy};
+use crate::plugin_notifications::DeliveryAuthorization;
 
 trait CoreAccess {
     fn with<T>(&mut self, action: impl FnOnce(&mut Host) -> T) -> T;
@@ -266,7 +267,11 @@ impl Runtime {
     /// nonblocking admission/poll only: all spawn, pipe IO and reaping occur in
     /// the bounded service or the fresh supervisor, never on this caller.
     pub fn poll(&mut self, host: &mut Host, now: Instant) {
-        self.poll_inner(host, now, |_| true);
+        self.poll_inner(host, now, |job| {
+            (job.event().origin().is_none()
+                && job.event().kind() != super::Kind::ManagedNotification)
+                .then_some(None)
+        });
     }
 
     /// Releases the core borrow before external metadata revalidation. A false
@@ -275,20 +280,40 @@ impl Runtime {
         &mut self,
         host: &std::rc::Rc<std::cell::RefCell<Host>>,
         now: Instant,
-        admitted: impl FnMut(Event) -> bool,
+        mut admitted: impl FnMut(Event) -> bool,
     ) {
-        self.poll_inner(&mut host.clone(), now, admitted);
+        self.poll_inner(&mut host.clone(), now, |job| {
+            (admitted(job.event())
+                && job.event().origin().is_none()
+                && job.event().kind() != super::Kind::ManagedNotification)
+                .then_some(None)
+        });
+    }
+
+    pub fn poll_authorized(
+        &mut self,
+        host: &std::rc::Rc<std::cell::RefCell<Host>>,
+        now: Instant,
+        mut authorize: impl FnMut(Job) -> Option<DeliveryAuthorization>,
+    ) {
+        self.poll_inner(&mut host.clone(), now, |job| authorize(job).map(Some));
     }
 
     fn poll_inner(
         &mut self,
         host: &mut impl CoreAccess,
         now: Instant,
-        mut admitted: impl FnMut(Event) -> bool,
+        mut authorize: impl FnMut(Job) -> Option<Option<DeliveryAuthorization>>,
     ) {
         let mut completed = Vec::new();
         self.attempts.retain(|attempt| {
-            if !host.with(|host| host.is_current(attempt.job)) {
+            if !host.with(|host| {
+                host.is_current(attempt.job)
+                    && attempt
+                        .delivery
+                        .as_ref()
+                        .is_none_or(|delivery| delivery.is_current(host, now))
+            }) {
                 attempt.cancel();
             }
             if let Some(completion) = attempt.completion() {
@@ -320,7 +345,12 @@ impl Runtime {
             let Some(authorization) = host.with(|host| host.authorization(job)) else {
                 continue;
             };
-            if !admitted(job.event()) {
+            let delivery = authorize(job).filter(|delivery| {
+                delivery.as_ref().is_none_or(|delivery| {
+                    delivery.job() == job && host.with(|host| delivery.is_current(host, now))
+                })
+            });
+            let Some(delivery) = delivery else {
                 host.with(|host| {
                     host.diagnose(DiagnosticKind::CommandCompletion(Completion {
                         job,
@@ -331,13 +361,14 @@ impl Runtime {
                     }))
                 });
                 continue;
-            }
+            };
             let Some(config) = self.configurations.get(&channel) else {
                 continue;
             };
             match service::submit(
                 job,
                 authorization,
+                delivery,
                 config.clone(),
                 self.helper.clone(),
                 cwd.clone(),

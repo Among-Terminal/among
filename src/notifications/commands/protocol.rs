@@ -22,6 +22,8 @@ pub(super) struct Payload {
     kind: PayloadKind,
     event: Identity,
     source: Option<Target>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<Producer>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -29,6 +31,14 @@ pub(super) struct Payload {
 enum PayloadKind {
     TerminalBell,
     Application,
+    ManagedNotification,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Producer {
+    identity: String,
+    generation: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -47,12 +57,41 @@ struct Target {
 }
 
 impl Payload {
-    pub fn from_event(event: Event) -> Self {
-        Self {
+    pub fn from_event(
+        event: Event,
+        delivery: Option<&crate::plugin_notifications::DeliveryAuthorization>,
+    ) -> io::Result<Self> {
+        let origin = match event.kind() {
+            Kind::ManagedNotification => {
+                let delivery = delivery
+                    .filter(|delivery| delivery.job().event() == event)
+                    .ok_or_else(|| io::Error::other("missing managed delivery authority"))?;
+                let owner = delivery
+                    .envelope()
+                    .origin
+                    .as_ref()
+                    .filter(|_| event.origin().is_some())
+                    .ok_or_else(|| io::Error::other("missing managed origin"))?;
+                Some(Producer {
+                    identity: owner.identity.clone(),
+                    generation: owner.generation.clone(),
+                })
+            }
+            Kind::TerminalBell | Kind::Application => {
+                if event.origin().is_some()
+                    || delivery.is_some_and(|delivery| delivery.envelope().origin.is_some())
+                {
+                    return Err(io::Error::other("host event origin mismatch"));
+                }
+                None
+            }
+        };
+        Ok(Self {
             schema: 1,
             kind: match event.kind() {
                 Kind::TerminalBell => PayloadKind::TerminalBell,
                 Kind::Application => PayloadKind::Application,
+                Kind::ManagedNotification => PayloadKind::ManagedNotification,
             },
             event: Identity {
                 session: event.session(),
@@ -63,7 +102,8 @@ impl Payload {
                 generation: source.generation(),
                 pane: source.pane(),
             }),
-        }
+            origin,
+        })
     }
 
     pub fn encode(&self) -> io::Result<Vec<u8>> {
