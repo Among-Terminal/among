@@ -874,6 +874,14 @@ An update preserves the installation token, rereads the exact expected receipt
 under store authority and retains the previous verified receipt/generation in the
 same selection document. Live reconciliation uses the host's current desired
 choice, never the download's earlier snapshot: a later accepted disable wins.
+That preservation applies only to the **same installation token**. An existing
+observer can miss a complete removal/reinstall transition; a changed token revokes
+its old runtime/process and queued authority even if version/digests are identical.
+The fresh entry stays off unless current explicit enablement names its actual new
+token. Old enabled preferences, scheduled restarts and a missing token cannot supply
+that consent. Retained settings/reviews and unrelated preferences are not deleted;
+fresh activation still passes ordinary publisher/access/settings admission. Old
+generation leases stay supervised through reaping before deferred cleanup.
 Selected and actually running package versions are observed separately while the
 old supervisor stops. Numeric publisher/access changes and incompatible local
 settings can refuse activation; no downloaded migration code runs. Details →

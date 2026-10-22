@@ -324,13 +324,39 @@ impl PluginHost {
         if current.receipt == entry.receipt {
             return;
         }
-        // desired state is live, never copied from the downloading worker. an
-        // intervening disable stays disabled; this never restores a saved switch.
+        // an observer can miss absence between removal and a fresh install.
+        // only the same installation authority may inherit its live desire.
+        let fresh_installation = current.receipt.installation != entry.receipt.installation;
+        if fresh_installation {
+            self.plugins[index].spec.enabled = !entry.removal_pending()
+                && entry
+                    .receipt
+                    .installation
+                    .as_ref()
+                    .is_some_and(|installation| {
+                        local.is_some_and(|local| {
+                            local.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
+                                && local
+                                    .get("installation")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(installation.as_str())
+                        })
+                    });
+        }
         self.stop_as(
             index,
             PluginState::Disabled,
-            "applying explicitly approved package update; waiting for process exit",
+            if fresh_installation {"installation authority changed; revoking the previous runtime before fresh activation"}
+            else {"applying explicitly approved package update; waiting for process exit"},
         );
+        if fresh_installation {
+            self.plugins[index].runtime = Some(managed_runtime::Runtime::new(
+                local.and_then(|local| local.get("review")).cloned(),
+            ));
+            self.plugins[index].removing = entry.removal_pending();
+            self.plugins[index].removed = false;
+            self.invalidated_sources.insert(key.clone());
+        }
         self.plugins[index].managed = Some(entry);
         self.plugins[index].observed = None;
         self.plugins[index].restart_at = None;
