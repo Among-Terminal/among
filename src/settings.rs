@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
+mod general;
+
 #[derive(Default)]
 struct ManagedEdits {
     enabled: Option<bool>,
@@ -43,6 +45,7 @@ pub enum Document {
     ManagedPlugins,
     Shortcuts,
     Window,
+    General,
 }
 
 pub struct PreferencesStorage {
@@ -50,6 +53,7 @@ pub struct PreferencesStorage {
     pending_plugins: std::collections::BTreeMap<String, bool>,
     pending_shortcuts: std::collections::BTreeMap<String, Value>,
     pending_managed: std::collections::BTreeMap<String, ManagedEdits>,
+    pending_general: Vec<among::notifications::preferences::Edit>,
     #[cfg(test)]
     fail_next_managed_confirmation: bool,
     pub problems: std::collections::BTreeMap<String, String>,
@@ -62,6 +66,7 @@ impl PreferencesStorage {
             pending_plugins: Default::default(),
             pending_shortcuts: Default::default(),
             pending_managed: Default::default(),
+            pending_general: Default::default(),
             #[cfg(test)]
             fail_next_managed_confirmation: false,
             problems: Default::default(),
@@ -326,6 +331,7 @@ impl Document {
             Self::ManagedPlugins => "managed-plugins.json",
             Self::Shortcuts => "shortcuts.json",
             Self::Window => "window.json",
+            Self::General => "general.json",
         }
     }
 
@@ -335,6 +341,7 @@ impl Document {
             Self::ManagedPlugins => json!({"version":1,"plugins":{}}),
             Self::Shortcuts => json!({"version": 1, "overrides": {}}),
             Self::Window => json!({"version": 1}),
+            Self::General => json!({"version": 1}),
         }
     }
 }
@@ -376,7 +383,7 @@ pub fn directory() -> Option<PathBuf> {
 }
 
 fn read_bytes(path: &Path, kind: Document) -> Result<Option<Vec<u8>>, StorageError> {
-    if matches!(kind, Document::ManagedPlugins) {
+    if matches!(kind, Document::ManagedPlugins | Document::General) {
         if matches!(std::fs::symlink_metadata(path),Err(error) if error.kind()==io::ErrorKind::NotFound)
         {
             return Ok(None);
@@ -407,7 +414,7 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
     let Some(bytes) = bytes else {
         return Ok(kind.empty());
     };
-    let value: Value = if matches!(kind, Document::ManagedPlugins) {
+    let value: Value = if matches!(kind, Document::ManagedPlugins | Document::General) {
         crate::plugin::data::parse_unique(bytes, crate::plugin::data::MAX_STATIC_BYTES)
             .map_err(|problem| invalid(path, problem))?
     } else {
@@ -417,6 +424,10 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
         return Err(invalid(path, "configuration must be an object"));
     }
     match kind {
+        Document::General => {
+            among::notifications::preferences::Preferences::parse(&value)
+                .map_err(|problem| invalid(path, problem))?;
+        }
         Document::ManagedPlugins => {
             if value.get("version").and_then(Value::as_u64) != Some(1)
                 || !value.get("plugins").is_some_and(Value::is_object)
@@ -515,14 +526,14 @@ fn update_with_confirmation(
         let original = read_bytes(path, kind)?;
         let mut value = parse(path, kind, original.as_deref())?;
         edit(&mut value).map_err(|message| invalid(path, message))?;
-        if matches!(kind, Document::ManagedPlugins) {
+        if matches!(kind, Document::ManagedPlugins | Document::General) {
             crate::plugin::data::serialized_size(&value, crate::plugin::data::MAX_STATIC_BYTES)
                 .map_err(|problem| invalid(path, problem))?;
         }
         let bytes = serde_json::to_vec_pretty(&value).map_err(|error| invalid(path, error))?;
         // unknown data can expand under pretty formatting. protect the reader's
         // actual byte budget before any replacement is prepared or published.
-        if matches!(kind, Document::ManagedPlugins)
+        if matches!(kind, Document::ManagedPlugins | Document::General)
             && bytes.len() > crate::plugin::data::MAX_STATIC_BYTES
         {
             return Err(invalid(
@@ -530,7 +541,7 @@ fn update_with_confirmation(
                 "encoded preferences exceed the managed document byte limit",
             ));
         }
-        if matches!(kind, Document::ManagedPlugins) {
+        if matches!(kind, Document::ManagedPlugins | Document::General) {
             std::fs::DirBuilder::new()
                 .recursive(true)
                 .mode(0o700)
@@ -1084,15 +1095,28 @@ mod tests {
             .skip(1)
             .map(|body| body.split("```").next().unwrap().trim())
             .collect();
-        assert_eq!(fixtures.len(), 3);
-        for (kind, body) in [Document::Plugins, Document::Shortcuts, Document::Window]
-            .into_iter()
-            .zip(fixtures)
-        {
+        assert_eq!(fixtures.len(), 4);
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for (identity, kind) in [
+            ("notifications", Document::General),
+            ("plugins", Document::Plugins),
+            ("overrides", Document::Shortcuts),
+            ("sidebar_width", Document::Window),
+        ] {
+            let body = fixtures
+                .iter()
+                .find(|body| {
+                    serde_json::from_str::<Value>(body)
+                        .unwrap()
+                        .get(identity)
+                        .is_some()
+                })
+                .unwrap();
             let path = temp.0.join(kind.filename());
             std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
             assert!(load(&path, kind).is_ok());
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), *body);
         }
     }
 

@@ -1,4 +1,4 @@
-//! The preferences window: keyboard shortcuts and plugins.
+//! The preferences window: General notifications, keyboard shortcuts and plugins.
 //!
 //! Both features have to be inspectable and changeable *by the user*, not just by
 //! editing configuration. Putting them in one window is also what makes the
@@ -14,6 +14,7 @@ use gtk::gdk;
 use crate::plugin::host::{Configuration, PluginState};
 use crate::shortcuts::{self, Action, Bindings};
 
+pub(crate) mod general;
 mod plugin_manager;
 mod plugin_settings;
 pub(crate) mod repositories;
@@ -35,6 +36,7 @@ type SavePluginSettings = dyn Fn(
 /// does not need to know how the application stores its state.
 #[derive(Clone)]
 pub struct PreferencesContext {
+    pub general: Option<general::Context>,
     pub on_closed: Rc<dyn Fn()>,
     pub storage_status: gtk::StringList,
     pub bindings: Rc<RefCell<Bindings>>,
@@ -60,14 +62,19 @@ pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
     let on_closed = ctx.on_closed.clone();
     window.connect_destroy(move |_| on_closed());
 
+    let general = general::page(ctx.general.as_ref());
+    add_storage_status(&general, &ctx);
+    window.add(&general);
     window.add(&shortcuts_page(&ctx));
     window.add(&plugins_page(&ctx));
+    window.set_visible_page(&general);
     window.present();
 }
 
 fn shortcuts_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     page.set_title("Keyboard");
+    page.set_name(Some("keyboard"));
     page.set_icon_name(Some("preferences-desktop-keyboard-symbolic"));
 
     let group = adw::PreferencesGroup::new();
@@ -254,7 +261,9 @@ fn attach_capture(
 }
 
 fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
-    plugin_manager::page(ctx)
+    let page = plugin_manager::page(ctx);
+    page.set_name(Some("plugins"));
+    page
 }
 
 fn describe_state(state: &PluginState) -> String {
@@ -339,6 +348,7 @@ mod tests {
         let disabled = state.clone();
         let desired = Rc::new(std::cell::Cell::new(true));
         let page = plugins_page(&PreferencesContext {
+            general: None,
             installations_changed: Rc::new(|| {}),
             on_closed: Rc::new(|| {}),
             storage_status: gtk::StringList::new(&[]),

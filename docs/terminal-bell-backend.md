@@ -1,14 +1,18 @@
 # Terminal bell backend
 
-This is a backend integration boundary, **not a finished notification UI**.
-The host receives VTE's semantic bell signal, retains session-local attention,
-and acknowledges actual terminal viewing. It does not yet render unread stripes,
-play sound or invoke managed notification providers. A reusable optional
-[command executor](notification-commands.md) is implemented separately; the normal
-application bell path does not register a command channel yet.
-There are no notification Preferences controls or saved notification settings in
-this implementation. VTE's independent audible bell is explicitly disabled for
-attached terminals; no fallback beep bypasses the future host audio policy.
+The host receives VTE's semantic bell signal, retains session-local attention and
+acknowledges actual terminal viewing. Pane headers and workspace rows consume
+that state in place, including collapsed rows and rename, without rebuilding on
+every bell. Stripe opacity pulses briefly; a static `!` and accessible names do
+not depend on colour or animation. System reduced-motion changes are read on the
+shared tick without discarding unread state or changing workspace hue/terminal size.
+
+[General Preferences](preferences.md#general-notifications) controls accepted
+visual/audio/optional-command policies and persistence. One shared application
+[audio owner](audio.md) consumes admitted events and explicit preview separately.
+The normal bell backend registers/polls the optional [command executor](notification-commands.md)
+when configured. Managed notification producers/providers are not attached yet.
+VTE's independent audible bell is disabled; no fallback beep bypasses host policy.
 
 ## Live source and focus
 
@@ -22,8 +26,9 @@ bell by the host.
 Each source token contains a process-local session identity, a target generation
 and its pane number. The host mints tokens; a pane number alone cannot reconstruct
 one. Removal revokes its attention, queued jobs and dequeued-job validity. A late
-callback cannot redirect to a reused pane number. Closing the main window drops
-the entire backend session. None of this state enters saved terminal sessions.
+callback cannot redirect to a reused pane number. Closing the main window revokes
+its sources/channels while retaining only asynchronous cleanup ownership through
+ordinary reaping. None of this state enters saved terminal sessions.
 
 Viewing means the terminal itself has keyboard focus, is mapped, and belongs to
 the active main window. A mapped native popover blocks acknowledgement. Header
@@ -43,9 +48,9 @@ An unrelated active window is not counted just because it shares the process.
 `src/notifications.rs` has no GTK types. Visual attention defaults to enabled /
 originating-terminal-unfocused. Independently registered delivery channels start
 with `Policy::DELIVERY_DEFAULT` (off / application-background); registration does
-not start any code. There are no delivery adapters registered by the application
-yet. An adapter must supply real admission and map its authoritative external
-channel identity to the opaque core handle.
+not start any code. Audio consumes current admission with zero pending playback;
+commands retain the bounded core queue. External provider adapters must map their
+authoritative identity/channel to an opaque core handle, never a display name.
 
 Every channel independently supports always, originating-terminal-unfocused and
 application-background. Eligibility is snapshotted at ingress. An authorized
@@ -76,21 +81,22 @@ owned active operations when the source, channel or policy is revoked. Policy
 changes clear queued jobs and invalidate already dequeued tokens. Re-enabling a
 channel never replays old work. The core cannot undo a completed external effect.
 
-## Pending integration
+## Open acceptance boundaries
 
-- Native stripes, accessible/static unread cues and reduced-motion presentation
-  must consume `attention` / `aggregate`; none are rendered here.
-- Sequential Preferences integration must supply accepted policies, persistence
-  and controls. Current app wiring uses only fresh defaults.
-- Audio needs validated immutable WAV inputs, a single owned asynchronous player
-  and observed packaged output. Explicit preview must be a separate operation,
-  usable while event-driven audio is off, not an event sent through this host.
-- Commands have a real reusable executor with bounded JSON stdin/EOF, literal
-  argv, an allowlisted environment/owned cwd and supervised cleanup. Sequential
-  UI/storage/channel-registration and graceful application-hold integration are
-  still required; see its contract and limitations above. It is not an OS sandbox.
+- The inherited command cleanup PID parser has an independent high-severity
+  truncation finding. Security acceptance is blocked pending its dedicated repair
+  and re-review; ordinary small-tree results do not override that finding.
+- Commands retain capacity through cleanup. Ordinary retirement holds GApplication
+  and polls without a join; unconfirmed cleanup/quarantine keeps the hold and logs
+  uncertainty rather than inventing rollback, retry or an irreversible forced exit.
 - Managed provider/producer authorization and real delivery belong to the separate
   plugin API/runtime integration, not this host core. No provider success is faked.
+- Independent review of the inherited audio player found that native decoder
+  teardown can wait on GTK despite the playback watchdog. Hard-bounded stalled
+  cancellation/shutdown acceptance requires its implementation repair and re-review;
+  ordinary captured output/cancellation does not establish that boundary.
+- Packaged command self-exec and the full audio platform/release matrix remain
+  separate from native General/UI observations.
 
 These boundaries require their own tests; core queue/policy tests do not establish
 audio output, command supervision, provider delivery, UI acceptance or release

@@ -529,6 +529,17 @@ fn build_with_writer(
     {
         let mut state = state.borrow_mut();
         state.settings.load(crate::settings::Document::Plugins);
+        if let Some(document) = state.settings.load(crate::settings::Document::General) {
+            if let Ok(preferences) =
+                among::notifications::preferences::Preferences::parse(&document)
+            {
+                if let Some(bells) = &state.bells {
+                    let source = preferences.sound.clone();
+                    bells.configure(preferences);
+                    bells.restore_sound(source);
+                }
+            }
+        }
         state.sidebar_width = state
             .settings
             .load(crate::settings::Document::Window)
@@ -722,12 +733,23 @@ fn build_with_writer(
             // its detached supervisors could signal/reap the owned children.
             let hold = app.hold();
             let state = state.clone();
+            let retirement_started = std::time::Instant::now();
+            let reported_cleanup = Cell::new(false);
             glib::timeout_add_local(Duration::from_millis(20), move || {
                 let _keep_application_alive = &hold;
                 let _keep_plugin_starts_closed = &retiring;
                 let mut state = state.borrow_mut();
                 state.plugins.poll();
-                if state.plugins.is_stopped() {
+                if let Some(bells) = &state.bells {
+                    bells.poll();
+                    if !bells.is_stopped() && retirement_started.elapsed() >= Duration::from_secs(15)
+                        && !reported_cleanup.replace(true) {
+                        eprintln!("among: command cleanup is not confirmed; application hold remains active. No retry, rollback or forced exit is implied.");
+                    }
+                }
+                if state.plugins.is_stopped()
+                    && state.bells.as_ref().is_none_or(|bells| bells.is_stopped())
+                {
                     glib::ControlFlow::Break
                 } else {
                     glib::ControlFlow::Continue
@@ -1883,6 +1905,14 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
         stripe.add_css_class(&colour_class(row_plan.colour));
         content.append(&stripe);
 
+        let unread = gtk::Label::new(Some("!"));
+        unread.add_css_class("notification-unread");
+        unread.set_visible(false);
+        let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        badge.set_size_request(10, -1);
+        badge.append(&unread);
+        content.append(&badge);
+
         if collapsed {
             let icon = terminal_icon();
             content.append(&icon);
@@ -1984,6 +2014,56 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
     let mut state = ctx.state.borrow_mut();
     state.sidebar_signature = signature;
     state.sidebar_shape = shape;
+}
+
+// attention changes in place, including during rename; rebuilding a row here
+// would cancel a pointer/key sequence and could falsely focus a terminal.
+fn present_attention(ctx: &Window) {
+    let state = ctx.state.borrow();
+    let Some(bells) = &state.bells else {
+        return;
+    };
+    let motion =
+        gtk::Settings::default().is_some_and(|settings| settings.is_gtk_enable_animations());
+    for (id, pane) in &state.panes {
+        pane.present_attention(bells.attention(id.0), motion);
+    }
+    for (index, workspace) in state.workspaces.workspaces().iter().enumerate() {
+        let Some(row) = ctx.workspace_list.row_at_index(index as i32) else {
+            continue;
+        };
+        let aggregate = bells.aggregate(workspace.panes().into_iter().map(|id| id.0));
+        let label = format!(
+            "{}, {} terminals, {} unread bells",
+            workspace.name,
+            workspace.panes().len(),
+            aggregate.unread_panes
+        );
+        row.update_property(&[gtk::accessible::Property::Label(&label)]);
+        row.set_tooltip_text(Some(&label));
+        fn update(widget: &gtk::Widget, unread: bool, pulse: bool) {
+            if widget.has_css_class("notification-unread") {
+                widget.set_visible(unread);
+            }
+            if widget.has_css_class("workspace-stripe") {
+                if pulse {
+                    widget.add_css_class("notification-pulse");
+                } else {
+                    widget.remove_css_class("notification-pulse");
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                update(&widget, unread, pulse);
+                child = widget.next_sibling();
+            }
+        }
+        update(
+            row.upcast_ref(),
+            aggregate.unread_panes != 0,
+            aggregate.pulsing && motion,
+        );
+    }
 }
 
 /// Show a workspace that is already in the model.
@@ -2935,6 +3015,7 @@ fn open_preferences(ctx: &Window) {
     let bindings = Rc::new(RefCell::new(ctx.state.borrow().bindings.clone()));
 
     let preferences = prefs::PreferencesContext {
+        general: general_context(ctx),
         on_closed: Rc::new({
             let window = ctx.handle();
             move || {
@@ -3078,6 +3159,67 @@ fn open_preferences(ctx: &Window) {
     };
 
     prefs::present(&ctx.window, preferences);
+}
+
+fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
+    let backend = ctx.state.borrow().bells.clone()?;
+    Some(prefs::general::Context {
+        query: Rc::new({
+            let backend = backend.clone();
+            move || backend.preferences()
+        }),
+        edit: Rc::new({
+            let backend = backend.clone();
+            let ctx = ctx.handle();
+            move |edit| {
+                backend.edit(&edit).map_err(str::to_owned)?;
+                present_attention(&ctx);
+                Ok(persist_general(&ctx, edit))
+            }
+        }),
+        select: Rc::new({
+            let backend = backend.clone();
+            let ctx = ctx.handle();
+            move |source, finished| {
+                let ctx = ctx.handle();
+                let accepted = source.clone();
+                backend.select_sound(
+                    source,
+                    Box::new(move |result| {
+                        finished(result.map(|()| {
+                            persist_general(
+                                &ctx,
+                                among::notifications::preferences::Edit::Sound(accepted),
+                            )
+                        }));
+                    }),
+                );
+            }
+        }),
+        preview: Rc::new({
+            let backend = backend.clone();
+            move || backend.preview()
+        }),
+        provider_available: Rc::new({
+            let backend = backend.clone();
+            move |key| backend.provider_available(key)
+        }),
+        status: Rc::new(move || (backend.audio_status(), backend.command_status())),
+    })
+}
+
+fn persist_general(
+    ctx: &Window,
+    edit: among::notifications::preferences::Edit,
+) -> crate::settings::Durability {
+    let result = ctx.state.borrow_mut().settings.general_changed(edit);
+    let durability = match &result {
+        Ok(()) => crate::settings::Durability::Durable,
+        Err(error) if error.replaced => crate::settings::Durability::Uncertain,
+        Err(_) => crate::settings::Durability::SessionOnly,
+    };
+    report_settings_save(ctx, result);
+    durability
 }
 
 fn reconcile_managed_installations(state: &Rc<RefCell<AppState>>) {
@@ -4072,7 +4214,9 @@ impl Window {
         }
         if let Some(bells) = &self.state.borrow().bells {
             bells.observe_focus();
+            bells.poll();
         }
+        present_attention(self);
         apply_sidebar_width(self);
         if !self.state.borrow().session_ready || self.state.borrow().session_closing {
             return;
@@ -4312,6 +4456,8 @@ mod plugin_tests;
 
 #[cfg(test)]
 mod bell_tests;
+#[cfg(test)]
+mod notification_ui_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5023,7 +5169,10 @@ mod tests {
             .into_iter()
             .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
             .unwrap();
+        assert_eq!(prefs.visible_page_name().as_deref(), Some("general"));
         if phase.starts_with("invalid-") {
+            prefs.set_visible_page_name("keyboard");
+            pump();
             let broken_path = if phase == "invalid-plugins" {
                 path.clone()
             } else {
@@ -5575,6 +5724,7 @@ mod tests {
         prefs::present(
             &window,
             prefs::PreferencesContext {
+                general: None,
                 installations_changed: Rc::new(|| {}),
                 on_closed: Rc::new(|| {}),
                 storage_status: gtk::StringList::new(&[""]),
@@ -5610,7 +5760,12 @@ mod tests {
         );
         pump();
         let prefs = editor();
-        let switch = descendants(prefs.upcast_ref())
+        let plugin_row = descendants(prefs.upcast_ref())
+            .into_iter()
+            .filter_map(|node| node.downcast::<adw::ActionRow>().ok())
+            .find(|row| row.title() == "test-plugin")
+            .expect("identity-scoped test plugin row");
+        let switch = descendants(plugin_row.upcast_ref())
             .into_iter()
             .find_map(|node| node.downcast::<gtk::Switch>().ok())
             .expect("plugin switch");
