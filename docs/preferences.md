@@ -90,6 +90,11 @@ simultaneous writes by external editors are not fully serialized.
 
 ## Changing preferences
 
+Preferences and the repository inspector are nonmodal: switch back to a terminal
+without closing them while a repository request is running. Their parented native
+window layout is unchanged. Other forms and confirmation dialogs retain their own
+interaction rules.
+
 Plugin switches and shortcut edits apply immediately and are saved without a Save
 button. Plugin-specific forms instead require an explicit Save after validation;
 closing without Save discards unfinished edits. Fresh launches restore plugin
