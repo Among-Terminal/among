@@ -352,6 +352,10 @@ impl Backend {
         Ok(())
     }
 
+    pub fn registration_current(&self, key: &str) -> bool {
+        self.registrations.contains(key)
+    }
+
     pub fn declare(&mut self, declaration: Declaration) -> Result<(), Rejection> {
         if !identity(&declaration.key.identity)
             || !local_id(&declaration.key.channel)

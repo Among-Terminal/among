@@ -49,7 +49,7 @@ Disable/fault/host destruction revoke actions, contributions, provider registrat
 and active jobs. Installer integration must also call `Backend::uninstall(identity)`
 when authoritative registration is removed, after stopping/revoking the host's
 registration. That operation retains channel choices but removes admission
-authority: an old registration's later automatic restart cannot re-admit itself.
+authority: an old registration's later restart is refused before executing code.
 Only an explicit new static registration restores installation authority.
 This does not implement the installer's update/uninstall transaction.
 The process owns an independent revocable admission lease: stopping clears it even
