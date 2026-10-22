@@ -28,6 +28,35 @@ pub(crate) fn removal_pending(root: &Path, identity: &str) -> bool {
     super::operations::Ticket::removal_pending(root, identity)
 }
 
+pub(crate) fn while_uninstalled<T>(
+    root_path: &Path,
+    identity: crate::plugin::manifest::ManagedIdentity,
+    edit: impl FnOnce() -> T,
+) -> Result<T, Problem> {
+    let ticket = super::operations::Ticket::acquire(root_path, identity.clone())?;
+    let root = open_root(root_path)?;
+    let lock = file(&root, "install.lock", false)?;
+    // this path runs on a preference action, so a competing worker is a retry,
+    // not a five-second main-loop wait. hold the commit lock through the edit.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(Problem(
+            "package store is busy; retry settings deletion after its operation finishes",
+        ));
+    }
+    verify_root(&root, root_path)?;
+    if ticket.cancelled.load(std::sync::atomic::Ordering::Acquire)
+        || document(&root)?
+            .installations
+            .iter()
+            .any(|receipt| receipt.identity().ok() == Some(identity.clone()))
+    {
+        return Err(Problem(
+            "plugin is installed or changed; uninstall it before deleting retained settings",
+        ));
+    }
+    Ok(edit())
+}
+
 pub(super) struct Transaction {
     root: File,
     root_path: PathBuf,

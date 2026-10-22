@@ -92,6 +92,26 @@ pub(super) fn page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     repository.add_suffix(&repositories);
     repository.set_activatable_widget(Some(&repositories));
     sources.add(&repository);
+    let retained = adw::ActionRow::builder()
+        .title("Settings retained after uninstall")
+        .subtitle("Review and separately delete local settings of uninstalled plugins.")
+        .build();
+    let retained_button = gtk::Button::with_label("Retained settings…");
+    retained_button.set_valign(gtk::Align::Center);
+    retained_button.connect_clicked({
+        let ctx = ctx.clone();
+        move |button| {
+            if let Some(parent) = button
+                .root()
+                .and_then(|root| root.downcast::<gtk::Window>().ok())
+            {
+                super::retained_settings::present(&parent, &ctx);
+            }
+        }
+    });
+    retained.add_suffix(&retained_button);
+    retained.set_activatable_widget(Some(&retained_button));
+    sources.add(&retained);
     page.add(&sources);
     let navigation = adw::PreferencesGroup::new();
     navigation.set_title("Your plugins");
