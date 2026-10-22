@@ -2948,6 +2948,82 @@ fn open_preferences(ctx: &Window) {
                 confirm_package_action(&window, receipt, action, parent.as_ref())
             }
         }),
+        retained_settings: Rc::new({
+            let state = ctx.state.clone();
+            move || {
+                if state.borrow().exiting {
+                    return Err(
+                        "This window is retiring; reopen preferences in the current window.".into(),
+                    );
+                }
+                let root = crate::plugin::inventory::root()
+                    .ok_or("Managed data directory is unavailable")?;
+                let installed: std::collections::BTreeSet<_> =
+                    crate::plugin::inventory::read(&root)
+                        .map_err(|problem| problem.to_string())?
+                        .into_iter()
+                        .map(|entry| entry.key())
+                        .collect();
+                let entries = state
+                    .borrow_mut()
+                    .settings
+                    .retained_settings()
+                    .map_err(|error| error.to_string())?;
+                Ok(entries
+                    .into_iter()
+                    .filter(|entry| {
+                        !installed.contains(&entry.identity().key())
+                            && state
+                                .borrow()
+                                .plugins
+                                .managed_details(&entry.identity().key())
+                                .is_none()
+                    })
+                    .collect())
+            }
+        }),
+        delete_retained_settings: Rc::new({
+            let window = ctx.handle();
+            move |expected| {
+                let key = expected.identity().key();
+                if window.state.borrow().exiting {
+                    return Err("This window is retiring; no settings were deleted.".into());
+                }
+                if window
+                    .state
+                    .borrow()
+                    .plugins
+                    .managed_details(&key)
+                    .is_some()
+                {
+                    return Err(
+                        "Plugin is installed; uninstall it before deleting retained settings."
+                            .into(),
+                    );
+                }
+                let root = crate::plugin::inventory::root()
+                    .ok_or("Managed data directory is unavailable")?;
+                let result = crate::plugin::install::store::while_uninstalled(
+                    &root,
+                    expected.identity().clone(),
+                    || {
+                        window
+                            .state
+                            .borrow_mut()
+                            .settings
+                            .delete_retained_settings(expected)
+                    },
+                )
+                .map_err(|problem| problem.to_string())?;
+                let durability = match &result {
+                    Ok(()) => Ok(crate::settings::Durability::Durable),
+                    Err(error) if error.replaced => Ok(crate::settings::Durability::Uncertain),
+                    Err(error) => Err(format!("No settings deletion accepted: {error}")),
+                };
+                report_settings_save(&window, result);
+                durability
+            }
+        }),
         plugin_details: Rc::new({
             let state = ctx.state.clone();
             move |name| state.borrow().plugins.managed_details(name)
@@ -5744,6 +5820,10 @@ mod tests {
                 plugin_configuration: Rc::new(|_| crate::plugin::host::Configuration::NotApplied),
                 restart_plugin: Rc::new(|_, _, _| {}),
                 package_action: Rc::new(|_, _, _| {}),
+                retained_settings: Rc::new(|| Ok(Vec::new())),
+                delete_retained_settings: Rc::new(|_| {
+                    Err("no retained settings in this fixture".into())
+                }),
                 enable_plugin: Rc::new({
                     let desired = desired.clone();
                     move |_, _| desired.set(true)

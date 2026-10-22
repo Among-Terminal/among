@@ -2,6 +2,54 @@ use super::*;
 use crate::plugin::install::package::tests::{extract_bytes, fixture, OwnedRoot};
 use std::os::unix::fs::PermissionsExt;
 
+#[test]
+fn retained_settings_deletion_requires_absence_and_exclusive_operation_authority() {
+    let root = super::super::package::tests::OwnedRoot::new();
+    let identity = crate::plugin::manifest::ManagedIdentity::new(12, "sample".into()).unwrap();
+    let called = std::cell::Cell::new(false);
+    let ticket = super::super::operations::Ticket::acquire(&root.0, identity.clone()).unwrap();
+    assert!(while_uninstalled(&root.0, identity.clone(), || called.set(true)).is_err());
+    drop(ticket);
+    let directory = open_root(&root.0).unwrap();
+    let lock = file(&directory, "install.lock", false).unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    assert!(while_uninstalled(&root.0, identity.clone(), || called.set(true)).is_err());
+    drop(lock);
+    let (transaction, mut receipt) = prepared(&root.0);
+    receipt.repository_id = 12;
+    let commit = transaction.commit(receipt, || Ok(()), || Ok(())).unwrap();
+    drop(transaction);
+    assert!(while_uninstalled(&root.0, identity.clone(), || called.set(true)).is_err());
+    assert!(!called.get());
+    mutate(
+        &root.0,
+        &commit.receipt,
+        crate::plugin::install::mutation::Action::Uninstall,
+        None,
+        &|| Ok(()),
+        || Ok(()),
+    )
+    .unwrap();
+    while_uninstalled(&root.0, identity, || {
+        called.set(true);
+        assert!(super::super::operations::Ticket::acquire(
+            &root.0,
+            commit.receipt.identity().unwrap()
+        )
+        .is_err());
+        let lock = file(&directory, "install.lock", false).unwrap();
+        assert_ne!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0,
+            "the absence check and settings edit are one exclusion interval"
+        );
+    })
+    .unwrap();
+    assert!(called.get());
+}
 fn prepared(root: &Path) -> (Transaction, Receipt) {
     let (metadata, bytes) = fixture();
     let mut transaction = Transaction::new(root, 8192, || Ok(())).unwrap();

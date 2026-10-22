@@ -853,8 +853,28 @@ up to five seconds for actual stop acknowledgement, then commits absence and a n
 store revision. Only that committed result removes the Installed entry. Failed
 stop/commit remains partial, and uncertain directory durability is not ordinary
 success. A reinstall uses a new token and stays disabled despite retained enabled
-preferences. Unknown/local values and grants remain stored; separately consented
-settings deletion is not yet implemented.
+preferences. Unknown/local values and grants remain stored.
+
+Preferences → Plugins → **Retained settings…** lists identity-scoped saved or
+pending settings only when that plugin is uninstalled. **Delete settings…** opens
+a separate destructive confirmation; closing it or pressing Escape deletes nothing.
+Deletion removes only the selected identity's `settings` payload and matching
+pending settings edits, including unknown values within that explicitly selected
+payload. Grants, enablement/installation tokens, unknown fields outside `settings`,
+other origins, repository registrations and legacy/external files remain intact.
+An installed identity must be uninstalled first; this is not a live-runtime reset.
+
+The confirmed saved/pending snapshot is rechecked before replacement. The same
+per-identity operation slot and a nonblocking store commit lock exclude conflicting
+package operations while authoritative absence is checked and settings are edited.
+A busy worker, currently reinstalled identity or changed settings refuses deletion; reopen
+the current list. Failure before replacement accepts no deletion. Post-rename
+directory-confirmation failure is shown as written-but-uncertain. Pending settings
+are discarded only after replacement, even if its durability is uncertain, and a
+later save never retries an old destructive request. Other pending preference edits
+are neither flushed nor forgotten. This is local logical deletion, not secure
+erasure, hook execution or reversal of external effects. Reinstall still requires
+explicit installation and starts disabled with a fresh token.
 
 New generations contain reserved `.among-receipt.json` and `.among-lease` files;
 packages cannot declare `.among-*` members. The receipt seal must agree with the

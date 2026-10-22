@@ -20,6 +20,22 @@ struct ManagedEdits {
     )>,
 }
 
+#[derive(Clone)]
+pub struct RetainedSettings {
+    identity: crate::plugin::manifest::ManagedIdentity,
+    saved: Option<Value>,
+    pending: Option<(
+        crate::plugin::schema::SettingsSchema,
+        serde_json::Map<String, Value>,
+    )>,
+}
+
+impl RetainedSettings {
+    pub fn identity(&self) -> &crate::plugin::manifest::ManagedIdentity {
+        &self.identity
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Durability {
     Durable,
@@ -187,6 +203,143 @@ impl PreferencesStorage {
         pending.review = Some(review);
         pending.enabled = Some(true);
         self.flush_managed().map(|_| ())
+    }
+
+    pub fn retained_settings(&mut self) -> Result<Vec<RetainedSettings>, StorageError> {
+        let result = self.path(Document::ManagedPlugins).and_then(|path| {
+            let document = load(&path, Document::ManagedPlugins)?;
+            let entries = document["plugins"]
+                .as_object()
+                .ok_or_else(|| invalid(&path, "managed plugins must be an object"))?;
+            let keys: std::collections::BTreeSet<_> =
+                entries.keys().chain(self.pending_managed.keys()).collect();
+            Ok(keys
+                .into_iter()
+                .filter_map(|key| {
+                    let (repository, plugin) = key.strip_prefix("github:")?.split_once('/')?;
+                    let identity = crate::plugin::manifest::ManagedIdentity::new(
+                        repository.parse().ok()?,
+                        plugin.into(),
+                    )
+                    .ok()?;
+                    if identity.key() != *key {
+                        return None;
+                    }
+                    let saved = entries
+                        .get(key)
+                        .and_then(|entry| entry.get("settings"))
+                        .cloned();
+                    let pending = self
+                        .pending_managed
+                        .get(key)
+                        .and_then(|edit| edit.settings.clone());
+                    if saved.is_none() && pending.is_none() {
+                        return None;
+                    }
+                    Some(RetainedSettings {
+                        identity,
+                        saved,
+                        pending,
+                    })
+                })
+                .collect())
+        });
+        if let Err(error) = &result {
+            self.problems.insert(
+                Document::ManagedPlugins.filename().into(),
+                error.to_string(),
+            );
+        }
+        result
+    }
+
+    pub fn delete_retained_settings(
+        &mut self,
+        expected: &RetainedSettings,
+    ) -> Result<(), StorageError> {
+        let key = expected.identity.key();
+        let result = (|| {
+            let path = self.path(Document::ManagedPlugins)?;
+            if self
+                .pending_managed
+                .get(&key)
+                .and_then(|edit| edit.settings.as_ref())
+                != expected.pending.as_ref()
+            {
+                return Err(invalid(
+                    &path,
+                    "pending settings changed; reopen retained settings before deleting",
+                ));
+            }
+            let edit = |document: &mut Value| {
+                let entry = document["plugins"]
+                    .get_mut(&key)
+                    .and_then(Value::as_object_mut);
+                if entry.as_ref().and_then(|entry| entry.get("settings")) != expected.saved.as_ref()
+                {
+                    return Err("retained settings changed; reopen before deleting".into());
+                }
+                if let Some(entry) = entry {
+                    entry.remove("settings");
+                }
+                Ok(())
+            };
+            #[cfg(not(test))]
+            {
+                update(&path, Document::ManagedPlugins, edit)
+            }
+            #[cfg(test)]
+            {
+                let fail_confirmation = std::mem::take(&mut self.fail_next_managed_confirmation);
+                update_with_confirmation(
+                    &path,
+                    Document::ManagedPlugins,
+                    edit,
+                    |_| Ok(()),
+                    |parent| {
+                        if fail_confirmation {
+                            Err(io::Error::other(
+                                "controlled directory confirmation failure",
+                            ))
+                        } else {
+                            confirm_directory(parent)
+                        }
+                    },
+                )
+            }
+        })();
+        if result.is_ok() || result.as_ref().is_err_and(|error| error.replaced) {
+            if let Some(pending) = self.pending_managed.get_mut(&key) {
+                pending.settings = None;
+            }
+            self.pending_managed.retain(|_, pending| {
+                pending.enabled.is_some()
+                    || pending.installation.is_some()
+                    || pending.review.is_some()
+                    || pending.settings.is_some()
+            });
+        }
+        match &result {
+            Ok(()) => {
+                if self.pending_managed.is_empty() {
+                    self.problems.remove(Document::ManagedPlugins.filename());
+                } else {
+                    self.problems.insert(Document::ManagedPlugins.filename().into(), "Other managed preference edits remain session-only; deleting settings did not save them.".into());
+                }
+            }
+            Err(error) => {
+                let status = if error.replaced {
+                    "Settings deletion written; durability uncertain"
+                } else {
+                    "Settings deletion failed; no deletion accepted"
+                };
+                self.problems.insert(
+                    Document::ManagedPlugins.filename().into(),
+                    format!("{status}: {error}"),
+                );
+            }
+        }
+        result
     }
 
     pub fn managed_enable_changed(
@@ -794,6 +947,190 @@ mod tests {
             std::fs::read(legacy).unwrap(),
             b"legacy bytes never inspected by managed settings"
         );
+    }
+
+    #[test]
+    fn explicit_retained_deletion_removes_only_confirmed_payload_and_pending_settings() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        let legacy = temp.0.join("plugins.json");
+        std::fs::write(&legacy, b"legacy bytes are not a managed settings payload").unwrap();
+        std::fs::write(&path, b"invalid; pending edit must not overwrite").unwrap();
+        let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+        let key = "github:12/sample";
+        let schema = crate::plugin::schema::SettingsSchema::parse(json!({"version":1,"apply":"live","fields":[{"key":"label","label":"Label","kind":"string"}]})).unwrap();
+        assert!(storage
+            .managed_settings_changed(
+                key,
+                &schema,
+                json!({"label":"unsaved"}).as_object().unwrap()
+            )
+            .is_err());
+        let before = json!({"version":1,"future":"keep","plugins":{
+            key:{"enabled":false,"installation":"a".repeat(64),"review":{"future":"keep"},"future":"keep","settings":{"version":42,"values":{"unknown":"delete explicitly"},"extra":"also part of payload"}},
+            "github:13/sample":{"settings":{"future":"retain"},"enabled":true},
+            "github:012/sample":{"settings":{"invalid identity":"preserve"}},
+            "local":{"settings":{"future":"preserve"}}}});
+        std::fs::write(&path, before.to_string()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let expected = storage
+            .retained_settings()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.identity().key() == key)
+            .unwrap();
+        assert_eq!(storage.retained_settings().unwrap().len(), 2);
+        storage.delete_retained_settings(&expected).unwrap();
+        let mut wanted = before;
+        wanted["plugins"][key]
+            .as_object_mut()
+            .unwrap()
+            .remove("settings");
+        assert_eq!(load(&path, Document::ManagedPlugins).unwrap(), wanted);
+        assert!(!storage.pending_managed.contains_key(key));
+        storage.plugin_changed("github:13/sample", false).unwrap();
+        assert!(
+            load(&path, Document::ManagedPlugins).unwrap()["plugins"][key]
+                .get("settings")
+                .is_none(),
+            "unrelated retry cannot resurrect deleted pending settings"
+        );
+        assert_eq!(
+            std::fs::read(legacy).unwrap(),
+            b"legacy bytes are not a managed settings payload"
+        );
+        assert!(
+            storage.delete_retained_settings(&expected).is_err(),
+            "a consumed snapshot is not a repeatable delete authority"
+        );
+    }
+
+    #[test]
+    fn changed_saved_or_pending_settings_refuse_stale_deletion_without_erasing_bytes() {
+        for pending in [false, true] {
+            let temp = Temp::new();
+            std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = temp.0.join("managed-plugins.json");
+            let body = json!({"version":1,"plugins":{"github:12/sample":{"settings":{"version":1,"values":{"label":"old"}}}}});
+            std::fs::write(&path, body.to_string()).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+            let expected = storage.retained_settings().unwrap().remove(0);
+            if pending {
+                std::fs::write(&path, b"not writable as a valid document").unwrap();
+                let schema = crate::plugin::schema::SettingsSchema::parse(json!({"version":1,"apply":"live","fields":[{"key":"label","label":"Label","kind":"string"}]})).unwrap();
+                assert!(storage
+                    .managed_settings_changed(
+                        "github:12/sample",
+                        &schema,
+                        json!({"label":"new pending"}).as_object().unwrap()
+                    )
+                    .is_err());
+                std::fs::write(&path, body.to_string()).unwrap();
+            } else {
+                update(&path, Document::ManagedPlugins, |document| {
+                    document["plugins"]["github:12/sample"]["settings"]["values"]["label"] =
+                        json!("new saved");
+                    Ok(())
+                })
+                .unwrap();
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            let error = storage.delete_retained_settings(&expected).unwrap_err();
+            assert!(!error.replaced);
+            assert!(error.message.contains("changed"));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(!storage.status().contains("session-only"));
+        }
+    }
+
+    #[test]
+    fn retained_deletion_failure_is_not_accepted_and_uncertainty_cannot_replay_deletion() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        let before = json!({"version":1,"future":true,"plugins":{"github:12/sample":{"enabled":false,"settings":{"opaque":"delete"}}}}).to_string();
+        std::fs::write(&path, &before).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+        let expected = storage.retained_settings().unwrap().remove(0);
+        let target = temp.0.join("original.json");
+        std::fs::rename(&path, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let failure = storage.delete_retained_settings(&expected);
+        assert!(!failure.unwrap_err().replaced);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), before);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&target, &path).unwrap();
+        storage.fail_next_managed_confirmation();
+        assert!(
+            storage
+                .delete_retained_settings(&expected)
+                .unwrap_err()
+                .replaced
+        );
+        assert!(
+            load(&path, Document::ManagedPlugins).unwrap()["plugins"]["github:12/sample"]
+                .get("settings")
+                .is_none()
+        );
+        assert!(storage.status().contains("durability uncertain"));
+        update(&path, Document::ManagedPlugins, |document| {
+            document["plugins"]["github:12/sample"]["settings"] =
+                json!({"new":"independent values"});
+            Ok(())
+        })
+        .unwrap();
+        storage.plugin_changed("github:13/sample", false).unwrap();
+        assert_eq!(
+            load(&path, Document::ManagedPlugins).unwrap()["plugins"]["github:12/sample"]
+                ["settings"],
+            json!({"new":"independent values"}),
+            "a later settings save never retries an old destructive request"
+        );
+    }
+
+    #[test]
+    fn pending_only_retained_deletion_does_not_flush_or_forget_unrelated_pending_choices() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        std::fs::write(&path, b"malformed; failed saves remain pending").unwrap();
+        let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+        let key = "github:12/sample";
+        let schema = crate::plugin::schema::SettingsSchema::parse(json!({"version":1,"apply":"live","fields":[{"key":"label","label":"Label","kind":"string"}]})).unwrap();
+        assert!(storage
+            .managed_settings_changed(
+                key,
+                &schema,
+                json!({"label":"pending-only"}).as_object().unwrap()
+            )
+            .is_err());
+        assert!(storage
+            .managed_enable_changed(key, true, Some(&"a".repeat(64)))
+            .is_err());
+        let other_review = json!({"future":"unrelated pending review"});
+        assert!(storage
+            .managed_review_changed("github:13/sample", other_review.clone())
+            .is_err());
+        let original = json!({"version":1,"future":"preserve","plugins":{}});
+        std::fs::write(&path, original.to_string()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let expected = storage.retained_settings().unwrap().remove(0);
+        assert!(expected.saved.is_none());
+        storage.delete_retained_settings(&expected).unwrap();
+        assert_eq!(load(&path, Document::ManagedPlugins).unwrap(), original);
+        assert!(storage.retained_settings().unwrap().is_empty());
+        assert!(storage
+            .status()
+            .contains("Other managed preference edits remain session-only"));
+        storage.plugin_changed(key, false).unwrap();
+        let saved = load(&path, Document::ManagedPlugins).unwrap();
+        assert!(saved["plugins"][key].get("settings").is_none());
+        assert_eq!(saved["plugins"][key]["enabled"], false);
+        assert_eq!(saved["plugins"][key]["installation"], "a".repeat(64));
+        assert_eq!(saved["plugins"]["github:13/sample"]["review"], other_review);
     }
 
     #[test]

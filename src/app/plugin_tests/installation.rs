@@ -4,6 +4,365 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
+#[ignore = "requires an isolated native display, real keyboard input and Rust HTTPS package pipeline"]
+fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
+    use crate::plugin::install::source::tests::{install_at, package_route};
+    use serde_json::json;
+    const KEY: &str = "github:12/sample";
+    const OTHER: &str = "github:13/sample";
+    let root = crate::plugin::inventory::root().unwrap();
+    let directory = crate::settings::directory().unwrap();
+    let config = directory.join("managed-plugins.json");
+    if std::env::var("AMONG_RETAINED_SETTINGS_PHASE").as_deref() == Ok("offline") {
+        crate::test_isolation::assert_below_check_root(&config);
+        let saved =
+            crate::settings::load(&config, crate::settings::Document::ManagedPlugins).unwrap();
+        assert!(saved["plugins"][KEY].get("settings").is_none());
+        assert!(saved["plugins"][OTHER].get("settings").is_none());
+        assert_eq!(saved["plugins"][KEY]["future"], "keep");
+        let mut host = crate::plugin::host::PluginHost::new();
+        for entry in crate::plugin::inventory::read(&root).unwrap() {
+            let local = crate::plugin::inventory::local(&saved, &entry.key());
+            host.register_managed(entry, local);
+        }
+        assert!(!host.desired_enabled(KEY));
+        assert_eq!(host.supervised_count(), 0);
+        println!("PASS fresh-process offline deletion persistence and disabled fresh-token reinstall; no repository access");
+        return;
+    }
+    let (metadata, archive) = crate::plugin::install::test_package("sample");
+    let server =
+        Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+    let selection = server
+        .inspect(true)
+        .unwrap()
+        .select("sample", "1.0")
+        .unwrap();
+    let first = install_at(&server, selection.clone(), &root)
+        .unwrap()
+        .receipt;
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let original = json!({"version":1,"future":"preserve","plugins":{
+        KEY:{"enabled":false,"installation":first.installation,"review":first.review(vec!["status".into()]),"future":"keep","settings":{"version":42,"values":{"opaque":"never echo this value"},"future":"delete only by consent"}},
+        OTHER:{"enabled":true,"future":"other origin","settings":{"version":99,"values":{"opaque":"other origin value"}}}}});
+    std::fs::write(&config, original.to_string()).unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let legacy = directory.join("plugins.json");
+    let legacy_bytes = b"{\"plugins\":[],\"future\":\"legacy retained byte-for-byte\"}";
+    std::fs::write(&legacy, legacy_bytes).unwrap();
+    let app = application("com.github.among-terminal.retained-settings-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
+    let terminal = ctx
+        .state
+        .borrow()
+        .pane(PaneId(1))
+        .unwrap()
+        .terminal()
+        .clone();
+    let pty = terminal.pty().unwrap().fd().as_raw_fd();
+    open_preferences(&ctx);
+    let preferences = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .find(|window| window.title().as_deref() == Some("Preferences"))
+        .unwrap();
+    let page = widgets(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::PreferencesPage>().ok())
+        .find(|page| page.title() == "Plugins")
+        .unwrap();
+    preferences.set_visible_page(&page);
+    let open_retained = || {
+        focus(&preferences);
+        press(&button(&preferences, "Retained settings…"));
+        wait_for(
+            || {
+                gtk::Window::list_toplevels().iter().any(|window| {
+                    window.downcast_ref::<gtk::Window>().is_some_and(|window| {
+                        window.title().as_deref() == Some("Retained plugin settings")
+                            && window.is_visible()
+                    })
+                })
+            },
+            Duration::from_secs(2),
+        );
+        let window = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+            .find(|window| {
+                window.title().as_deref() == Some("Retained plugin settings") && window.is_visible()
+            })
+            .unwrap();
+        focus(&window);
+        window
+    };
+    let retained_row = |window: &adw::PreferencesWindow, key: &str| {
+        widgets(window.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+            .find(|row| row.title() == key)
+            .unwrap()
+    };
+    let confirm_delete = |window: &adw::PreferencesWindow, row: &adw::ActionRow| {
+        press(&button(row, "Delete settings…"));
+        wait_for(|| window.visible_dialog().is_some(), Duration::from_secs(2));
+        assert!(has_label(
+            window.visible_dialog().unwrap().upcast_ref(),
+            "Delete retained settings?"
+        ));
+    };
+    let retained = open_retained();
+    assert!(
+        !has_label(retained.upcast_ref(), KEY),
+        "installed settings are not a deletion candidate"
+    );
+    retained_row(&retained, OTHER);
+    retained.destroy();
+    focus(&preferences);
+    let plugin_row = widgets(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| {
+            widgets(row.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+                .any(|button| button.label().as_deref() == Some("Details…"))
+        })
+        .unwrap();
+    press(&button(&plugin_row, "Details…"));
+    wait_for(
+        || {
+            gtk::Window::list_toplevels().iter().any(|window| {
+                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
+                    window.title().as_deref() == Some("Plugin details") && window.is_visible()
+                })
+            })
+        },
+        Duration::from_secs(2),
+    );
+    let details = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .find(|window| window.title().as_deref() == Some("Plugin details") && window.is_visible())
+        .unwrap();
+    focus(&details);
+    press(&button(&details, "Uninstall…"));
+    wait_for(
+        || details.visible_dialog().is_some(),
+        Duration::from_secs(2),
+    );
+    press(&button(&details.visible_dialog().unwrap(), "Uninstall"));
+    wait_for(
+        || {
+            details
+                .visible_dialog()
+                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Plugin uninstalled"))
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        crate::settings::load(&config, crate::settings::Document::ManagedPlugins).unwrap(),
+        original,
+        "native uninstall has not deleted settings or grants"
+    );
+    press(&button(&details.visible_dialog().unwrap(), "Close"));
+    details.destroy();
+
+    let retained = open_retained();
+    let row = retained_row(&retained, KEY);
+    assert!(!has_label(retained.upcast_ref(), "never echo this value"));
+    let before = std::fs::read(&config).unwrap();
+    confirm_delete(&retained, &row);
+    screenshot_dialog(
+        &retained.visible_dialog().unwrap(),
+        "retained-settings-separate-consent",
+    );
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(
+        || retained.visible_dialog().is_none(),
+        Duration::from_secs(2),
+    );
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        before,
+        "Escape is a real no-op, not deletion consent"
+    );
+    confirm_delete(&retained, &row);
+    crate::settings::update(
+        &config,
+        crate::settings::Document::ManagedPlugins,
+        |document| {
+            document["plugins"][KEY]["settings"]["future"] = json!("independent change");
+            Ok(())
+        },
+    )
+    .unwrap();
+    let changed = std::fs::read(&config).unwrap();
+    press(&button(
+        &retained.visible_dialog().unwrap(),
+        "Delete settings",
+    ));
+    wait_for(
+        || row.subtitle().is_some_and(|text| text.contains("changed")),
+        Duration::from_secs(2),
+    );
+    assert_eq!(std::fs::read(&config).unwrap(), changed);
+    retained.destroy();
+
+    let retained = open_retained();
+    let row = retained_row(&retained, KEY);
+    confirm_delete(&retained, &row);
+    let reinstalled = install_at(&server, selection.clone(), &root)
+        .unwrap()
+        .receipt;
+    // intentionally do not reconcile the UI host: the authoritative store must
+    // refuse this stale confirmation even before its observer catches up.
+    press(&button(
+        &retained.visible_dialog().unwrap(),
+        "Delete settings",
+    ));
+    wait_for(
+        || {
+            row.subtitle()
+                .is_some_and(|text| text.contains("installed"))
+        },
+        Duration::from_secs(2),
+    );
+    assert_eq!(std::fs::read(&config).unwrap(), changed);
+    let removal = crate::plugin::install::mutation::Job::start(
+        root.clone(),
+        reinstalled,
+        crate::plugin::install::mutation::Action::Uninstall,
+        None,
+    )
+    .unwrap();
+    removal.supervised_stopped();
+    let removed = RefCell::new(None);
+    wait_for(
+        || {
+            if let Some(outcome) = removal.poll() {
+                removed.replace(Some(outcome));
+                true
+            } else {
+                false
+            }
+        },
+        Duration::from_secs(5),
+    );
+    removed.into_inner().unwrap().unwrap();
+    retained.destroy();
+
+    let retained = open_retained();
+    let row = retained_row(&retained, KEY);
+    let mut expected =
+        crate::settings::load(&config, crate::settings::Document::ManagedPlugins).unwrap();
+    expected["plugins"][KEY]
+        .as_object_mut()
+        .unwrap()
+        .remove("settings");
+    let selection_bytes = std::fs::read(root.join("installed.json")).unwrap();
+    let settings_bytes = std::fs::read(&config).unwrap();
+    assert_ne!(
+        unsafe { libc::geteuid() },
+        0,
+        "the native permission-refusal observation needs an unprivileged profile"
+    );
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+    confirm_delete(&retained, &row);
+    press(&button(
+        &retained.visible_dialog().unwrap(),
+        "Delete settings",
+    ));
+    wait_for(
+        || {
+            row.subtitle()
+                .is_some_and(|text| text.contains("No settings deletion accepted"))
+        },
+        Duration::from_secs(2),
+    );
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(std::fs::read(&config).unwrap(), settings_bytes);
+    confirm_delete(&retained, &row);
+    press(&button(
+        &retained.visible_dialog().unwrap(),
+        "Delete settings",
+    ));
+    wait_for(
+        || row.subtitle().as_deref() == Some("Retained settings deleted locally."),
+        Duration::from_secs(2),
+    );
+    assert_eq!(
+        crate::settings::load(&config, crate::settings::Document::ManagedPlugins).unwrap(),
+        expected
+    );
+    assert_eq!(
+        std::fs::read(root.join("installed.json")).unwrap(),
+        selection_bytes
+    );
+    assert!(!button(&row, "Delete settings…").is_sensitive());
+    let other = retained_row(&retained, OTHER);
+    ctx.state
+        .borrow_mut()
+        .settings
+        .fail_next_managed_confirmation();
+    confirm_delete(&retained, &other);
+    press(&button(
+        &retained.visible_dialog().unwrap(),
+        "Delete settings",
+    ));
+    wait_for(
+        || {
+            other
+                .subtitle()
+                .is_some_and(|text| text.contains("durability uncertain"))
+        },
+        Duration::from_secs(2),
+    );
+    expected["plugins"][OTHER]
+        .as_object_mut()
+        .unwrap()
+        .remove("settings");
+    assert_eq!(
+        crate::settings::load(&config, crate::settings::Document::ManagedPlugins).unwrap(),
+        expected
+    );
+    screenshot(&retained, "retained-settings-result-and-uncertainty");
+    assert_eq!(std::fs::read(&legacy).unwrap(), legacy_bytes);
+    assert_eq!(terminal.pty().unwrap().fd().as_raw_fd(), pty);
+    retained.destroy();
+    let retained = open_retained();
+    assert!(has_label(
+        retained.upcast_ref(),
+        "No retained settings to delete"
+    ));
+    retained.destroy();
+    ctx.state
+        .borrow_mut()
+        .settings
+        .managed_enable_changed(KEY, true, first.installation.as_deref())
+        .unwrap();
+    let fresh = install_at(&server, selection, &root).unwrap().receipt;
+    reconcile_managed_installations(&ctx.state);
+    assert_ne!(fresh.installation, first.installation);
+    assert!(!ctx.state.borrow().plugins.desired_enabled(KEY));
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
+    preferences.destroy();
+    ctx.window.destroy();
+    let child = std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", "app::plugin_tests::installation::retained_settings_deletion_is_separate_stale_safe_and_identity_scoped", "--ignored", "--nocapture", "--test-threads=1"]).env("AMONG_RETAINED_SETTINGS_PHASE", "offline").output().unwrap();
+    assert!(
+        child.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&child.stdout));
+    println!("PASS real native keyboard uninstall retains settings, separate deletion Escape/cancel, changed-settings refusal, store-authoritative stale-reinstall refusal before host reconcile, actual permission refusal without accepted deletion, exact-payload-only deletion, truthful post-rename uncertainty, preserved unknown/grant/other-origin/legacy fields and unchanged terminal PTY. No downloaded process was executed; fresh reinstall remains OFF by token. This does not close the original modal terminal-input or combined-provider gates.");
+}
+
+#[test]
 #[ignore = "requires isolated native keyboard input, Rust HTTPS and built managed processes"]
 fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins() {
     use crate::plugin::install::{
