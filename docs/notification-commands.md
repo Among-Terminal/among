@@ -1,9 +1,14 @@
 # Optional command backend
 
 `among::notifications::commands` executes real, optional local command attempts.
-It is a GTK-free backend API, **not a General settings page or a saved command
-configuration**. The normal application bell path does not register a command
-channel yet. No command is configured or enabled by default.
+Its core API is GTK-free. [General](preferences.md#general-notifications) accepts
+and stores explicit configuration; the normal VTE adapter owns registration,
+shared-tick polling and retirement. No command is configured or enabled by default.
+
+**Security acceptance is blocked:** independent review found that the inherited
+procfs child parser can treat a truncated PID suffix as a complete PID. Its
+dedicated repair/re-review is pending; ordinary small-tree tests are not approval
+of that path. The common UI work does not repair or bypass the parser.
 
 ## Configuration and admission
 
@@ -20,6 +25,12 @@ channel yet. No command is configured or enabled by default.
   own executable, not the user-configured command). `register` creates a core
   channel **off** with application-background eligibility. Registration and
   configuration inspection never start a process.
+- `Runtime::unprepared` supports inert stable registration before directory I/O;
+  `prepare` accepts an already validated descriptor. The app requests preparation
+  only after a new eligible event, using one bounded process-wide worker. Its
+  cwd/HOME is `$XDG_DATA_HOME/among/notification-command-home` (or the standard
+  HOME fallback). Explicit later edits can retry failed preparation, never the old
+  event. Opening, inspecting, saving or enabling alone does not prepare it.
 - `set_policy` explicitly enables/adopts a policy. `poll(&mut Host, Instant)`
   performs nonblocking admission and completion collection. Pending work remains
   in the core's globally bounded/fair queue; there is no second delivery backlog.
@@ -108,10 +119,13 @@ or empty-success delivery path.
 `shutdown` removes pending channels and requests active cancellation immediately.
 Runtime drop also revokes channel admission and active leases without joining;
 the core removes revoked registrations on its next housekeeping operation.
-Integrators must keep the host process alive and poll until `active_count()==0`
-for ordinary graceful shutdown. A future window integration needs the same kind
-of application hold/nonblocking retirement already used for other owned children;
-this backend API does not silently add a new window lifecycle or Preferences UI.
+The app's removal handler retains a GApplication hold and polls until ordinary
+`active_count()==0` and any owned directory preparation has finished, alongside
+the existing plugin retirement gate. GTK never waits for a child or joins a
+thread. Replacement windows do not abandon old reaping ownership.
+This describes command ownership only. The inherited audio backend has a separate
+native-teardown blocking finding; app-wide stalled-media responsiveness is not
+established by the command hold or ordinary audio output tests.
 
 No userspace supervisor can promise that SIGKILL instantly ends a kernel
 uninterruptible task. Such cleanup retains the isolated supervisor/global slot
@@ -119,15 +133,16 @@ and reports uncertainty instead of replacing it with more commands or blocking
 GTK. If a supervisor is lost after execution permission without trustworthy reap
 confirmation, its capacity is quarantined for the process lifetime. A deliberately
 hostile same-user program can attack its supervisor; this is not a security
-boundary against that authority. Unknown effects are never retried.
+boundary against that authority. Unknown effects are never retried. Unconfirmed
+retirement keeps the hold, logs that cleanup is unconfirmed, and does not silently
+choose an irreversible forced-exit policy.
 
 This implementation requires Linux subreaping, procfs and `close_range` with
 close-on-exec support. Native execution is tested. AppImage loader paths under
 the deliberately cleared environment and Snap confinement permission for these
 operations still need concrete packaging validation; no packaging changes or
-packaged-delivery claims are made here. UI policy editing/persistence, live
-application channel registration, audio/WAV/preview and managed provider delivery
-remain separate sequential work.
+packaged-command delivery claims are made here. Managed provider delivery and
+the dedicated PID safety repair/re-review remain separate acceptance boundaries.
 
 ## Evidence boundary
 
@@ -145,5 +160,8 @@ uses the cached Rust fixture built by the ordinary integration test. Under an
 isolated X11 harness it configures a test channel on the real bell host and polls
 this API with a GTK timer. A real semantic VTE bell dispatches the command while
 keyboard input continues in a sibling terminal during a stubborn command tree.
-Host access/configuration is test-only; this does not establish absent General
-controls, persistent policies or default live application channel registration.
+Host access/configuration in that older test is test-only. The separate ignored
+`app::notification_ui_tests::general_controls_drive_production_commands_and_application_retirement`
+drives actual General keyboard controls, normal VTE registration/polling, lazy cwd
+preparation and a real no-window GApplication run held through small-tree cleanup.
+Neither test establishes the pending PID-parser security boundary or packaged delivery.

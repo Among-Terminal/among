@@ -117,7 +117,10 @@ pub fn verify(
                 .ok_or("plugin settings disappeared")?,
         )?;
         if settings["keep"] != 42
-            || settings["plugins"][1] != json!({"name":"unavailable","enabled":true})
+            || settings["plugins"]
+                .as_array()
+                .and_then(|entries| entries.iter().find(|entry| entry["name"] == "unavailable"))
+                != Some(&json!({"name":"unavailable","enabled":true}))
         {
             return Err("Preferences lost unrelated plugin settings".into());
         }

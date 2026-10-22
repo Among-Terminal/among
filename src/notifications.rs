@@ -18,6 +18,8 @@ pub const MAX_DIAGNOSTICS: usize = 32;
 static SESSION: AtomicU64 = AtomicU64::new(0);
 
 pub mod commands;
+pub mod preferences;
+pub mod providers;
 
 /// tokens are minted by the host, not reconstructed from a pane number by a
 /// producer. reusing a pane number cannot revive an old callback.
@@ -505,6 +507,11 @@ impl Host {
                 self.is_current(**job) && channel.is_none_or(|channel| job.channel == channel)
             })
             .count()
+    }
+
+    /// zero-backlog adapters consume current admission only, never a later replay.
+    pub fn discard_pending(&mut self, channel: Channel) {
+        self.pending.retain(|job| job.channel != channel);
     }
 
     /// skipping cooling sources allows a quiet sibling to progress. a repeated

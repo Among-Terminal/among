@@ -1,6 +1,6 @@
 use super::*;
 
-fn pump_for(duration: Duration) {
+pub(super) fn pump_for(duration: Duration) {
     let deadline = std::time::Instant::now() + duration;
     while std::time::Instant::now() < deadline {
         while glib::MainContext::default().pending() {
@@ -10,7 +10,7 @@ fn pump_for(duration: Duration) {
     }
 }
 
-fn wait(mut condition: impl FnMut() -> bool, description: &str) {
+pub(super) fn wait(mut condition: impl FnMut() -> bool, description: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while !condition() && std::time::Instant::now() < deadline {
         pump_for(Duration::from_millis(20));
@@ -18,7 +18,7 @@ fn wait(mut condition: impl FnMut() -> bool, description: &str) {
     assert!(condition(), "timed out: {description}");
 }
 
-fn xdo(args: &[&str]) -> String {
+pub(super) fn xdo(args: &[&str]) -> String {
     let output = std::process::Command::new("xdotool")
         .args(args)
         .output()
@@ -27,7 +27,7 @@ fn xdo(args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-fn activate(window: &impl IsA<gtk::Window>) {
+pub(super) fn activate(window: &impl IsA<gtk::Window>) {
     let window = window.as_ref();
     let ids = xdo(&[
         "search",
@@ -42,11 +42,11 @@ fn activate(window: &impl IsA<gtk::Window>) {
     pump_for(Duration::from_millis(100));
 }
 
-fn terminal(ctx: &Window, id: PaneId) -> vte::Terminal {
+pub(super) fn terminal(ctx: &Window, id: PaneId) -> vte::Terminal {
     ctx.state.borrow().pane(id).unwrap().terminal().clone()
 }
 
-fn real_bell(ctx: &Window, backend: &bell::Backend, id: PaneId) {
+pub(super) fn real_bell(ctx: &Window, backend: &bell::Backend, id: PaneId) {
     let before = backend.event_count();
     terminal(ctx, id).feed_child(b"printf '\\007'\n");
     wait(

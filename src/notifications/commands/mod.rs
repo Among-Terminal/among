@@ -41,7 +41,7 @@ pub enum Error {
 }
 
 /// validation is syntactic and inert: it never probes an executable by running it.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
     executable: String,
@@ -49,6 +49,12 @@ pub struct Configuration {
 }
 
 impl Configuration {
+    pub fn executable(&self) -> &str {
+        &self.executable
+    }
+    pub fn arguments(&self) -> &[String] {
+        &self.arguments
+    }
     pub fn new(executable: &Path, arguments: Vec<String>) -> Result<Self, Error> {
         let executable = executable.to_str().ok_or(Error::InvalidExecutable)?;
         let config = Self {
@@ -143,7 +149,7 @@ pub struct Completion {
 
 pub struct Runtime {
     helper: PathBuf,
-    cwd: OwnedDirectory,
+    cwd: Option<OwnedDirectory>,
     configurations: BTreeMap<Channel, Configuration>,
     registrations: BTreeMap<Channel, Arc<AtomicBool>>,
     attempts: Vec<service::Ticket>,
@@ -153,18 +159,33 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(helper: &Path, cwd: OwnedDirectory) -> Result<Self, Error> {
+        let mut runtime = Self::unprepared(helper)?;
+        runtime.cwd = Some(cwd);
+        Ok(runtime)
+    }
+
+    /// registration is inert; directory preparation is deferred until an
+    /// eligible event exists, without changing its channel identity.
+    pub fn unprepared(helper: &Path) -> Result<Self, Error> {
         if !helper.is_absolute() || helper.to_str().is_none_or(|path| path.contains('\0')) {
             return Err(Error::InvalidExecutable);
         }
         Ok(Self {
             helper: helper.to_owned(),
-            cwd,
+            cwd: None,
             configurations: BTreeMap::new(),
             registrations: BTreeMap::new(),
             attempts: Vec::new(),
             cursor: 0,
             stopped: false,
         })
+    }
+
+    pub fn prepare(&mut self, cwd: OwnedDirectory) {
+        self.cwd = Some(cwd);
+    }
+    pub fn is_prepared(&self) -> bool {
+        self.cwd.is_some()
     }
 
     pub fn register(&mut self, host: &mut Host, config: Configuration) -> Result<Channel, Error> {
@@ -249,6 +270,9 @@ impl Runtime {
         if self.stopped || self.configurations.is_empty() {
             return;
         }
+        let Some(cwd) = &self.cwd else {
+            return;
+        };
         let channels: Vec<_> = self.configurations.keys().copied().collect();
         for offset in 0..channels.len() {
             let index = (self.cursor + offset) % channels.len();
@@ -270,7 +294,7 @@ impl Runtime {
                 authorization,
                 config.clone(),
                 self.helper.clone(),
-                self.cwd.clone(),
+                cwd.clone(),
                 reservation,
             ) {
                 Ok(ticket) => self.attempts.push(ticket),

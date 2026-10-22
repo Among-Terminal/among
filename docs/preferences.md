@@ -3,6 +3,53 @@
 The storage module uses `$XDG_CONFIG_HOME/among`, falling back to
 `$HOME/.config/among` when XDG_CONFIG_HOME is absent or empty.
 
+## General notifications
+
+General is the first and initially visible page, followed by Keyboard and Plugins.
+Page/control automation uses identities (`general`, `keyboard`, `plugins` and
+`notification-…` widget names), not the first tab or first switch.
+
+Notification choices use `general.json`, version 1. Missing fields inherit these
+in-memory defaults; opening Preferences never writes this document:
+
+```json
+{"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"command":{"enabled":false,"eligibility":"application-background"}}}
+```
+
+Each channel has independent Always, Originating terminal unfocused and Among in
+background conditions. Preferences and native menus count as foreground Among,
+but not as viewing a terminal. Visual alerts retain a static `!` and accessible
+unread names; system animation changes stop stripe motion without acknowledging
+unread terminals. Workspace hue and terminal allocation are not notification state.
+
+Policy edits apply immediately. The command's absolute executable and literal
+arguments (a JSON string array) require **Save command**. Empty executable clears
+configuration and disables the channel. Saving or enabling does not run a command
+or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
+See [the command contract](notification-commands.md) for authority and cleanup limits.
+
+**Use local WAV** reads and validates asynchronously; only an accepted immutable
+snapshot changes the selected sound and saves its source. Invalid selection does
+not play a fallback or overwrite the last accepted selection. A missing/invalid
+saved local source disables playback until a source is accepted. **Use built-in
+WAV** selects the original bundled sound. **Preview** explicitly plays the accepted
+snapshot even with event audio off, without entering notification ingress or
+changing policy/unread/command/provider state. Playback requests and decoder end
+are not proof of output. See [audio limits and packaging](audio.md).
+
+Provider choices are keyed by full provider identity and channel ID under
+`notifications.providers[identity].channels[channel]`. Retained unavailable choices
+remain editable and are labelled unavailable, not delivered. A generic registry
+supplies typed policy/admission ownership; managed producer/provider attachment
+still requires its separate committed API integration. New channels default off.
+
+General edits re-read and merge the relevant fields, preserving unknown keys and
+other provider identities. Bounded unique-key JSON and safe owner-controlled paths
+are required; fresh files are private, and safe existing directory permissions
+are not silently changed. Future versions, invalid known fields, symlinks and malformed documents are reported,
+not repaired. Settings are outside packaged application trees. No transient
+attention, operation IDs or pending delivery jobs are persisted.
+
 Plugin choices keep the existing `plugins.json` format:
 
 ```json
