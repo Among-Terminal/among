@@ -89,6 +89,38 @@ pub fn analyze(bytes: &[u8], signal: bool) -> Result<Value> {
     Ok(result)
 }
 
+/// clear-stall recovery must produce a second tone, not merely retain the
+/// initial pre-stall playback in a successful whole-capture energy measurement.
+pub fn recovered_output(bytes: &[u8]) -> Result<Value> {
+    analyze(bytes, true)?;
+    let mut islands = Vec::new();
+    let mut current: Option<(usize, usize)> = None;
+    for (frame, sample) in bytes.as_chunks::<2>().0.iter().enumerate() {
+        if i32::from(i16::from_le_bytes(*sample)).abs() < 128 {
+            continue;
+        }
+        match current {
+            Some((start, end)) if frame - end < 4_800 => current = Some((start, frame)),
+            Some(previous) => {
+                islands.push(previous);
+                current = Some((frame, frame));
+            }
+            None => current = Some((frame, frame)),
+        }
+    }
+    if let Some(last) = current {
+        islands.push(last);
+    }
+    if islands.len() != 2 {
+        return Err("clear-stall capture lacks two distinct initial/recovery tones".into());
+    }
+    let mut observed = Vec::new();
+    for (start, end) in islands {
+        observed.push(json!({"start_frame":start,"end_frame":end,"analysis":analyze(&bytes[start*2..(end+1)*2],true)?}));
+    }
+    Ok(json!({"initial":observed[0],"recovery":observed[1]}))
+}
+
 fn text(
     program: &str,
     args: &[&str],

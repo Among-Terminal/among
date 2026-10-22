@@ -51,6 +51,33 @@ fn analysis_requires_real_expected_waveform_and_nonempty_silence() -> Result<()>
 }
 
 #[test]
+fn recovery_capture_cannot_borrow_the_initial_pre_stall_tone() -> Result<()> {
+    let tone: Vec<_> = (0..48_000)
+        .flat_map(|frame| {
+            (((frame as f64 * 880.0 * std::f64::consts::TAU / 48_000.0).sin() * 8000.0) as i16)
+                .to_le_bytes()
+        })
+        .collect();
+    assert!(audio_capture::recovered_output(&tone).is_err());
+    let mut two = tone.clone();
+    two.extend(vec![0; 48_000]);
+    two.extend(&tone);
+    let observed = audio_capture::recovered_output(&two)?;
+    assert!(
+        observed["recovery"]["start_frame"]
+            .as_u64()
+            .ok_or("recovery frame absent")?
+            > observed["initial"]["end_frame"]
+                .as_u64()
+                .ok_or("initial frame absent")?
+    );
+    let mut only_initial = tone;
+    only_initial.extend(vec![0; 96_000]);
+    assert!(audio_capture::recovered_output(&only_initial).is_err());
+    Ok(())
+}
+
+#[test]
 fn probe_receipt_binds_architecture_artifact_source_and_real_binary_bytes() -> Result<()> {
     let root = storage::private_directory(&std::env::temp_dir(), "among-audio-receipt")?;
     let artifact = root.join("synthetic-package");
