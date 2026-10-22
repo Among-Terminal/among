@@ -118,7 +118,7 @@ struct Container {
     footer: gtk::Box,
 }
 
-fn button_at(widget: &gtk::Widget, x: f64, y: f64) -> bool {
+pub(crate) fn button_at(widget: &gtk::Widget, x: f64, y: f64) -> bool {
     widget
         .pick(x, y, gtk::PickFlags::DEFAULT)
         .is_some_and(|target| {
@@ -800,6 +800,12 @@ impl Pane {
     }
 
     /// Refresh both slot areas from the store.
+    pub(crate) fn notification_slots(&self) -> Option<(gtk::Box, gtk::Box)> {
+        let container = self.container.borrow();
+        let container = container.as_ref()?;
+        Some((container.header_slot.clone(), container.footer.clone()))
+    }
+
     pub fn refresh_slots(&self, store: &SlotStore) {
         let container = self.container.borrow();
         let Some(container) = container.as_ref() else {

@@ -23,6 +23,7 @@ use crate::tree::{Node, Orientation, PaneId};
 use crate::workspace::{PaneAllocator, Workspace, WorkspaceSet};
 
 mod bell;
+mod notification_ui;
 
 /// How often the main loop pumps plugins and re-derives pane sizes.
 ///
@@ -345,6 +346,22 @@ fn update_plugin_context(state: &mut AppState) {
         .iter()
         .map(|workspace| workspace.reference)
         .collect();
+    if let Some(bells) = &state.bells {
+        bells.set_workspaces(
+            state
+                .workspaces
+                .workspaces()
+                .iter()
+                .flat_map(|workspace| {
+                    workspace
+                        .panes()
+                        .into_iter()
+                        .map(move |pane| (pane.0, workspace.reference))
+                })
+                .collect(),
+        );
+        bells.sync_provider_policies();
+    }
     state.plugins.reconcile_workspace_content(
         &mut state.store,
         &workspaces,
@@ -384,6 +401,7 @@ struct Window {
     /// Per-source clocks keep one accepted summary from suppressing a sibling.
     summary_requested: Rc<RefCell<std::collections::BTreeMap<(usize, String), u64>>>,
     collection_cursor: Rc<Cell<usize>>,
+    notification_renderer: Rc<RefCell<notification_ui::Renderer>>,
 }
 
 struct SplitWidget {
@@ -526,7 +544,14 @@ fn build_with_writer(
     )));
     admission.current.replace(Rc::downgrade(&state));
     match bell::Backend::new(&window) {
-        Ok(backend) => state.borrow_mut().bells = Some(backend),
+        Ok(backend) => {
+            let mut state = state.borrow_mut();
+            state.plugins = PluginHost::with_notification_backend(
+                admission.starts_allowed.clone(),
+                Some(backend.notification_backend()),
+            );
+            state.bells = Some(backend);
+        }
         Err(_) => eprintln!("among: bell session identity exhausted; backend unavailable"),
     }
     {
@@ -707,6 +732,7 @@ fn build_with_writer(
         paneds: Rc::new(RefCell::new(Vec::new())),
         summary_requested: Rc::new(RefCell::new(std::collections::BTreeMap::new())),
         collection_cursor: Rc::new(Cell::new(0)),
+        notification_renderer: Rc::new(RefCell::new(notification_ui::Renderer::default())),
     };
 
     let removal_handler = Rc::new(RefCell::new(None));
@@ -1942,7 +1968,13 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
             entry_click.connect_pressed({
                 let content = content.clone();
                 let target = ctx.handle();
-                move |gesture, presses, _, _| {
+                move |gesture, presses, x, y| {
+                    if gesture
+                        .widget()
+                        .is_some_and(|widget| crate::pane::button_at(&widget, x, y))
+                    {
+                        return;
+                    }
                     if presses < 2 {
                         // The first press of a sequence is the click that switches
                         // workspaces. Any press after it is a further click in the
@@ -2811,6 +2843,8 @@ fn refresh_slots(ctx: &Window) {
         }
     }
     let _ = &ctx.split_view;
+    drop(state);
+    notification_ui::refresh(ctx);
 }
 
 /// Install the shortcut controller.
@@ -3200,9 +3234,17 @@ fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
             let backend = backend.clone();
             move || backend.preview()
         }),
-        provider_available: Rc::new({
+        cancel_audio: Rc::new({
             let backend = backend.clone();
-            move |key| backend.provider_available(key)
+            move || backend.cancel_audio()
+        }),
+        audio_state: Rc::new({
+            let backend = backend.clone();
+            move || backend.audio_state()
+        }),
+        providers: Rc::new({
+            let backend = backend.clone();
+            move || backend.provider_inventory()
         }),
         status: Rc::new(move || (backend.audio_status(), backend.command_status())),
     })
@@ -4254,6 +4296,7 @@ impl Window {
             paneds: self.paneds.clone(),
             summary_requested: self.summary_requested.clone(),
             collection_cursor: self.collection_cursor.clone(),
+            notification_renderer: self.notification_renderer.clone(),
         }
     }
 
@@ -4279,11 +4322,13 @@ impl Window {
         }
         if let Some(bells) = &self.state.borrow().bells {
             bells.observe_focus();
-            bells.poll();
         }
         present_attention(self);
         apply_sidebar_width(self);
         if !self.state.borrow().session_ready || self.state.borrow().session_closing {
+            if let Some(bells) = self.state.borrow().bells.clone() {
+                bells.poll();
+            }
             return;
         }
         // 1. Read whatever plugins wrote, then ask for whatever is missing.
@@ -4294,6 +4339,10 @@ impl Window {
             update_plugin_context(&mut state);
             state.plugins.poll();
         }
+        if let Some(bells) = self.state.borrow().bells.clone() {
+            bells.poll();
+        }
+        notification_ui::refresh(self);
         log_plugin_notices(self);
         collect_plugin_results(self);
         request_plugin_status(self);

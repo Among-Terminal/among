@@ -509,8 +509,12 @@ pub fn icon_exists(name: &str) -> bool {
 /// Rebuilt wholesale on each update: fragment counts are small, and rebuilding
 /// avoids stale widgets from a plugin that stopped reporting.
 pub fn render_slot(store: &SlotStore, scope: Scope, container: &gtk::Box, max_chars: usize) {
-    while let Some(child) = container.first_child() {
-        container.remove(&child);
+    let mut child = container.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if !widget.has_css_class("notification-contributions") {
+            container.remove(&widget);
+        }
     }
     if scope == Scope::AppFooter && !store.is_empty(scope) {
         // Alignment belongs to the application's slot, not to plugin data.
@@ -524,7 +528,12 @@ pub fn render_slot(store: &SlotStore, scope: Scope, container: &gtk::Box, max_ch
             container.append(&widget);
         }
     }
-    container.set_visible(!store.is_empty(scope));
+    container.set_visible(
+        !store.is_empty(scope)
+            || container
+                .first_child()
+                .is_some_and(|child| child.is_visible()),
+    );
 }
 
 /// A monotonic millisecond counter for refresh scheduling.

@@ -40,8 +40,21 @@ are not proof of output. See [audio limits and packaging](audio.md).
 Provider choices are keyed by full provider identity and channel ID under
 `notifications.providers[identity].channels[channel]`. Retained unavailable choices
 remain editable and are labelled unavailable, not delivered. A generic registry
-supplies typed policy/admission ownership; managed producer/provider attachment
-still requires its separate committed API integration. New channels default off.
+supplies typed policy/admission ownership. The ordinary application now connects
+the managed backend to the same live core and displays declared channel metadata,
+plugin enablement and admitted-owner state without starting code on inspection.
+New channels default off. This is an integration under review, not acceptance:
+active-envelope retention, targetless origin fairness and owner-chosen strict
+producer/delivery role separation still need their reviewed follow-ups. The
+access-review role-choice consumer awaits its exact typed backend handoff; existing
+review/grant/settings layout is not replaced speculatively. Managed-origin command
+attempts are withheld until the typed-core/origin integration is supplied.
+
+Replacing active Preview first cancels and retires the old decoder. A real Busy
+response retains no replacement: wait for confirmation and press Preview again.
+Cancel sound / selection requests cancellation without persisting playback success.
+The owner accepts this explicit-retry UX detail, not decoder safety/platform
+acceptance. A newer Preview diagnostic is not overwritten by older playback IDs.
 
 General edits re-read and merge the relevant fields, preserving unknown keys and
 other provider identities. Bounded unique-key JSON and safe owner-controlled paths

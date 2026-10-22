@@ -18,7 +18,21 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Channel, DiagnosticKind, Host, Job, Policy};
+use super::{Channel, DiagnosticKind, Event, Host, Job, Policy};
+
+trait CoreAccess {
+    fn with<T>(&mut self, action: impl FnOnce(&mut Host) -> T) -> T;
+}
+impl CoreAccess for Host {
+    fn with<T>(&mut self, action: impl FnOnce(&mut Host) -> T) -> T {
+        action(self)
+    }
+}
+impl CoreAccess for std::rc::Rc<std::cell::RefCell<Host>> {
+    fn with<T>(&mut self, action: impl FnOnce(&mut Host) -> T) -> T {
+        action(&mut self.borrow_mut())
+    }
+}
 
 pub const DEADLINE: Duration = Duration::from_secs(10);
 pub const MAX_OUTPUT: usize = 32 * 1024;
@@ -252,9 +266,29 @@ impl Runtime {
     /// nonblocking admission/poll only: all spawn, pipe IO and reaping occur in
     /// the bounded service or the fresh supervisor, never on this caller.
     pub fn poll(&mut self, host: &mut Host, now: Instant) {
+        self.poll_inner(host, now, |_| true);
+    }
+
+    /// Releases the core borrow before external metadata revalidation. A false
+    /// decision consumes the attempt without starting or retaining replay work.
+    pub fn poll_guarded(
+        &mut self,
+        host: &std::rc::Rc<std::cell::RefCell<Host>>,
+        now: Instant,
+        admitted: impl FnMut(Event) -> bool,
+    ) {
+        self.poll_inner(&mut host.clone(), now, admitted);
+    }
+
+    fn poll_inner(
+        &mut self,
+        host: &mut impl CoreAccess,
+        now: Instant,
+        mut admitted: impl FnMut(Event) -> bool,
+    ) {
         let mut completed = Vec::new();
         self.attempts.retain(|attempt| {
-            if !host.is_current(attempt.job) {
+            if !host.with(|host| host.is_current(attempt.job)) {
                 attempt.cancel();
             }
             if let Some(completion) = attempt.completion() {
@@ -265,7 +299,7 @@ impl Runtime {
             }
         });
         for completion in completed {
-            host.diagnose(DiagnosticKind::CommandCompletion(completion));
+            host.with(|host| host.diagnose(DiagnosticKind::CommandCompletion(completion)));
         }
         if self.stopped || self.configurations.is_empty() {
             return;
@@ -280,12 +314,24 @@ impl Runtime {
             let Some(reservation) = service::reserve(channel) else {
                 continue;
             };
-            let Some(job) = host.take_ready(channel, now) else {
+            let Some(job) = host.with(|host| host.take_ready(channel, now)) else {
                 continue;
             };
-            let Some(authorization) = host.authorization(job) else {
+            let Some(authorization) = host.with(|host| host.authorization(job)) else {
                 continue;
             };
+            if !admitted(job.event()) {
+                host.with(|host| {
+                    host.diagnose(DiagnosticKind::CommandCompletion(Completion {
+                        job,
+                        outcome: Outcome::NotStarted(Reason::Revoked),
+                        output_bytes: 0,
+                        elapsed: Duration::ZERO,
+                        reaped: true,
+                    }))
+                });
+                continue;
+            }
             let Some(config) = self.configurations.get(&channel) else {
                 continue;
             };
@@ -298,13 +344,15 @@ impl Runtime {
                 reservation,
             ) {
                 Ok(ticket) => self.attempts.push(ticket),
-                Err(outcome) => host.diagnose(DiagnosticKind::CommandCompletion(Completion {
-                    job,
-                    outcome,
-                    output_bytes: 0,
-                    elapsed: Duration::ZERO,
-                    reaped: true,
-                })),
+                Err(outcome) => host.with(|host| {
+                    host.diagnose(DiagnosticKind::CommandCompletion(Completion {
+                        job,
+                        outcome,
+                        output_bytes: 0,
+                        elapsed: Duration::ZERO,
+                        reaped: true,
+                    }))
+                }),
             }
         }
         self.cursor = (self.cursor + 1) % channels.len();
@@ -358,4 +406,87 @@ pub fn supervisor_entry() -> Option<u8> {
     } else {
         2
     })
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::{
+        notifications::{Eligibility, Focus},
+        plugin_notifications::Backend,
+    };
+    use std::{cell::RefCell, os::unix::fs::PermissionsExt, rc::Rc};
+
+    #[test]
+    fn external_revalidation_has_no_core_borrow_and_rejection_has_no_effect_or_replay() {
+        let path = std::env::temp_dir().join(format!(
+            "among-command-guard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let core = Rc::new(RefCell::new(Host::new().unwrap()));
+        let source = core.borrow_mut().attach(1).unwrap();
+        let mut backend = Backend::new(core.clone(), Focus::default());
+        let mut runtime = Runtime::new(
+            &std::env::current_exe().unwrap(),
+            OwnedDirectory::open(&path).unwrap(),
+        )
+        .unwrap();
+        let marker = path.join("must-not-run");
+        let channel = runtime
+            .register(
+                &mut core.borrow_mut(),
+                Configuration::new(
+                    Path::new("/usr/bin/touch"),
+                    vec![marker.display().to_string()],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        runtime
+            .set_policy(
+                &mut core.borrow_mut(),
+                channel,
+                Policy {
+                    enabled: true,
+                    eligibility: Eligibility::Always,
+                },
+            )
+            .unwrap();
+        let now = Instant::now();
+        let event = core
+            .borrow_mut()
+            .bell(source, Focus::default(), now)
+            .unwrap();
+        backend
+            .observe_host_event(event, Some(1), Focus::default())
+            .unwrap();
+        let mut decisions = 0;
+        runtime.poll_guarded(&core, now, |event| {
+            decisions += 1;
+            assert!(
+                backend.envelope(event, now).is_some(),
+                "guard borrowed the already-mutably-borrowed core"
+            );
+            false
+        });
+        assert_eq!(decisions, 1);
+        assert!(!marker.exists());
+        assert_eq!(
+            core.borrow().command_completions().next().unwrap().outcome,
+            Outcome::NotStarted(Reason::Revoked)
+        );
+        assert_eq!(core.borrow().pending_count(Some(channel)), 0);
+        runtime.poll_guarded(&core, now + Duration::from_secs(3), |_| {
+            panic!("rejected work replayed")
+        });
+        assert!(!marker.exists());
+        runtime.shutdown(&mut core.borrow_mut());
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

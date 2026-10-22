@@ -9,14 +9,26 @@ use among::notifications::{
 type Selected = Box<dyn FnOnce(Result<Durability, String>)>;
 type Select = dyn Fn(AudioSource, Selected);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AudioState {
+    Ready,
+    Active,
+    Reading,
+    Retiring,
+    Unconfirmed,
+    Unavailable,
+}
+
 #[derive(Clone)]
 pub(crate) struct Context {
     pub query: Rc<dyn Fn() -> Preferences>,
     pub edit: Rc<dyn Fn(Edit) -> Result<Durability, String>>,
     pub select: Rc<Select>,
     pub preview: Rc<dyn Fn() -> Result<(), String>>,
+    pub cancel_audio: Rc<dyn Fn()>,
+    pub audio_state: Rc<dyn Fn() -> AudioState>,
     pub status: Rc<dyn Fn() -> (String, String)>,
-    pub provider_available: Rc<dyn Fn(&among::notifications::providers::Key) -> bool>,
+    pub providers: Rc<dyn Fn() -> Vec<among::plugin_notifications::ChannelView>>,
 }
 
 fn row(group: &adw::PreferencesGroup, title: &str, subtitle: &str) -> adw::ActionRow {
@@ -74,7 +86,7 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
 
     let audio = adw::PreferencesGroup::new();
     audio.set_title("Audio");
-    audio.set_description(Some("One sound at a time; no queued playback. Preview works while audio events are off and does not create a notification."));
+    audio.set_description(Some("One sound at a time; no queued playback. Preview works while audio events are off and does not create a notification. Replacing a sound first retires its decoder: a Busy request is discarded, never queued. After confirmation, press Preview again explicitly."));
     policy(
         &audio,
         "Audio alerts",
@@ -109,6 +121,14 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
     )]);
     preview.set_valign(gtk::Align::Center);
     playback.add_suffix(&preview);
+    let cancel = gtk::Button::with_label("Cancel sound / selection");
+    cancel.set_widget_name("notification-audio-cancel");
+    cancel.set_valign(gtk::Align::Center);
+    cancel.connect_clicked({
+        let callback = ctx.cancel_audio.clone();
+        move |_| callback()
+    });
+    playback.add_suffix(&cancel);
     for (button, local) in [(&builtin, false), (&choose, true)] {
         let ctx = ctx.clone();
         let path = path.clone();
@@ -239,29 +259,18 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
 
     let providers = adw::PreferencesGroup::new();
     providers.set_title("Provider channels");
-    row(&providers, "Managed notification providers unavailable", "Managed delivery needs the committed provider API integration. Installing or inspecting a plugin does not grant notification permission.");
-    for (key, value) in &current.providers {
-        let title = format!("{} · {}", key.identity, key.channel);
-        let identity = format!("provider:{}:{}", key.identity, key.channel);
-        let captured = key.clone();
-        let enabled = policy(
-            &providers,
-            &title,
-            &identity,
-            *value,
-            ctx,
-            &result,
-            move |policy| Edit::Provider(captured.clone(), policy),
-        );
-        enabled.set_subtitle(if (ctx.provider_available)(key) {
-            "Available admitted channel"
-        } else {
-            "Unavailable; choice retained, no delivery consumer is attached"
-        });
-    }
+    row(&providers, "Managed integration under review", "Channels start off. Permission is separate from plugin enablement and access review. Opening or editing this page starts no provider. Active-envelope retention, origin fairness and role-separated admission still await reviewed repairs; results are local claims, not remote receipts.");
+    let provider_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
+    provider_rows_refresh(&providers, ctx, &result, &provider_rows);
     page.add(&providers);
     page.add(&feedback);
     let status = ctx.status.clone();
+    let audio_state = ctx.audio_state.clone();
+    let preview = preview.downgrade();
+    let cancel = cancel.downgrade();
+    let providers = providers.downgrade();
+    let provider_context = ctx.clone();
+    let feedback_row = result.downgrade();
     let playback = playback.downgrade();
     let command_status = command_status.downgrade();
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
@@ -270,10 +279,75 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
         };
         let (a, c) = status();
         audio.set_subtitle(&escape_display(&a));
+        if let (Some(preview), Some(cancel)) = (preview.upgrade(), cancel.upgrade()) {
+            let state = audio_state();
+            preview.set_sensitive(matches!(
+                state,
+                AudioState::Ready | AudioState::Active | AudioState::Retiring
+            ));
+            cancel.set_sensitive(matches!(
+                state,
+                AudioState::Reading | AudioState::Active | AudioState::Retiring
+            ));
+        }
         command.set_subtitle(&escape_display(&c));
+        if let (Some(group), Some(result)) = (providers.upgrade(), feedback_row.upgrade()) {
+            provider_rows_refresh(&group, &provider_context, &result, &provider_rows);
+        }
         glib::ControlFlow::Continue
     });
     page
+}
+
+fn provider_rows_refresh(
+    group: &adw::PreferencesGroup,
+    ctx: &Context,
+    result: &adw::ActionRow,
+    rows: &RefCell<
+        std::collections::BTreeMap<among::notifications::providers::Key, adw::SwitchRow>,
+    >,
+) {
+    let inventory: std::collections::BTreeMap<_, _> = (ctx.providers)()
+        .into_iter()
+        .filter_map(|channel| {
+            let key = &channel.declaration.key;
+            among::notifications::providers::Key::new(&key.identity, &key.channel)
+                .ok()
+                .map(|key| (key, channel))
+        })
+        .collect();
+    for (key, value) in (ctx.query)().providers {
+        let mut rows = rows.borrow_mut();
+        let enabled = rows.entry(key.clone()).or_insert_with(|| {
+            let captured = key.clone();
+            policy(
+                group,
+                &format!("{} · {}", key.identity, key.channel),
+                &format!("provider:{}:{}", key.identity, key.channel),
+                value,
+                ctx,
+                result,
+                move |policy| Edit::Provider(captured.clone(), policy),
+            )
+        });
+        let channel = inventory.get(&key);
+        let subtitle = match channel {
+            Some(channel) if channel.installed => format!(
+                "{} — {}. {}",
+                channel.declaration.name,
+                channel.declaration.description,
+                if channel.owner.is_some() {
+                    "Admitted provider process"
+                } else if channel.plugin_enabled {
+                    "Waiting for process admission"
+                } else {
+                    "Plugin disabled; channel permission does not start it"
+                }
+            ),
+            _ => "Unavailable; choice retained, no delivery consumer is attached".into(),
+        };
+        enabled.set_subtitle(&escape_display(&subtitle));
+    }
 }
 
 fn source_label(source: &AudioSource) -> String {

@@ -134,9 +134,10 @@ The app's removal handler retains a GApplication hold and polls until ordinary
 `active_count()==0` and any owned directory preparation has finished, alongside
 the existing plugin retirement gate. GTK never waits for a child or joins a
 thread. Replacement windows do not abandon old reaping ownership.
-This describes command ownership only. The inherited audio backend has a separate
-native-teardown blocking finding; app-wide stalled-media responsiveness is not
-established by the command hold or ordinary audio output tests.
+This describes command ownership only. The supervised audio teardown repair is
+joined but still requires independent re-review; the owner accepts discarded Busy
+requests with explicit retry after confirmed retirement. Command retirement and old ordinary audio captures do not
+establish app-wide stalled-media acceptance.
 
 No userspace supervisor can promise that SIGKILL instantly ends a kernel
 uninterruptible task. Such cleanup retains the isolated supervisor/global slot
@@ -154,6 +155,14 @@ the deliberately cleared environment and Snap confinement permission for these
 operations still need concrete packaging validation; no packaging changes or
 packaged-command delivery claims are made here. Managed provider delivery and
 broader lifecycle/platform acceptance remain separate boundaries.
+
+The ordinary application's command adapter additionally validates the managed
+backend envelope without holding a mutable core borrow. Missing, expired or
+managed-origin envelopes are currently refused before submission; refused work
+is consumed, not retained for replay. Managed-origin commands remain deliberately
+withheld pending the separately authored typed core kind/origin follow-up. That
+join must carry actual kind/origin metadata and a live OriginLease through the
+asynchronous service alongside core authorization, not merely change this guard.
 
 ## Evidence boundary
 
