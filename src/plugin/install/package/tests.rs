@@ -74,6 +74,25 @@ pub(crate) fn fixture_for(id: &str) -> (Value, Vec<u8>) {
     (metadata, bytes)
 }
 
+pub(crate) fn entrypoint_fixture(executable: &[u8], runtime: Value) -> (Value, Vec<u8>) {
+    let (mut metadata, _) = fixture();
+    metadata["artifacts"][0]["runtime"] = runtime;
+    let manifest = metadata["manifest"].to_string().into_bytes();
+    let hash = inventory::checksum(&manifest).unwrap();
+    metadata["manifest_sha256"] = json!(hash);
+    metadata["artifacts"][0]["members"] = json!([
+        {"path":"among-plugin.json","size":manifest.len(),"sha256":hash,"executable":false},
+        {"path":"bin/plugin","size":executable.len(),"sha256":inventory::checksum(executable).unwrap(),"executable":true}
+    ]);
+    let mut archive = raw("among-plugin.json", b'0', 0o644, &manifest);
+    archive.truncate(archive.len() - 1024);
+    archive.extend(raw("bin/plugin", b'0', 0o755, executable));
+    let archive = compressed(&archive);
+    metadata["artifacts"][0]["size"] = json!(archive.len());
+    metadata["artifacts"][0]["sha256"] = json!(inventory::checksum(&archive).unwrap());
+    (metadata, archive)
+}
+
 pub(crate) fn managed_fixture(
     version: &str,
     mode: &str,
