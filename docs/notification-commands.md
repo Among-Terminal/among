@@ -100,6 +100,17 @@ descendants do not turn local completion/cancellation into an endless pipe wait.
 Adopted direct children are also stopped within that isolated supervisor; it does
 not scan or signal application/plugin/unrelated processes.
 
+Each child-list pass reads at most 64 KiB, using a 4-KiB scratch buffer and bounded
+read attempts. A PID is selected only after ASCII whitespace or an actually
+observed EOF completes its positive decimal record. A byte cap, exhausted read
+budget or read error never completes a numeric suffix; an exact-cap undelimited
+token is conservatively discarded, even if the underlying file ends there.
+Short reads and interruptions retain the token only within that pass. It is never
+carried across reaping or joined to a newly opened child list. Each pass signals
+before its at-most-256 nonblocking reaps; subsequent fresh scans cover remaining
+reapable children as the prefix shrinks, without increasing the byte cap or
+signalling a guessed PID prefix.
+
 `Host::command_completions` reads results from the shared bounded diagnostic ring:
 
 - `Exited(code)` / `Signaled(signal)` describes only known local process exit.
@@ -153,6 +164,15 @@ generations, targetless policy, concurrency, finite queues/diagnostics, a real
 ten-second timeout, combined output overflow and descendant/supervisor reaping.
 `AMONG_COMMAND_TEST_ROOT` selects an explicit evidence directory; otherwise files
 remain under `target/notification-command-tests`.
+
+Pure cleanup regressions cover the reviewer's 9,005 mixed-width synthetic child
+identities across 64 KiB, framing/EOF/read-error boundaries and malformed tokens.
+The production `Cleanup::poll` body is also driven through bounded passes with
+synthetic I/O: every positive signal target must belong to that child set, all
+9,005 reapable identities must progress, and the reserved leader's final group
+signal must precede reaping and never recur. Those tests send no real signals
+and do not create a large process tree; the separate hostile-process suite above
+observes actual owned-process behavior with unchanged production limits.
 
 The ignored native test
 `app::bell_tests::hostile_command_backend_preserves_real_terminal_input_and_nonblocking_shutdown`
