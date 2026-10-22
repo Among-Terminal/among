@@ -753,14 +753,45 @@ It neither builds nor executes downloaded code.
 The preflight parser defines `among-plugins.json` schema 1. A root version
 envelope normalizes to one plugin/version; a multi-plugin root has
 `schema_version: 1` and a `plugins` list of independent `id`/`versions` entries.
-Each version embeds the existing shared plugin `manifest`, a publisher-asserted
-40-hex build `revision`, `manifest_sha256`, numeric GitHub `release_id` and `artifacts`.
+Each version embeds the existing shared plugin `manifest`, a 40-lowercase-hex
+version commit `revision`, `manifest_sha256`, numeric GitHub `release_id` and `artifacts`.
 Unknown fields, duplicate keys/IDs/version labels and executable hooks are refused.
-The version revision is retained exactly, but is not currently resolved against a
-release tag/commit or authenticated as the asset's build provenance. It is distinct
-from the actually resolved catalogue commit and exact cached catalogue digest.
-Neither a release's mutable `target_commitish` nor a colocated asset hash proves a
-reproducible build or independent publisher authentication.
+The catalogue-declared version `revision` must equal the exact commit obtained by
+resolving the selected GitHub release's actual `tag_name`. It is distinct from the
+separately resolved catalogue-snapshot commit and exact cached catalogue digest:
+one catalogue can describe releases at several different commits.
+
+Before downloading, the installer reads the exact numeric release ID, verifies its
+public asset membership/ID/size/digest, then requests the exact fully qualified
+`refs/tags/<tag_name>` through the numeric repository's Git-reference endpoint.
+There is no branch, prefix-match, `latest` or `target_commitish` fallback. A
+lightweight tag points directly to a commit; annotated tags are peeled through at
+most eight exact Git tag object IDs to a commit, which is fetched by SHA from the
+same numeric repository. Missing, ambiguous, cyclic, unsupported or inconsistent
+references/objects/commits refuse installation. Git-object responses are limited
+to 64 KiB each; release metadata retains its 256-KiB limit. The existing operation
+deadline, cancellation, worker credits and constrained HTTPS rules still apply.
+
+Supported tag names are bounded ASCII Git-style paths: at most 256 bytes / 16
+nonempty components containing letters, digits, `.`, `_` or `-`; no `..`, leading
+or trailing component dots or `.lock` suffix. Other tag forms fail closed rather
+than being guessed or passed to a shell. All API paths are locally constructed;
+response-provided object URLs are never followed.
+
+After package extraction and before selection commitment, the same release ID,
+asset checks and complete tag-object/commit chain are re-observed with no-cache
+requests. Any observed change, including a new annotation object with the same
+peeled commit, refuses publication. These checks pin one observation and reject
+visible drift; GitHub does not supply an atomic lock against movement after the
+last observation or a history proving a tag never moved and returned. No stronger
+immutability claim is made.
+
+New source receipts retain `release_binding` (`tag`, observed reference `object`,
+resolved `commit` equal to the version revision). Details distinguish that binding
+from catalogue-snapshot provenance. Older receipts remain readable/offline but
+show that tag verification was not recorded; a new install/update must pass the
+strict check. Matching tag commits and asset hashes establish content consistency,
+not build reproducibility, independent publisher authentication or an OS sandbox.
 
 Artifacts declare `os: linux`, `architecture: amd64` or `arm64`, a `runtime`
 (`native` with `libc` and numeric `minimum`, or `script` with an explicit installed
