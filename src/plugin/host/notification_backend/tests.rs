@@ -286,6 +286,66 @@ fn ordinary_host_does_not_advertise_roles_and_disabled_inventory_edit_never_star
 }
 
 #[test]
+fn authoritative_replacement_and_removal_withdraw_static_channels_and_retry_borrowed_backend() {
+    let mut fixture = Fixture::new(&["notifications.deliver", "notifications.ui"], true, true);
+    fixture.admitted();
+    fixture.policy("second", Eligibility::Always, true);
+    let mut entry = fixture.host.managed_details(KEY).unwrap().0;
+    entry.receipt.package_sha256 = "d".repeat(64);
+    entry
+        .inspected
+        .as_mut()
+        .unwrap()
+        .manifest
+        .delivery_channels
+        .retain(|channel| channel.id == "first");
+    let backend = fixture.backend.clone();
+    let held = backend.borrow_mut();
+    fixture.host.reconcile_managed(entry, None);
+    assert!(fixture
+        .host
+        .pending_notification_registrations
+        .contains(KEY));
+    drop(held);
+    fixture.admitted();
+    let inventory = fixture.backend.borrow().inventory();
+    assert!(
+        inventory
+            .iter()
+            .find(|channel| channel.declaration.key.channel == "first")
+            .unwrap()
+            .installed
+    );
+    let withdrawn = inventory
+        .iter()
+        .find(|channel| channel.declaration.key.channel == "second")
+        .unwrap();
+    assert!(!withdrawn.installed && withdrawn.policy.enabled);
+    let held = backend.borrow_mut();
+    fixture.host.reconcile_removed(&Default::default());
+    drop(held);
+    fixture.wait(|fixture| fixture.host.is_stopped());
+    assert!(!fixture.backend.borrow().registration_current(KEY));
+    assert!(fixture
+        .backend
+        .borrow()
+        .inventory()
+        .iter()
+        .all(|channel| !channel.installed));
+    assert!(
+        fixture
+            .backend
+            .borrow()
+            .inventory()
+            .iter()
+            .find(|channel| channel.declaration.key.channel == "second")
+            .unwrap()
+            .policy
+            .enabled
+    );
+}
+
+#[test]
 fn real_ingress_policies_identity_stamping_and_context_grants_change_actual_wire() {
     let mut fixture = Fixture::new(&["notifications.produce", "context.terminals"], true, true);
     fixture.admitted();

@@ -46,37 +46,55 @@ impl PluginHost {
     }
 
     pub(super) fn declare_notification_channels(&mut self, index: usize) {
+        self.pending_notification_registrations
+            .insert(self.plugins[index].spec.name.clone());
+        self.reconcile_notification_registrations();
+    }
+
+    fn reconcile_notification_registrations(&mut self) {
         let Some(context) = &self.notifications else {
+            self.pending_notification_registrations.clear();
             return;
         };
         let Ok(mut context) = context.try_borrow_mut() else {
             return;
         };
-        let plugin = &self.plugins[index];
-        let Some(inspected) = plugin
-            .managed
-            .as_ref()
-            .and_then(|entry| entry.inspected.as_ref().ok())
-        else {
-            return;
-        };
-        if let Err(reason) = context.register_identity(&plugin.spec.name) {
-            context.reject(reason);
-            return;
-        }
-        for channel in &inspected.manifest.delivery_channels {
-            if let Err(reason) = context.declare(Declaration {
-                key: ChannelKey {
-                    identity: plugin.spec.name.clone(),
-                    channel: channel.id.clone(),
-                },
-                name: channel.name.clone(),
-                description: channel.description.clone(),
-            }) {
+        for key in std::mem::take(&mut self.pending_notification_registrations) {
+            // Static replacement withdraws channels absent from the new manifest,
+            // without erasing the user's independently stored channel policies.
+            context.uninstall(&key);
+            let Some(plugin) = self
+                .plugins
+                .iter()
+                .find(|plugin| plugin.spec.name == key && !plugin.removed)
+            else {
+                continue;
+            };
+            let Some(inspected) = plugin
+                .managed
+                .as_ref()
+                .and_then(|entry| entry.inspected.as_ref().ok())
+            else {
+                continue;
+            };
+            if let Err(reason) = context.register_identity(&key) {
                 context.reject(reason);
+                continue;
             }
+            for channel in &inspected.manifest.delivery_channels {
+                if let Err(reason) = context.declare(Declaration {
+                    key: ChannelKey {
+                        identity: key.clone(),
+                        channel: channel.id.clone(),
+                    },
+                    name: channel.name.clone(),
+                    description: channel.description.clone(),
+                }) {
+                    context.reject(reason);
+                }
+            }
+            context.plugin_enabled(&key, plugin.spec.enabled);
         }
-        context.plugin_enabled(&plugin.spec.name, plugin.spec.enabled);
     }
 
     fn notification_owner(
@@ -196,6 +214,7 @@ impl PluginHost {
     }
 
     pub(super) fn reconcile_notifications(&mut self) {
+        self.reconcile_notification_registrations();
         let usable = self.supported_features().contains(&"notifications.produce");
         for index in 0..self.plugins.len() {
             if let Some(mut context) = self

@@ -2,6 +2,8 @@ use super::bell_tests::{activate, pump_for, real_bell, terminal, wait, xdo};
 use super::*;
 use std::path::PathBuf;
 
+mod installation;
+
 fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
     let mut result = vec![widget.clone()];
     let mut child = widget.first_child();
