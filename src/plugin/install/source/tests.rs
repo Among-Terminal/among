@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 
+mod installation_authority;
 mod release_binding;
 
 pub(crate) static JOB_TESTS: Mutex<()> = Mutex::new(());
