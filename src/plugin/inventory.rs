@@ -12,6 +12,42 @@ pub const MAX_INSTALLATIONS: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct ReleaseBinding {
+    pub tag: String,
+    pub object: String,
+    pub commit: String,
+}
+
+impl ReleaseBinding {
+    pub(crate) fn supported_tag(tag: &str) -> bool {
+        !tag.is_empty()
+            && tag.len() <= 256
+            && tag.split('/').count() <= 16
+            && !tag.contains("..")
+            && tag.split('/').all(|part| {
+                !part.is_empty()
+                    && !part.starts_with('.')
+                    && !part.ends_with('.')
+                    && !part.ends_with(".lock")
+                    && part.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceReceipt {
+    pub publisher_id: u64,
+    pub catalogue_revision: String,
+    pub catalogue_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_binding: Option<ReleaseBinding>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub repository_id: u64,
     pub owner: String,
@@ -23,6 +59,12 @@ pub struct Receipt {
     pub release_id: u64,
     pub asset_id: u64,
     pub generation: String,
+    // fresh installs cannot inherit an earlier installation's persisted switch.
+    // absent tokens retain startup compatibility for pre-installer receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceReceipt>,
 }
 
 impl Receipt {
@@ -30,28 +72,76 @@ impl Receipt {
         ManagedIdentity::new(self.repository_id, self.plugin_id.clone())
     }
 
-    fn validate(&self) -> Result<(), Problem> {
+    pub(super) fn validate(&self) -> Result<(), Problem> {
         self.identity()?;
-        let github_component = |text: &str| {
-            !text.is_empty()
-                && text.len() <= 100
-                && text
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-                && !matches!(text, "." | "..")
-        };
-        if !github_component(&self.owner)
-            || !github_component(&self.repository)
+        if !super::origin::component(&self.owner)
+            || !super::origin::component(&self.repository)
             || !hex(&self.revision, 40)
             || !hex(&self.manifest_sha256, 64)
             || !hex(&self.package_sha256, 64)
             || !hex(&self.generation, 64)
+            || self
+                .installation
+                .as_ref()
+                .is_some_and(|token| !hex(token, 64))
             || self.release_id == 0
+            || self.source.as_ref().is_some_and(|source| {
+                source.publisher_id == 0
+                    || !hex(&source.catalogue_revision, 40)
+                    || !hex(&source.catalogue_sha256, 64)
+                    || source.release_binding.as_ref().is_some_and(|binding| {
+                        !ReleaseBinding::supported_tag(&binding.tag)
+                            || !hex(&binding.object, 40)
+                            || binding.commit != self.revision
+                    })
+            })
             || self.asset_id == 0
         {
             return Err(Problem("invalid committed installation receipt"));
         }
         Ok(())
+    }
+
+    pub fn origin_change(
+        &self,
+        candidate: &super::origin::Origin,
+        plugin_id: &str,
+    ) -> super::origin::Change {
+        use super::origin::{Change, Origin};
+        if self.repository_id != candidate.repository_id || self.plugin_id != plugin_id {
+            return Change::IdentityChanged;
+        }
+        match &self.source {
+            Some(source) => candidate.compare(&Origin {
+                repository_id: self.repository_id,
+                publisher_id: source.publisher_id,
+                owner: self.owner.clone(),
+                repository: self.repository.clone(),
+            }),
+            None => Change::PublisherChanged,
+        }
+    }
+
+    pub fn review(&self, features: Vec<String>) -> Value {
+        let mut review = serde_json::json!({"owner":self.owner,"repository":self.repository,"features":features});
+        if let Some(source) = &self.source {
+            review["repository_id"] = self.repository_id.into();
+            review["publisher_id"] = source.publisher_id.into();
+        }
+        review
+    }
+
+    pub fn matches_review(&self, review: &Value) -> bool {
+        match &self.source {
+            Some(source) => {
+                review["repository_id"].as_u64() == Some(self.repository_id)
+                    && review["publisher_id"].as_u64() == Some(source.publisher_id)
+            }
+            None => {
+                review["owner"].as_str() == Some(&self.owner)
+                    && review["repository"].as_str() == Some(&self.repository)
+            }
+        }
     }
 
     pub fn package_path(&self, root: &Path) -> PathBuf {
@@ -69,21 +159,69 @@ fn hex(value: &str, length: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Selection {
-    version: u32,
-    installations: Vec<Receipt>,
+pub(super) struct Selection {
+    pub version: u32,
+    pub installations: Vec<Receipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous: Vec<Receipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
+impl Selection {
+    pub fn validate(&self) -> Result<(), Problem> {
+        if self.version != 1
+            || self.installations.len() > MAX_INSTALLATIONS
+            || self.previous.len() > MAX_INSTALLATIONS
+            || self.revision.as_ref().is_some_and(|value| !hex(value, 64))
+        {
+            return Err(Problem(
+                "unsupported selection version or installation count",
+            ));
+        }
+        for receipts in [&self.installations, &self.previous] {
+            let mut identities = BTreeSet::new();
+            for receipt in receipts {
+                receipt.validate()?;
+                if !identities.insert(receipt.identity()?.key()) {
+                    return Err(Problem("duplicate committed plugin identity"));
+                }
+            }
+        }
+        for previous in &self.previous {
+            if !self.installations.iter().any(|current| {
+                current.identity().ok() == previous.identity().ok()
+                    && current.generation != previous.generation
+            }) {
+                return Err(Problem(
+                    "retained generation has no distinct selected identity",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub receipt: Receipt,
     pub inspected: Result<Inspected, Problem>,
+    pub previous: Option<Receipt>,
     store: PathBuf,
+    // clones, open detail views and supervised processes retain this shared
+    // lock. cleanup needs an exclusive lock before touching generation files.
+    _lease: Option<std::sync::Arc<std::fs::File>>,
 }
 
 impl Entry {
+    pub fn removal_pending(&self) -> bool {
+        super::install::store::removal_pending(&self.store, &self.key())
+    }
+    pub fn generation_lease(&self) -> Option<std::sync::Arc<std::fs::File>> {
+        self._lease.clone()
+    }
     pub fn key(&self) -> String {
         format!(
             "github:{}/{}",
@@ -94,7 +232,7 @@ impl Entry {
     pub fn executable_files(&self) -> Result<(std::fs::File, std::fs::File), Problem> {
         use std::os::unix::fs::MetadataExt;
         let inspected = self.inspected.as_ref().map_err(|problem| *problem)?;
-        let root = data::owned_directory(&self.store)?;
+        let root = super::install::store::open_existing_root(&self.store)?;
         let directory = data::contained_directory(
             &root,
             &format!(
@@ -143,7 +281,7 @@ pub fn read(root: &Path) -> Result<Vec<Entry>, Problem> {
     {
         return Ok(Vec::new());
     }
-    let directory = data::owned_directory(root)?;
+    let directory = super::install::store::open_existing_root(root)?;
     if matches!(std::fs::symlink_metadata(root.join("installed.json")), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
     {
         return Ok(Vec::new());
@@ -155,11 +293,7 @@ pub fn read(root: &Path) -> Result<Vec<Entry>, Problem> {
     let selection: Selection =
         serde_json::from_value(data::parse_unique(&bytes, data::MAX_STATIC_BYTES)?)
             .map_err(|_| Problem("invalid managed selection document"))?;
-    if selection.version != 1 || selection.installations.len() > MAX_INSTALLATIONS {
-        return Err(Problem(
-            "unsupported selection version or installation count",
-        ));
-    }
+    selection.validate()?;
     let mut identities = BTreeSet::new();
     let mut entries = Vec::new();
     for receipt in selection.installations {
@@ -183,10 +317,20 @@ pub fn read(root: &Path) -> Result<Vec<Entry>, Problem> {
             }
             manifest::inspect(&package, &receipt.package_path(root), identity)
         })();
+        let (inspected, lease) = match super::install::store::lease(&directory, &receipt) {
+            Ok(lease) => (inspected, lease),
+            Err(problem) => (Err(problem), None),
+        };
         entries.push(Entry {
+            previous: selection
+                .previous
+                .iter()
+                .find(|old| old.identity().ok() == receipt.identity().ok())
+                .cloned(),
             receipt,
             inspected,
             store: root.into(),
+            _lease: lease,
         });
     }
     Ok(entries)
@@ -219,6 +363,8 @@ pub(crate) mod tests {
             release_id: 1,
             asset_id: 2,
             generation: "c".repeat(64),
+            installation: None,
+            source: None,
         };
         let package = receipt.package_path(root);
         std::fs::create_dir_all(&package).unwrap();
@@ -286,6 +432,83 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(read(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recorded_release_binding_is_validated_on_actual_offline_inventory_read() {
+        let root = std::env::temp_dir().join(format!(
+            "among-release-receipt-{}",
+            glib::uuid_string_random()
+        ));
+        let mut receipt = fixture(&root);
+        receipt.source = Some(SourceReceipt {
+            publisher_id: 34,
+            catalogue_revision: "d".repeat(40),
+            catalogue_sha256: "b".repeat(64),
+            release_binding: Some(ReleaseBinding {
+                tag: "releases/v1.0".into(),
+                object: "c".repeat(40),
+                commit: receipt.revision.clone(),
+            }),
+        });
+        for invalid in ["commit", "object", "tag"] {
+            let mut candidate = receipt.clone();
+            let binding = candidate
+                .source
+                .as_mut()
+                .unwrap()
+                .release_binding
+                .as_mut()
+                .unwrap();
+            match invalid {
+                "commit" => binding.commit = "e".repeat(40),
+                "object" => binding.object = "invalid".into(),
+                _ => binding.tag = "../heads/main".into(),
+            }
+            let bytes = json!({"version":1,"installations":[candidate]}).to_string();
+            std::fs::write(root.join("installed.json"), &bytes).unwrap();
+            assert!(
+                read(&root).is_err(),
+                "{invalid}: a persisted label cannot stand in for a consistent receipt"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("installed.json")).unwrap(),
+                bytes
+            );
+        }
+        std::fs::write(
+            root.join("installed.json"),
+            json!({"version":1,"installations":[receipt]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(read(&root).unwrap()[0].receipt, receipt);
+        let legacy = fixture(&root);
+        assert!(legacy.source.is_none());
+        assert_eq!(read(&root).unwrap()[0].receipt, legacy);
+        for tag in [
+            "",
+            "../v1",
+            "v1..0",
+            "/v1",
+            "v1/",
+            "v1//x",
+            ".hidden",
+            "v1.",
+            "v1.lock",
+            "v1/x.lock",
+            "v1@{1}",
+            "v1^{}",
+            "v1%2fx",
+            "v1?token=synthetic",
+            "v1 x",
+            "версия",
+        ] {
+            assert!(!ReleaseBinding::supported_tag(tag), "{tag}");
+        }
+        assert!(!ReleaseBinding::supported_tag(&"x".repeat(257)));
+        assert!(!ReleaseBinding::supported_tag(&vec!["x"; 17].join("/")));
+        assert!(ReleaseBinding::supported_tag("releases/v1.0-rc_1"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

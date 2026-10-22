@@ -73,6 +73,27 @@ application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
 
+## Installer ENOSPC context
+
+`among-tools check-installer-enospc-from-cargo CARGO_TEST_RECORDS` selects the
+unique exact ignored installer ENOSPC test from real Cargo records and executes
+its unchanged assertions. Run it only in a fresh disposable Docker container
+with a dedicated `/owned-full` tmpfs: writable, `nosuid,nodev,noexec`, at most
+128 MiB. The runner checks the actual mount and filesystem capacity before
+creating a new user-owned child directory or starting a test. It refuses an
+ordinary directory, bind mount, shared `/dev/shm`, missing/ambiguous test or
+nonempty fixture mount. Docker presence is an accidental-host-use guard, not an
+authentication or sandbox guarantee against deliberate same-user interference.
+
+Checks CI runs this command unconditionally on both native architectures before
+the generic graphical suite. Only this exact case is routed out of standalone
+graphics; that exclusion is not acceptance credit. The dedicated command fails
+if its context or original test fails. Ordinary evidence, TMPDIR, `/tmp`, `/run`
+and `/dev/shm` remain disk-backed; only the bounded fixture is intentionally full.
+Logs, actual executable hash, mount information and the retained installed record
+are written below `AMONG_CHECK_ROOT`. The retained old generation is checked by
+inventory inspection, not executed on the `noexec` fixture mount.
+
 ## AppImageLauncher on GNOME Wayland
 
 `among-tools check-appimage-gnome APPIMAGE NEW_EVIDENCE_DIRECTORY` runs the real

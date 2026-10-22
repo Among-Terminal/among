@@ -2,15 +2,98 @@ use crate::{process::OwnedProcess, storage, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
+
+mod supplemental;
 
 pub const MANIFESTS: [&str; 3] = [
     "Cargo.toml",
     "examples/plugins/Cargo.toml",
     "tools/among-tools/Cargo.toml",
 ];
-pub fn inventory(graphs: &[(&str, Value)]) -> Result<(BTreeMap<String, Vec<u8>>, usize)> {
+
+fn locked_download_identity(root: &Path, manifest: &str, diagnostic: &str) -> Option<String> {
+    let identity = diagnostic.lines().find_map(|line| {
+        line.strip_prefix("error: failed to download `")?
+            .strip_suffix('`')
+    })?;
+    let (name, version) = identity.split_once(" v")?;
+    if name.len() > 64
+        || version.len() > 64
+        || name.is_empty()
+        || version.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b".+-".contains(&byte))
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::open(root.join(manifest).with_file_name("Cargo.lock"))
+        .ok()?
+        .take(256 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 256 * 1024 {
+        return None;
+    }
+    let lock = toml::from_str::<toml::Value>(std::str::from_utf8(&bytes).ok()?).ok()?;
+    lock.get("package")?.as_array()?.iter().find(|package| {
+        package.get("name").and_then(toml::Value::as_str) == Some(name)
+            && package.get("version").and_then(toml::Value::as_str) == Some(version)
+    })?;
+    Some(format!("{name} v{version}"))
+}
+
+fn metadata_failure(
+    root: &Path,
+    base: &Path,
+    index: usize,
+    manifest: &str,
+    status: &std::process::ExitStatus,
+) -> Result<String> {
+    let stderr = base.join(format!("metadata-{index}.stderr"));
+    let mut prefix = Vec::new();
+    File::open(&stderr)?.take(8192).read_to_end(&mut prefix)?;
+    let text = String::from_utf8_lossy(&prefix);
+    // cargo can echo authenticated URLs, local configuration and terminal escapes;
+    // only fixed diagnoses and identities already in this locked graph may leave scratch.
+    let diagnostic = if text.contains("failed to download") && text.contains("--offline") {
+        match locked_download_identity(root, manifest, &text) {
+            Some(identity) => {
+                format!("offline metadata requires download of locked crate {identity}")
+            }
+            None => "offline metadata requires an unavailable download".into(),
+        }
+    } else {
+        "Cargo diagnostic withheld; inspect the private raw stderr".into()
+    };
+    fs::write(
+        base.join("metadata-failure.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema": 1,
+            "graph_index": index,
+            "manifest": manifest,
+            "status": status.to_string(),
+            "stderr_bytes": fs::metadata(stderr)?.len(),
+            "diagnostic": diagnostic,
+        }))?,
+    )?;
+    Ok(format!(
+        "locked Cargo metadata failed for graph {index} ({manifest}); {status}; {diagnostic}; raw stderr retained privately under the notice check root"
+    ))
+}
+
+pub fn inventory(
+    graphs: &[(&str, Value)],
+    root: &Path,
+) -> Result<(BTreeMap<String, Vec<u8>>, usize)> {
+    let mut supplemental = supplemental::Inputs::load(root)?;
     let mut packages: BTreeMap<String, (Value, BTreeSet<String>)> = BTreeMap::new();
     for (manifest, graph) in graphs {
         if !MANIFESTS.contains(manifest) {
@@ -81,10 +164,9 @@ pub fn inventory(graphs: &[(&str, Value)]) -> Result<(BTreeMap<String, Vec<u8>>,
         if let Some(relative) = package["license_file"].as_str() {
             files.insert(storage::safe_path(source, Path::new(relative))?);
         }
-        if files.is_empty()
-            || !package["license"]
-                .as_str()
-                .is_some_and(|license| !license.is_empty())
+        if !package["license"]
+            .as_str()
+            .is_some_and(|license| !license.is_empty())
         {
             return Err(format!("missing authentic license evidence: {name}").into());
         }
@@ -110,8 +192,19 @@ pub fn inventory(graphs: &[(&str, Value)]) -> Result<(BTreeMap<String, Vec<u8>>,
             outputs.insert(relative.clone(), bytes);
             texts.push(json!({"path":relative,"sha256":digest}));
         }
-        records.push(json!({"name":name,"version":version,"source":package["source"],"license":package["license"],"trees":trees,"texts":texts}));
+        let provenance = supplemental.apply(&package, source, &mut outputs, &mut texts)?;
+        if texts.is_empty() {
+            return Err(format!("missing authentic license evidence: {name}").into());
+        }
+        texts.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+        texts.dedup();
+        let mut record = json!({"name":name,"version":version,"source":package["source"],"license":package["license"],"trees":trees,"texts":texts});
+        if let Some(provenance) = provenance {
+            record["supplemental"] = provenance;
+        }
+        records.push(record);
     }
+    supplemental.finish()?;
     let count = records.len();
     let mut bytes = serde_json::to_vec_pretty(
         &json!({"schema":1,"scope":"all three locked Cargo graphs, including build and target-specific dependencies","packages":records}),
@@ -151,6 +244,7 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
             &[
                 "metadata",
                 "--locked",
+                "--offline",
                 "--format-version",
                 "1",
                 "--manifest-path",
@@ -161,14 +255,13 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
             &log,
             &errors,
         )?;
-        if !process.wait(Duration::from_secs(180))?.success() {
-            return Err(
-                format!("locked Cargo metadata failed; evidence: {}", base.display()).into(),
-            );
+        let status = process.wait(Duration::from_secs(180))?;
+        if !status.success() {
+            return Err(metadata_failure(root, &base, index, manifest, &status)?.into());
         }
         graphs.push((*manifest, storage::parse_json(&fs::read(output)?)?));
     }
-    let (outputs, count) = inventory(&graphs)?;
+    let (outputs, count) = inventory(&graphs, root)?;
     for (relative, bytes) in &outputs {
         let path = storage::safe_path(destination, Path::new(relative))?;
         if check {
@@ -183,7 +276,10 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
     println!(
         "{} {count} dependency records and {} verbatim texts from three locked graphs",
         if check { "Checked" } else { "Generated" },
-        outputs.len() - 1
+        outputs
+            .keys()
+            .filter(|path| path.starts_with("texts/"))
+            .count()
     );
     Ok(())
 }

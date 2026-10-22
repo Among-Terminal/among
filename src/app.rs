@@ -439,6 +439,8 @@ struct ApplicationPlugins {
     app: glib::WeakRef<adw::Application>,
     starts_allowed: Rc<Cell<bool>>,
     retiring: Cell<usize>,
+    current: RefCell<std::rc::Weak<RefCell<AppState>>>,
+    recovery_started: Cell<bool>,
 }
 
 thread_local! {
@@ -459,6 +461,8 @@ fn application_plugins(app: &adw::Application) -> Rc<ApplicationPlugins> {
             app: app.downgrade(),
             starts_allowed: Rc::new(Cell::new(true)),
             retiring: Cell::new(0),
+            current: RefCell::new(std::rc::Weak::new()),
+            recovery_started: Cell::new(false),
         });
         entries.push(entry.clone());
         entry
@@ -518,6 +522,7 @@ fn build_with_writer(
     let state = Rc::new(RefCell::new(AppState::new(
         admission.starts_allowed.clone(),
     )));
+    admission.current.replace(Rc::downgrade(&state));
     {
         let mut state = state.borrow_mut();
         state.settings.load(crate::settings::Document::Plugins);
@@ -596,6 +601,24 @@ fn build_with_writer(
         }
     }
     apply_env_plugin_switches(&state);
+    if !admission.recovery_started.replace(true) {
+        if let Some(root) = crate::plugin::inventory::root() {
+            match crate::plugin::install::store::RecoveryJob::start(root) {
+                Ok(job) => {
+                    glib::timeout_add_local(Duration::from_millis(100), move || {
+                        let Some(outcome) = job.poll() else {
+                            return glib::ControlFlow::Continue;
+                        };
+                        if let Err(problem) = outcome {
+                            eprintln!("among: managed-store recovery deferred: {problem}");
+                        }
+                        glib::ControlFlow::Break
+                    });
+                }
+                Err(problem) => eprintln!("among: managed-store recovery deferred: {problem}"),
+            }
+        }
+    }
 
     let app_header = slot_area("app-slot-header");
     let workspace_header = slot_area("app-slot-workspace");
@@ -2918,6 +2941,89 @@ fn open_preferences(ctx: &Window) {
             let state = ctx.state.clone();
             move || state.borrow().plugins.overview()
         }),
+        installations_changed: installation_observer(ctx),
+        package_action: Rc::new({
+            let window = ctx.handle();
+            move |receipt, action, parent| {
+                confirm_package_action(&window, receipt, action, parent.as_ref())
+            }
+        }),
+        retained_settings: Rc::new({
+            let state = ctx.state.clone();
+            move || {
+                if state.borrow().exiting {
+                    return Err(
+                        "This window is retiring; reopen preferences in the current window.".into(),
+                    );
+                }
+                let root = crate::plugin::inventory::root()
+                    .ok_or("Managed data directory is unavailable")?;
+                let installed: std::collections::BTreeSet<_> =
+                    crate::plugin::inventory::read(&root)
+                        .map_err(|problem| problem.to_string())?
+                        .into_iter()
+                        .map(|entry| entry.key())
+                        .collect();
+                let entries = state
+                    .borrow_mut()
+                    .settings
+                    .retained_settings()
+                    .map_err(|error| error.to_string())?;
+                Ok(entries
+                    .into_iter()
+                    .filter(|entry| {
+                        !installed.contains(&entry.identity().key())
+                            && state
+                                .borrow()
+                                .plugins
+                                .managed_details(&entry.identity().key())
+                                .is_none()
+                    })
+                    .collect())
+            }
+        }),
+        delete_retained_settings: Rc::new({
+            let window = ctx.handle();
+            move |expected| {
+                let key = expected.identity().key();
+                if window.state.borrow().exiting {
+                    return Err("This window is retiring; no settings were deleted.".into());
+                }
+                if window
+                    .state
+                    .borrow()
+                    .plugins
+                    .managed_details(&key)
+                    .is_some()
+                {
+                    return Err(
+                        "Plugin is installed; uninstall it before deleting retained settings."
+                            .into(),
+                    );
+                }
+                let root = crate::plugin::inventory::root()
+                    .ok_or("Managed data directory is unavailable")?;
+                let result = crate::plugin::install::store::while_uninstalled(
+                    &root,
+                    expected.identity().clone(),
+                    || {
+                        window
+                            .state
+                            .borrow_mut()
+                            .settings
+                            .delete_retained_settings(expected)
+                    },
+                )
+                .map_err(|problem| problem.to_string())?;
+                let durability = match &result {
+                    Ok(()) => Ok(crate::settings::Durability::Durable),
+                    Err(error) if error.replaced => Ok(crate::settings::Durability::Uncertain),
+                    Err(error) => Err(format!("No settings deletion accepted: {error}")),
+                };
+                report_settings_save(&window, result);
+                durability
+            }
+        }),
         plugin_details: Rc::new({
             let state = ctx.state.clone();
             move |name| state.borrow().plugins.managed_details(name)
@@ -2993,7 +3099,20 @@ fn open_preferences(ctx: &Window) {
                     return;
                 }
                 state.borrow_mut().plugins.enable(name);
-                let result = state.borrow_mut().settings.plugin_changed(name, true);
+                let installation = state
+                    .borrow()
+                    .plugins
+                    .managed_details(name)
+                    .and_then(|(entry, _)| entry.receipt.installation);
+                let result = if name.starts_with("github:") {
+                    state.borrow_mut().settings.managed_enable_changed(
+                        name,
+                        true,
+                        installation.as_deref(),
+                    )
+                } else {
+                    state.borrow_mut().settings.plugin_changed(name, true)
+                };
                 report_settings_save(&window, result);
             }
         }),
@@ -3033,6 +3152,52 @@ fn open_preferences(ctx: &Window) {
     prefs::present(&ctx.window, preferences);
 }
 
+fn installation_observer(ctx: &Window) -> Rc<dyn Fn()> {
+    let admission = ctx
+        .window
+        .application()
+        .and_then(|app| app.downcast::<adw::Application>().ok())
+        .map(|app| application_plugins(&app));
+    let fallback = Rc::downgrade(&ctx.state);
+    Rc::new(move || {
+        // installer completions belong to the application, not the window which
+        // opened their view. never register code into an exiting/retiring host.
+        let current = admission
+            .as_ref()
+            .and_then(|entry| entry.current.borrow().upgrade())
+            .or_else(|| fallback.upgrade());
+        if let Some(current) = current.filter(|state| !state.borrow().exiting) {
+            reconcile_managed_installations(&current);
+        }
+    })
+}
+
+fn reconcile_managed_installations(state: &Rc<RefCell<AppState>>) {
+    if state.borrow().exiting {
+        return;
+    }
+    let Some(root) = crate::plugin::inventory::root() else {
+        return;
+    };
+    match crate::plugin::inventory::read(&root) {
+        Ok(entries) => {
+            let selected = entries.iter().map(|entry| entry.key()).collect();
+            state.borrow_mut().plugins.reconcile_removed(&selected);
+            let document = state
+                .borrow_mut()
+                .settings
+                .load(crate::settings::Document::ManagedPlugins);
+            for entry in entries {
+                let local = document
+                    .as_ref()
+                    .and_then(|document| crate::plugin::inventory::local(document, &entry.key()));
+                state.borrow_mut().plugins.reconcile_managed(entry, local);
+            }
+        }
+        Err(problem) => eprintln!("among: committed installation reconciliation failed: {problem}"),
+    }
+}
+
 fn report_settings_save(ctx: &Window, result: Result<(), crate::settings::StorageError>) {
     let (model, status) = {
         let state = ctx.state.borrow();
@@ -3041,6 +3206,102 @@ fn report_settings_save(ctx: &Window, result: Result<(), crate::settings::Storag
     model.splice(0, 1, &[&status]);
     if let Err(error) = result {
         eprintln!("among: settings save failed: {error}");
+    }
+}
+
+fn confirm_package_action(
+    ctx: &Window,
+    expected: crate::plugin::inventory::Receipt,
+    action: crate::plugin::install::mutation::Action,
+    parent: Option<&gtk::Window>,
+) {
+    use crate::plugin::install::mutation::{Action, Job};
+    let key = match expected.identity() {
+        Ok(identity) => identity.key(),
+        Err(_) => return,
+    };
+    if ctx.state.borrow().exiting
+        || ctx
+            .state
+            .borrow()
+            .plugins
+            .managed_details(&key)
+            .is_none_or(|(entry, _)| entry.receipt != expected)
+    {
+        return;
+    }
+    let parent = parent
+        .cloned()
+        .unwrap_or_else(|| ctx.window.clone().upcast());
+    let uninstall = action == Action::Uninstall;
+    let dialog=adw::AlertDialog::builder().heading(if uninstall {"Uninstall this plugin?"}else{"Recover the previous package?"})
+        .body(if uninstall {format!("{key}\nOnly this plugin will stop. Pending installs/updates, restarts, host actions and subscriptions are revoked before bounded supervised shutdown. Local settings are retained. Only committed removal removes its Installed entry; occupied owned generations are cleaned later. No uninstall hook runs.")}else{format!("{key}\nReselect the retained previous verified generation and restart only this plugin if it is still enabled. Local settings are retained; unsupported migrations are refused. Publisher/access review and runtime admission still apply. Independent filesystem/network effects cannot be rolled back.")}).build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response(
+        "apply",
+        if uninstall {
+            "Uninstall"
+        } else {
+            "Recover previous"
+        },
+    );
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    if uninstall {
+        dialog.set_response_appearance("apply", adw::ResponseAppearance::Destructive);
+    }
+    dialog.connect_response(None,{
+        let window=ctx.handle();let parent=parent.downgrade();let observer=installation_observer(ctx);
+        move |_,response| {
+            if response!="apply" || window.state.borrow().exiting{return;}
+            let Some(parent)=parent.upgrade().filter(|parent|parent.is_visible()) else {return;};
+            let Some((entry,stored))=window.state.borrow().plugins.managed_details(&key).filter(|(entry,_)|entry.receipt==expected) else {return;};
+            let status=adw::AlertDialog::builder().heading("Package operation").body("Starting bounded package operation").build();status.add_response("close","Close");status.set_close_response("close");status.present(Some(&parent));
+            let job=crate::plugin::inventory::root().ok_or(crate::plugin::data::Problem("managed data directory is unavailable")).and_then(|root|Job::start(root,entry.receipt.clone(),action,stored));
+            let job=match job {Ok(job)=>job,Err(problem)=>{status.set_heading(Some("Package operation was not started"));status.set_body(problem.0);return;}};
+            if uninstall {
+                if let Err(problem)=window.state.borrow_mut().plugins.begin_removal(&expected){status.set_body(problem.0);return;}
+                let result=window.state.borrow_mut().settings.plugin_changed(&key,false);report_settings_save(&window,result);
+                window.state.borrow_mut().store.remove_source(&key);refresh_slots(&window);rebuild_sidebar(&window,false);
+            }
+            status.set_body(&format!("{}\nIdentity {} · operation {}",job.phase(),job.identity,job.generation));
+            let state=window.state.clone();let key=key.clone();let observer=observer.clone();
+            glib::timeout_add_local(Duration::from_millis(50),move || {
+                if uninstall && state.borrow().plugins.supervised_stopped(&key){job.supervised_stopped();}
+                let Some(outcome)=job.poll() else {status.set_body(job.phase());return glib::ControlFlow::Continue;};
+                match outcome {
+                    Ok(commit)=>{
+                        observer();
+                        status.set_heading(Some(if commit.durability!=crate::settings::Durability::Durable {"Selection written; durability uncertain"}else if uninstall {"Plugin uninstalled"}else{"Previous package selected"}));
+                        status.set_body(if uninstall {"The removed selection is authoritative. Local settings are retained. Only owned unreferenced generations may be cleaned after leases are released; cleanup can remain deferred."}else{"Current enabled choice is preserved. Previous package selection does not bypass publisher/access review, settings compatibility or runtime admission. Independent external effects are not rolled back."});
+                        if let Some(root)=crate::plugin::inventory::root(){start_store_recovery(root);}
+                    },
+                    Err(problem)=>{
+                        if uninstall{state.borrow_mut().plugins.removal_failed(&key);}
+                        observer();status.set_heading(Some("Package operation failed or remained partial"));status.set_body(problem.0);
+                    }
+                }
+                glib::ControlFlow::Break
+            });
+        }
+    });
+    dialog.present(Some(&parent));
+}
+
+fn start_store_recovery(root: std::path::PathBuf) {
+    match crate::plugin::install::store::RecoveryJob::start(root) {
+        Ok(job) => {
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                let Some(outcome) = job.poll() else {
+                    return glib::ControlFlow::Continue;
+                };
+                if let Err(problem) = outcome {
+                    eprintln!("among: managed-store recovery deferred: {problem}");
+                }
+                glib::ControlFlow::Break
+            });
+        }
+        Err(problem) => eprintln!("among: managed-store recovery deferred: {problem}"),
     }
 }
 
@@ -3176,26 +3437,68 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
     let window = ctx.handle();
     let key = name.to_string();
     let weak_parent = parent.downgrade();
-    dialog.connect_response(None,move |_,response| {
-        if response!="enable" {return;}
-        if window.state.borrow().exiting {return;}
-        let Some(parent)=weak_parent.upgrade().filter(|parent|parent.is_visible()) else{return};
-        let current=window.state.borrow().plugins.managed_details(&key)
-            .filter(|(current,_)|current.receipt.generation==entry.receipt.generation && current.receipt==entry.receipt);
-        let Some((current,_))=current else{return};
-        let review=serde_json::json!({"owner":current.receipt.owner,"repository":current.receipt.repository,
-            "features":features.iter().filter(|(_,control)|control.is_active()).map(|(feature,_)|feature.clone()).collect::<Vec<_>>()});
-        let valid=current.inspected.as_ref().map_err(|problem|*problem)
-            .and_then(|inspected|crate::plugin::managed::granted_features(&inspected.manifest,&current.receipt,Some(&serde_json::json!({"review":review}))))
-            .and_then(|_|window.state.borrow_mut().plugins.review_access(&key,review.clone()));
-        if let Err(problem)=valid {
-            let explanation=adw::AlertDialog::builder().heading("Plugin access was not accepted").body(problem.to_string()).build();
-            explanation.add_response("close","Close");explanation.present(Some(&parent));return;
+    dialog.connect_response(None, move |_, response| {
+        if response != "enable" {
+            return;
         }
-        let result=window.state.borrow_mut().settings.managed_review_changed(&key,review);
+        if window.state.borrow().exiting {
+            return;
+        }
+        let Some(parent) = weak_parent.upgrade().filter(|parent| parent.is_visible()) else {
+            return;
+        };
+        let current = window
+            .state
+            .borrow()
+            .plugins
+            .managed_details(&key)
+            .filter(|(current, _)| {
+                current.receipt.generation == entry.receipt.generation
+                    && current.receipt == entry.receipt
+            });
+        let Some((current, _)) = current else { return };
+        let review = current.receipt.review(
+            features
+                .iter()
+                .filter(|(_, control)| control.is_active())
+                .map(|(feature, _)| feature.clone())
+                .collect::<Vec<_>>(),
+        );
+        let valid = current
+            .inspected
+            .as_ref()
+            .map_err(|problem| *problem)
+            .and_then(|inspected| {
+                crate::plugin::managed::granted_features(
+                    &inspected.manifest,
+                    &current.receipt,
+                    Some(&serde_json::json!({"review":review})),
+                )
+            })
+            .and_then(|_| {
+                window
+                    .state
+                    .borrow_mut()
+                    .plugins
+                    .review_access(&key, review.clone())
+            });
+        if let Err(problem) = valid {
+            let explanation = adw::AlertDialog::builder()
+                .heading("Plugin access was not accepted")
+                .body(problem.to_string())
+                .build();
+            explanation.add_response("close", "Close");
+            explanation.present(Some(&parent));
+            return;
+        }
+        let result = window
+            .state
+            .borrow_mut()
+            .settings
+            .managed_review_for_installation(&key, review, current.receipt.installation.as_deref());
         // consent was accepted by the stopped runtime above; a persistence
         // failure is reported separately without revoking this session's consent.
-        report_settings_save(&window,result);
+        report_settings_save(&window, result);
         window.state.borrow_mut().plugins.enable(&key);
     });
     dialog.present(Some(&parent));
@@ -5498,6 +5801,7 @@ mod tests {
         prefs::present(
             &window,
             prefs::PreferencesContext {
+                installations_changed: Rc::new(|| {}),
                 on_closed: Rc::new(|| {}),
                 storage_status: gtk::StringList::new(&[""]),
                 bindings: Rc::new(RefCell::new(Bindings::defaults())),
@@ -5515,6 +5819,11 @@ mod tests {
                 save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
                 plugin_configuration: Rc::new(|_| crate::plugin::host::Configuration::NotApplied),
                 restart_plugin: Rc::new(|_, _, _| {}),
+                package_action: Rc::new(|_, _, _| {}),
+                retained_settings: Rc::new(|| Ok(Vec::new())),
+                delete_retained_settings: Rc::new(|_| {
+                    Err("no retained settings in this fixture".into())
+                }),
                 enable_plugin: Rc::new({
                     let desired = desired.clone();
                     move |_, _| desired.set(true)

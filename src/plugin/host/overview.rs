@@ -16,6 +16,7 @@ pub struct Overview {
     pub available: bool,
     pub state: PluginState,
     pub generation: Option<String>,
+    pub running_version: Option<String>,
 }
 
 impl Overview {
@@ -33,6 +34,7 @@ impl Overview {
             available: true,
             state,
             generation: None,
+            running_version: None,
         }
     }
 
@@ -91,6 +93,7 @@ impl PluginHost {
                         .is_some_and(|command| std::path::Path::new(command).is_file()),
                     state: plugin.state.clone(),
                     generation: None,
+                    running_version: plugin.io.as_ref().and_then(|io| io.package_version.clone()),
                 };
                 if let Some(entry) = &plugin.managed {
                     overview.origin = format!(

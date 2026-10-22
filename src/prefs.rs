@@ -16,17 +16,28 @@ use crate::shortcuts::{self, Action, Bindings};
 
 mod plugin_manager;
 mod plugin_settings;
+pub(crate) mod repositories;
+mod repository_sources;
+mod retained_settings;
 
 type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
 type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
 type ConfigurationQuery = dyn Fn(&str) -> Configuration;
 type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
 type RestartPlugin = dyn Fn(&str, &str, Option<gtk::Window>);
+type PackageAction = dyn Fn(
+    crate::plugin::inventory::Receipt,
+    crate::plugin::install::mutation::Action,
+    Option<gtk::Window>,
+);
 type SavePluginSettings = dyn Fn(
     &str,
     &str,
     &serde_json::Map<String, serde_json::Value>,
 ) -> Result<crate::settings::Durability, String>;
+type RetainedSettingsQuery = dyn Fn() -> Result<Vec<crate::settings::RetainedSettings>, String>;
+type DeleteRetainedSettings =
+    dyn Fn(&crate::settings::RetainedSettings) -> Result<crate::settings::Durability, String>;
 
 /// What the preferences window needs from the running application.
 ///
@@ -44,6 +55,10 @@ pub struct PreferencesContext {
     pub restart_plugin: Rc<RestartPlugin>,
     pub enable_plugin: Rc<EnablePlugin>,
     pub disable_plugin: Rc<dyn Fn(&str)>,
+    pub installations_changed: Rc<dyn Fn()>,
+    pub package_action: Rc<PackageAction>,
+    pub retained_settings: Rc<RetainedSettingsQuery>,
+    pub delete_retained_settings: Rc<DeleteRetainedSettings>,
     /// Rebuilds the window's shortcut controller after a rebind.
     pub bindings_changed: Rc<dyn Fn()>,
 }
@@ -52,6 +67,7 @@ pub struct PreferencesContext {
 pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
+        .modal(false)
         .search_enabled(false)
         .build();
     window.set_title(Some("Preferences"));
@@ -337,6 +353,12 @@ mod tests {
         let disabled = state.clone();
         let desired = Rc::new(std::cell::Cell::new(true));
         let page = plugins_page(&PreferencesContext {
+            package_action: Rc::new(|_, _, _| {}),
+            retained_settings: Rc::new(|| Ok(Vec::new())),
+            delete_retained_settings: Rc::new(|_| {
+                Err("no retained settings in this fixture".into())
+            }),
+            installations_changed: Rc::new(|| {}),
             on_closed: Rc::new(|| {}),
             storage_status: gtk::StringList::new(&[]),
             bindings: Rc::new(RefCell::new(Bindings::defaults())),
@@ -389,7 +411,7 @@ mod tests {
             .expect("live plugin row containing the switch");
         assert!(row
             .subtitle()
-            .is_some_and(|text| text.contains("Running") && text.contains("Declared API unknown")));
+            .is_some_and(|text| text.contains("Running") && text.contains("Local test fixture")));
         switch.set_active(false);
         assert!(row.subtitle().is_some_and(|text| text.contains("Disabled")));
         switch.set_active(true);

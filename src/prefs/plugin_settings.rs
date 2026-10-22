@@ -14,9 +14,13 @@ pub(super) fn add_actions(
     save: Rc<SavePluginSettings>,
     load: Rc<PluginDetailsQuery>,
     status: Rc<ConfigurationQuery>,
-    restart: Rc<RestartPlugin>,
+    operations: (Rc<RestartPlugin>, Rc<PackageAction>),
+    inventory: Rc<dyn Fn() -> Vec<crate::plugin::host::Overview>>,
 ) {
+    let (restart, package_action) = operations;
     let details = gtk::Button::with_label("Details…");
+    details.add_css_class("flat");
+    details.set_tooltip_text(Some("Plugin details"));
     details.set_valign(gtk::Align::Center);
     details.update_property(&[gtk::accessible::Property::Label(&format!(
         "Details for {}",
@@ -25,55 +29,148 @@ pub(super) fn add_actions(
     let details_receipt = entry.receipt.clone();
     let details_key = entry.key();
     let current_details = load.clone();
-    let description = match &entry.inspected {
-        Ok(inspected) => {
-            let manifest = &inspected.manifest;
-            let compatibility = manifest
-                .compatibility(
-                    crate::plugin::managed::MAJOR,
-                    crate::plugin::managed::MINOR,
-                    crate::plugin::managed::FEATURES,
-                )
-                .map_or_else(
-                    |problem| problem.to_string(),
-                    |()| "Compatible declared API".into(),
-                );
-            format!("{}\n\nVersion: {}\nGitHub: {}/{} (repository {})\nIdentity: {}\nRevision: {}\nRelease / asset: {} / {}\nPackage SHA-256: {}\nEntrypoint: {}\nAPI: {}.{}\n{}\nRequired features: {}\nOptional features: {}\nDelivery channels: {}\n{}\n\nPlugins run as your user, not in an OS sandbox.",
-                manifest.description,manifest.version,entry.receipt.owner,entry.receipt.repository,
-                inspected.identity.repository_id(),entry.key(),entry.receipt.revision,entry.receipt.release_id,entry.receipt.asset_id,
-                entry.receipt.package_sha256,inspected.executable.display(),manifest.api.major,manifest.api.minor,compatibility,
-                manifest.required_features.join(", "),manifest.optional_features.join(", "),
-                manifest.delivery_channels.iter().map(|channel|format!("{} ({})",channel.name,channel.id)).collect::<Vec<_>>().join(", "),
-                inspected.icon_problem.map_or("".into(),|problem|format!("Artwork: {problem}")))
-        }
-        Err(problem) => format!(
-            "Identity: {}\nGitHub: {}/{}\n{}\nNo executable was probed.",
-            entry.key(),
-            entry.receipt.owner,
-            entry.receipt.repository,
-            problem
-        ),
-    };
     details.connect_clicked(move |button| {
-        let dialog = adw::AlertDialog::builder()
-            .heading("Plugin details")
-            .body(
-                if current_details(&details_key)
-                    .is_some_and(|(current, _)| current.receipt == details_receipt)
-                {
-                    description.as_str()
-                } else {
-                    "The selected package changed or was removed. Reopen its current details."
-                },
-            )
+        let parent = button
+            .root()
+            .and_then(|root| root.downcast::<gtk::Window>().ok());
+        let current =
+            current_details(&details_key).filter(|(current, _)| current.receipt == details_receipt);
+        let Some((current, _)) = current else {
+            let dialog = adw::AlertDialog::builder()
+                .heading("Plugin changed")
+                .body("The selected package changed or was removed. Reopen its current details.")
+                .build();
+            dialog.add_response("close", "Close");
+            dialog.present(parent.as_ref());
+            return;
+        };
+        let window = adw::PreferencesWindow::builder()
+            .title("Plugin details")
+            .search_enabled(false)
+            .default_width(640)
+            .default_height(560)
             .build();
-        dialog.add_response("close", "Close");
-        dialog.present(
-            button
-                .root()
-                .and_then(|root| root.downcast::<gtk::Window>().ok())
-                .as_ref(),
+        window.set_transient_for(parent.as_ref());
+        let page = adw::PreferencesPage::new();
+        let summary = adw::PreferencesGroup::new();
+        let info = inventory().into_iter().find(|info| info.key == details_key);
+        summary.set_title(&escape_display(
+            info.as_ref()
+                .map_or(details_key.as_str(), |info| info.name.as_str()),
+        ));
+        summary.set_description(Some(
+            "Read-only snapshot; opening details does not run code. Plugins run as your user, not in an OS sandbox.",
+        ));
+        if let Some(info) = info {
+            detail_row(&summary, "Description", &info.description);
+            detail_row(&summary, "Runtime state", &describe_state(&info.state));
+            if let Some(version)=&info.running_version {detail_row(&summary,"Running package version",version);}
+            detail_row(&summary, "API compatibility", &info.declared);
+            detail_row(
+                &summary,
+                "Observed API",
+                &info
+                    .observed
+                    .map_or("Not observed in this session".into(), |api| {
+                        format!("{}.{}", api.major, api.minor)
+                    }),
+            );
+        }
+        let source = adw::PreferencesGroup::new();
+        source.set_title("Source and identity");
+        detail_row(&source, "Identity", &current.key());
+        let repository_id = current.inspected.as_ref().map_or(current.receipt.repository_id,
+            |inspected| inspected.identity.repository_id());
+        detail_row(
+            &source,
+            "GitHub repository",
+            &format!(
+                "{}/{} (repository {})",
+                current.receipt.owner, current.receipt.repository, repository_id
+            ),
         );
+        if let Ok(inspected) = &current.inspected {
+            let manifest = &inspected.manifest;
+            detail_row(&source, "Version", &manifest.version);
+            detail_row(
+                &source,
+                "Required features",
+                &manifest.required_features.join(", "),
+            );
+            detail_row(
+                &source,
+                "Optional features",
+                &manifest.optional_features.join(", "),
+            );
+            detail_row(
+                &source,
+                "Delivery channels",
+                &manifest
+                    .delivery_channels
+                    .iter()
+                    .map(|channel| format!("{} ({})", channel.name, channel.id))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            if let Some(problem) = inspected.icon_problem {
+                detail_row(&source, "Artwork", &problem.to_string());
+            }
+        } else if let Err(problem) = &current.inspected {
+            detail_row(&summary, "Metadata unavailable", &problem.to_string());
+        }
+        let package = adw::PreferencesGroup::new();
+        package.set_title("Package provenance");
+        detail_row(&package, "Catalogue-declared version commit", &current.receipt.revision);
+        detail_row(
+            &package,
+            "Release / asset",
+            &format!(
+                "{} / {}",
+                current.receipt.release_id, current.receipt.asset_id
+            ),
+        );
+        detail_row(&package, "Package SHA-256", &current.receipt.package_sha256);
+        detail_row(&package, "Manifest SHA-256", &current.receipt.manifest_sha256);
+        detail_row(&package, "Selected generation", &current.receipt.generation);
+        if let Some(receipt) = &current.receipt.source {
+            detail_row(&source, "Numeric publisher identity", &receipt.publisher_id.to_string());
+            detail_row(&package, "Resolved catalogue revision", &receipt.catalogue_revision);
+            detail_row(&package, "Catalogue SHA-256", &receipt.catalogue_sha256);
+        } else {
+            detail_row(&source, "Numeric publisher identity", "Unconfirmed in this pre-installer receipt; an update requires renewed review");
+        }
+        if let Some(binding) = current.receipt.source.as_ref().and_then(|source| source.release_binding.as_ref()) {
+            detail_row(&package, "Release tag", &binding.tag);
+            detail_row(&package, "Observed tag reference object", &binding.object);
+            detail_row(&package, "Resolved release commit", &binding.commit);
+            detail_row(&package, "Release-tag consistency", "Observed before transfer and rechecked before commit. This is not build reproducibility, independent publisher authentication or a sandbox.");
+        } else {
+            detail_row(&package, "Release-tag consistency", "Not recorded for this installation; a revision alone is not tag verification.");
+        }
+        if let Ok(inspected) = &current.inspected {
+            detail_row(
+                &package,
+                "Entrypoint",
+                &inspected.executable.display().to_string(),
+            );
+        }
+        page.add(&summary);
+        page.add(&source);
+        page.add(&package);
+        window.add(&page);
+        let actions=adw::PreferencesGroup::new();actions.set_title("Package actions");
+        for (label,action,available) in [("Recover previous…",crate::plugin::install::mutation::Action::RestorePrevious,current.previous.is_some()),("Uninstall…",crate::plugin::install::mutation::Action::Uninstall,true)] {
+            if !available{continue;}
+            let row=adw::ActionRow::builder().title(label).build();
+            let button=gtk::Button::with_label(label);button.set_valign(gtk::Align::Center);
+            button.update_property(&[gtk::accessible::Property::Label(&format!("{label} {}",current.key()))]);
+            button.connect_clicked({let package_action=package_action.clone();let receipt=current.receipt.clone();move |button| {
+                package_action(receipt.clone(),action,button.root().and_then(|root|root.downcast::<gtk::Window>().ok()));
+            }});
+            row.add_suffix(&button);row.set_activatable_widget(Some(&button));actions.add(&row);
+        }
+        page.add(&actions);
+        window.present();
     });
     row.add_suffix(&details);
     let Ok(inspected) = entry.inspected.as_ref() else {
@@ -105,6 +202,7 @@ pub(super) fn add_actions(
     let Some(schema) = inspected.manifest.settings.clone() else {
         return;
     };
+    let name = inspected.manifest.name.clone();
     let settings = gtk::Button::with_label("Settings…");
     settings.set_valign(gtk::Align::Center);
     settings.update_property(&[gtk::accessible::Property::Label(&format!(
@@ -117,6 +215,8 @@ pub(super) fn add_actions(
         let window = adw::PreferencesWindow::builder()
             .title("Plugin settings")
             .search_enabled(false)
+            .default_width(640)
+            .default_height(520)
             .build();
         window.set_transient_for(
             button
@@ -126,11 +226,18 @@ pub(super) fn add_actions(
         );
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
-        group.set_title("Local settings");
+        group.set_title(&escape_display(&format!("{name} settings")));
         group.set_description(Some(match schema.apply {
-            Apply::Live => "Saved locally. Runtime application is reported separately.",
-            Apply::Restart => "Saving requires a plugin restart before runtime application.",
+            Apply::Live => "Use Save to store changes locally. Closing discards unsaved edits.",
+            Apply::Restart => {
+                "Use Save to store changes locally, then restart the plugin to apply them."
+            }
         }));
+        let commit = gtk::Button::with_label("Save");
+        commit.add_css_class("suggested-action");
+        commit.set_sensitive(schema.supported());
+        commit.set_valign(gtk::Align::Start);
+        group.set_header_suffix(Some(&commit));
         let mut editors: Vec<(String, ReadValue)> = Vec::new();
         for field in &schema.fields {
             let value = stored
@@ -251,6 +358,10 @@ pub(super) fn add_actions(
         }
         let result = adw::ActionRow::new();
         result.set_title("Local changes");
+        result.set_subtitle("No changes saved from this window.");
+        let feedback = adw::PreferencesGroup::new();
+        feedback.set_title("Save and runtime status");
+        feedback.add(&result);
         let runtime = adw::ActionRow::new();
         runtime.set_title("Runtime application");
         runtime.set_subtitle(status(&entry.key()).description());
@@ -281,7 +392,7 @@ pub(super) fn add_actions(
             )
         });
         runtime.add_suffix(&restart_button);
-        group.add(&runtime);
+        feedback.add(&runtime);
         let weak_runtime = runtime.downgrade();
         let weak_restart = restart_button.downgrade();
         let status = status.clone();
@@ -310,11 +421,6 @@ pub(super) fn add_actions(
             }
             glib::ControlFlow::Continue
         });
-        let commit = gtk::Button::with_label("Save");
-        commit.set_sensitive(schema.supported());
-        commit.set_valign(gtk::Align::Center);
-        result.add_suffix(&commit);
-        group.add(&result);
         let save = save.clone();
         let key = entry.key();
         let generation = entry.receipt.generation.clone();
@@ -351,8 +457,22 @@ pub(super) fn add_actions(
             }));
         });
         page.add(&group);
+        page.add(&feedback);
         window.add(&page);
         window.present();
     });
     row.add_suffix(&settings);
+}
+
+fn detail_row(group: &adw::PreferencesGroup, title: &str, value: &str) {
+    let row = adw::ActionRow::new();
+    row.set_title(title);
+    row.set_subtitle(&escape_display(if value.is_empty() {
+        "None declared"
+    } else {
+        value
+    }));
+    row.set_subtitle_lines(0);
+    row.set_subtitle_selectable(true);
+    group.add(&row);
 }

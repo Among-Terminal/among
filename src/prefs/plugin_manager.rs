@@ -6,6 +6,32 @@ use crate::plugin::host::Overview;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
+fn subtitle(info: &Overview) -> String {
+    let version = info
+        .version
+        .as_ref()
+        .map(|version| format!(" · version {version}"))
+        .unwrap_or_default();
+    let mut text = format!(
+        "{}{version}\n{}{}",
+        describe_state(&info.state),
+        info.origin,
+        if info.available {
+            ""
+        } else {
+            " · Files unavailable"
+        }
+    );
+    if let Some(running) = &info.running_version {
+        text.push_str(&format!("\nRunning package version {running}"));
+    }
+    if !info.available || info.declared.starts_with("Declared API unavailable:") {
+        text.push('\n');
+        text.push_str(&info.declared);
+    }
+    text
+}
+
 // gtk owns the widgets; the refresh index must not prolong a closed page's life.
 struct Row {
     widget: glib::WeakRef<adw::ActionRow>,
@@ -20,11 +46,7 @@ impl Row {
             return;
         };
         widget.set_title(&escape_display(&info.name));
-        widget.set_subtitle(&escape_display(&format!(
-            "{}\n{}",
-            info.metadata(),
-            describe_state(&info.state)
-        )));
+        widget.set_subtitle(&escape_display(&subtitle(info)));
         widget.set_visible(info.search_text().contains(query));
         switch.update_property(&[gtk::accessible::Property::Label(&format!(
             "Enable {} ({})",
@@ -46,23 +68,67 @@ pub(super) fn page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     page.set_title("Plugins");
     page.set_icon_name(Some("application-x-addon-symbolic"));
     add_storage_status(&page, ctx);
+    let sources = adw::PreferencesGroup::new();
+    sources.set_title("Plugin sources");
+    let repository = adw::ActionRow::builder()
+        .title("Inspect a GitHub repository")
+        .subtitle("Inspect metadata, then explicitly install one ready-built version. New installs stay disabled.")
+        .build();
+    repository.add_prefix(&gtk::Image::from_icon_name("folder-remote-symbolic"));
+    let repositories = gtk::Button::with_label("Inspect repository…");
+    repositories.set_valign(gtk::Align::Center);
+    repositories.connect_clicked({
+        let changed = ctx.installations_changed.clone();
+        let details = ctx.plugin_details.clone();
+        move |button| {
+            if let Some(parent) = button
+                .root()
+                .and_then(|root| root.downcast::<gtk::Window>().ok())
+            {
+                super::repositories::present(&parent, changed.clone(), details.clone());
+            }
+        }
+    });
+    repository.add_suffix(&repositories);
+    repository.set_activatable_widget(Some(&repositories));
+    sources.add(&repository);
+    let retained = adw::ActionRow::builder()
+        .title("Settings retained after uninstall")
+        .subtitle("Review and separately delete local settings of uninstalled plugins.")
+        .build();
+    let retained_button = gtk::Button::with_label("Retained settings…");
+    retained_button.set_valign(gtk::Align::Center);
+    retained_button.connect_clicked({
+        let ctx = ctx.clone();
+        move |button| {
+            if let Some(parent) = button
+                .root()
+                .and_then(|root| root.downcast::<gtk::Window>().ok())
+            {
+                super::retained_settings::present(&parent, &ctx);
+            }
+        }
+    });
+    retained.add_suffix(&retained_button);
+    retained.set_activatable_widget(Some(&retained_button));
+    sources.add(&retained);
+    page.add(&sources);
     let navigation = adw::PreferencesGroup::new();
+    navigation.set_title("Your plugins");
+    navigation.set_description(Some(
+        "Search installed and configured plugins. Use a switch to enable or disable one.",
+    ));
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search plugins"));
+    search.set_placeholder_text(Some("Search your plugins"));
     search.update_property(&[gtk::accessible::Property::Label(
         "Search plugins by name, identity or origin",
     )]);
     navigation.add(&search);
     page.add(&navigation);
     let group = adw::PreferencesGroup::new();
-    group.set_title("Installed and configured");
-    group.set_description(Some("Inspection does not start code. Plugins run as your user, not in an OS sandbox. Switches show desired enablement, separately from runtime state."));
     page.add(&group);
     let empty = adw::ActionRow::new();
     empty.set_title("No matching plugins");
-    empty.set_subtitle(
-        "Configured missing files remain listed. Newly discovered executables start disabled.",
-    );
     group.add(&empty);
     let rows = Rc::new(RefCell::new(BTreeMap::new()));
     reconcile(ctx, &group, &empty, &rows, "");
@@ -135,6 +201,16 @@ fn reconcile(
             .or_insert_with(|| make_row(ctx, group, info));
         row.refresh(info, query);
     }
+    empty.set_title(if inventory.is_empty() {
+        "No plugins yet"
+    } else {
+        "No matching plugins"
+    });
+    empty.set_subtitle(if inventory.is_empty() {
+        "Newly discovered plugins appear here disabled. Repository inspection only previews metadata."
+    } else {
+        "Try a different name, identity or origin, or clear the search."
+    });
     empty.set_visible(!rows.values().any(|row| {
         row.widget
             .upgrade()
@@ -144,7 +220,7 @@ fn reconcile(
 
 fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Overview) -> Row {
     let row = adw::ActionRow::new();
-    row.set_subtitle_lines(0);
+    row.set_subtitle_lines(3);
     row.set_title_lines(1);
     if let Some((entry, _)) = (ctx.plugin_details)(&info.key) {
         plugin_settings::add_actions(
@@ -153,13 +229,16 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
             ctx.save_plugin_settings.clone(),
             ctx.plugin_details.clone(),
             ctx.plugin_configuration.clone(),
-            ctx.restart_plugin.clone(),
+            (ctx.restart_plugin.clone(), ctx.package_action.clone()),
+            ctx.plugin_inventory.clone(),
         );
     } else {
         let icon = gtk::Image::from_icon_name("application-x-addon-symbolic");
         icon.set_pixel_size(32);
         row.add_prefix(&icon);
         let details = gtk::Button::with_label("Details…");
+        details.add_css_class("flat");
+        details.set_tooltip_text(Some("Plugin details"));
         details.set_valign(gtk::Align::Center);
         details.update_property(&[gtk::accessible::Property::Label(&format!(
             "Details for {} ({})",
@@ -200,9 +279,20 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
     let disable = ctx.disable_plugin.clone();
     let key = info.key.clone();
     let listing = ctx.plugin_inventory.clone();
+    let generation = info.generation.clone();
     let weak_row = row.downgrade();
     switch.connect_active_notify(move |switch| {
         if signal.get() {
+            return;
+        }
+        if listing()
+            .into_iter()
+            .find(|info| info.key == key)
+            .is_none_or(|info| info.generation != generation)
+        {
+            if let Some(row) = weak_row.upgrade() {
+                row.set_subtitle("Plugin changed or was removed; reopen its current controls.");
+            }
             return;
         }
         if switch.is_active() {
@@ -219,11 +309,7 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
             weak_row.upgrade(),
             listing().into_iter().find(|info| info.key == key),
         ) {
-            row.set_subtitle(&escape_display(&format!(
-                "{}\n{}",
-                info.metadata(),
-                describe_state(&info.state)
-            )));
+            row.set_subtitle(&escape_display(&subtitle(&info)));
         }
     });
     row.add_suffix(&switch);
@@ -234,5 +320,21 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
         switch: switch.downgrade(),
         updating,
         generation: info.generation.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_cards_keep_refusal_reasons_even_when_the_plugin_is_disabled() {
+        let mut info = Overview::fixture("sample", PluginState::Disabled, false);
+        info.declared = "Declared API unavailable: required settings cannot be edited".into();
+        assert!(subtitle(&info).contains("required settings"));
+        info.available = false;
+        info.declared = "invalid settings schema".into();
+        assert!(subtitle(&info).contains("invalid settings schema"));
+        assert!(subtitle(&info).contains("Files unavailable"));
     }
 }

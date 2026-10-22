@@ -43,6 +43,11 @@ simultaneous writes by external editors are not fully serialized.
 
 ## Changing preferences
 
+Preferences and the repository inspector are nonmodal: switch back to a terminal
+without closing them while a repository request is running. Their parented native
+window layout is unchanged. Other forms and confirmation dialogs retain their own
+interaction rules.
+
 Plugin switches and shortcut edits apply immediately and are saved without a Save
 button. Plugin-specific forms instead require an explicit Save after validation;
 closing without Save discards unfinished edits. Fresh launches restore plugin
@@ -72,11 +77,25 @@ Developer checks are described in [the contributing guide](../CONTRIBUTING.md#ch
 
 The Plugins page has a labelled native search field. Match by name, description,
 identity or origin; clear it to return to the full installed/configured list.
+Repository inspection belongs to its own Plugin sources section, above and
+separate from search. Inspection only previews metadata; a separate Install disabled
+action selects one compatible ready-built version without enabling it. Existing
+selected identities are refused rather than overwritten. Add source explicitly
+saves discovery metadata; Cached reports its retrieval time/offline/stale state,
+Refresh resolves the numeric registered repository, and Remove source affects
+discovery only. Publisher transfer requires explicit renewed source approval and
+cannot grant installed code new runtime access. Existing identities expose
+**Apply update…** with explicit target-only restart consent. Managed Details adds
+**Recover previous…** and **Uninstall…**; the latter waits for supervised stop and
+committed removal, retains local settings and invalidates stale package work.
+Neither action updates or removes legacy executables. Separate settings deletion
+and combined notification-provider acceptance remain unfinished.
 Equal names show separate origins, missing configured files stay inspectable,
 and a desired-on unavailable entry remains switchable off. Details opens a native
-dialog; Settings appears only for a declared settings schema. Use Tab/Shift+Tab
-to move between search, actions and switches, Space to operate a switch, and the
-dialog's dismiss action to return. The form's Save boundary is separate from
+view; Settings appears only for a declared settings schema. The form's Save action
+is above its fields; persistence feedback and runtime status have their own group.
+Use Tab/Shift+Tab to move between search, actions and switches, Space to operate
+a switch, and the view's close action or Escape to return. The form's Save boundary is separate from
 runtime applied/pending/rejected/restart-required acknowledgement.
 
 Background registration or process-state changes update rows by identity rather

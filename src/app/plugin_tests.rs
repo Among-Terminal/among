@@ -1,6 +1,7 @@
 use super::*;
 use crate::plugin::host::PluginState;
 
+mod installation;
 mod settings;
 
 #[track_caller]
@@ -357,9 +358,48 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
         .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
         .unwrap();
     assert!(!switch.is_active());
-    assert!(selected.subtitle().is_some_and(
-        |text| text.contains("Declared API 1.2 supported") && text.contains("Not observed")
+    assert!(selected
+        .subtitle()
+        .is_some_and(|text| text.contains("Disabled") && text.contains("another/sample")));
+    let details = widgets(selected.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Details…"))
+        .unwrap();
+    assert!(details.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait_for(
+        || {
+            gtk::Window::list_toplevels().iter().any(|window| {
+                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
+                    window.title().as_deref() == Some("Plugin details") && window.is_mapped()
+                })
+            })
+        },
+        Duration::from_secs(2),
+    );
+    let details = gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|window| {
+            window
+                .downcast::<adw::PreferencesWindow>()
+                .ok()
+                .filter(|window| window.title().as_deref() == Some("Plugin details"))
+        })
+        .unwrap();
+    assert!(has_label(
+        details.upcast_ref(),
+        "Declared API 1.2 supported"
     ));
+    assert!(has_label(
+        details.upcast_ref(),
+        "Not observed in this session"
+    ));
+    assert!(has_label(details.upcast_ref(), "github:13/sample"));
+    focus(&details);
+    xdo(&["key", "--clearmodifiers", "alt+F4"]);
+    wait_for(|| !details.is_visible(), Duration::from_secs(2));
+    focus(&preferences);
     let search = widgets(page.upcast_ref())
         .into_iter()
         .find_map(|widget| widget.downcast::<gtk::SearchEntry>().ok())

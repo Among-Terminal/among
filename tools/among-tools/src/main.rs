@@ -15,6 +15,7 @@ Usage:
   among-tools isolated-x11 <command> [args...]
   among-tools vm-x11 <command> [args...]
   among-tools run-ignored-tests <cargo-test-executables.jsonl>
+  among-tools check-installer-enospc-from-cargo <cargo-test-executables.jsonl>
   among-tools check-resource-measurements <system-status-binary>
   among-tools check-preferences <prebuilt-app-test> <prebuilt-plugins-directory>
   among-tools check-preferences-from-cargo <cargo-test-executables.jsonl> <prebuilt-plugins-directory>
@@ -767,6 +768,16 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         [command, records] if command == "run-ignored-tests" => {
             let count = ignored_tests::run(Path::new(records), &among_tools::scratch::root()?)?;
             println!("Executed {count} ignored tests, one owned display per test");
+        }
+        [command, records] if command == "check-installer-enospc-from-cargo" => {
+            let evidence = among_tools::installer_enospc::run(
+                Path::new(records),
+                &among_tools::scratch::root()?,
+            )?;
+            println!(
+                "Executed the original installer ENOSPC assertion test; evidence: {}",
+                evidence.display()
+            );
         }
         [family, operation] if family == "platform" && operation == "discover" => {
             println!("{}", serde_json::to_string_pretty(&platform::discover()?)?);
