@@ -629,7 +629,14 @@ pub fn retirement(
             return Err("retirement liveness measurements violated the contract".into());
         }
         maps(&payload, &evidence)?;
-        results.push(json!({"scenario":scenario,"capture":signal,"measurements":measurements}));
+        let separated_output = if scenario == "stall-retire-shutdown" {
+            Some(audio_capture::recovered_output(&fs::read(
+                evidence.join("capture.s16le"),
+            )?)?)
+        } else {
+            None
+        };
+        results.push(json!({"scenario":scenario,"capture":signal,"measurements":measurements,"separated_output":separated_output}));
     }
     if digest(artifact)? != receipt.artifact_sha256 {
         return Err("actual package changed during retirement tests".into());
