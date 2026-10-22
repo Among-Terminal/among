@@ -178,6 +178,15 @@ impl PluginHost {
             .runtime
             .as_ref()
             .ok_or(Problem("managed runtime is unavailable"))?;
+        if self.notifications.as_ref().is_some_and(|backend| {
+            !backend
+                .try_borrow()
+                .is_ok_and(|backend| backend.registration_current(&self.plugins[index].spec.name))
+        }) {
+            return Err(Problem(
+                "notification registration was revoked; static re-registration is required",
+            ));
+        }
         if self.notifications.is_none() {
             return managed::granted_features(
                 &inspected.manifest,

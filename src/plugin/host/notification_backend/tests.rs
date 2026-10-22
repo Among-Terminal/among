@@ -1079,10 +1079,16 @@ fn actual_provider_failed_uncertain_and_accepted_outcomes_are_distinct_and_unins
     fixture.event(1, None);
     assert_eq!(fixture.core.borrow().event_count(), 3);
     let generation = fixture.host.running_generation(KEY).unwrap();
+    let executed = std::fs::read(fixture.package.join("executed")).unwrap();
     assert!(fixture.host.restart_managed(KEY, &generation));
     fixture.wait_for(Duration::from_secs(5), |fixture| matches!(&fixture.host.plugins[0].state,
-        PluginState::Stopping { reason, .. } | PluginState::Faulted { reason } if reason.contains("notification backend")));
+        PluginState::Unavailable { reason } if reason.contains("notification registration was revoked")));
     assert!(!fixture.host.plugins[0].state.is_healthy());
+    assert_eq!(
+        std::fs::read(fixture.package.join("executed")).unwrap(),
+        executed,
+        "a retired registration cannot re-execute old code merely to fail its handshake"
+    );
     assert!(fixture
         .backend
         .borrow()
