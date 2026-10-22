@@ -113,7 +113,11 @@ impl PluginHost {
                             overview.description = manifest.description.clone();
                             overview.version = Some(manifest.version.clone());
                             overview.declared = manifest
-                                .compatibility(managed::MAJOR, managed::MINOR, managed::FEATURES)
+                                .compatibility(
+                                    managed::MAJOR,
+                                    managed::MINOR,
+                                    &self.supported_features(),
+                                )
                                 .map_or_else(
                                     |problem| format!("Declared API unavailable: {problem}"),
                                     |()| {
