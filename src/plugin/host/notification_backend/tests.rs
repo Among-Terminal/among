@@ -851,6 +851,10 @@ fn native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood() {
     window.set_child(Some(&row));
     let spawned = Rc::new(Cell::new(0));
     let exited = Rc::new(Cell::new(0));
+    let views = Rc::new(RefCell::new(Vec::<(
+        among::notifications::Source,
+        glib::WeakRef<vte::Terminal>,
+    )>::new()));
     let mut terminals = Vec::new();
     for pane in 1..=2 {
         let pty = crate::new_pty().unwrap();
@@ -863,10 +867,31 @@ fn native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood() {
         let core = fixture.core.clone();
         let backend = fixture.backend.clone();
         let source = core.borrow().source(pane).unwrap();
+        let views = views.clone();
+        views.borrow_mut().push((source, terminal.downgrade()));
+        let active_window = window.downgrade();
         terminal.connect_bell(move |_| {
+            let application_active = active_window
+                .upgrade()
+                .is_some_and(|window| window.is_active());
+            let viewed = application_active
+                .then(|| {
+                    views.borrow().iter().find_map(|(source, terminal)| {
+                        terminal
+                            .upgrade()
+                            .filter(|terminal| terminal.is_mapped() && terminal.has_focus())
+                            .map(|_| *source)
+                    })
+                })
+                .flatten();
+            let focus = Focus {
+                application_active,
+                viewed,
+            };
+            backend.borrow_mut().set_focus(focus);
             let event = core
                 .borrow_mut()
-                .bell(source, Focus::default(), Instant::now())
+                .bell(source, focus, Instant::now())
                 .unwrap();
             backend
                 .borrow_mut()
@@ -955,6 +980,13 @@ fn native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood() {
         fixture.deliveries()[0]["delivery"]["event"]["source"].is_null(),
         "no terminal context grant"
     );
+    assert!(
+        fixture
+            .core
+            .borrow()
+            .attention(fixture.core.borrow().source(1).unwrap(), Instant::now())
+            .unread
+    );
     std::fs::write(fixture.package.join("delivery-mode"), "flood").unwrap();
     // a different actual bell source bypasses only the repeated-source cooldown,
     // not policy, supervised I/O or provider result handling.
@@ -976,6 +1008,14 @@ fn native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood() {
         &mut fixture,
         &|fixture| !fixture.host.plugins[0].state.is_healthy(),
         Duration::from_secs(3),
+    );
+    assert!(
+        !fixture
+            .core
+            .borrow()
+            .attention(fixture.core.borrow().source(2).unwrap(), Instant::now())
+            .unread,
+        "a bell in the actually viewed sibling must not invent unread state"
     );
     for terminal in &terminals {
         terminal.feed_child(b"exit\n");
