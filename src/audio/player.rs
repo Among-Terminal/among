@@ -1,12 +1,17 @@
-use super::{Sound, WavError, WavInfo};
-use gtk::prelude::*;
+use super::{
+    execution::{self, Operation, Outcome},
+    Sound, WavError, WavInfo,
+};
 use std::{
     cell::RefCell,
     collections::VecDeque,
     fmt,
     path::PathBuf,
     rc::Rc,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -42,6 +47,7 @@ pub enum AudioError {
     Busy,
     NotInitialized,
     AlreadyOwned,
+    Unavailable,
 }
 impl fmt::Display for AudioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -51,6 +57,7 @@ impl fmt::Display for AudioError {
             Self::Busy => f.write_str("A sound selection is already being read."),
             Self::NotInitialized => f.write_str("Initialize GTK on the main thread before audio."),
             Self::AlreadyOwned => f.write_str("The application already has an audio owner."),
+            Self::Unavailable => f.write_str("The audio execution boundary is unavailable."),
         }
     }
 }
@@ -59,25 +66,22 @@ impl std::error::Error for AudioError {}
 struct Active {
     id: u64,
     kind: PlaybackKind,
-    media: gtk::MediaFile,
+    operation: Arc<Operation>,
     deadline: Instant,
-    _sound: Sound,
-}
-impl Drop for Active {
-    fn drop(&mut self) {
-        self.media.pause();
-        self.media.clear();
-    }
 }
 
 struct State {
     selected: Sound,
     active: Option<Active>,
+    retiring: Option<Active>,
+    retirement_reported: bool,
     generation: u64,
     admitted: bool,
     loading: bool,
     closed: bool,
     notices: VecDeque<Notice>,
+    last_operation: Option<Arc<Operation>>,
+    reported_uncertain: bool,
 }
 impl State {
     fn notice(&mut self, notice: Notice) {
@@ -87,41 +91,91 @@ impl State {
         self.notices.push_back(notice);
     }
     fn stop(&mut self) {
+        self.poll_retiring();
         if let Some(active) = self.active.take() {
-            self.notice(Notice::Cancelled { id: active.id });
-            drop(active);
+            active.operation.cancel();
+            self.retiring = Some(active);
+            self.retirement_reported = false;
+        }
+    }
+    fn poll_retiring(&mut self) {
+        let Some(retiring) = &self.retiring else {
+            return;
+        };
+        let phase = retiring.operation.snapshot().map(|snapshot| snapshot.phase);
+        let outcome = retiring.operation.outcome();
+        if !self.retirement_reported {
+            if let Some(outcome) = outcome {
+                let id = retiring.id;
+                let notice = match outcome {
+                    Outcome::Cancelled => Notice::Cancelled { id },
+                    Outcome::Ended => Notice::DecoderEnded { id },
+                    Outcome::Failed(reason) => Notice::Failed { id, reason },
+                };
+                self.retirement_reported = true;
+                if phase == Some(super::DecoderPhase::Quarantined) {
+                    self.reported_uncertain = true;
+                }
+                self.notice(notice);
+            }
+        }
+        if phase == Some(super::DecoderPhase::Finished) {
+            self.retiring.take();
         }
     }
     fn poll(&mut self) {
+        self.poll_retiring();
         let Some(active) = &self.active else {
+            if !self.reported_uncertain {
+                if let Some(snapshot) = self
+                    .last_operation
+                    .as_ref()
+                    .and_then(|operation| operation.snapshot())
+                    .filter(|snapshot| snapshot.phase == super::DecoderPhase::Quarantined)
+                {
+                    self.reported_uncertain = true;
+                    self.notice(Notice::Failed {
+                        id: snapshot.id,
+                        reason: "Audio cleanup is unconfirmed; the decoder slot is quarantined.",
+                    });
+                }
+            }
             return;
         };
-        // Error wins over prepared/ended: both can be true for failed backends.
-        let outcome = if active.media.error().is_some() {
-            Some(Notice::Failed {
+        let outcome = match active.operation.outcome() {
+            Some(Outcome::Ended) => Some(Notice::DecoderEnded { id: active.id }),
+            Some(Outcome::Failed(reason)) => Some(Notice::Failed {
                 id: active.id,
-                reason: "The WAV decoder or audio output is unavailable.",
-            })
-        } else if active.media.is_ended() {
-            Some(Notice::DecoderEnded { id: active.id })
-        } else if Instant::now() >= active.deadline {
-            Some(Notice::Failed {
-                id: active.id,
-                reason: "Audio did not finish within its playback deadline.",
-            })
-        } else {
-            None
+                reason,
+            }),
+            Some(Outcome::Cancelled) => Some(Notice::Cancelled { id: active.id }),
+            None if Instant::now() >= active.deadline => {
+                active.operation.cancel();
+                Some(Notice::Failed {
+                    id: active.id,
+                    reason:
+                        "Audio exceeded its 13-second operation deadline; retirement is pending.",
+                })
+            }
+            None => None,
         };
         if let Some(notice) = outcome {
+            if active
+                .operation
+                .snapshot()
+                .is_some_and(|snapshot| snapshot.phase == super::DecoderPhase::Quarantined)
+            {
+                self.reported_uncertain = true;
+            }
             self.active.take();
             self.notice(notice);
         }
     }
 }
 
-/// One main-thread owner, one active MediaFile, zero queued playbacks and at
-/// most one outstanding bounded file read. Preview replaces an active sound;
-/// busy event requests coalesce instead of retaining stale notification work.
+/// One main-thread owner, one supervised decoder slot, zero queued playbacks and at
+/// most one outstanding bounded file read. Replacement cancels the old operation;
+/// unconfirmed retirement reports Busy rather than retaining a replayable sound.
 pub struct Audio {
     state: Rc<RefCell<State>>,
     timer: Option<glib::SourceId>,
@@ -153,11 +207,15 @@ impl Audio {
         let state = Rc::new(RefCell::new(State {
             selected: Sound::builtin().map_err(AudioError::Wav)?,
             active: None,
+            retiring: None,
+            retirement_reported: false,
             generation: 0,
             admitted: false,
             loading: false,
             closed: false,
             notices: VecDeque::new(),
+            last_operation: None,
+            reported_uncertain: false,
         }));
         let weak = Rc::downgrade(&state);
         OWNER.with(|owner| *owner.borrow_mut() = weak.clone());
@@ -300,17 +358,21 @@ impl Audio {
         }
         state.stop();
         let id = NEXT_OPERATION.fetch_add(1, Ordering::Relaxed);
-        let sound = state.selected.clone();
-        let media = gtk::MediaFile::for_filename(sound.decoder_path());
-        media.set_loop(false);
-        media.set_volume(1.0);
-        media.play();
+        let operation = match execution::start(id, state.selected.clone()) {
+            Ok(Some(operation)) => operation,
+            Ok(None) => return Ok(Request::Busy),
+            Err(reason) => {
+                state.notice(Notice::Failed { id, reason });
+                return Err(AudioError::Unavailable);
+            }
+        };
+        state.last_operation = Some(operation.clone());
+        state.reported_uncertain = false;
         state.active = Some(Active {
             id,
             kind,
-            media,
-            deadline: Instant::now() + Duration::from_secs(13),
-            _sound: sound,
+            operation,
+            deadline: Instant::now() + execution::DEADLINE,
         });
         state.notice(Notice::Requested { id, kind });
         Ok(Request::Started(id))
@@ -342,6 +404,16 @@ impl Audio {
 
     pub fn is_active(&self) -> bool {
         self.state.borrow().active.is_some()
+    }
+
+    /// bounded diagnostic snapshot of this owner's last operation. A PID is
+    /// observational only; cancellation always uses the owned operation token.
+    pub fn decoder_snapshot(&self) -> Option<super::DecoderSnapshot> {
+        self.state
+            .borrow()
+            .last_operation
+            .as_ref()
+            .and_then(|operation| operation.snapshot())
     }
 
     pub fn shutdown(&self) {

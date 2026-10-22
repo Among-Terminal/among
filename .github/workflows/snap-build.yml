@@ -13,7 +13,7 @@ permissions:
 jobs:
   snap:
     env:
-      CARGO_BUILD_JOBS: '2'
+      CARGO_BUILD_JOBS: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -49,7 +49,7 @@ jobs:
         env:
           BUILD_ARCH: ${{ matrix.arch }}
         run: |
-          sudo env CARGO_BUILD_JOBS=2 snapcraft --destructive-mode --platform "$BUILD_ARCH" --verbose
+          sudo env CARGO_BUILD_JOBS=1 snapcraft --destructive-mode --platform "$BUILD_ARCH" --verbose
           version="$(sudo parts/among/build/among-tools-target/release/among-tools package-version .)"
           test -f "among_${version}_${BUILD_ARCH}.snap"
           sha256sum "among_${version}_${BUILD_ARCH}.snap"
@@ -72,7 +72,7 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal
           rustup override set 1.98.1
           cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
-          cargo build --locked --release --example check-clipboard --example audio-probe
+          cargo build --locked --release --example check-clipboard --example audio-probe --example audio-retirement-probe
       - name: Installed host workflow and terminal controls
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-snap-runtime --github-hosted
@@ -114,11 +114,13 @@ jobs:
           "$tool" package-native-checker target/release/examples/check-clipboard "$SOURCE_SHA" "v$SNAP_VERSION" ubuntu24.04 "$BUILD_ARCH" clean-snap-input/clipboard
           "$tool" bind-audio-probe target/release/examples/audio-probe "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" \
             "$SOURCE_SHA" "$BUILD_ARCH" clean-snap-input/audio
+          "$tool" bind-audio-probe target/release/examples/audio-retirement-probe "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" \
+            "$SOURCE_SHA" "$BUILD_ARCH" clean-snap-input/retirement
           cp "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" clean-snap-input/among.snap
           cp docs/plugins.md clean-snap-input/docs/plugins.md
           printf 'v%s\n' "$SNAP_VERSION" > clean-snap-input/tag
           cd clean-snap-input
-          sha256sum among.snap tag docs/plugins.md tools/among-tools tools/checker-record.json clipboard/among-tools clipboard/checker-record.json audio/audio-probe audio/audio-receipt.json > SHA256SUMS
+          sha256sum among.snap tag docs/plugins.md tools/among-tools tools/checker-record.json clipboard/among-tools clipboard/checker-record.json audio/audio-probe audio/audio-receipt.json retirement/audio-probe retirement/audio-receipt.json > SHA256SUMS
       - name: Transfer internal runtime inputs separately
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -201,7 +203,7 @@ jobs:
         run: |
           test "$(dpkg --print-architecture)" = "$EXPECTED_ARCH"
           docker build --file packaging/ci/snap-runtime/Dockerfile --tag among-clean-snap:ci packaging/ci/snap-runtime
-          chmod +x clean-snap-input/tools/among-tools clean-snap-input/clipboard/among-tools clean-snap-input/audio/audio-probe
+          chmod +x clean-snap-input/tools/among-tools clean-snap-input/clipboard/among-tools clean-snap-input/audio/audio-probe clean-snap-input/retirement/audio-probe
           mkdir runtime-evidence
           chmod 1777 runtime-evidence
           docker run --detach --name among-clean-runtime --privileged --cgroupns=private \

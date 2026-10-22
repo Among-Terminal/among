@@ -1,5 +1,5 @@
-//! Pre-thread bundle discovery. Overrides are consumed here, never inherited by
-//! host terminal shells or plugins; native installations use system discovery.
+//! helper-only bundle discovery. Overrides stay in the short-lived decoder
+//! process, never in the GUI or its host shells/plugins.
 
 use gtk::prelude::*;
 use std::{
@@ -39,12 +39,14 @@ fn member(root: &Path, relative: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Must run before GTK initialization and before any application worker starts:
+/// Helper-only: run before its GTK initialization and native workers:
 /// GTK and GStreamer cache their environment-based search paths at initialization.
 ///
 /// # Safety
 /// The caller must exclude concurrent environment access for this startup-only
-/// operation. All caller values are restored before it returns, even on failure.
+/// operation and must be the dedicated helper, which exits after decoding.
+/// Overrides remain installed: initialization itself may start native threads,
+/// so restoring environment variables afterwards would race those readers.
 pub unsafe fn initialize_packaged(root: &Path) -> Result<(), String> {
     if gtk::is_initialized() {
         return Err("Packaged audio must initialize before GTK.".into());
@@ -108,14 +110,10 @@ pub unsafe fn initialize_packaged(root: &Path) -> Result<(), String> {
         ("GST_REGISTRY_UPDATE", "yes".into()),
         ("GST_REGISTRY_FORK", "yes".into()),
     ];
-    let previous: Vec<_> = overrides
-        .iter()
-        .map(|(key, _)| (*key, std::env::var_os(key)))
-        .collect();
     for (key, value) in &overrides {
         std::env::set_var(key, value);
     }
-    let result = (|| {
+    (|| {
         let path = CString::new(gst.as_os_str().as_encoded_bytes())
             .map_err(|_| "Audio library path contains NUL")?;
         // Keep the native module alive for process lifetime: GTK's registered
@@ -154,12 +152,5 @@ pub unsafe fn initialize_packaged(root: &Path) -> Result<(), String> {
             return Err("Packaged GTK media backend did not register.".into());
         }
         Ok(())
-    })();
-    for (key, value) in previous {
-        match value {
-            Some(value) => std::env::set_var(key, value),
-            None => std::env::remove_var(key),
-        }
-    }
-    result
+    })()
 }

@@ -289,7 +289,12 @@ pub fn run(request: &Invocation<'_>, output: &Path) -> Result<Value> {
     let status = outcome?;
     let analysis = analysis?;
     if let Some(expected) = request.expected_failure {
-        if status.success() || !fs::read_to_string(base.join("errors.log"))?.contains(expected) {
+        let diagnostics = format!(
+            "{}{}",
+            fs::read_to_string(base.join("errors.log"))?,
+            fs::read_to_string(base.join("consumer/decoder-errors.txt")).unwrap_or_default()
+        );
+        if status.success() || !diagnostics.contains(expected) {
             return Err("negative probe did not produce its expected diagnostic failure".into());
         }
     } else if !status.success() {

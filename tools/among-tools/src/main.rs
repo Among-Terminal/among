@@ -37,6 +37,7 @@ Usage:
   among-tools check-snap-runtime [--github-hosted]
   among-tools bind-audio-probe <probe> <artifact> <source-sha> <architecture> <new-directory>
   among-tools check-audio-package <appimage|snap-core24|snap-installed> <artifact> <probe-directory> <source-sha> <architecture> <new-output>
+  among-tools check-audio-retirement <checked-package-run> <artifact> <retirement-probe-directory> <source-sha> <architecture> <new-output>
   among-tools deb-release-inputs <source-root> <stable-tag> <debian13|ubuntu24.04> <amd64|arm64>
   among-tools stage-deb <source-root> <binaries> <new-destination>
   among-tools deb-tag-source <source-root>
@@ -90,6 +91,18 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
+        [command, prepared, artifact, checkers, source, architecture, output]
+            if command == "check-audio-retirement" =>
+        {
+            among_tools::audio_package::retirement(
+                Path::new(prepared),
+                Path::new(artifact),
+                Path::new(checkers),
+                source,
+                architecture,
+                Path::new(output),
+            )?;
+        }
         [command, probe, artifact, source, architecture, output]
             if command == "bind-audio-probe" =>
         {

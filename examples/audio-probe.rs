@@ -25,8 +25,24 @@ fn spin(duration: Duration) {
 struct Evidence(PathBuf);
 impl Drop for Evidence {
     fn drop(&mut self) {
+        let _ = among::audio::finish_execution_shutdown();
         if let Ok(maps) = fs::read("/proc/self/maps") {
             let _ = fs::write(self.0.join("exit-maps.txt"), maps);
+        }
+    }
+}
+
+fn request_after_retirement(
+    mut request: impl FnMut() -> Result<Request, AudioError>,
+) -> Result<u64, Box<dyn Error>> {
+    let started = Instant::now();
+    loop {
+        match request()? {
+            Request::Started(id) => return Ok(id),
+            Request::Busy if started.elapsed() < Duration::from_secs(1) => {
+                spin(Duration::from_millis(10))
+            }
+            _ => return Err("explicit caller retry was not admitted after retirement".into()),
         }
     }
 }
@@ -66,6 +82,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     {
         return Err("private null-sink identity not confirmed; refusing playback".into());
     }
+    if let Some(code) = among::audio::decoder_dispatch() {
+        return if code == glib::ExitCode::SUCCESS {
+            Ok(())
+        } else {
+            Err("audio helper failed".into())
+        };
+    }
     let mut args = std::env::args_os().skip(1);
     let scenario = args.next().ok_or("scenario required")?;
     let output = PathBuf::from(args.next().ok_or("new output directory required")?);
@@ -104,14 +127,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         "LD_PRELOAD",
     ];
     let before: Vec<_> = keys.iter().map(std::env::var_os).collect();
-    if let Some(root) = root {
-        // Single-threaded startup; no application workers or host processes yet.
-        unsafe {
-            among::audio::runtime::initialize_packaged(&root)?;
-        }
-    } else {
-        gtk::init()?;
-    }
+    among::audio::initialize_execution(root.as_deref())?;
+    gtk::init()?;
     let after: Vec<_> = keys.iter().map(std::env::var_os).collect();
     if before != after {
         return Err("bundle discovery leaked environment overrides".into());
@@ -151,9 +168,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             drop(audio);
             audio = Audio::new()?;
             audio.set_event_admitted(true);
-            let Request::Started(current) = audio.event()? else {
-                return Err("new owner event not admitted".into());
-            };
+            let current = request_after_retirement(|| audio.event())?;
             assert_ne!(old, current);
             audio.cancel_event(old);
             assert!(audio.is_active());
@@ -163,7 +178,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let Request::Started(old) = audio.event()? else {
                 return Err("event not admitted".into());
             };
-            assert!(matches!(audio.preview()?, Request::Started(_)));
+            request_after_retirement(|| audio.preview())?;
             audio.cancel_event(old);
             assert!(audio.is_active());
         }
@@ -199,7 +214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     "replace" => {
                         audio.select(Sound::builtin()?)?;
                         assert!(!audio.is_active());
-                        assert!(matches!(audio.preview()?, Request::Started(_)));
+                        request_after_retirement(|| audio.preview())?;
                     }
                     _ => return Err("unexpected cancellation scenario".into()),
                 }
@@ -242,6 +257,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     spin(Duration::from_secs(4));
     fs::write(output.join("maps.txt"), fs::read("/proc/self/maps")?)?;
+    if let Some(snapshot) = audio.decoder_snapshot() {
+        fs::write(output.join("decoder-maps.txt"), snapshot.maps.as_ref())?;
+        fs::write(output.join("decoder-errors.txt"), snapshot.stderr.as_ref())?;
+        fs::write(output.join("decoder-state.txt"), format!("{snapshot:?}"))?;
+    }
     let notices = audio.drain_notices();
     assert!(notices.len() <= 32);
     fs::write(output.join("notices.txt"), format!("{notices:#?}\n"))?;
