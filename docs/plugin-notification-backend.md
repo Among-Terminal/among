@@ -1,11 +1,19 @@
-# Managed notification backend — explicit integration only
+# Managed notification backend — explicit integration under review
 
-This is an implemented backend boundary, **not an enabled ordinary-app feature**.
-Normal `PluginHost::new` / `with_start_gate` construction offers no notification
-roles. A required notification role refuses execution there; optional roles are
-omitted. General controls, durable provider policy, contribution widgets and normal
-application wiring remain separate integration work. Compilation or serialization
-does not establish native notification acceptance.
+This is an implemented backend boundary plus an ordinary-app integration on the
+current test branch, **not accepted notification enablement**. Plain
+`PluginHost::new` / `with_start_gate` construction still offers no notification
+roles; the application explicitly uses `with_notification_backend` with its VTE
+core. General reads declared full-identity/channel inventory and persists choices
+independently of plugin enablement, retaining unavailable choices and unknown data.
+Compilation or serialization does not establish native notification acceptance.
+
+Independent review of `ca73e6e` found three open P2 blockers: active provider
+envelopes can be evicted at the 64-record bound, targetless producers share one
+coalescing/cooldown key, and the permanent producer retirement after any delivery
+assignment (including not-enqueued) lacks an approved dual-role contract. The API
+author owns the first two/core-kind repairs and the owner-chosen strict role split.
+The common UI does not waive or duplicate those repairs.
 
 `src/plugin_notifications.rs` is GTK-free state and shared-core scheduling.
 `src/plugin/host/notification_backend.rs` connects it to actual supervised managed
@@ -42,8 +50,8 @@ and channel ID; names are not keys. `set_policy(key, Policy)` changes effective
 channel policy only, never plugin enablement. New channels are off with background
 eligibility. Views distinguish saved policy, installation, desired plugin switch
 and current admitted owner. Disabled/unavailable choices remain in memory.
-Persistence is the future General/storage consumer's responsibility, not a claimed
-operation of this backend.
+Persistence belongs to the General/storage consumer, not this backend. Opening
+the page or editing channel consent never starts a provider.
 
 Disable/fault/host destruction revoke actions, contributions, provider registration
 and active jobs. Installer integration must also call `Backend::uninstall(identity)`
@@ -86,13 +94,18 @@ not event text, configuration payloads or plugin free-form result text.
 The bridge stamps an envelope with event/root causal ID, core session, authoritative
 plugin identity/process generation, optional source-generation/workspace identity,
 and kind `managed_notification`. Delivery-linked production (`causal_job`) is
-rejected, not recursively routed. **Fail-closed dual-role rule:** after a process
+rejected, not recursively routed. **Rejected old dual-role behavior:** after a process
 generation has been assigned a delivery attempt, further production from that generation
 is rejected even if it omits `causal_job`. It can still deliver and contribute UI.
 This conservative restriction prevents disguised feedback; it is a contract-review
 point, not a claim of arbitrary dual-role workflow support. Assignment is conservative
 even if enqueue later fails; it is not a claim that a provider received bytes.
-Self-delivery is omitted.
+Self-delivery is omitted. This old permanent taint is not owner-approved. The owner
+has chosen strict producer/delivery authority separation before process spawn,
+conflicting-required-role refusal without execution, and explicit optional-role
+selection at access review/admission. Declarative UI remains independent. Await
+the exact typed author follow-up and native review-choice consumer; do not silently
+prefer a role or infer intent from an omitted causal field.
 Results never become notification events. No automatic retry or reconnect replay.
 
 ## Contribution and action state
@@ -209,19 +222,26 @@ bridge does not hide this by adding another pending-delivery queue.
 3. General must consume typed inventory and call `set_policy` after accepted edits,
    with durable identity/channel-scoped storage and unknown-data preservation.
 4. Render contribution snapshots only in the existing plugin areas and activate
-   opaque handles. No native contribution/action widget acceptance is claimed here.
+   opaque handles. The current app renderer adds plain text, inspected icons,
+   named styles and native action buttons inside those areas; it never replaces
+   the title, Restore control or workspace identity. Focused widgets are retained
+   across unchanged snapshots/legacy slot refresh; bounded scrolling contains wide
+   content. Native contribution/action acceptance remains evidence-dependent.
 5. The frozen core names its source-bearing ingress `bell`/`Kind::TerminalBell`.
    Managed provider envelopes correctly say `managed_notification`; later command/
    audio/app adapters **must use `Backend::envelope(event, now)`**, or extend the core's typed
    origin contract, rather than relabel plugin events from that old core enum.
-   The command backend is not duplicated or changed by this slice.
+    The ordinary command adapter currently refuses managed-origin work until that
+    typed follow-up. Audio retains and checks the current origin lease with core
+    authorization and cancels invalid active work on the shared tick. Neither
+    statement closes the core/causality or new-source audio acceptance boundaries.
 6. Join installer registration removal/replacement with host stop/reap and bridge
    uninstall/re-registration. Do not resurrect consent from retained settings.
 
 Run real process/model tests after building the fixture:
 
 ```sh
-CARGO_BUILD_JOBS=2 cargo build --locked --example notification-plugin
+CARGO_BUILD_JOBS=1 cargo build --locked --example notification-plugin
 CARGO_BUILD_JOBS=2 cargo test --locked plugin::host::notification_backend -- --nocapture
 CARGO_BUILD_JOBS=2 cargo test --locked --test plugin_notification_model
 ```

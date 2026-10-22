@@ -11,7 +11,9 @@ shared tick without discarding unread state or changing workspace hue/terminal s
 visual/audio/optional-command policies and persistence. One shared application
 [audio owner](audio.md) consumes admitted events and explicit preview separately.
 The normal bell backend registers/polls the optional [command executor](notification-commands.md)
-when configured. Managed notification producers/providers are not attached yet.
+when configured. The application also explicitly attaches the managed notification
+backend to this same core; no second scheduler is introduced. This test-branch
+integration remains subject to the separate API/core and causal-contract blockers.
 VTE's independent audible bell is disabled; no fallback beep bypasses host policy.
 
 ## Live source and focus
@@ -89,14 +91,23 @@ application, packaging or release approval.
 - Commands retain capacity through cleanup. Ordinary retirement holds GApplication
   and polls without a join; unconfirmed cleanup/quarantine keeps the hold and logs
   uncertainty rather than inventing rollback, retry or an irreversible forced exit.
-- Managed provider/producer authorization and real delivery belong to the separate
-  plugin API/runtime integration, not this host core. No provider success is faked.
-- Independent review of the inherited audio player found that native decoder
-  teardown can wait on GTK despite the playback watchdog. Hard-bounded stalled
-  cancellation/shutdown acceptance requires its implementation repair and re-review;
-  ordinary captured output/cancellation does not establish that boundary.
+- Managed provider/producer authorization belongs to the joined plugin backend.
+  Active-envelope eviction, targetless origin fairness and the dual-role contract
+  are independently open. Managed-origin command attempts are refused rather than
+  encoded from the old core kind; the API author owns the typed-core follow-up.
+- The supervised audio decoder repair is joined, including both early helper
+  dispatches and post-loop shutdown confirmation. Independent safety/platform
+  review remains outstanding; the owner separately accepts discarded Busy requests
+  and explicit retry after confirmed retirement. No
+  rejected Preview is queued or replayed, and accepted sound selection is not a
+  playback receipt. New-source native controls/captures are required; older output
+  and normal cancellation do not establish this repair's stalled boundary.
 - Packaged command self-exec and the full audio platform/release matrix remain
   separate from native General/UI observations.
+- Installer fresh-token authority has a separately assigned L1 remove/reinstall
+  finding. Current-host/nonmodal approval does not establish that boundary. Await
+  the exact reviewed installer repair and actual combined regression; no mutable
+  installer checkpoint is incorporated here.
 
 These boundaries require their own tests; core queue/policy tests do not establish
 audio output, command supervision, provider delivery, UI acceptance or release

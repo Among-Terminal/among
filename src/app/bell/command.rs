@@ -130,7 +130,11 @@ impl Adapter {
         }
     }
 
-    pub fn poll(&mut self, host: &mut Host) {
+    pub fn poll(
+        &mut self,
+        host: &std::rc::Rc<std::cell::RefCell<Host>>,
+        bridge: &std::rc::Rc<std::cell::RefCell<among::plugin_notifications::Backend>>,
+    ) {
         if let Some(receive) = &self.preparation {
             match receive.try_recv() {
                 Ok(Ok(directory)) => {
@@ -156,7 +160,7 @@ impl Adapter {
             && !runtime.is_prepared()
             && self
                 .channel
-                .is_some_and(|channel| host.pending_count(Some(channel)) != 0)
+                .is_some_and(|channel| host.borrow().pending_count(Some(channel)) != 0)
         {
             self.attempted = true;
             self.preparation = self.path.clone().and_then(prepare);
@@ -166,10 +170,18 @@ impl Adapter {
         }
         if self.problem.is_some() {
             if let Some(channel) = self.channel {
-                host.discard_pending(channel);
+                host.borrow_mut().discard_pending(channel);
             }
         }
-        runtime.poll(host, Instant::now());
+        let now = Instant::now();
+        runtime.poll_guarded(host, now, |event| {
+            // The API author's typed-core join must precede managed command
+            // payloads. Never encode a managed event as an old terminal bell.
+            bridge
+                .borrow()
+                .envelope(event, now)
+                .is_some_and(|envelope| envelope.origin.is_none())
+        });
     }
 
     pub fn shutdown(&mut self, host: &mut Host) {
@@ -190,7 +202,7 @@ impl Adapter {
         if self.preparation.is_some() {
             return "Preparing owned command directory off the UI loop".into();
         }
-        "Local process completion is not remote delivery. Cancellation cannot undo external effects.".into()
+        "Local process completion is not remote delivery. Cancellation cannot undo external effects. Managed-origin commands are withheld pending the typed-core integration.".into()
     }
 }
 

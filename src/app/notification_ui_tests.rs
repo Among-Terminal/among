@@ -109,6 +109,401 @@ fn accessible_property(
 }
 
 #[test]
+#[ignore = "requires owned X11/WM/private XDG, prebuilt notification-plugin and command fixtures; typed-core acceptance remains separate"]
+fn ordinary_app_provider_controls_and_declarative_actions_use_one_live_core() {
+    use serde_json::{json, Value};
+    use std::os::unix::fs::PermissionsExt;
+    if std::env::var("AMONG_PROVIDER_UI_PHASE").as_deref() == Ok("restore") {
+        let root = crate::plugin::inventory::root().unwrap();
+        let package = crate::plugin::inventory::read(&root)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.key() == "github:12/sample")
+            .unwrap()
+            .receipt
+            .package_path(&root);
+        let deliveries = |text: &str| {
+            text.lines()
+                .filter(|line| serde_json::from_str::<Value>(line).unwrap()["type"] == "deliver")
+                .count()
+        };
+        let before = std::fs::read_to_string(package.join("received.jsonl")).unwrap();
+        let general = crate::settings::directory().unwrap().join("general.json");
+        let bytes = std::fs::read(&general).unwrap();
+        let (_app, ctx) = app();
+        wait(
+            || {
+                ctx.state.borrow().plugins.configuration("github:12/sample")
+                    == crate::plugin::host::Configuration::Applied
+            },
+            "fresh process retained explicit plugin enablement",
+        );
+        let executed = std::fs::read(package.join("executed")).unwrap();
+        let prefs = preferences(&ctx);
+        assert!(named::<adw::SwitchRow>(
+            &prefs,
+            "notification-provider:github:12/sample:first-enabled"
+        )
+        .is_active());
+        for name in [
+            "notification-provider:github:12/sample:second-enabled",
+            "notification-provider:github:13/sample:first-enabled",
+            "notification-provider:github:13/sample:second-enabled",
+        ] {
+            assert!(!named::<adw::SwitchRow>(&prefs, name).is_active());
+        }
+        pump_for(Duration::from_millis(400));
+        assert_eq!(
+            std::fs::read(general).unwrap(),
+            bytes,
+            "fresh view saved defaults or replay state"
+        );
+        assert_eq!(
+            std::fs::read(package.join("executed")).unwrap(),
+            executed,
+            "view restarted the managed process"
+        );
+        assert_eq!(
+            deliveries(&std::fs::read_to_string(package.join("received.jsonl")).unwrap()),
+            deliveries(&before),
+            "fresh process replayed an old delivery"
+        );
+        prefs.destroy();
+        ctx.window.destroy();
+        println!("PASS fresh ordinary app restores independent real provider choices; General view neither restarts admitted providers nor writes defaults/replays delivery");
+        return;
+    }
+    let config = crate::settings::directory().unwrap();
+    crate::test_isolation::assert_below_check_root(&config);
+    let root = crate::plugin::inventory::root().unwrap();
+    let mut receipt = crate::plugin::inventory::tests::fixture(&root);
+    let package = receipt.package_path(&root);
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/notification-plugin");
+    assert!(binary.is_file());
+    std::fs::copy(&binary, package.join("plugin")).unwrap();
+    std::fs::set_permissions(
+        package.join("plugin"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(package.join("among-plugin.json")).unwrap()).unwrap();
+    manifest["required_features"] = json!(["status", "settings"]);
+    manifest["optional_features"] = json!([
+        "notifications.ui",
+        "notifications.deliver",
+        "context.terminals"
+    ]);
+    manifest["delivery_channels"] = json!([
+        {"id":"first","name":"Same display","description":"First independent channel"},
+        {"id":"second","name":"Same display","description":"Second independent channel"}
+    ]);
+    let bytes = manifest.to_string();
+    std::fs::write(package.join("among-plugin.json"), &bytes).unwrap();
+    receipt.manifest_sha256 = crate::plugin::inventory::checksum(bytes.as_bytes()).unwrap();
+    let mut other = receipt.clone();
+    other.repository_id = 13;
+    let other_package = other.package_path(&root);
+    std::fs::create_dir_all(&other_package).unwrap();
+    let mut path = other_package.as_path();
+    while path.starts_with(&root) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if path == root {
+            break;
+        }
+        path = path.parent().unwrap();
+    }
+    for name in ["among-plugin.json", "plugin"] {
+        std::fs::copy(package.join(name), other_package.join(name)).unwrap();
+    }
+    std::fs::write(
+        root.join("installed.json"),
+        json!({"version":1,"installations":[receipt,other]}).to_string(),
+    )
+    .unwrap();
+    let (_app, ctx) = app();
+    split_focused(&ctx);
+    pump_for(Duration::from_millis(200));
+    let backend = ctx.state.borrow().bells.clone().unwrap();
+    let bridge = backend.notification_backend();
+    let first = PaneId(1);
+    let second = ctx.state.borrow().workspaces.active().focused;
+    assert_eq!(
+        bridge.borrow().source(first.0),
+        backend.with_host(|host| host.source(first.0)).unwrap()
+    );
+    let prefs = preferences(&ctx);
+    assert_eq!(backend.provider_inventory().len(), 4);
+    assert!(backend
+        .provider_inventory()
+        .iter()
+        .all(|channel| !channel.policy.enabled && !channel.plugin_enabled));
+    assert!(!package.join("executed").exists() && !other_package.join("executed").exists());
+    assert!(!config.join("general.json").exists(), "view wrote defaults");
+    let enabled: adw::SwitchRow = named(
+        &prefs,
+        "notification-provider:github:12/sample:first-enabled",
+    );
+    let condition: adw::ComboRow = named(
+        &prefs,
+        "notification-provider:github:12/sample:first-condition",
+    );
+    assert!(condition.grab_focus());
+    xdo(&["key", "--clearmodifiers", "Return", "Home", "Return"]);
+    pump_for(Duration::from_millis(150));
+    assert_eq!(condition.selected(), 0);
+    toggle(&enabled);
+    assert!(
+        !package.join("executed").exists(),
+        "channel permission started disabled plugin"
+    );
+    assert!(backend
+        .provider_inventory()
+        .iter()
+        .filter(|channel| channel.policy.enabled)
+        .all(
+            |channel| channel.declaration.key.identity == "github:12/sample"
+                && channel.declaration.key.channel == "first"
+        ));
+    // Review is explicit fixture setup, not a claim about the separate native
+    // access-review workflow. Enablement below still uses the real manager.
+    let features = json!([
+        "status",
+        "settings",
+        "notifications.ui",
+        "notifications.deliver",
+        "context.terminals"
+    ]);
+    for identity in ["github:12/sample", "github:13/sample"] {
+        ctx.state
+            .borrow_mut()
+            .plugins
+            .review_access(
+                identity,
+                json!({"owner":"example","repository":"sample","features":features}),
+            )
+            .unwrap();
+    }
+    let plugin_page = descendants(prefs.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::PreferencesPage>().ok())
+        .find(|page| page.name().as_deref() == Some("plugins"))
+        .unwrap();
+    prefs.set_visible_page(&plugin_page);
+    let switch_for = |identity: &str| {
+        let row = descendants(plugin_page.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+            .find(|row| row.subtitle().is_some_and(|text| text.contains(identity)))
+            .unwrap();
+        descendants(row.upcast_ref())
+            .into_iter()
+            .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
+            .unwrap()
+    };
+    for identity in ["github:12/sample", "github:13/sample"] {
+        let switch = switch_for(identity);
+        assert!(!switch.is_active() && switch.grab_focus());
+        xdo(&["key", "--clearmodifiers", "space"]);
+        wait(|| switch.is_active(), "native managed enable");
+        wait(
+            || {
+                ctx.state.borrow().plugins.configuration(identity)
+                    == crate::plugin::host::Configuration::Applied
+            },
+            "ordinary application admission",
+        );
+        ctx.state.borrow_mut().settings.managed_review_for_installation(
+            identity, json!({"owner":"example","repository":"sample","features":features}), None,
+        ).unwrap();
+    }
+    let frames = |package: &std::path::Path| -> Vec<Value> {
+        std::fs::read_to_string(package.join("received.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    let mut serial = 0;
+    let mut send = |package: &std::path::Path, message: Value| {
+        serial += 1;
+        let temporary = package.join("ui-pending.json");
+        let destination = package.join(format!("input-{serial}.json"));
+        std::fs::write(&temporary, message.to_string()).unwrap();
+        std::fs::rename(temporary, &destination).unwrap();
+        wait(
+            || !destination.exists(),
+            "actual managed contribution ingress",
+        );
+        pump_for(Duration::from_millis(100));
+    };
+    real_bell(&ctx, &backend, first);
+    wait(
+        || {
+            frames(&package)
+                .iter()
+                .any(|frame| frame["type"] == "deliver")
+        },
+        "normal VTE to ordinary provider",
+    );
+    let deliveries: Vec<_> = frames(&package)
+        .into_iter()
+        .filter(|frame| frame["type"] == "deliver")
+        .collect();
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(deliveries[0]["delivery"]["event"]["kind"], "terminal_bell");
+    assert_eq!(deliveries[0]["delivery"]["channel"], "first");
+    assert!(frames(&other_package)
+        .iter()
+        .all(|frame| frame["type"] != "deliver"));
+    let workspace = ctx.state.borrow().workspaces.active().reference.to_string();
+    for (id, slot, target) in [
+        ("app", "app_header", json!({"kind":"application"})),
+        ("footer", "app_footer", json!({"kind":"application"})),
+        (
+            "workspace",
+            "workspace_header",
+            json!({"kind":"workspace","reference":workspace}),
+        ),
+        (
+            "summary",
+            "workspace_summary",
+            json!({"kind":"workspace","reference":workspace}),
+        ),
+        (
+            "pane",
+            "pane_header",
+            json!({"kind":"pane","reference":second.0.to_string()}),
+        ),
+        (
+            "pane-footer",
+            "pane_footer",
+            json!({"kind":"pane","reference":second.0.to_string()}),
+        ),
+    ] {
+        send(
+            &package,
+            json!({"type":"notification_contribution","session":"$session","generation":"$generation",
+            "contribution":{"id":id,"revision":1,"scope":{"slot":slot,"target":target},
+                "source_generation":bridge.borrow().source(second.0).unwrap().generation().to_string(),
+                "text":format!("Native {id}"),"tooltip":"Plain notification text","style":"warning",
+                "icon":"theme:dialog-information-symbolic","actions":[{"id":"ack","label":format!("Acknowledge {id}")}]}}),
+        );
+    }
+    prefs.destroy();
+    activate(&ctx.window);
+    let buttons = || {
+        descendants(ctx.window.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .filter(|button| button.widget_name() == "notification-contribution-action")
+            .collect::<Vec<_>>()
+    };
+    wait(
+        || buttons().len() == 6,
+        "six actual allowed-scope native action controls",
+    );
+    let marker =
+        PathBuf::from(std::env::var_os("HOME").unwrap()).join("notification-action-vte-misroute");
+    terminal(&ctx, second).grab_focus();
+    xdo(&[
+        "type",
+        "--clearmodifiers",
+        "--delay",
+        "0",
+        &format!("printf WRONG > '{}'", marker.display()),
+    ]);
+    let mut retained = None;
+    let mut ordered = buttons();
+    ordered.sort_by_key(|button| button.label().as_deref() == Some("Acknowledge pane-footer"));
+    for button in ordered {
+        assert!(gtk::test_accessible_has_role(
+            &button,
+            gtk::AccessibleRole::Button
+        ));
+        accessible_label(&button, button.label().unwrap().as_str());
+        key_button(&button);
+        retained = Some(button);
+    }
+    wait(
+        || {
+            frames(&package)
+                .iter()
+                .filter(|frame| frame["type"] == "notification_action")
+                .count()
+                == 6
+        },
+        "opaque native action routing",
+    );
+    assert!(!marker.exists(), "notification action Enter reached VTE");
+    let retained = retained.unwrap();
+    refresh_slots(&ctx);
+    pump_for(Duration::from_millis(200));
+    assert!(
+        retained.has_focus(),
+        "slot polling replaced focused notification action"
+    );
+    assert!(buttons().contains(&retained));
+    let source = bridge.borrow().source(second.0).unwrap();
+    close_focused(&ctx);
+    wait(
+        || bridge.borrow().source(second.0).is_none(),
+        "real pane lifetime revocation",
+    );
+    assert!(!backend.with_host(|host| host.is_live(source)).unwrap());
+    wait(
+        || buttons().len() == 4,
+        "withdrawn pane-scoped native controls",
+    );
+    let count = frames(&package)
+        .iter()
+        .filter(|frame| frame["type"] == "notification_action")
+        .count();
+    retained.emit_clicked();
+    pump_for(Duration::from_millis(200));
+    assert_eq!(
+        frames(&package)
+            .iter()
+            .filter(|frame| frame["type"] == "notification_action")
+            .count(),
+        count,
+        "stale opaque action routed after pane close"
+    );
+    terminal(&ctx, first).feed_child(b"\x15printf '\\033]0;provider-ui-input-alive\\007'\n");
+    wait(
+        || terminal(&ctx, first).window_title().as_deref() == Some("provider-ui-input-alive"),
+        "real terminal survives contribution updates",
+    );
+    ctx.window.destroy();
+    wait(
+        || ctx.state.borrow().plugins.supervised_count() == 0 && backend.is_stopped(),
+        "parent retirement before fresh relaunch",
+    );
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["app::notification_ui_tests::ordinary_app_provider_controls_and_declarative_actions_use_one_live_core", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("AMONG_PROVIDER_UI_PHASE", "restore").output().unwrap();
+    let log = crate::test_isolation::check_root()
+        .join(format!("provider-ui-fresh-{}.log", std::process::id()));
+    std::fs::write(
+        &log,
+        [output.stdout.as_slice(), output.stderr.as_slice()].concat(),
+    )
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "fresh provider phase failed; {}",
+        log.display()
+    );
+    println!("PASS ordinary app single core, four same-name identity/channel rows off by default, channel permission does not start plugins, real manager enable/provider/VTE delivery, all six allowed declarative areas, native accessible opaque keyboard actions with zero VTE misroute, stable focused widgets across slot refresh and live pane withdrawal, real fresh-process policy restoration. Typed core/origin command follow-up and broader acceptance remain open.");
+}
+
+#[test]
 #[ignore = "requires an owned X11 display/WM with GTK_A11Y=test and private XDG roots"]
 fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
     let (_app, ctx) = app();
