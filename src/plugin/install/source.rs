@@ -16,6 +16,8 @@ use crate::plugin::data::{self, Problem};
 use crate::plugin::inventory::{Receipt, SourceReceipt};
 use crate::plugin::origin::Origin;
 
+mod release;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -158,7 +160,7 @@ impl Inspection {
                     Err(problem) => problem.to_string(),
                 };
                 lines.push(format!(
-                    "{} — {} {}: {}\n{}\npublisher-asserted build revision {}; release {}; manifest {}",
+                    "{} — {} {}: {}\n{}\ncatalogue-declared version commit {}; release {}; manifest {}. Exact release-tag binding is required during installation.",
                     plugin.id,
                     version.manifest.name,
                     version.manifest.version,
@@ -209,6 +211,7 @@ impl Inspection {
                 publisher_id: self.publisher_id,
                 catalogue_revision: self.catalogue_revision.clone(),
                 catalogue_sha256: crate::plugin::inventory::checksum(&self.catalogue_bytes)?,
+                release_binding: None,
             },
         })
     }
@@ -271,7 +274,7 @@ impl Selection {
                 &self.version.manifest.id,
             )
         });
-        format!("{}\nSelected version {} · publisher-asserted build revision {}\n{}\nRequired access: {}\nOptional access: {}\nOnly this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "))
+        format!("{}\nSelected version {} · catalogue-declared version commit {}\n{}\nRequired access: {}\nOptional access: {}\nThe exact release tag must resolve to this commit and remain consistent through the pre-commit recheck. This is content consistency, not build reproducibility or independent publisher authentication. Only this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "))
     }
     pub fn description(&self) -> String {
         format!(
@@ -565,7 +568,7 @@ impl Operation {
         let version = &selected.version;
         let artifact = &selected.artifact;
         artifact.compatibility(&Platform::current()?)?;
-        let receipt = Receipt {
+        let mut receipt = Receipt {
             repository_id: selected.repository_id,
             owner: selected.repository.owner.clone(),
             repository: selected.repository.name.clone(),
@@ -595,6 +598,12 @@ impl Operation {
         } else {
             transaction.refuse_existing(&receipt)?;
         }
+        let release = self.resolve_release(&selected).await?;
+        receipt
+            .source
+            .as_mut()
+            .ok_or(Problem("selected package has no source receipt"))?
+            .release_binding = Some(release.binding.clone());
         self.download(&selected, &mut transaction.archive, state)
             .await?;
         transaction
@@ -612,6 +621,9 @@ impl Operation {
             artifact,
             || self.check(),
         )?;
+        if self.resolve_release(&selected).await? != release {
+            return Err(Problem("release tag or immutable peel chain changed during installation; selection was not committed"));
+        }
         match &selected.previous {
             Some(previous) => transaction.commit_update(
                 receipt,
@@ -634,47 +646,7 @@ impl Operation {
         state: &AtomicU8,
     ) -> Result<(), Problem> {
         let repository = selected.repository_id.to_string();
-        let release = selected.version.release_id.to_string();
         let asset = selected.artifact.asset_id.to_string();
-        let url = github_url(
-            "api.github.com",
-            &["repositories", &repository, "releases", &release],
-        )?;
-        let requested = url.clone();
-        let (bytes, _) = self
-            .get(url, |next| next == &requested, data::MAX_STATIC_BYTES)
-            .await?;
-        let release = data::parse_unique(&bytes, data::MAX_STATIC_BYTES)?;
-        if release["id"].as_u64() != Some(selected.version.release_id)
-            || release["draft"].as_bool() != Some(false)
-        {
-            return Err(Problem(
-                "selected public release identity disagrees with the catalogue",
-            ));
-        }
-        let assets = release["assets"]
-            .as_array()
-            .ok_or(Problem("selected release has no asset inventory"))?;
-        let mut matches = assets
-            .iter()
-            .filter(|entry| entry["id"].as_u64() == Some(selected.artifact.asset_id));
-        let entry = matches.next().ok_or(Problem(
-            "selected asset does not belong to the selected release",
-        ))?;
-        if matches.next().is_some()
-            || entry["size"].as_u64() != Some(selected.artifact.size)
-            || entry["state"].as_str() != Some("uploaded")
-        {
-            return Err(Problem("selected release asset identity or size changed"));
-        }
-        if entry.get("digest").is_some_and(|digest| {
-            !digest.is_null()
-                && digest.as_str() != Some(format!("sha256:{}", selected.artifact.sha256).as_str())
-        }) {
-            return Err(Problem(
-                "release asset digest disagrees with selected metadata",
-            ));
-        }
         let mut url = github_url(
             "api.github.com",
             &["repositories", &repository, "releases", "assets", &asset],
@@ -800,6 +772,7 @@ impl Operation {
                 .client
                 .get(url.clone())
                 .header("Accept", "application/vnd.github+json")
+                .header("Cache-Control", "no-cache")
                 .header("Accept-Encoding", "identity");
             let mut response = self.wait(request.send()).await?;
             if response.status().is_redirection() {

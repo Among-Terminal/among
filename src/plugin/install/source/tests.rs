@@ -3,6 +3,8 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 
+mod release_binding;
+
 pub(crate) static JOB_TESTS: Mutex<()> = Mutex::new(());
 
 pub(crate) struct Reply {
@@ -465,8 +467,10 @@ fn selected(metadata: &Value) -> Selection {
 pub(crate) fn package_route(metadata: Value, archive: Vec<u8>, request: &str) -> Reply {
     let path = request.split_whitespace().nth(1).unwrap();
     match path {
-        "/repositories/12/releases/7" => Reply::json(serde_json::json!({"id":7,"draft":false,"assets":[
+        "/repositories/12/releases/7" => Reply::json(serde_json::json!({"id":7,"draft":false,"tag_name":"v1.0","assets":[
             {"id":11,"size":archive.len(),"state":"uploaded","digest":format!("sha256:{}", metadata["artifacts"][0]["sha256"].as_str().unwrap())}]})),
+        "/repositories/12/git/ref/tags/v1.0" => Reply::json(serde_json::json!({"ref":"refs/tags/v1.0","object":{"type":"commit","sha":metadata["revision"]}})),
+        path if path == format!("/repositories/12/git/commits/{}", metadata["revision"].as_str().unwrap()) => Reply::json(serde_json::json!({"sha":metadata["revision"]})),
         "/repositories/12/releases/assets/11" => Reply { status: 302, headers: vec![("Location".into(),
             "https://release-assets.githubusercontent.com/github-production-release-asset/12/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee?token=synthetic-delivery-token".into())], ..Reply::json(Value::Null) },
         path if path.starts_with("/github-production-release-asset/12/") => Reply { body: archive, ..Reply::json(Value::Null) },
@@ -893,11 +897,12 @@ fn actual_https_stream_commits_exact_selection_inert_and_loads_offline() {
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        3,
-        "install must not refetch mutable latest/catalogue"
+        8,
+        "install rechecks the pinned release/ref/commit without refetching mutable latest/catalogue"
     );
     assert!(requests[0].starts_with("GET /repositories/12/releases/7 "));
-    assert!(requests[1].starts_with("GET /repositories/12/releases/assets/11 "));
+    assert!(requests[1].starts_with("GET /repositories/12/git/ref/tags/v1.0 "));
+    assert!(requests[3].starts_with("GET /repositories/12/releases/assets/11 "));
     assert!(requests
         .iter()
         .all(|request| !request.to_lowercase().contains("authorization:")
@@ -1000,7 +1005,11 @@ fn cancellation_of_actual_package_worker_cannot_report_a_committed_rollback() {
     });
     let job = server.install(selection, root.0.clone()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while server.requests().len() < 2 {
+    while !server
+        .requests()
+        .iter()
+        .any(|request| request.starts_with("GET /repositories/12/releases/assets/11 "))
+    {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(5));
     }

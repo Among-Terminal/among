@@ -120,7 +120,7 @@ pub(super) fn add_actions(
         }
         let package = adw::PreferencesGroup::new();
         package.set_title("Package provenance");
-        detail_row(&package, "Build revision (publisher-asserted)", &current.receipt.revision);
+        detail_row(&package, "Catalogue-declared version commit", &current.receipt.revision);
         detail_row(
             &package,
             "Release / asset",
@@ -138,6 +138,14 @@ pub(super) fn add_actions(
             detail_row(&package, "Catalogue SHA-256", &receipt.catalogue_sha256);
         } else {
             detail_row(&source, "Numeric publisher identity", "Unconfirmed in this pre-installer receipt; an update requires renewed review");
+        }
+        if let Some(binding) = current.receipt.source.as_ref().and_then(|source| source.release_binding.as_ref()) {
+            detail_row(&package, "Release tag", &binding.tag);
+            detail_row(&package, "Observed tag reference object", &binding.object);
+            detail_row(&package, "Resolved release commit", &binding.commit);
+            detail_row(&package, "Release-tag consistency", "Observed before transfer and rechecked before commit. This is not build reproducibility, independent publisher authentication or a sandbox.");
+        } else {
+            detail_row(&package, "Release-tag consistency", "Not recorded for this installation; a revision alone is not tag verification.");
         }
         if let Ok(inspected) = &current.inspected {
             detail_row(

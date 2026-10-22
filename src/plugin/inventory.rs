@@ -12,10 +12,38 @@ pub const MAX_INSTALLATIONS: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct ReleaseBinding {
+    pub tag: String,
+    pub object: String,
+    pub commit: String,
+}
+
+impl ReleaseBinding {
+    pub(crate) fn supported_tag(tag: &str) -> bool {
+        !tag.is_empty()
+            && tag.len() <= 256
+            && tag.split('/').count() <= 16
+            && !tag.contains("..")
+            && tag.split('/').all(|part| {
+                !part.is_empty()
+                    && !part.starts_with('.')
+                    && !part.ends_with('.')
+                    && !part.ends_with(".lock")
+                    && part.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SourceReceipt {
     pub publisher_id: u64,
     pub catalogue_revision: String,
     pub catalogue_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_binding: Option<ReleaseBinding>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -61,6 +89,11 @@ impl Receipt {
                 source.publisher_id == 0
                     || !hex(&source.catalogue_revision, 40)
                     || !hex(&source.catalogue_sha256, 64)
+                    || source.release_binding.as_ref().is_some_and(|binding| {
+                        !ReleaseBinding::supported_tag(&binding.tag)
+                            || !hex(&binding.object, 40)
+                            || binding.commit != self.revision
+                    })
             })
             || self.asset_id == 0
         {
@@ -399,6 +432,83 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(read(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recorded_release_binding_is_validated_on_actual_offline_inventory_read() {
+        let root = std::env::temp_dir().join(format!(
+            "among-release-receipt-{}",
+            glib::uuid_string_random()
+        ));
+        let mut receipt = fixture(&root);
+        receipt.source = Some(SourceReceipt {
+            publisher_id: 34,
+            catalogue_revision: "d".repeat(40),
+            catalogue_sha256: "b".repeat(64),
+            release_binding: Some(ReleaseBinding {
+                tag: "releases/v1.0".into(),
+                object: "c".repeat(40),
+                commit: receipt.revision.clone(),
+            }),
+        });
+        for invalid in ["commit", "object", "tag"] {
+            let mut candidate = receipt.clone();
+            let binding = candidate
+                .source
+                .as_mut()
+                .unwrap()
+                .release_binding
+                .as_mut()
+                .unwrap();
+            match invalid {
+                "commit" => binding.commit = "e".repeat(40),
+                "object" => binding.object = "invalid".into(),
+                _ => binding.tag = "../heads/main".into(),
+            }
+            let bytes = json!({"version":1,"installations":[candidate]}).to_string();
+            std::fs::write(root.join("installed.json"), &bytes).unwrap();
+            assert!(
+                read(&root).is_err(),
+                "{invalid}: a persisted label cannot stand in for a consistent receipt"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("installed.json")).unwrap(),
+                bytes
+            );
+        }
+        std::fs::write(
+            root.join("installed.json"),
+            json!({"version":1,"installations":[receipt]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(read(&root).unwrap()[0].receipt, receipt);
+        let legacy = fixture(&root);
+        assert!(legacy.source.is_none());
+        assert_eq!(read(&root).unwrap()[0].receipt, legacy);
+        for tag in [
+            "",
+            "../v1",
+            "v1..0",
+            "/v1",
+            "v1/",
+            "v1//x",
+            ".hidden",
+            "v1.",
+            "v1.lock",
+            "v1/x.lock",
+            "v1@{1}",
+            "v1^{}",
+            "v1%2fx",
+            "v1?token=synthetic",
+            "v1 x",
+            "версия",
+        ] {
+            assert!(!ReleaseBinding::supported_tag(tag), "{tag}");
+        }
+        assert!(!ReleaseBinding::supported_tag(&"x".repeat(257)));
+        assert!(!ReleaseBinding::supported_tag(&vec!["x"; 17].join("/")));
+        assert!(ReleaseBinding::supported_tag("releases/v1.0-rc_1"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
