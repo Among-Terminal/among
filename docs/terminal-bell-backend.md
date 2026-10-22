@@ -81,11 +81,11 @@ owned active operations when the source, channel or policy is revoked. Policy
 changes clear queued jobs and invalidate already dequeued tokens. Re-enabling a
 channel never replays old work. The core cannot undo a completed external effect.
 
-## Open acceptance boundaries
+The inherited command PID-truncation finding is closed by the separately authored
+framed-selector repair and its independent re-review. That is not broader
+application, packaging or release approval.
 
-- The inherited command cleanup PID parser has an independent high-severity
-  truncation finding. Security acceptance is blocked pending its dedicated repair
-  and re-review; ordinary small-tree results do not override that finding.
+## Open acceptance boundaries
 - Commands retain capacity through cleanup. Ordinary retirement holds GApplication
   and polls without a join; unconfirmed cleanup/quarantine keeps the hold and logs
   uncertainty rather than inventing rollback, retry or an irreversible forced exit.

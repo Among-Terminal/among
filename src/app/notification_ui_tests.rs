@@ -80,12 +80,20 @@ fn app() -> (adw::Application, Window) {
 }
 
 fn accessible_label(widget: &impl IsA<gtk::Accessible>, expected: &str) {
+    accessible_property(widget, gtk::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL, expected);
+}
+
+fn accessible_property(
+    widget: &impl IsA<gtk::Accessible>,
+    property: gtk::ffi::GtkAccessibleProperty,
+    expected: &str,
+) {
     use glib::translate::*;
     let text = std::ffi::CString::new(expected).unwrap();
     let error = unsafe {
         gtk::ffi::gtk_test_accessible_check_property(
             widget.as_ref().to_glib_none().0,
-            gtk::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL,
+            property,
             text.as_ptr(),
         )
     };
@@ -110,6 +118,9 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
     pump_for(Duration::from_millis(200));
     let second = ctx.state.borrow().workspaces.active().focused;
     let term = terminal(&ctx, first);
+    term.update_property(&[gtk::accessible::Property::Description(
+        "Native terminal description retained",
+    )]);
     let header = term.parent().unwrap().first_child().unwrap();
     assert!(gtk::test_accessible_has_role(
         &header,
@@ -134,6 +145,11 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
     );
     assert!(badge.is_visible());
     accessible_label(&header, &format!("Terminal {}, unread bell", first.0));
+    accessible_property(
+        &term,
+        gtk::ffi::GTK_ACCESSIBLE_PROPERTY_DESCRIPTION,
+        "Native terminal description retained",
+    );
     let row = ctx.workspace_list.row_at_index(0).unwrap();
     accessible_label(&row, "project, 2 terminals, 1 unread bells");
     assert_eq!(
@@ -235,7 +251,7 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
 }
 
 #[test]
-#[ignore = "requires owned X11/private XDG plus prebuilt Rust command fixture; ordinary small trees only, security acceptance still blocked pending PID review"]
+#[ignore = "requires owned X11/private XDG plus prebuilt Rust command fixture; ordinary small trees only, not exceptional-path or packaged acceptance"]
 fn general_controls_drive_production_commands_and_application_retirement() {
     let (app, ctx) = app();
     let backend = ctx.state.borrow().bells.clone().unwrap();
@@ -395,7 +411,7 @@ fn general_controls_drive_production_commands_and_application_retirement() {
         first_channel, final_channel,
         "configuration replacement changed channel identity"
     );
-    println!("PASS real labelled General keyboard program/literal-argv/condition/enable controls drive the normal VTE backend registration, lazy off-loop directory preparation, shared-tick execution/completion, stable ownership and nonblocking GApplication hold through real small-tree reaping; this is NOT security approval of the pending PID-parser repair");
+    println!("PASS real labelled General keyboard program/literal-argv/condition/enable controls drive the normal VTE backend registration, lazy off-loop directory preparation, shared-tick execution/completion, stable ownership and nonblocking GApplication hold through real small-tree reaping; PID selection has separate repair/re-review evidence, not exceptional-path or packaged acceptance");
 }
 
 #[test]
