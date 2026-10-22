@@ -32,7 +32,11 @@ impl Drop for Evidence {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    if !std::path::Path::new("/.dockerenv").exists() || std::path::Path::new("/dev/snd").exists() {
+    if !std::path::Path::new("/.dockerenv").exists()
+        || ["/dev/snd", "/dev/dsp", "/dev/audio"]
+            .iter()
+            .any(|name| std::path::Path::new(name).exists())
+    {
         return Err("audio probe requires an owned device-free container".into());
     }
     let socket = format!("unix:{}/pulse.sock", std::env::var("XDG_RUNTIME_DIR")?);
@@ -46,6 +50,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let modules = Command::new("pactl")
         .args(["list", "short", "modules"])
         .output()?;
+    if !info.status.success() || !sinks.status.success() || !modules.status.success() {
+        return Err("private null-sink inspection failed; refusing playback".into());
+    }
     let info = String::from_utf8(info.stdout)?;
     let sinks = String::from_utf8(sinks.stdout)?;
     let modules = String::from_utf8(modules.stdout)?;
@@ -64,6 +71,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output = PathBuf::from(args.next().ok_or("new output directory required")?);
     fs::create_dir(&output)?;
     let _evidence = Evidence(output.clone());
+    fs::write(
+        output.join("process-context.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "compiled_arch":std::env::consts::ARCH,
+            "executable":fs::read_link("/proc/self/exe")?,
+            "confinement":fs::read_to_string("/proc/self/attr/current")?,
+            "snap":std::env::var("SNAP").ok(),
+            "snap_revision":std::env::var("SNAP_REVISION").ok(),
+            "scope":"external audio library probe; not General controls"
+        }))?,
+    )?;
+    fs::write(
+        output.join("mountinfo.txt"),
+        fs::read("/proc/self/mountinfo")?,
+    )?;
     let input = args
         .next()
         .map(PathBuf::from)

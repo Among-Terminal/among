@@ -35,6 +35,8 @@ Usage:
   among-tools check-context-menu <among-binary> <prebuilt-clipboard-helper> <light|dark>
   among-tools check-context-menu-snap <prebuilt-clipboard-helper> <light|dark> [--github-hosted]
   among-tools check-snap-runtime [--github-hosted]
+  among-tools bind-audio-probe <probe> <artifact> <source-sha> <architecture> <new-directory>
+  among-tools check-audio-package <appimage|snap-core24|snap-installed> <artifact> <probe-directory> <source-sha> <architecture> <new-output>
   among-tools deb-release-inputs <source-root> <stable-tag> <debian13|ubuntu24.04> <amd64|arm64>
   among-tools stage-deb <source-root> <binaries> <new-destination>
   among-tools deb-tag-source <source-root>
@@ -88,6 +90,29 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
+        [command, probe, artifact, source, architecture, output]
+            if command == "bind-audio-probe" =>
+        {
+            among_tools::audio_package::bind(
+                Path::new(probe),
+                Path::new(artifact),
+                source,
+                architecture,
+                Path::new(output),
+            )?;
+        }
+        [command, kind, artifact, probe, source, architecture, output]
+            if command == "check-audio-package" =>
+        {
+            among_tools::audio_package::run(
+                kind,
+                Path::new(artifact),
+                Path::new(probe),
+                source,
+                architecture,
+                Path::new(output),
+            )?;
+        }
         [command, source, version, output] if command == "package-metainfo" => {
             among_tools::release_metadata::write_package_metainfo(
                 Path::new(source),

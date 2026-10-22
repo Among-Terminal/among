@@ -73,3 +73,44 @@ play request or `prepared=true`. Native adapter output does not establish real
 General controls, an installed DEB/RPM, Snap/core24 or another architecture.
 Every new artifact still needs exact-payload source/notices/replacement checks
 and its own live-output run. See `docs/licensing.md` for native obligations.
+
+## Reusable packaged-output checks
+
+The headless tooling binds an external probe to an actual artifact digest,
+source commit and ELF architecture, separately from the shipped payload:
+
+```sh
+among-tools bind-audio-probe audio-probe candidate.AppImage SOURCE_SHA amd64 new-probe-directory
+among-tools check-audio-package appimage candidate.AppImage new-probe-directory SOURCE_SHA amd64 new-evidence
+```
+
+Use only an owned device-free container. The checker refuses a visible native
+GTK media/GStreamer plugin tree, creates a fresh private Unix PulseAudio socket
+with exactly one null sink, confirms its identity before launching a consumer,
+and retains raw PCM, waveform analysis, diagnostics, environment and module maps.
+It generates original 880 Hz PCM8/16/24/32 and float32/64 fixtures. Each positive
+must produce that signal; a disabled event and three missing-member fixtures
+must produce nonempty silent baselines. The original artifact is never modified.
+Probe copies alone receive discovery RUNPATH/interpreter changes; their before/
+after digests are retained. Kernel, compiled and expected architectures must agree.
+Hosted runner identity remains necessary to distinguish native arm64 from emulation.
+
+`snap-core24` checks an extracted **actual Snap**, using its real interpreter
+under an available `/snap/core24/` base. This establishes loader/discovery/output,
+not snap-confine or installed launch. `snap-installed` additionally requires the
+installed executable and full native-library/module/helper inventory to match
+the artifact, and invokes the external probe through `snap run --shell among`.
+It retains the actual SNAP revision, process security context, mount information
+and core24 loader maps. Among currently declares **classic** confinement: this
+must not be described as a strict sandbox. Missing-member negatives run in
+separate extracted fixtures, not by altering the installed read-only Snap.
+
+Existing AppImage and Snap workflows transfer these bound checkers for both
+native runner architectures and retain failure captures. A workflow edit does
+not establish output until that exact commit's hosted run has executed it.
+These remain library-adapter checks, **not real General/VTE output**. The later
+General-control driver can reuse `audio_capture::Invocation`: its executable
+receives `(scenario, new-consumer-evidence, fixture-wav, payload-root)` inside the
+owned sink environment. It must drive the installed application's real controls
+and save that application's maps/diagnostics, rather than call `Audio` itself.
+No alternate production test flag or General control is introduced here.
