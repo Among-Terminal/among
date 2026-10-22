@@ -12,13 +12,12 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Channel, DiagnosticKind, Event, Host, Job, Policy};
+use super::{Channel, DiagnosticKind, Event, Host, Job, Policy, Registration};
 use crate::plugin_notifications::DeliveryAuthorization;
 
 trait CoreAccess {
@@ -166,7 +165,7 @@ pub struct Runtime {
     helper: PathBuf,
     cwd: Option<OwnedDirectory>,
     configurations: BTreeMap<Channel, Configuration>,
-    registrations: BTreeMap<Channel, Arc<AtomicBool>>,
+    registrations: BTreeMap<Channel, Registration>,
     attempts: Vec<service::Ticket>,
     cursor: usize,
     stopped: bool,
@@ -252,7 +251,7 @@ impl Runtime {
         host.remove_channel(channel);
         self.cancel(channel);
         if let Some(registration) = self.registrations.remove(&channel) {
-            registration.store(false, Ordering::Release);
+            registration.revoke();
         }
     }
 
@@ -405,7 +404,7 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         // no join or child wait here; the service retains capacity through reap.
         for registration in self.registrations.values() {
-            registration.store(false, Ordering::Release);
+            registration.revoke();
         }
         for attempt in &self.attempts {
             attempt.cancel();

@@ -236,7 +236,12 @@ metadata lifetime. A managed snapshot always retains its lease; a host snapshot
 has none. Off-thread work must retain/check the cloneable thread-safe lease as
 well as the adapter's existing source/channel cancellation, without carrying GTK
 or RefCell borrows into the worker. Revocation cannot reverse external effects.
-Provider attempts consume this same accessor. The compatible
+Provider attempts consume this same accessor and an owned exact-job effect
+capability. For off-thread/exec consumers, use the
+[owned effect authority](notification-effect-authority.md), including its
+post-operation-claim validation ordering and finite read-only descriptor contract.
+Missing metadata is checked at original private snapshot issuance: bounded cache
+eviction does not revoke an already issued owned snapshot. The compatible
 `plugin_notifications::OriginLease` path re-exports the core's single lease type;
 no duplicate lifetime authority or pending queue is introduced.
 Timers, envelopes/jobs and action handles are session-only, never saved sessions.
