@@ -20,6 +20,7 @@ mod plugin_manager;
 mod plugin_settings;
 pub(crate) mod repositories;
 mod repository_sources;
+mod retained_settings;
 
 type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
 type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
@@ -36,6 +37,9 @@ type SavePluginSettings = dyn Fn(
     &str,
     &serde_json::Map<String, serde_json::Value>,
 ) -> Result<crate::settings::Durability, String>;
+type RetainedSettingsQuery = dyn Fn() -> Result<Vec<crate::settings::RetainedSettings>, String>;
+type DeleteRetainedSettings =
+    dyn Fn(&crate::settings::RetainedSettings) -> Result<crate::settings::Durability, String>;
 
 /// What the preferences window needs from the running application.
 ///
@@ -56,6 +60,8 @@ pub struct PreferencesContext {
     pub disable_plugin: Rc<dyn Fn(&str)>,
     pub installations_changed: Rc<dyn Fn()>,
     pub package_action: Rc<PackageAction>,
+    pub retained_settings: Rc<RetainedSettingsQuery>,
+    pub delete_retained_settings: Rc<DeleteRetainedSettings>,
     /// Rebuilds the window's shortcut controller after a rebind.
     pub bindings_changed: Rc<dyn Fn()>,
 }
@@ -359,6 +365,10 @@ mod tests {
         let page = plugins_page(&PreferencesContext {
             general: None,
             package_action: Rc::new(|_, _, _| {}),
+            retained_settings: Rc::new(|| Ok(Vec::new())),
+            delete_retained_settings: Rc::new(|_| {
+                Err("no retained settings in this fixture".into())
+            }),
             installations_changed: Rc::new(|| {}),
             on_closed: Rc::new(|| {}),
             storage_status: gtk::StringList::new(&[]),
