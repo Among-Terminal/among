@@ -1276,7 +1276,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     screenshot(&view, "source-removed-installed-preserved");
     view.destroy();
     ctx.window.destroy();
-    println!("PASS actual source Add, fresh-view offline cache, numeric Refresh/rename, explicit transferred publisher approval, actual rate-limit/cancellation and Remove without changing selected installation, enablement or settings. Native modality unchanged; simultaneous terminal input remains open.");
+    println!("PASS actual source Add, fresh-view offline cache, numeric Refresh/rename, explicit transferred publisher approval, actual rate-limit/cancellation and Remove without changing selected installation, enablement or settings. Native window hierarchy retained; simultaneous terminal input is exercised separately.");
 }
 
 #[test]
@@ -1493,7 +1493,7 @@ fn native_install(close_after_commit: bool) {
     assert_eq!(std::fs::read_to_string(proof).unwrap(), "installer-alive");
     assert_eq!(terminal.pty().unwrap().fd().as_raw_fd(), initial_pty);
     ctx.window.destroy();
-    println!("PASS actual HTTPS selected one of two catalogue plugins, verified/extracted/committed immutable files, hot native inventory disabled despite retained enabled=true, unchanged settings and terminal PTY, real input after modal close. Simultaneous modal input remains a separate unresolved acceptance conflict.");
+    println!("PASS actual HTTPS selected one of two catalogue plugins, verified/extracted/committed immutable files, hot native inventory disabled despite retained enabled=true, unchanged settings and terminal PTY, real input after closing its views. Input with the views open is exercised separately.");
 }
 
 fn widgets(root: &gtk::Widget) -> Vec<gtk::Widget> {
@@ -1743,8 +1743,8 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
     let view = inspector();
     screenshot(&view, "repository-empty");
     assert!(
-        preferences.is_modal() && view.is_modal(),
-        "this layout change must not alter modality"
+        !preferences.is_modal() && !view.is_modal(),
+        "Preferences and inspection must leave the terminal available"
     );
     assert!(!button(&view, "Inspect").is_sensitive());
     assert!(!button(&view, "Cancel request").is_visible());
@@ -1872,7 +1872,7 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
     view.destroy();
     preferences.destroy();
     ctx.window.destroy();
-    println!("PASS native repository source/search separation, labelled details, Save above fields and actual saved values; inline Inspect through real Tab/Enter, invalid/idle/loading/cancel/result states, dark narrow layout and inert address edits; modality unchanged. Simultaneous terminal input is covered by a separate unresolved test.");
+    println!("PASS native repository source/search separation, labelled details, Save above fields and actual saved values; inline Inspect through real Tab/Enter, invalid/idle/loading/cancel/result states, dark narrow layout and inert address edits; Preferences and inspection are nonmodal. Simultaneous terminal input is exercised separately.");
 }
 
 #[test]

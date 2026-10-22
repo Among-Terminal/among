@@ -117,6 +117,7 @@ fn present_complete(
 ) {
     let window = adw::PreferencesWindow::builder()
         .transient_for(parent)
+        .modal(false)
         .title("Inspect public GitHub repository")
         .search_enabled(false)
         .default_width(640)
