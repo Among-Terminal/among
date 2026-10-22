@@ -52,6 +52,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install pinned Rust toolchain in the build container
         run: |
           base="https://static.rust-lang.org/rustup/archive/1.28.2/${RUST_HOST}"
@@ -65,6 +66,7 @@ jobs:
       - name: Build the application, plugins and tooling
         run: |
           cargo build --release --locked
+          cargo build --release --locked --example audio-probe
           cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Name the candidate after the tag or the package version
@@ -109,8 +111,12 @@ jobs:
         run: |
           mkdir appimage-checker
           cp tools/among-tools/target/release/among-tools appimage-checker/among-tools
+          source="$(git rev-parse HEAD)"
+          tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-probe \
+            "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/audio
+          printf '%s\n' "$source" > appimage-checker/source-sha
           cd appimage-checker
-          sha256sum among-tools > SHA256SUMS
+          sha256sum among-tools audio/audio-probe audio/audio-receipt.json source-sha > SHA256SUMS
       - name: Retain build logs after a failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -206,13 +212,13 @@ jobs:
               fuse3 xvfb xauth openbox dbus-x11 xdotool x11-utils procps imagemagick \
               libwayland-client0 libx11-6 libxcb1 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
               libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core \
-              libgl1 libegl1 libgles2 libgbm1 libdrm2 libx11-xcb1
+              libgl1 libegl1 libgles2 libgbm1 libdrm2 libx11-xcb1 pulseaudio pulseaudio-utils patchelf
           else
             dnf install -y git ca-certificates fuse3 xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo \
               xwininfo openbox dbus-x11 xdotool procps-ng ImageMagick util-linux shadow-utils glibc-common \
               libwayland-client libX11 libxcb fontconfig freetype harfbuzz fribidi expat gmp libgpg-error \
               libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts \
-              libglvnd-glx libglvnd-egl libglvnd-gles mesa-libgbm libdrm libX11-xcb
+              libglvnd-glx libglvnd-egl libglvnd-gles mesa-libgbm libdrm libX11-xcb pulseaudio pulseaudio-utils patchelf
           fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -234,6 +240,31 @@ jobs:
           chmod 755 appimage-checker/among-tools
           appimage-checker/among-tools ci-appimage-install . "$HOST" "$BUILD_ARCH" \
             appimage-candidate appimage-runtime-evidence
+      - name: Capture actual packaged backend output and missing-member failures
+        if: ${{ !cancelled() }}
+        env:
+          BUILD_ARCH: ${{ matrix.architecture }}
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(cat appimage-checker/source-sha)" = "$EXPECTED_SOURCE"
+          (cd appimage-checker && sha256sum --check SHA256SUMS)
+          chmod 755 appimage-checker/among-tools appimage-checker/audio/audio-probe
+          useradd --create-home --shell /bin/bash among-audio
+          mkdir audio-package-evidence
+          chown among-audio:among-audio audio-package-evidence
+          set -- appimage-candidate/*.AppImage
+          test "$#" -eq 1
+          runuser -u among-audio -- env RUNNER_ARCH="$RUNNER_ARCH" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            "$PWD/appimage-checker/among-tools" check-audio-package appimage "$PWD/$1" \
+            "$PWD/appimage-checker/audio" "$EXPECTED_SOURCE" "$BUILD_ARCH" "$PWD/audio-package-evidence/run"
+      - name: Retain audio capture and module maps even on failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-audio-${{ matrix.host }}-${{ matrix.architecture }}
+          path: audio-package-evidence/
+          if-no-files-found: error
+          retention-days: 14
       - name: Retain display check evidence after a failure
         # The job log names the failed check; its application log, helper
         # output and screenshots live only under the check root.
