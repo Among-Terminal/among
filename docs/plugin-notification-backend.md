@@ -44,6 +44,29 @@ negotiation. Grants do not sandbox ordinary user-level plugin processes. Require
 secret settings remain unsupported; no credential storage or environment expansion
 is introduced here.
 
+### Explicit production/delivery role choice
+
+A process may hold **either** `notifications.produce` **or**
+`notifications.deliver`, never both. `notifications.ui` remains independent and may
+coexist with either. A manifest requiring both conflicting roles is refused before
+executing its entrypoint. When both are optional, the existing identity/publisher-
+scoped access review must explicitly grant one or neither in `review.features`;
+selecting both refuses admission, without silently preferring or removing a grant.
+Ordinary unsupported optional-feature omission still applies.
+
+General can validate a proposed grant set with
+`managed::notification_role(&BTreeSet<String>) -> Result<Option<NotificationRole>,
+NotificationRoleConflict>`, and required declarations with
+`required_notification_role(&Manifest)`. Conflicts distinguish `RequiredRoles`
+from `ReviewChoice` and provide a finite `problem()` message. The existing
+`review_access` / preflight / runtime feature checks consume this same validation;
+the actual hello contains only the explicitly chosen supported role. Static
+overview reports impossible required-role declarations as unavailable.
+`PluginHost::reviewed_notification_role(name)` reports the validated retained
+choice; `admitted_notification_role(name)` reports only current admitted authority,
+which may omit an optional reviewed feature. Review does not start code, enable
+channels or save preferences; General still owns its native controls/persistence.
+
 Static channel declarations populate `Backend::inventory()` without starting code.
 Each `ChannelKey` contains authoritative `identity` (`github:<repository-id>/<id>`)
 and channel ID; names are not keys. `set_policy(key, Policy)` changes effective
@@ -93,19 +116,19 @@ not event text, configuration payloads or plugin free-form result text.
 
 The bridge stamps an envelope with event/root causal ID, core session, authoritative
 plugin identity/process generation, optional source-generation/workspace identity,
-and kind `managed_notification`. Delivery-linked production (`causal_job`) is
-rejected, not recursively routed. **Rejected old dual-role behavior:** after a process
-generation has been assigned a delivery attempt, further production from that generation
-is rejected even if it omits `causal_job`. It can still deliver and contribute UI.
-This conservative restriction prevents disguised feedback; it is a contract-review
-point, not a claim of arbitrary dual-role workflow support. Assignment is conservative
-even if enqueue later fails; it is not a claim that a provider received bytes.
-Self-delivery is omitted. This old permanent taint is not owner-approved. The owner
-has chosen strict producer/delivery authority separation before process spawn,
-conflicting-required-role refusal without execution, and explicit optional-role
-selection at access review/admission. Declarative UI remains independent. Await
-the exact typed author follow-up and native review-choice consumer; do not silently
-prefer a role or infer intent from an omitted causal field.
+and kind `managed_notification`. The shared core itself retains
+`Kind::ManagedNotification` for both pane and targetless ingress, not a terminal
+bell/application substitute. Its opaque `Event::origin()` resolves through
+`Host::origin(token)` to the host-registered `OriginIdentity { identity, generation }`.
+Only trusted admission mints that token and its irrevocable lifetime lease;
+neither kind nor origin is accepted from the plugin's event body.
+Delivery-linked production (`causal_job`) is rejected, not recursively routed.
+Production/delivery authority is separated at review/preflight/admission, not
+silently retired after the first assigned or non-enqueued job. A delivery-only
+process cannot produce even if it omits `causal_job`; omission is not proof of
+independent intent. Results remain separate, self-delivery is omitted, and work is
+rate/budget bounded. This is API-mediated feedback prevention, **not** a sandbox or
+a guarantee against out-of-band communication between unsandboxed processes.
 Results never become notification events. No automatic retry or reconnect replay.
 
 ## Contribution and action state
@@ -176,41 +199,58 @@ cancelled job whose credit is still retained.
 
 | Boundary | Implemented limit |
 | --- | --- |
-| Shared core delivery queue | 64 globally / 16 per channel, coalesced by source |
+| Shared core delivery queue | 64 globally / 16 per channel; source keys for targeted work, distinct origin keys for targetless managed work |
 | Active provider attempts | Two per bridge / one per channel, no second pending-job queue |
 | Delivery request payload | 16 KiB including host envelope |
 | Provider response deadline | Five seconds; existing off-loop two-second write deadline |
 | Process wire/output | Existing 64-KiB frames, depth 32, 16 queued frames/1 MiB, rotating bounded drains |
 | Replies | Status + configurations + deliveries share **15 retained credits**; enumeration retains its reserved slot |
-| Event metadata | 64 envelopes / ten seconds, coalesced by source/origin while retaining active IDs; evicted/unobserved jobs are dropped, never reattributed |
+| Event metadata | 64 envelopes / ten seconds, coalesced by source/origin/ingress eligibility while retaining active IDs; evicted/unobserved jobs are dropped, never reattributed |
+| Core producer registrations | 128 live origins; identity <=256 UTF-8 bytes, generation <=128; revoked metadata is reclaimed, not retained as history |
 | Contributions | 128 globally / eight distinct IDs per process, including revision tombstones; ten-second lifetime |
 | Actions | Four per contribution; 16 pending activations |
 | Provider inventory | At most 128 installed identities / 4096 retained channel rows |
 | Backend diagnostic records | 16 completions + 16 fixed rejections; existing core diagnostics remain separate |
 
+At most two active event IDs are pinned **inside** the same 64-envelope budget.
+Cap eviction selects only non-active records (or refuses new metadata if none is
+available); fresh source traffic alone cannot revoke a valid active attempt.
+Expiry, origin/source/channel revocation and deadlines still invalidate authority.
+
 Provider disable removes its core channels/queued work immediately. Producer
-revocation deletes its envelopes; the bridge discards corresponding coalesced core
-entries on bounded dequeue, not under a fabricated origin. `envelope(event, now)`
-also revalidates the independent origin lease, source and expiry before returning
-data, even when mutable revocation bookkeeping has not yet run. The frozen core's
-job token alone does not encode producer authority: **all other adapters** sharing
-this core must enforce the same envelope/origin lifetime before managed-produced
-work executes. After a valid managed envelope, `origin_lease(event, now)` supplies
-a cloneable, thread-safe `OriginLease`; combine its `is_current()` with the core's
-source/channel authorization before **and during** an asynchronous attempt. It
-cannot be re-enabled after revocation. Provider attempts already consume this
-lease. Joining unchanged adapters does not yet satisfy that contract.
+revocation invalidates the same generic core-issued lease held by the backend,
+process and active adapters. `Host::is_current(job)` and `is_event_current(event)`
+reject that origin immediately, even before mutable cleanup; scheduling prunes its
+queued jobs and bounded registry/cooldown entries. An old generation cannot become
+a new origin, and a managed event cannot re-enter via `observe_host_event` as a host
+bell after its envelope disappears. `envelope(event, now)` also checks exact core
+kind/origin/source attribution and expiry before returning data.
+
+**All asynchronous adapters** must consume
+`Backend::authorize_delivery(job, now) -> Option<DeliveryAuthorization>` after
+dequeue. This joined snapshot supplies `envelope() -> &Envelope`, `job() -> Job`,
+`origin_lease() -> Option<OriginLease>` and
+`is_current(&notifications::Host, now) -> bool`. Recheck it before **and during**
+an attempt; it combines core source/channel/origin authority with the ten-second
+metadata lifetime. A managed snapshot always retains its lease; a host snapshot
+has none. Off-thread work must retain/check the cloneable thread-safe lease as
+well as the adapter's existing source/channel cancellation, without carrying GTK
+or RefCell borrows into the worker. Revocation cannot reverse external effects.
+Provider attempts consume this same accessor. The compatible
+`plugin_notifications::OriginLease` path re-exports the core's single lease type;
+no duplicate lifetime authority or pending queue is introduced.
 Timers, envelopes/jobs and action handles are session-only, never saved sessions.
 
-The frozen core's channel-full policy drops an incoming distinct source once that
-channel already has sixteen pending sources. Single-source floods coalesce and a
+The core's channel-full policy drops an incoming distinct scheduling key once that
+channel already has sixteen pending keys. Single-source/origin floods coalesce and a
 quiet sibling progresses; this is **not** a guarantee that every new distinct
-source survives an already saturated channel. Core suppression diagnostics expose
+key survives an already saturated channel. Core suppression diagnostics expose
 that overload. Changing the core's admission fairness is a separate review point.
-The frozen core also coalesces targetless jobs under its single `None` source key,
-not independently by plugin origin. Origin-scoped targetless fairness therefore
-needs a reviewed core scheduling contract before combined app acceptance; the
-bridge does not hide this by adding another pending-delivery queue.
+Targetless managed events coalesce and cool down by their exact registered origin
+(including generation), separately from targetless host application work. A quiet
+origin entering after noisy production has begun can bypass that origin's cooldown.
+Global fanout balancing uses those same keys within the existing 64-job queue.
+Target-bearing delivery cooldown/unread/focus semantics remain source-based.
 
 ## Sequential integration requirements and local checks
 
@@ -222,19 +262,17 @@ bridge does not hide this by adding another pending-delivery queue.
 3. General must consume typed inventory and call `set_policy` after accepted edits,
    with durable identity/channel-scoped storage and unknown-data preservation.
 4. Render contribution snapshots only in the existing plugin areas and activate
-   opaque handles. The current app renderer adds plain text, inspected icons,
+    opaque handles. The current app renderer adds plain text, inspected icons,
    named styles and native action buttons inside those areas; it never replaces
    the title, Restore control or workspace identity. Focused widgets are retained
    across unchanged snapshots/legacy slot refresh; bounded scrolling contains wide
    content. Native contribution/action acceptance remains evidence-dependent.
-5. The frozen core names its source-bearing ingress `bell`/`Kind::TerminalBell`.
-   Managed provider envelopes correctly say `managed_notification`; later command/
-   audio/app adapters **must use `Backend::envelope(event, now)`**, or extend the core's typed
-   origin contract, rather than relabel plugin events from that old core enum.
-    The ordinary command adapter currently refuses managed-origin work until that
-    typed follow-up. Audio retains and checks the current origin lease with core
-    authorization and cancels invalid active work on the shared tick. Neither
-    statement closes the core/causality or new-source audio acceptance boundaries.
+5. Command/audio/app adapters must explicitly map `Kind::ManagedNotification` and
+   consume `authorize_delivery(job, now)`, retaining/rechecking its origin authority
+   alongside their source/channel cancellation. **Those adapters are not joined or
+   accepted by this slice.** In particular an old exhaustive kind conversion needs
+   an explicit managed branch, not a fallback to terminal bell. The command backend
+   is neither duplicated nor changed here.
 6. Join installer registration removal/replacement with host stop/reap and bridge
    uninstall/re-registration. Do not resurrect consent from retained settings.
 
@@ -242,8 +280,8 @@ Run real process/model tests after building the fixture:
 
 ```sh
 CARGO_BUILD_JOBS=1 cargo build --locked --example notification-plugin
-CARGO_BUILD_JOBS=2 cargo test --locked plugin::host::notification_backend -- --nocapture
-CARGO_BUILD_JOBS=2 cargo test --locked --test plugin_notification_model
+CARGO_BUILD_JOBS=1 cargo test --locked plugin::host::notification_backend -- --nocapture
+CARGO_BUILD_JOBS=1 cargo test --locked --test plugin_notification_model
 ```
 
 The ignored `native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood`

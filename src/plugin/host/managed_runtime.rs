@@ -139,6 +139,35 @@ impl PluginHost {
         self.selected_grants(index).map(|_| ())
     }
 
+    pub fn reviewed_notification_role(
+        &self,
+        name: &str,
+    ) -> Result<Option<managed::NotificationRole>, Problem> {
+        let index = self
+            .find(name)
+            .ok_or(Problem("plugin is no longer registered"))?;
+        managed::notification_role(&self.selected_grants(index)?)
+            .map_err(managed::NotificationRoleConflict::problem)
+    }
+
+    pub fn admitted_notification_role(&self, name: &str) -> Option<managed::NotificationRole> {
+        let plugin = &self.plugins[self.find(name)?];
+        let io = plugin.io.as_ref()?;
+        if !plugin.spec.enabled
+            || !plugin.state.is_healthy()
+            || !io.handshake_done
+            || io
+                .notification_live
+                .as_ref()
+                .is_none_or(|lease| !lease.is_current())
+        {
+            return None;
+        }
+        managed::notification_role(&plugin.runtime.as_ref()?.grants)
+            .ok()
+            .flatten()
+    }
+
     pub fn review_access(&mut self, name: &str, review: Value) -> Result<(), Problem> {
         let index = self
             .find(name)
