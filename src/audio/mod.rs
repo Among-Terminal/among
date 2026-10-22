@@ -1,5 +1,6 @@
 //! Owned audio only: no notification ingress, preference writes or other channels.
 
+mod authorization;
 mod execution;
 mod player;
 pub mod runtime;

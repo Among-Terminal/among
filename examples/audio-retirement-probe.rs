@@ -1,4 +1,8 @@
 //! actual GTK heartbeat + trusted native-call stalls. Not a production control.
+#[path = "audio-cancellation-cases/mod.rs"]
+mod cancellation;
+#[path = "audio-fork-hook/mod.rs"]
+mod fork_hook;
 #[path = "audio-stall-hooks/mod.rs"]
 mod hooks;
 use among::audio::{Audio, DecoderPhase, Notice, Request, Sound};
@@ -78,6 +82,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir(&output)?;
     let input = PathBuf::from(args.get(3).ok_or("WAV fixture required")?);
     let root = args.get(4).filter(|arg| *arg != "-").map(PathBuf::from);
+    if scenario.starts_with("cancel-") {
+        return cancellation::run(scenario, &output, &input, root.as_deref(), &runtime);
+    }
     among::audio::initialize_execution(root.as_deref())?;
     let _exit = ExecutionExit(runtime.clone());
     assert_eq!(

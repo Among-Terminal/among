@@ -1,6 +1,6 @@
 //! one process-wide decoder slot. GTK never constructs or retires a decoder in
 //! the caller; uncertain cleanup quarantines this slot instead of spawning more.
-use super::Sound;
+use super::{authorization::Authorization, Sound};
 use std::{
     fs::File,
     io::{Read, Write},
@@ -24,11 +24,12 @@ const CLEANUP_GRACE: Duration = Duration::from_millis(250);
 const MAX_MAPS: u64 = 512 * 1024;
 const MAX_PACKET: usize = 1024 * 1024;
 const MAX_STDERR: usize = 4096;
-const FLAG: &str = "--among-audio-decoder-v1";
+const FLAG: &str = "--among-audio-decoder-v2";
 static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
 static BUSY: AtomicBool = AtomicBool::new(false);
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 static WORKER: OnceLock<Result<SyncSender<Job>, String>> = OnceLock::new();
+static CURRENT_AUTHORITY: Mutex<Option<Arc<Authorization>>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecoderPhase {
@@ -61,12 +62,15 @@ struct Report {
 }
 pub(crate) struct Operation {
     cancel: AtomicBool,
+    authority: Arc<Authorization>,
     cancelled_micros: AtomicU64,
     started: Instant,
     report: Mutex<Report>,
 }
 impl Operation {
     pub(crate) fn cancel(&self) {
+        // shared revocation wins even while the supervisor is inside spawn.
+        self.authority.revoke();
         let elapsed = (self
             .started
             .elapsed()
@@ -115,6 +119,11 @@ struct Job {
 struct Slot;
 impl Drop for Slot {
     fn drop(&mut self) {
+        let retired = CURRENT_AUTHORITY
+            .lock()
+            .ok()
+            .and_then(|mut current| current.take());
+        drop(retired);
         BUSY.store(false, Ordering::Release);
     }
 }
@@ -163,8 +172,24 @@ pub(crate) fn start(id: u64, sound: Sound) -> Result<Option<Arc<Operation>>, &'s
         return Ok(None);
     }
     let started = Instant::now();
+    let authority = match Authorization::new(id) {
+        Ok(authority) => Arc::new(authority),
+        Err(_) => {
+            BUSY.store(false, Ordering::Release);
+            return Err("The audio start authority is unavailable.");
+        }
+    };
+    // GTK never waits for a registry lock or a helper handshake. The supervisor
+    // clears this entry before releasing capacity; the exit guard only try-locks.
+    if let Ok(mut current) = CURRENT_AUTHORITY.try_lock() {
+        *current = Some(authority.clone());
+    } else {
+        BUSY.store(false, Ordering::Release);
+        return Err("The audio start authority registry is unavailable.");
+    }
     let operation = Arc::new(Operation {
         cancel: AtomicBool::new(false),
+        authority,
         cancelled_micros: AtomicU64::new(0),
         started,
         report: Mutex::new(Report {
@@ -186,6 +211,10 @@ pub(crate) fn start(id: u64, sound: Sound) -> Result<Option<Arc<Operation>>, &'s
         })
         .is_err()
     {
+        operation.authority.revoke();
+        if let Ok(mut current) = CURRENT_AUTHORITY.try_lock() {
+            current.take();
+        }
         BUSY.store(false, Ordering::Release);
         return Err("The audio supervisor did not accept this operation.");
     }
@@ -398,6 +427,8 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
                     .unwrap_or(std::ffi::OsStr::new("-")),
             )
             .arg(deadline.to_string())
+            .arg(job.operation.authority.id().to_string())
+            .arg(job.operation.authority.fd().to_string())
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .stdin(Stdio::from(job.sound.decoder_file()?))
@@ -430,10 +461,16 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
         }
         command.env("TMPDIR", temporary);
         let parent = unsafe { libc::getpid() };
+        let authority_fd = job.operation.authority.fd();
         // only async-signal-safe syscalls run between fork/exec. A crashing host
         // cannot leave its decoder alive; the parent-race check covers early exit.
         unsafe {
             command.pre_exec(move || {
+                // Keep the already-reserved descriptor number: dup2 onto a fixed
+                // number could overwrite Command's private exec-error pipe.
+                if libc::fcntl(authority_fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -472,6 +509,21 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
             child,
             "The decoder pipes could not be made nonblocking.",
         );
+    }
+    if unsafe { libc::getpgid(child.child.id() as i32) } != child.child.id() as i32 {
+        return quarantine(
+            job,
+            child,
+            "The decoder process group could not be confirmed.",
+        );
+    }
+    // no grant exists until real spawn observation, owned group identity and
+    // bounded pipes are established. Revocation cannot transition back to granted.
+    if !job.operation.cancel.load(Ordering::Acquire)
+        && !SHUTTING_DOWN.load(Ordering::Acquire)
+        && job.started.elapsed() < DEADLINE
+    {
+        job.operation.authority.grant();
     }
     let mut buffer = Vec::new();
     let mut diagnostics = Vec::new();
@@ -594,6 +646,7 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
             );
         }
         if killed_at.is_none() && retire_at.is_some_and(|at| now >= at) {
+            job.operation.authority.revoke();
             let _ = child.kill();
             killed_at = Some(now);
             job.operation
@@ -615,13 +668,22 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
 pub fn finish_shutdown() -> bool {
     SHUTTING_DOWN.store(true, Ordering::Release);
     let started = Instant::now();
-    while BUSY.load(Ordering::Acquire) && started.elapsed() < CONFIRM {
+    loop {
+        if let Ok(current) = CURRENT_AUTHORITY.try_lock() {
+            if let Some(authority) = current.as_ref() {
+                authority.revoke();
+            }
+        }
+        if !BUSY.load(Ordering::Acquire) || started.elapsed() >= CONFIRM {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(2));
     }
     !BUSY.load(Ordering::Acquire)
 }
 
 fn quarantine(job: &Job, mut child: OwnedDecoder, reason: &'static str) -> Outcome {
+    job.operation.authority.revoke();
     job.operation.update(|report| {
         report.snapshot.phase = DecoderPhase::Quarantined;
         report.outcome = Some(Outcome::Failed(reason));
@@ -651,14 +713,28 @@ pub fn dispatch() -> Option<glib::ExitCode> {
         return None;
     }
     let result = (|| -> Result<(), String> {
-        if args.len() != 4 {
+        if args.len() != 6 {
             return Err("Invalid audio decoder invocation.".into());
         }
+        let id = args[4]
+            .to_str()
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or("Invalid audio operation identity.")?;
+        let fd = args[5]
+            .to_str()
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|&fd| fd >= 3 && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0)
+            .ok_or("Invalid audio authority descriptor.")?;
+        let authority = Authorization::receive(unsafe { File::from_raw_fd(fd) }, id)
+            .map_err(|error| error.to_string())?;
         let deadline = args[3]
             .to_str()
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or("Invalid decoder deadline.")?;
         let check_deadline = || -> Result<(), String> {
+            if authority.revoked() {
+                return Err("Audio operation was cancelled before playback.".into());
+            }
             let now = monotonic_ns().map_err(|_| "Decoder monotonic clock is unavailable.")?;
             if now >= deadline || deadline - now > DEADLINE.as_nanos() as u64 {
                 return Err("Decoder operation expired or has an invalid deadline.".into());
@@ -687,7 +763,13 @@ pub fn dispatch() -> Option<glib::ExitCode> {
         let media = gtk::MediaFile::for_filename(sound.decoder_path());
         media.set_loop(false);
         media.set_volume(1.0);
-        check_deadline()?;
+        loop {
+            check_deadline()?;
+            if authority.claim()? {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         media.play();
         packet(2, true)?;
         loop {

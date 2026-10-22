@@ -68,6 +68,21 @@ pipes. Its 13-second operation deadline includes construction and native
 retirement: an ended acknowledgement alone cannot report `DecoderEnded`.
 The helper also checks an absolute monotonic deadline before construction/play,
 so delayed OS launch or a native call returning after expiry cannot start output.
+Each operation additionally owns a distinct shared-memory start authority, separate
+from its immutable sound descriptor. It begins pending; the supervisor grants it
+only after the real spawn returns, the owned process group is confirmed and the
+protocol pipes are nonblocking. Cancellation revokes it directly, including while
+spawn observation is delayed. After actual native construction the helper checks
+revocation/deadline and atomically consumes its single-use grant immediately before
+calling play. Revocation cannot be regranted; a stale operation retains a different
+mapping and cannot authorize or revoke its replacement. The inherited descriptor
+is marked close-on-exec before native scanner children can start.
+
+The atomic claim is the playback-start linearization point: cancellation ordered
+before it prevents a first play; cancellation after it retires already-started
+work. This is not an OS scheduling or native-call interruptibility guarantee.
+No GTK callback waits for a helper handshake. The post-loop exit guard also
+revokes the current authority within its existing bounded confirmation interval.
 `DecoderEnded` additionally requires exit status zero and observed
 process-group quiescence. Cancellation/deadline uses SIGKILL instead of waiting
 for a possibly blocked GTK clear. The unreaped leader pins the group identity;
@@ -173,3 +188,9 @@ measured alongside actual captured sound after recovery. These are injected
 faults, not claims that a codec deadlock was discovered in a normal recording.
 `check-audio-retirement` reuses a checked package extraction and separately bound
 fault probe; the CI workflows retain its captures on both native architectures.
+The cancellation cases delay the real fork (before it or only its parent return),
+release actual native construction before expiry and assert no play invocation
+before issuing any recovery. Cancel-only and explicit-recovery runs have separate
+captures: the former requires nonempty silence, the latter actual 880 Hz output.
+They cover pending grants, event-policy revocation, selection, shutdown and owner
+drop without queuing a replacement; denied kill is confined to its named fixture.
