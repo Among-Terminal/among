@@ -25,7 +25,7 @@ pub const MAX_CONTRIBUTIONS_PER_PLUGIN: usize = 8;
 const MAX_CHANNELS: usize = 128 * 32;
 const MAX_ACTIONS: usize = 16;
 const MAX_EVENTS: usize = core::MAX_PENDING;
-pub const EVENT_LIFETIME: Duration = Duration::from_secs(10);
+pub const EVENT_LIFETIME: Duration = core::EVENT_LIFETIME;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -228,6 +228,136 @@ impl DeliveryAuthorization {
             && now.saturating_duration_since(self.job.event().received_at()) < EVENT_LIFETIME
             && self.origin.as_ref().is_none_or(OriginLease::is_current)
     }
+
+    /// metadata is authenticated at private snapshot issuance, not by continued
+    /// membership in the bounded event cache. conversion retains the exact job,
+    /// live scopes/origin and original expiry without borrowing Backend again.
+    pub fn effect_authorization(
+        &self,
+        core: &core::Authorization,
+        now: Instant,
+    ) -> Result<core::EffectAuthorization, core::EffectAuthorityError> {
+        if core.job() != self.job {
+            return Err(core::EffectAuthorityError::JobMismatch);
+        }
+        let event = self.job.event();
+        if self.envelope.event_id != event.id().to_string()
+            || self.envelope.causal_id != event.id().to_string()
+            || self.envelope.core_session != event.session().to_string()
+            || match (event.source(), &self.envelope.source) {
+                (Some(source), Some(identity)) => {
+                    identity.pane != source.pane().to_string()
+                        || identity.generation != source.generation().to_string()
+                }
+                (None, None) => false,
+                _ => true,
+            }
+        {
+            return Err(core::EffectAuthorityError::MetadataUnavailable);
+        }
+        let attributed = match (
+            event.kind(),
+            event.origin(),
+            &self.envelope.origin,
+            &self.origin,
+        ) {
+            (Kind::ManagedNotification, Some(_), Some(_), Some(_)) => {
+                self.envelope.kind == "managed_notification"
+            }
+            (Kind::TerminalBell, None, None, None) => self.envelope.kind == "terminal_bell",
+            (Kind::Application, None, None, None) => self.envelope.kind == "application",
+            _ => false,
+        };
+        let owner_matches = match (&self.envelope.origin, core.origin_identity()) {
+            (Some(owner), Some(identity)) => {
+                owner.identity == identity.identity && owner.generation == identity.generation
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if !attributed || !owner_matches || !core.matches_origin(self.origin.as_ref()) {
+            return Err(core::EffectAuthorityError::MetadataUnavailable);
+        }
+        core.effect(now)
+    }
+}
+
+#[cfg(test)]
+mod effect_snapshot_tests {
+    use super::*;
+    use crate::notifications::{EffectAuthorityError, Eligibility};
+
+    #[test]
+    fn forged_private_envelope_fields_and_missing_or_foreign_origins_refuse_conversion() {
+        let now = Instant::now();
+        let host = Rc::new(RefCell::new(Host::new().unwrap()));
+        let source = host.borrow_mut().attach(17).unwrap();
+        let channel = host
+            .borrow_mut()
+            .register_channel(Policy {
+                enabled: true,
+                eligibility: Eligibility::Always,
+            })
+            .unwrap();
+        let mut backend = Backend::new(host.clone(), Focus::default());
+        assert!(backend.bind("effect-forgery"));
+        let owner = Owner {
+            identity: "github:12/forgery".into(),
+            generation: "one".into(),
+        };
+        backend.register_identity(&owner.identity).unwrap();
+        backend.admit(owner.clone(), false, None).unwrap();
+        backend
+            .produce(
+                &owner,
+                EventInput {
+                    sequence: 1,
+                    target: Target::Pane { reference: 17 },
+                    source_generation: Some(source.generation().to_string()),
+                    message: "fixture".into(),
+                    causal_job: None,
+                },
+                Some(1),
+                now,
+            )
+            .unwrap();
+        let job = host.borrow_mut().take_ready(channel, now).unwrap();
+        let issued = backend.authorize_delivery(job, now).unwrap();
+        let core = host.borrow().authorization(job).unwrap();
+        assert!(issued.effect_authorization(&core, now).is_ok());
+        for mutation in 0..12 {
+            let mut forged = issued.clone();
+            match mutation {
+                0 => forged.envelope.event_id = "wrong".into(),
+                1 => forged.envelope.causal_id = "wrong".into(),
+                2 => forged.envelope.core_session = "wrong".into(),
+                3 => forged.envelope.kind = "terminal_bell",
+                4 => forged.envelope.source = None,
+                5 => forged.envelope.source.as_mut().unwrap().pane = "18".into(),
+                6 => forged.envelope.source.as_mut().unwrap().generation = "wrong".into(),
+                7 => forged.envelope.origin = None,
+                8 => forged.envelope.origin.as_mut().unwrap().identity = "github:12/other".into(),
+                9 => forged.envelope.origin.as_mut().unwrap().generation = "two".into(),
+                10 => forged.origin = None,
+                _ => {
+                    forged.origin = Some(
+                        host.borrow_mut()
+                            .register_origin("github:12/other", "one")
+                            .unwrap()
+                            .1,
+                    )
+                }
+            }
+            assert!(
+                matches!(
+                    forged.effect_authorization(&core, now),
+                    Err(EffectAuthorityError::MetadataUnavailable)
+                ),
+                "forged field {mutation}"
+            );
+        }
+        assert!(issued.effect_authorization(&core, now).is_ok());
+    }
 }
 
 struct RememberedEvent {
@@ -247,6 +377,7 @@ struct Active {
     owner: Owner,
     key: ChannelKey,
     authorization: DeliveryAuthorization,
+    effect: core::EffectAuthorization,
     deadline: Instant,
 }
 
@@ -1040,6 +1171,14 @@ impl Backend {
                     continue;
                 }
                 let mut envelope = authorization.envelope.clone();
+                let effect = self.core.try_borrow().ok()?.authorization(job)?;
+                let effect = match authorization.effect_authorization(&effect, now) {
+                    Ok(effect) => effect,
+                    Err(_) => {
+                        self.reject(Rejection::Unavailable);
+                        continue;
+                    }
+                };
                 // notification delivery is not an alternate terminal enumeration
                 // grant. the runtime further strips source metadata without consent.
                 if job.event().source().is_none() {
@@ -1053,6 +1192,7 @@ impl Backend {
                         owner: owner.clone(),
                         key: key.clone(),
                         authorization,
+                        effect,
                         deadline: now.checked_add(DEADLINE)?,
                     },
                 );
@@ -1105,6 +1245,7 @@ impl Backend {
             .iter()
             .filter_map(|(id, active)| {
                 let current = self.current(&active.owner)
+                    && active.effect.is_current(now)
                     && self
                         .core
                         .try_borrow()

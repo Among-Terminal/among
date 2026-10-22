@@ -5,8 +5,7 @@
 //! a dequeued job is permission to attempt delivery, never a delivery receipt.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 pub const PULSE: Duration = Duration::from_secs(1);
@@ -15,6 +14,15 @@ pub const MAX_PENDING: usize = 64;
 pub const MAX_PENDING_PER_CHANNEL: usize = 16;
 pub const MAX_DIAGNOSTICS: usize = 32;
 pub const MAX_ORIGINS: usize = 128;
+pub const EVENT_LIFETIME: Duration = Duration::from_secs(10);
+
+mod effect;
+pub use effect::{
+    monotonic_now_ns, EffectAuthorityError, EffectAuthorization, EffectDescriptors,
+    ProcessEffectAuthorization, ProcessJobIdentity, Registration, MAX_EFFECT_BINDING,
+    MAX_EFFECT_FDS, MAX_EFFECT_HANDLES, MAX_EFFECT_SCOPES,
+};
+use effect::{Scope, ScopeIdentity, ScopeKind};
 
 static SESSION: AtomicU64 = AtomicU64::new(0);
 
@@ -62,15 +70,15 @@ pub struct OriginIdentity {
 /// revocation remains observable by workers and the core while its owner cannot
 /// obtain a mutable borrow. no public operation can revive a retired lifetime.
 #[derive(Debug, Clone)]
-pub struct OriginLease(Arc<AtomicBool>);
+pub struct OriginLease(Scope);
 
 impl OriginLease {
     pub fn revoke(&self) {
-        self.0.store(false, Ordering::Release);
+        self.0.revoke();
     }
 
     pub fn is_current(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.is_current()
     }
 }
 
@@ -226,6 +234,41 @@ impl Job {
     }
 }
 
+/// owned exact-job read authority; scope invalidation reaches workers/helpers
+/// directly rather than depending on a future owner-thread poll.
+#[derive(Clone, Debug)]
+pub struct Authorization {
+    job: Job,
+    scopes: Vec<Scope>,
+    origin_identity: Option<OriginIdentity>,
+}
+impl Authorization {
+    pub fn job(&self) -> Job {
+        self.job
+    }
+    pub fn is_current(&self) -> bool {
+        self.scopes.iter().all(Scope::is_current)
+    }
+    pub fn origin_identity(&self) -> Option<&OriginIdentity> {
+        self.origin_identity.as_ref()
+    }
+    pub(crate) fn matches_origin(&self, origin: Option<&OriginLease>) -> bool {
+        match (
+            self.scopes
+                .iter()
+                .find(|scope| scope.identity().kind == ScopeKind::Origin),
+            origin,
+        ) {
+            (Some(scope), Some(origin)) => scope.same(&origin.0),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    pub(crate) fn effect(&self, now: Instant) -> Result<EffectAuthorization, EffectAuthorityError> {
+        EffectAuthorization::issue(self, now)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
     Exhausted,
@@ -233,6 +276,7 @@ pub enum Failure {
     StaleChannel,
     StaleOrigin,
     InvalidOrigin,
+    AuthorityUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,7 +299,7 @@ pub struct Diagnostic {
 #[derive(Debug)]
 struct LiveSource {
     token: Source,
-    live: Arc<AtomicBool>,
+    live: Scope,
     unread: bool,
     pulse_until: Option<Instant>,
     next_pulse: Option<Instant>,
@@ -265,15 +309,15 @@ struct LiveSource {
 struct DeliveryChannel {
     policy: Policy,
     revision: u64,
-    live: Arc<AtomicBool>,
-    registered: Arc<AtomicBool>,
+    live: Scope,
+    registered: Scope,
     next_delivery: BTreeMap<SchedulingKey, Instant>,
 }
 
 #[derive(Debug)]
 pub struct Host {
     session: u64,
-    live: Arc<AtomicBool>,
+    live: Scope,
     next_source: u64,
     next_origin: u64,
     next_channel: u64,
@@ -295,7 +339,13 @@ impl Host {
             .map_err(|_| Failure::Exhausted)?;
         Ok(Self {
             session: previous + 1,
-            live: Arc::new(AtomicBool::new(true)),
+            live: Scope::new(ScopeIdentity {
+                kind: ScopeKind::Session,
+                session: previous + 1,
+                key: 0,
+                generation: 0,
+            })
+            .map_err(|_| Failure::AuthorityUnavailable)?,
             next_source: 0,
             next_origin: 0,
             next_channel: 0,
@@ -314,6 +364,15 @@ impl Host {
         if let Some(old) = self.source(pane) {
             self.detach(old);
         }
+        // replacement retires the old lifetime even if allocating its successor
+        // fails; a resource refusal must not leave an exported old source live.
+        let live = Scope::new(ScopeIdentity {
+            kind: ScopeKind::Source,
+            session: self.session,
+            key: pane,
+            generation: self.next_source,
+        })
+        .map_err(|_| Failure::AuthorityUnavailable)?;
         let token = Source {
             session: self.session,
             generation: self.next_source,
@@ -323,7 +382,7 @@ impl Host {
             pane,
             LiveSource {
                 token,
-                live: Arc::new(AtomicBool::new(true)),
+                live,
                 unread: false,
                 pulse_until: None,
                 next_pulse: None,
@@ -367,7 +426,15 @@ impl Host {
             session: self.session,
             id: self.next_origin,
         };
-        let lease = OriginLease(Arc::new(AtomicBool::new(true)));
+        let lease = OriginLease(
+            Scope::new(ScopeIdentity {
+                kind: ScopeKind::Origin,
+                session: self.session,
+                key: origin.id,
+                generation: 0,
+            })
+            .map_err(|_| Failure::AuthorityUnavailable)?,
+        );
         self.origins.insert(
             origin,
             RegisteredOrigin {
@@ -414,8 +481,8 @@ impl Host {
         if !self.is_live(source) {
             return;
         }
-        if let Some(source) = self.sources.remove(&source.pane) {
-            source.live.store(false, Ordering::Release);
+        if let Some(state) = self.sources.remove(&source.pane) {
+            state.live.revoke();
         }
         self.pending.retain(|job| job.event.source != Some(source));
         for channel in self.channels.values_mut() {
@@ -546,7 +613,9 @@ impl Host {
             .channels
             .iter()
             .filter(|(_, channel)| {
-                channel.live.load(Ordering::Acquire) && channel.policy.permits(source, focus)
+                channel.live.is_current()
+                    && channel.registered.is_current()
+                    && channel.policy.permits(source, focus)
             })
             .map(|(id, channel)| (*id, channel.revision))
             .collect();
@@ -576,8 +645,20 @@ impl Host {
             DeliveryChannel {
                 policy,
                 revision: 0,
-                live: Arc::new(AtomicBool::new(true)),
-                registered: Arc::new(AtomicBool::new(true)),
+                live: Scope::new(ScopeIdentity {
+                    kind: ScopeKind::Channel,
+                    session: self.session,
+                    key: id.id,
+                    generation: 0,
+                })
+                .map_err(|_| Failure::AuthorityUnavailable)?,
+                registered: Scope::new(ScopeIdentity {
+                    kind: ScopeKind::Registration,
+                    session: self.session,
+                    key: id.id,
+                    generation: 0,
+                })
+                .map_err(|_| Failure::AuthorityUnavailable)?,
                 next_delivery: BTreeMap::new(),
             },
         );
@@ -589,31 +670,57 @@ impl Host {
     pub fn set_channel_policy(&mut self, id: Channel, policy: Policy) -> Result<(), Failure> {
         self.prune_revoked_channels();
         let channel = self.channels.get_mut(&id).ok_or(Failure::StaleChannel)?;
-        if channel.policy == policy {
+        if channel.policy == policy && channel.live.is_current() {
             return Ok(());
         }
         channel.policy = policy;
         self.cancel_channel_work(id)
     }
 
-    /// configuration replacement must revoke old work even if policy is unchanged.
+    /// configuration edits retire the old revision even when policy is unchanged.
+    /// a construction failure leaves old authority terminal, never a true default.
     pub fn cancel_channel_work(&mut self, id: Channel) -> Result<(), Failure> {
         self.prune_revoked_channels();
         let channel = self.channels.get_mut(&id).ok_or(Failure::StaleChannel)?;
-        channel.live.store(false, Ordering::Release);
-        channel.revision = channel.revision.checked_add(1).ok_or(Failure::Exhausted)?;
-        channel.live = Arc::new(AtomicBool::new(true));
-        channel.next_delivery.clear();
+        channel.live.revoke();
         self.pending.retain(|job| job.channel != id);
+        channel.revision = channel.revision.checked_add(1).ok_or(Failure::Exhausted)?;
+        channel.live = Scope::new(ScopeIdentity {
+            kind: ScopeKind::Channel,
+            session: self.session,
+            key: id.id,
+            generation: channel.revision,
+        })
+        .map_err(|_| Failure::AuthorityUnavailable)?;
+        if !channel.registered.is_current() {
+            channel.live.revoke();
+            return Err(Failure::StaleChannel);
+        }
+        channel.next_delivery.clear();
         Ok(())
     }
 
     pub fn remove_channel(&mut self, id: Channel) {
         if let Some(channel) = self.channels.remove(&id) {
-            channel.live.store(false, Ordering::Release);
-            channel.registered.store(false, Ordering::Release);
+            channel.live.revoke();
+            channel.registered.revoke();
         }
         self.pending.retain(|job| job.channel != id);
+    }
+
+    /// retain this owner in the adapter's registration map; dropping it revokes
+    /// the registration without needing a mutable Host or an adapter poll.
+    pub fn registration(&self, channel: Channel) -> Option<Registration> {
+        let scope = self.channels.get(&channel)?.registered.clone();
+        scope.is_current().then_some(Registration { scope })
+    }
+
+    fn prune_revoked_channels(&mut self) {
+        self.channels
+            .retain(|_, channel| channel.registered.is_current());
+        let channels = &self.channels;
+        self.pending
+            .retain(|job| channels.contains_key(&job.channel));
     }
 
     fn enqueue(&mut self, job: Job) {
@@ -714,43 +821,43 @@ impl Host {
             && self.channels.get(&job.channel).is_some_and(|channel| {
                 channel.policy.enabled
                     && channel.revision == job.revision
-                    && channel.live.load(Ordering::Acquire)
-                    && channel.registered.load(Ordering::Acquire)
+                    && channel.live.is_current()
+                    && channel.registered.is_current()
             })
     }
 
-    /// workers revalidate these flags before granting execution and throughout
-    /// an active attempt; no worker needs access to GTK or a borrowed Host.
     pub fn authorization(&self, job: Job) -> Option<Authorization> {
         if !self.is_current(job) {
             return None;
         }
-        Some(Authorization {
-            session: self.live.clone(),
-            channel: self.channels.get(&job.channel)?.live.clone(),
-            registration: self.channels.get(&job.channel)?.registered.clone(),
-            source: job.event.source.and_then(|source| {
-                self.sources
-                    .get(&source.pane)
-                    .map(|state| state.live.clone())
-            }),
-        })
-    }
-
-    fn registration(&self, channel: Channel) -> Option<Arc<AtomicBool>> {
-        Some(self.channels.get(&channel)?.registered.clone())
-    }
-
-    fn prune_revoked_channels(&mut self) {
-        self.channels
-            .retain(|_, channel| channel.registered.load(Ordering::Acquire));
-        let channels = &self.channels;
-        self.pending
-            .retain(|job| channels.contains_key(&job.channel));
+        let channel = self.channels.get(&job.channel)?;
+        let mut scopes = vec![
+            self.live.clone(),
+            channel.live.clone(),
+            channel.registered.clone(),
+        ];
+        if let Some(source) = job.event.source {
+            scopes.push(self.sources.get(&source.pane)?.live.clone());
+        }
+        if let Some(origin) = job.event.origin {
+            scopes.push(self.origins.get(&origin)?.lease.0.clone());
+        }
+        let origin_identity = job.event.origin.and_then(|origin| {
+            self.origins
+                .get(&origin)
+                .map(|state| state.identity.clone())
+        });
+        let authorization = Authorization {
+            job,
+            scopes,
+            origin_identity,
+        };
+        authorization.is_current().then_some(authorization)
     }
 
     pub fn is_event_current(&self, event: Event) -> bool {
-        event.session == self.session
+        self.live.is_current()
+            && event.session == self.session
             && event.source.is_none_or(|source| self.is_live(source))
             && event
                 .origin
@@ -787,30 +894,10 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
-        self.live.store(false, Ordering::Release);
+        self.live.revoke();
         for registered in self.origins.values() {
             registered.lease.revoke();
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct Authorization {
-    session: Arc<AtomicBool>,
-    channel: Arc<AtomicBool>,
-    registration: Arc<AtomicBool>,
-    source: Option<Arc<AtomicBool>>,
-}
-
-impl Authorization {
-    pub fn is_current(&self) -> bool {
-        self.session.load(Ordering::Acquire)
-            && self.channel.load(Ordering::Acquire)
-            && self.registration.load(Ordering::Acquire)
-            && self
-                .source
-                .as_ref()
-                .is_none_or(|source| source.load(Ordering::Acquire))
     }
 }
 
