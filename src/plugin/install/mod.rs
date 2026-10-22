@@ -1,5 +1,6 @@
 //! repository metadata is inert input, not permission to install or execute it.
 
+mod entrypoint;
 pub mod metadata;
 pub mod mutation;
 mod operations;

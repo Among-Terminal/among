@@ -158,7 +158,7 @@ impl Inspection {
                     Err(problem) => problem.to_string(),
                 };
                 lines.push(format!(
-                    "{} — {} {}: {}\n{}\nrevision {}; release {}; manifest {}",
+                    "{} — {} {}: {}\n{}\npublisher-asserted build revision {}; release {}; manifest {}",
                     plugin.id,
                     version.manifest.name,
                     version.manifest.version,
@@ -271,7 +271,7 @@ impl Selection {
                 &self.version.manifest.id,
             )
         });
-        format!("{}\nSelected version {} · revision {}\n{}\nRequired access: {}\nOptional access: {}\nOnly this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "))
+        format!("{}\nSelected version {} · publisher-asserted build revision {}\n{}\nRequired access: {}\nOptional access: {}\nOnly this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "))
     }
     pub fn description(&self) -> String {
         format!(

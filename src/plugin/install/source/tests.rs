@@ -606,6 +606,267 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
 }
 
 #[test]
+fn real_https_install_rejects_all_reported_runtime_entrypoint_mismatches_without_execution() {
+    use super::super::package::tests::{entrypoint_fixture, OwnedRoot};
+    use serde_json::json;
+    let missing = "/usr/bin/among-independent-no-such-interpreter";
+    assert!(!std::path::Path::new(missing).exists());
+    let script = json!({"kind":"script","executable":"/usr/bin/sh","minimum":null});
+    let native = json!({"kind":"native","libc":"glibc","minimum":"2.35"});
+    let mut accepted = Vec::new();
+    for (case, bytes, runtime) in [
+        (
+            "missing actual interpreter",
+            format!("#!{missing}\nexit 123\n").into_bytes(),
+            script.clone(),
+        ),
+        (
+            "declared true instead of actual sh",
+            b"#!/usr/bin/sh\nexit 123\n".to_vec(),
+            json!({"kind":"script","executable":"/usr/bin/true","minimum":null}),
+        ),
+        (
+            "actual script declared native glibc",
+            b"#!/usr/bin/sh\nexit 123\n".to_vec(),
+            native,
+        ),
+        (
+            "env wrapper is not modeled",
+            b"#!/usr/bin/env sh\nexit 123\n".to_vec(),
+            script.clone(),
+        ),
+        (
+            "interpreter arguments are not modeled",
+            b"#!/usr/bin/sh -e\nexit 123\n".to_vec(),
+            script.clone(),
+        ),
+        (
+            "CRLF changes actual interpreter path",
+            b"#!/usr/bin/sh\r\nexit 123\n".to_vec(),
+            script.clone(),
+        ),
+        (
+            "overlong first line",
+            format!("#!{}\nexit 123\n", "x".repeat(1024)).into_bytes(),
+            script,
+        ),
+    ] {
+        let root = OwnedRoot::new();
+        let (metadata, archive) = entrypoint_fixture(&bytes, runtime);
+        let server =
+            Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+        let selection = server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap();
+        let outcome = install_at(&server, selection, &root.0);
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|request| request.contains("/github-production-release-asset/12/")),
+            "{case}: test must exercise real package transfer, not merely parse a schema"
+        );
+        println!(
+            "actual HTTPS format boundary {case}: {}",
+            if outcome.is_err() {
+                "REFUSED"
+            } else {
+                "UNEXPECTED COMMIT"
+            }
+        );
+        if outcome.is_ok() {
+            accepted.push(case);
+        } else {
+            assert!(!root.0.join("installed.json").exists(), "{case}");
+        }
+        assert_eq!(crate::plugin::host::PluginHost::new().supervised_count(), 0);
+    }
+    assert!(
+        accepted.is_empty(),
+        "incompatible actual payloads were committed: {accepted:?}"
+    );
+}
+
+#[test]
+fn real_https_native_formats_are_inertly_bound_to_linux_class_machine_and_loader() {
+    use super::super::package::tests::{entrypoint_fixture, OwnedRoot};
+    use serde_json::json;
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/fake-plugin");
+    let genuine = std::fs::read(binary).unwrap();
+    let native = json!({"kind":"native","libc":"glibc","minimum":"2.35"});
+    let mut class = genuine.clone();
+    class[4] = 1;
+    let mut endian = genuine.clone();
+    endian[5] = 2;
+    let mut machine = genuine.clone();
+    let wrong = if u16::from_le_bytes([machine[18], machine[19]]) == 62 {
+        183u16
+    } else {
+        62
+    };
+    machine[18..20].copy_from_slice(&wrong.to_le_bytes());
+    let mut relocation = genuine.clone();
+    relocation[16..18].copy_from_slice(&1u16.to_le_bytes());
+    let mut program_table = genuine.clone();
+    program_table[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut entry = genuine.clone();
+    entry[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut too_many = genuine.clone();
+    too_many[56..58].copy_from_slice(&129u16.to_le_bytes());
+    let phoff = u64::from_le_bytes(genuine[32..40].try_into().unwrap()) as usize;
+    let count = u16::from_le_bytes(genuine[56..58].try_into().unwrap()) as usize;
+    let interpreter = (0..count)
+        .map(|index| phoff + index * 56)
+        .find(|offset| u32::from_le_bytes(genuine[*offset..*offset + 4].try_into().unwrap()) == 3)
+        .unwrap();
+    let replace_loader = |path: &str| {
+        let mut bytes = genuine.clone();
+        let offset =
+            u64::from_le_bytes(bytes[interpreter + 8..interpreter + 16].try_into().unwrap())
+                as usize;
+        let mut loader = path.as_bytes().to_vec();
+        loader.push(0);
+        bytes[offset..offset + loader.len()].copy_from_slice(&loader);
+        bytes[interpreter + 32..interpreter + 40]
+            .copy_from_slice(&(loader.len() as u64).to_le_bytes());
+        bytes
+    };
+    for (case, bytes, runtime) in [
+        (
+            "ELF declared as script",
+            genuine.clone(),
+            json!({"kind":"script","executable":"/usr/bin/sh","minimum":null}),
+        ),
+        ("32-bit ELF", class, native.clone()),
+        ("big-endian ELF", endian, native.clone()),
+        ("different machine ELF", machine, native.clone()),
+        ("relocatable object", relocation, native.clone()),
+        ("overflowing program table", program_table, native.clone()),
+        ("entry outside executable segments", entry, native.clone()),
+        ("truncated ELF", b"\x7fELF".to_vec(), native.clone()),
+        ("program-header count budget", too_many, native.clone()),
+        (
+            "wrong dynamic loader ABI",
+            replace_loader("/usr/bin/sh"),
+            native.clone(),
+        ),
+        (
+            "unavailable dynamic loader",
+            replace_loader("/lib/among-independent-missing-loader.so"),
+            native.clone(),
+        ),
+    ] {
+        let root = OwnedRoot::new();
+        let (metadata, archive) = entrypoint_fixture(&bytes, runtime);
+        let server =
+            Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+        let selection = server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap();
+        let outcome = install_at(&server, selection, &root.0);
+        assert!(
+            outcome.is_err(),
+            "{case}: actual hash-consistent incompatible bytes reached selection"
+        );
+        assert!(!root.0.join("installed.json").exists());
+        println!("PASS real HTTPS rejected {case}");
+    }
+    for (label, bytes, runtime) in [
+        ("genuine ELF64", genuine, native),
+        (
+            "exact installed shell",
+            b"#!/usr/bin/sh\nexit 123\n".to_vec(),
+            json!({"kind":"script","executable":"/usr/bin/sh","minimum":null}),
+        ),
+    ] {
+        let root = OwnedRoot::new();
+        let (metadata, archive) = entrypoint_fixture(&bytes, runtime);
+        let server =
+            Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+        let selection = server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap();
+        let committed = install_at(&server, selection, &root.0).unwrap();
+        let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
+        assert!(entry.inspected.is_ok());
+        let mut host = crate::plugin::host::PluginHost::new();
+        host.register_managed(entry, None);
+        assert!(!host.desired_enabled("github:12/sample"));
+        assert_eq!(host.supervised_count(), 0);
+        assert!(!committed
+            .receipt
+            .package_path(&root.0)
+            .join("executed")
+            .exists());
+        println!("PASS real HTTPS accepted {label} inertly and disabled");
+    }
+}
+
+#[test]
+fn actual_update_format_rejection_preserves_previous_selected_bytes_and_consent() {
+    use super::super::package::tests::{entrypoint_fixture, OwnedRoot};
+    use serde_json::json;
+    let root = OwnedRoot::new();
+    let (metadata, archive) = super::super::package::tests::fixture();
+    let first =
+        Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+    let committed = install_at(
+        &first,
+        first
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap(),
+        &root.0,
+    )
+    .unwrap();
+    let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
+    let before = std::fs::read(root.0.join("installed.json")).unwrap();
+    let executable =
+        std::fs::read(committed.receipt.package_path(&root.0).join("bin/plugin")).unwrap();
+    let (metadata, archive) = entrypoint_fixture(
+        b"#!/usr/bin/sh\nexit 123\n",
+        json!({"kind":"native","libc":"glibc","minimum":"2.35"}),
+    );
+    let update =
+        Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+    let selected = update
+        .inspect(true)
+        .unwrap()
+        .select("sample", "1.0")
+        .unwrap()
+        .for_update(&entry, None)
+        .unwrap();
+    assert!(install_at(&update, selected, &root.0).is_err());
+    assert_eq!(
+        std::fs::read(root.0.join("installed.json")).unwrap(),
+        before
+    );
+    assert_eq!(
+        std::fs::read(committed.receipt.package_path(&root.0).join("bin/plugin")).unwrap(),
+        executable
+    );
+    assert_eq!(
+        crate::plugin::inventory::read(&root.0).unwrap()[0]
+            .receipt
+            .installation,
+        committed.receipt.installation
+    );
+}
+
+#[test]
 fn actual_https_stream_commits_exact_selection_inert_and_loads_offline() {
     let root = crate::plugin::install::package::tests::OwnedRoot::new();
     let (metadata, archive) = crate::plugin::install::package::tests::fixture();
