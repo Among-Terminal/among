@@ -57,6 +57,18 @@ fn only_the_exact_parent_owned_worker_is_excluded() -> among_tools::Result<()> {
     Ok(())
 }
 
+#[test]
+fn only_the_exact_dedicated_enospc_case_is_routed_out_of_graphics() -> among_tools::Result<()> {
+    let name = among_tools::installer_enospc::TEST;
+    let suffix = format!("{name}_suffix");
+    let prefix = format!("other::{name}");
+    assert_eq!(
+        ignored_tests::names(&format!("{name}: test\n{suffix}: test\n{prefix}: test"))?,
+        [prefix, suffix]
+    );
+    Ok(())
+}
+
 struct SelectionFixture(std::path::PathBuf);
 
 impl Drop for SelectionFixture {

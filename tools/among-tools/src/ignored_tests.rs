@@ -64,6 +64,10 @@ pub fn names(listing: &str) -> Result<Vec<String>> {
                 eprintln!("{name} is excluded from standalone graphics; this is not an acceptance pass; its owning parent regression supplies coverage");
                 continue;
             }
+            if name == crate::installer_enospc::TEST {
+                eprintln!("{name} requires check-installer-enospc-from-cargo in its mandatory bounded tmpfs CI container; exclusion from graphics is not an acceptance pass");
+                continue;
+            }
             if !names.insert(name.to_string()) {
                 return Err("duplicate Rust test name".into());
             }

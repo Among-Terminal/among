@@ -145,6 +145,23 @@ jobs:
             tools/among-tools/target/release/among-tools check-desktop . target/release/among
       - name: Independent Linux measurements
         run: tools/among-tools/target/release/among-tools check-resource-measurements examples/plugins/target/release/system-status
+      - name: Original installer ENOSPC assertions on a dedicated bounded tmpfs
+        run: |
+          docker build --file tools/among-tools/containers/Dockerfile.display --tag among-installer-enospc:ci tools/among-tools/containers
+          root="$AMONG_CHECK_ROOT/installer-enospc"
+          mkdir -m 700 "$root" "$root/tmp" "$root/run" "$root/shm"
+          cargo test --locked --no-run --message-format=json > "$root/cargo-tests.jsonl"
+          docker run --rm --init --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" \
+            --tmpfs /owned-full:rw,nosuid,nodev,noexec,mode=1777,size=128m \
+            --mount "type=bind,source=$PWD,target=$PWD,readonly" \
+            --mount "type=bind,source=$root,target=$root" \
+            --mount "type=bind,source=$root/tmp,target=/tmp" \
+            --mount "type=bind,source=$root/run,target=/run" \
+            --mount "type=bind,source=$root/shm,target=/dev/shm" \
+            --env "AMONG_CHECK_ROOT=$root" --env TMPDIR=/tmp --workdir "$PWD" \
+            among-installer-enospc:ci \
+            "$PWD/tools/among-tools/target/release/among-tools" check-installer-enospc-from-cargo "$root/cargo-tests.jsonl"
       - name: Ignored Rust graphical tests on individual owned displays
         run: |
           cargo test --locked --no-run --manifest-path tools/among-tools/Cargo.toml --message-format=json > "$RUNNER_TEMP/tool-tests.jsonl"
