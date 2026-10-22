@@ -169,15 +169,24 @@ cancelled job whose credit is still retained.
 | Provider response deadline | Five seconds; existing off-loop two-second write deadline |
 | Process wire/output | Existing 64-KiB frames, depth 32, 16 queued frames/1 MiB, rotating bounded drains |
 | Replies | Status + configurations + deliveries share **15 retained credits**; enumeration retains its reserved slot |
-| Event metadata | 64 envelopes / ten seconds; evicted/unobserved jobs are dropped, never reattributed |
+| Event metadata | 64 envelopes / ten seconds, coalesced by source/origin while retaining active IDs; evicted/unobserved jobs are dropped, never reattributed |
 | Contributions | 128 globally / eight distinct IDs per process, including revision tombstones; ten-second lifetime |
 | Actions | Four per contribution; 16 pending activations |
 | Provider inventory | At most 128 installed identities / 4096 retained channel rows |
 | Backend diagnostic records | 16 completions + 16 fixed rejections; existing core diagnostics remain separate |
 
 Provider disable removes its core channels/queued work immediately. Producer
-revocation deletes its envelopes; any already coalesced core entries lose authority
-and are discarded on bounded dequeue, not delivered under a fabricated origin.
+revocation deletes its envelopes; the bridge discards corresponding coalesced core
+entries on bounded dequeue, not under a fabricated origin. `envelope(event, now)`
+also revalidates the independent origin lease, source and expiry before returning
+data, even when mutable revocation bookkeeping has not yet run. The frozen core's
+job token alone does not encode producer authority: **all other adapters** sharing
+this core must enforce the same envelope/origin lifetime before managed-produced
+work executes. After a valid managed envelope, `origin_lease(event, now)` supplies
+a cloneable, thread-safe `OriginLease`; combine its `is_current()` with the core's
+source/channel authorization before **and during** an asynchronous attempt. It
+cannot be re-enabled after revocation. Provider attempts already consume this
+lease. Joining unchanged adapters does not yet satisfy that contract.
 Timers, envelopes/jobs and action handles are session-only, never saved sessions.
 
 The frozen core's channel-full policy drops an incoming distinct source once that
@@ -185,20 +194,25 @@ channel already has sixteen pending sources. Single-source floods coalesce and a
 quiet sibling progresses; this is **not** a guarantee that every new distinct
 source survives an already saturated channel. Core suppression diagnostics expose
 that overload. Changing the core's admission fairness is a separate review point.
+The frozen core also coalesces targetless jobs under its single `None` source key,
+not independently by plugin origin. Origin-scoped targetless fairness therefore
+needs a reviewed core scheduling contract before combined app acceptance; the
+bridge does not hide this by adding another pending-delivery queue.
 
 ## Sequential integration requirements and local checks
 
 1. Supply real focus/source lifetimes and the same core, then construct the host
    with the explicit bridge. Update the ordinary-app feature set only then.
 2. On actual core bell/application ingress call `observe_host_event(event,
-   current_workspace)` immediately. Never recover missing envelopes by guessing.
+   current_workspace, ingress_focus)` immediately, using the same focus snapshot
+   passed to the core. Never recover missing envelopes or eligibility by guessing.
 3. General must consume typed inventory and call `set_policy` after accepted edits,
    with durable identity/channel-scoped storage and unknown-data preservation.
 4. Render contribution snapshots only in the existing plugin areas and activate
    opaque handles. No native contribution/action widget acceptance is claimed here.
 5. The frozen core names its source-bearing ingress `bell`/`Kind::TerminalBell`.
    Managed provider envelopes correctly say `managed_notification`; later command/
-   app adapters **must use `Backend::envelope(event)`**, or extend the core's typed
+   audio/app adapters **must use `Backend::envelope(event, now)`**, or extend the core's typed
    origin contract, rather than relabel plugin events from that old core enum.
    The command backend is not duplicated or changed by this slice.
 6. Join installer registration removal/replacement with host stop/reap and bridge

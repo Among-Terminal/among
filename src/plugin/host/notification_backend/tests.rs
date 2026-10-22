@@ -663,7 +663,7 @@ fn cancelled_jobs_share_fifteen_retained_credits_and_preserve_reserved_enumerati
         fixture
             .backend
             .borrow_mut()
-            .observe_host_event(event, Some(10))
+            .observe_host_event(event, Some(10), Focus::default())
             .unwrap();
         fixture.wait(|fixture| fixture.deliveries().len() == id as usize);
         fixture.policy("first", Eligibility::Always, false);
@@ -895,7 +895,7 @@ fn native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood() {
                 .unwrap();
             backend
                 .borrow_mut()
-                .observe_host_event(event, Some(if pane == 1 { 10 } else { 20 }))
+                .observe_host_event(event, Some(if pane == 1 { 10 } else { 20 }), focus)
                 .unwrap();
         });
         let done = spawned.clone();
@@ -1103,7 +1103,7 @@ fn actual_provider_failed_uncertain_and_accepted_outcomes_are_distinct_and_unins
         fixture
             .backend
             .borrow_mut()
-            .observe_host_event(event, Some(10))
+            .observe_host_event(event, Some(10), Focus::default())
             .unwrap();
         fixture.wait(|fixture| fixture.backend.borrow().completions().len() == index + 1);
         assert_eq!(

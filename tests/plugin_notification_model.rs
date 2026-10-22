@@ -65,7 +65,9 @@ fn real_core_queue_limits_quiet_source_progress_and_session_revocation() {
             .borrow_mut()
             .bell(*source, Focus::default(), now)
             .unwrap();
-        backend.observe_host_event(event, Some(10)).unwrap();
+        backend
+            .observe_host_event(event, Some(10), Focus::default())
+            .unwrap();
         assert!(core.borrow().pending_count(None) <= 64);
         assert!(backend.event_count() <= 64);
     }
@@ -89,19 +91,24 @@ fn real_core_queue_limits_quiet_source_progress_and_session_revocation() {
             )
             .unwrap();
     }
-    // refreshing a noisy source cannot indefinitely postpone a quiet sibling.
+    // the quiet event precedes the flood: replacing noisy envelopes must not
+    // evict it while its shared-core job is still waiting in the same position.
+    let quiet = core
+        .borrow_mut()
+        .bell(sources[99], Focus::default(), now)
+        .unwrap();
+    backend
+        .observe_host_event(quiet, Some(10), Focus::default())
+        .unwrap();
     for _ in 0..100_000 {
         let event = core
             .borrow_mut()
             .bell(sources[0], Focus::default(), now)
             .unwrap();
-        backend.observe_host_event(event, Some(10)).unwrap();
+        backend
+            .observe_host_event(event, Some(10), Focus::default())
+            .unwrap();
     }
-    let quiet = core
-        .borrow_mut()
-        .bell(sources[99], Focus::default(), now)
-        .unwrap();
-    backend.observe_host_event(quiet, Some(10)).unwrap();
     let mut quiet_delivered = false;
     for step in 0..20 {
         for id in 2..=6 {
@@ -254,4 +261,131 @@ fn source_generation_reuse_off_background_unfocused_and_tombstone_budgets() {
         .iter()
         .all(|view| !view.installed && view.owner.is_none()));
     assert!(backend.inventory().iter().any(|view| view.policy.enabled));
+}
+
+#[test]
+fn independent_origin_lease_revokes_active_and_queued_shared_core_work() {
+    let core = Rc::new(RefCell::new(Host::new().unwrap()));
+    let mut backend = Backend::new(core.clone(), Focus::default());
+    backend.bind("session");
+    backend.register_identity(&owner(1).identity).unwrap();
+    let origin_lease = backend.admit(owner(1), false, None).unwrap();
+    backend
+        .declare(Declaration {
+            key: key(2, 1),
+            name: "Provider".into(),
+            description: "Synthetic".into(),
+        })
+        .unwrap();
+    backend.plugin_enabled(&owner(2).identity, true);
+    backend
+        .set_policy(
+            &key(2, 1),
+            Policy {
+                enabled: true,
+                eligibility: Eligibility::Always,
+            },
+        )
+        .unwrap();
+    backend.admit(owner(2), true, None).unwrap();
+    let now = Instant::now();
+    let event = backend
+        .produce(&owner(1), input(1, None), None, now)
+        .unwrap();
+    let job = backend.take_delivery(&owner(2), now).unwrap();
+    assert!(backend.envelope(event, now).is_some());
+    // stop_io can clear this without acquiring the renderer/backend RefCell.
+    let worker_lease = backend.origin_lease(event, now).unwrap();
+    origin_lease.revoke();
+    assert!(!std::thread::spawn(move || worker_lease.is_current())
+        .join()
+        .unwrap());
+    assert!(backend.envelope(event, now).is_none());
+    backend.housekeep(now);
+    assert_eq!(backend.active_count(), 0);
+    assert_eq!(
+        backend.completions().back().unwrap().status,
+        Status::CancelledUncertain
+    );
+    assert!(!backend.result(&owner(2), job.job_id, DeliveryOutcome::Accepted, now));
+
+    let replacement = Owner {
+        identity: owner(1).identity,
+        generation: "replacement-generation".into(),
+    };
+    let replacement_lease = backend.admit(replacement.clone(), false, None).unwrap();
+    let now = now + Duration::from_secs(2);
+    let queued = backend
+        .produce(&replacement, input(1, None), None, now)
+        .unwrap();
+    assert_eq!(core.borrow().pending_count(None), 1);
+    replacement_lease.revoke();
+    assert!(backend.envelope(queued, now).is_none());
+    assert!(backend.take_delivery(&owner(2), now).is_none());
+    assert_eq!(core.borrow().pending_count(None), 0);
+}
+
+#[test]
+fn later_ineligible_event_cannot_erase_another_channels_earlier_eligible_job() {
+    let core = Rc::new(RefCell::new(Host::new().unwrap()));
+    let source = core.borrow_mut().attach(1).unwrap();
+    let mut backend = Backend::new(core.clone(), Focus::default());
+    backend.bind("session");
+    backend.register_identity(&owner(1).identity).unwrap();
+    backend.admit(owner(1), false, None).unwrap();
+    for channel in 1..=2 {
+        backend
+            .declare(Declaration {
+                key: key(2, channel),
+                name: "Provider".into(),
+                description: "Synthetic".into(),
+            })
+            .unwrap();
+    }
+    backend.plugin_enabled(&owner(2).identity, true);
+    backend
+        .set_policy(
+            &key(2, 1),
+            Policy {
+                enabled: true,
+                eligibility: Eligibility::ApplicationBackground,
+            },
+        )
+        .unwrap();
+    backend
+        .set_policy(
+            &key(2, 2),
+            Policy {
+                enabled: true,
+                eligibility: Eligibility::Always,
+            },
+        )
+        .unwrap();
+    backend.admit(owner(2), true, None).unwrap();
+    let now = Instant::now();
+    let background = backend
+        .produce(&owner(1), input(1, Some(source)), Some(10), now)
+        .unwrap();
+    backend.set_focus(Focus {
+        application_active: true,
+        viewed: Some(source),
+    });
+    let foreground = backend
+        .produce(
+            &owner(1),
+            input(2, Some(source)),
+            Some(10),
+            now + Duration::from_secs(2),
+        )
+        .unwrap();
+    let background_job = backend
+        .take_delivery(&owner(2), now + Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(background_job.channel, "channel-1");
+    assert_eq!(background_job.event.event_id, background.id().to_string());
+    let always_job = backend
+        .take_delivery(&owner(2), now + Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(always_job.channel, "channel-2");
+    assert_eq!(always_job.event.event_id, foreground.id().to_string());
 }

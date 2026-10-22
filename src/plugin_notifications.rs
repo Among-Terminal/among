@@ -3,9 +3,10 @@
 
 use crate::notifications::{self as core, Channel, Event, Focus, Host, Job, Policy, Source};
 use serde::{Deserialize, Serialize};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -68,6 +69,20 @@ pub struct Scope {
 pub struct Owner {
     pub identity: String,
     pub generation: String,
+}
+
+/// a delivery worker can observe origin revocation without borrowing GTK or the
+/// bridge. only revocation is public; an old process cannot re-enable this lease.
+#[derive(Clone, Debug)]
+pub struct OriginLease(Arc<AtomicBool>);
+
+impl OriginLease {
+    pub fn revoke(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+    pub fn is_current(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -201,6 +216,7 @@ pub struct Envelope {
 struct RememberedEvent {
     event: Event,
     envelope: Envelope,
+    eligibility: [bool; 3],
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -215,6 +231,7 @@ struct Active {
     key: ChannelKey,
     job: Job,
     deadline: Instant,
+    origin: Option<OriginLease>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -260,7 +277,7 @@ struct Producer {
     revisions: BTreeMap<String, u64>,
     icon: Option<Icon>,
     delivery_seen: bool,
-    live: Rc<Cell<bool>>,
+    live: OriginLease,
 }
 
 pub struct Backend {
@@ -422,7 +439,7 @@ impl Backend {
         owner: Owner,
         delivery: bool,
         icon: Option<Icon>,
-    ) -> Result<Rc<Cell<bool>>, Rejection> {
+    ) -> Result<OriginLease, Rejection> {
         if !identity(&owner.identity)
             || owner.generation.is_empty()
             || owner.generation.len() > 128
@@ -450,7 +467,7 @@ impl Backend {
                 channel.view.owner = Some(owner.clone());
             }
         }
-        let live = Rc::new(Cell::new(true));
+        let live = OriginLease(Arc::new(AtomicBool::new(true)));
         self.producers.insert(
             owner.identity.clone(),
             Producer {
@@ -468,7 +485,7 @@ impl Backend {
 
     pub fn revoke(&mut self, identity: &str) {
         if let Some(producer) = self.producers.remove(identity) {
-            producer.live.set(false);
+            producer.live.revoke();
         }
         self.contributions
             .retain(|item| item.owner.identity != identity);
@@ -523,7 +540,7 @@ impl Backend {
             && self
                 .producers
                 .get(&owner.identity)
-                .is_some_and(|producer| &producer.owner == owner && producer.live.get())
+                .is_some_and(|producer| &producer.owner == owner && producer.live.is_current())
     }
 
     /// workspace membership is host-resolved; plugin text cannot supply origin,
@@ -602,6 +619,7 @@ impl Backend {
                 source,
                 message: Some(input.message),
             },
+            self.focus,
         );
         Ok(event)
     }
@@ -612,6 +630,7 @@ impl Backend {
         &mut self,
         event: Event,
         workspace: Option<u64>,
+        focus: Focus,
     ) -> Result<(), Rejection> {
         let core = self.core.try_borrow().map_err(|_| Rejection::Unavailable)?;
         let source = match event.source() {
@@ -642,22 +661,69 @@ impl Backend {
                 source,
                 message: None,
             },
+            focus,
         );
         Ok(())
     }
 
-    fn remember(&mut self, event: Event, envelope: Envelope) {
+    fn remember(&mut self, event: Event, envelope: Envelope, focus: Focus) {
+        let eligibility = [
+            core::Eligibility::Always,
+            core::Eligibility::OriginatingTerminalUnfocused,
+            core::Eligibility::ApplicationBackground,
+        ]
+        .map(|eligibility| {
+            Policy {
+                enabled: true,
+                eligibility,
+            }
+            .permits(event.source(), focus)
+        });
+        // mirror source coalescing without evicting a quiet source's envelope
+        // on every noisy bell. different ingress eligibility must survive: an
+        // ineligible later bell cannot erase another channel's earlier job.
+        self.events.retain(|old| {
+            old.event.source() != event.source()
+                || old.envelope.origin != envelope.origin
+                || old.eligibility != eligibility
+                || self
+                    .active
+                    .values()
+                    .any(|active| active.job.event() == old.event)
+        });
         if self.events.len() == MAX_EVENTS {
             self.events.pop_front();
         }
-        self.events.push_back(RememberedEvent { event, envelope });
+        self.events.push_back(RememberedEvent {
+            event,
+            envelope,
+            eligibility,
+        });
     }
 
-    pub fn envelope(&self, event: Event) -> Option<&Envelope> {
+    pub fn envelope(&self, event: Event, now: Instant) -> Option<&Envelope> {
         self.events
             .iter()
-            .find(|record| record.event == event)
+            .find(|record| {
+                record.event == event
+                    && now.saturating_duration_since(event.received_at()) < EVENT_LIFETIME
+                    && record
+                        .envelope
+                        .origin
+                        .as_ref()
+                        .is_none_or(|owner| self.current(owner))
+                    && event.source().is_none_or(|source| {
+                        self.core
+                            .try_borrow()
+                            .is_ok_and(|core| core.is_live(source))
+                    })
+            })
             .map(|record| &record.envelope)
+    }
+
+    pub fn origin_lease(&self, event: Event, now: Instant) -> Option<OriginLease> {
+        let origin = self.envelope(event, now)?.origin.as_ref()?;
+        Some(self.producers.get(&origin.identity)?.live.clone())
     }
 
     pub fn contribute(
@@ -890,7 +956,8 @@ impl Backend {
                 if !self.core.try_borrow().ok()?.is_current(job) {
                     continue;
                 }
-                let Some(envelope) = self.envelope(job.event()) else {
+                let Some(envelope) = self.envelope(job.event(), now) else {
+                    self.reject(Rejection::Stale);
                     continue;
                 };
                 if envelope
@@ -898,6 +965,7 @@ impl Backend {
                     .as_ref()
                     .is_some_and(|origin| origin.identity == owner.identity)
                 {
+                    self.reject(Rejection::CausalFeedback);
                     continue;
                 }
                 let mut envelope = envelope.clone();
@@ -906,6 +974,11 @@ impl Backend {
                 if job.event().source().is_none() {
                     envelope.source = None;
                 }
+                let origin = if envelope.origin.is_some() {
+                    Some(self.origin_lease(job.event(), now)?)
+                } else {
+                    None
+                };
                 self.next_job = self.next_job.checked_add(1)?;
                 let job_id = self.next_job;
                 self.active.insert(
@@ -915,6 +988,7 @@ impl Backend {
                         key: key.clone(),
                         job,
                         deadline: now.checked_add(DEADLINE)?,
+                        origin,
                     },
                 );
                 if let Some(producer) = self.producers.get_mut(&owner.identity) {
@@ -969,14 +1043,12 @@ impl Backend {
             .iter()
             .filter_map(|(id, active)| {
                 let current = self.current(&active.owner)
+                    && active.origin.as_ref().is_none_or(OriginLease::is_current)
                     && self
                         .core
                         .try_borrow()
                         .is_ok_and(|core| core.is_current(active.job))
-                    && self
-                        .events
-                        .iter()
-                        .any(|event| event.event == active.job.event());
+                    && self.envelope(active.job.event(), now).is_some();
                 if !current {
                     Some((*id, Status::CancelledUncertain))
                 } else if now >= active.deadline {
