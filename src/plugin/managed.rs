@@ -22,6 +22,54 @@ pub const FEATURES: &[&str] = &[
     "events.terminal",
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationRole {
+    Producer,
+    Delivery,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationRoleConflict {
+    RequiredRoles,
+    ReviewChoice,
+}
+
+impl NotificationRoleConflict {
+    pub fn problem(self) -> Problem {
+        Problem(match self {
+            Self::RequiredRoles => {
+                "notification production and delivery cannot both be required by one process"
+            }
+            Self::ReviewChoice => {
+                "choose either notification production or delivery in the explicit access review"
+            }
+        })
+    }
+}
+
+/// the retained identity-scoped review.features list is the role choice. never
+/// infer preference from channel policy or silently delete one granted role.
+pub fn notification_role(
+    features: &BTreeSet<String>,
+) -> Result<Option<NotificationRole>, NotificationRoleConflict> {
+    match (
+        features.contains("notifications.produce"),
+        features.contains("notifications.deliver"),
+    ) {
+        (true, true) => Err(NotificationRoleConflict::ReviewChoice),
+        (true, false) => Ok(Some(NotificationRole::Producer)),
+        (false, true) => Ok(Some(NotificationRole::Delivery)),
+        (false, false) => Ok(None),
+    }
+}
+
+pub fn required_notification_role(
+    manifest: &Manifest,
+) -> Result<Option<NotificationRole>, NotificationRoleConflict> {
+    notification_role(&manifest.required_features.iter().cloned().collect())
+        .map_err(|_| NotificationRoleConflict::RequiredRoles)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub session: String,
@@ -271,6 +319,7 @@ pub fn granted_features_with(
     local: Option<&Value>,
     supported: &[&str],
 ) -> Result<BTreeSet<String>, Problem> {
+    required_notification_role(manifest).map_err(NotificationRoleConflict::problem)?;
     manifest.compatibility(MAJOR, MINOR, supported)?;
     let review = local
         .and_then(|local| local.get("review"))
@@ -312,6 +361,7 @@ pub fn granted_features_with(
 }
 
 pub fn feature_dependencies(selected: &BTreeSet<String>) -> Result<(), Problem> {
+    notification_role(selected).map_err(NotificationRoleConflict::problem)?;
     if selected.iter().any(|feature| {
         matches!(
             feature.as_str(),
@@ -468,6 +518,30 @@ pub fn parse(bytes: &[u8]) -> Result<Response, Problem> {
 mod tests {
     use super::super::protocol::TerminalInfo;
     use super::*;
+
+    #[test]
+    fn explicit_role_choice_allows_ui_but_never_prefers_one_conflicting_grant() {
+        use NotificationRole::*;
+        for (features, expected) in [
+            (vec!["notifications.ui"], Ok(None)),
+            (
+                vec!["notifications.produce", "notifications.ui"],
+                Ok(Some(Producer)),
+            ),
+            (
+                vec!["notifications.deliver", "notifications.ui"],
+                Ok(Some(Delivery)),
+            ),
+            (
+                vec!["notifications.produce", "notifications.deliver"],
+                Err(NotificationRoleConflict::ReviewChoice),
+            ),
+        ] {
+            let features = features.into_iter().map(str::to_owned).collect();
+            assert_eq!(notification_role(&features), expected);
+            assert_eq!(feature_dependencies(&features).is_ok(), expected.is_ok());
+        }
+    }
 
     fn world() -> World {
         World {

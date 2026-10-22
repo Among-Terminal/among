@@ -3,6 +3,14 @@
 
 use super::*;
 
+fn notification_role_label(role: Option<managed::NotificationRole>) -> &'static str {
+    match role {
+        Some(managed::NotificationRole::Producer) => "producer",
+        Some(managed::NotificationRole::Delivery) => "delivery",
+        None => "none",
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Overview {
     pub key: String,
@@ -112,12 +120,15 @@ impl PluginHost {
                             overview.name = manifest.name.clone();
                             overview.description = manifest.description.clone();
                             overview.version = Some(manifest.version.clone());
-                            overview.declared = manifest
-                                .compatibility(
-                                    managed::MAJOR,
-                                    managed::MINOR,
-                                    &self.supported_features(),
-                                )
+                            overview.declared = managed::required_notification_role(manifest)
+                                .map_err(managed::NotificationRoleConflict::problem)
+                                .and_then(|_| {
+                                    manifest.compatibility(
+                                        managed::MAJOR,
+                                        managed::MINOR,
+                                        &self.supported_features(),
+                                    )
+                                })
                                 .map_or_else(
                                     |problem| format!("Declared API unavailable: {problem}"),
                                     |()| {
@@ -127,6 +138,14 @@ impl PluginHost {
                                         )
                                     },
                                 );
+                            if manifest.required_features.iter().chain(&manifest.optional_features)
+                                .any(|feature| matches!(feature.as_str(), "notifications.produce" | "notifications.deliver"))
+                            {
+                                let reviewed = self.reviewed_notification_role(&plugin.spec.name)
+                                    .map_or_else(|problem| problem.to_string(), |role| notification_role_label(role).into());
+                                let admitted = notification_role_label(self.admitted_notification_role(&plugin.spec.name));
+                                overview.declared.push_str(&format!("\nNotification role: reviewed {reviewed} · admitted {admitted}"));
+                            }
                         }
                         Err(problem) => {
                             overview.description = "Static metadata unavailable".into();

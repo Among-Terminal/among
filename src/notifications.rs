@@ -14,6 +14,7 @@ pub const COOLDOWN: Duration = Duration::from_secs(2);
 pub const MAX_PENDING: usize = 64;
 pub const MAX_PENDING_PER_CHANNEL: usize = 16;
 pub const MAX_DIAGNOSTICS: usize = 32;
+pub const MAX_ORIGINS: usize = 128;
 
 static SESSION: AtomicU64 = AtomicU64::new(0);
 
@@ -42,6 +43,41 @@ impl Source {
     pub fn generation(self) -> u64 {
         self.generation
     }
+}
+
+/// host-issued producer lifetime; external identities are bounded registry data,
+/// never reconstructed from a plugin's output or used as interchangeable handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Origin {
+    session: u64,
+    id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginIdentity {
+    pub identity: String,
+    pub generation: String,
+}
+
+/// revocation remains observable by workers and the core while its owner cannot
+/// obtain a mutable borrow. no public operation can revive a retired lifetime.
+#[derive(Debug, Clone)]
+pub struct OriginLease(Arc<AtomicBool>);
+
+impl OriginLease {
+    pub fn revoke(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Debug)]
+struct RegisteredOrigin {
+    identity: OriginIdentity,
+    lease: OriginLease,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -109,6 +145,7 @@ pub struct Aggregate {
 pub enum Kind {
     TerminalBell,
     Application,
+    ManagedNotification,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +154,7 @@ pub struct Event {
     id: u64,
     kind: Kind,
     source: Option<Source>,
+    origin: Option<Origin>,
     received_at: Instant,
 }
 
@@ -137,9 +175,30 @@ impl Event {
         self.source
     }
 
+    pub fn origin(self) -> Option<Origin> {
+        self.origin
+    }
+
     pub fn received_at(self) -> Instant {
         self.received_at
     }
+
+    fn scheduling_key(self) -> SchedulingKey {
+        // source-local emphasis and delivery cooldown remain independent of who
+        // produced an event. only targetless work needs a producer-local key.
+        match (self.source, self.origin) {
+            (Some(source), _) => SchedulingKey::Source(source),
+            (None, Some(origin)) => SchedulingKey::Origin(origin),
+            (None, None) => SchedulingKey::Application,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SchedulingKey {
+    Source(Source),
+    Origin(Origin),
+    Application,
 }
 
 /// the adapter owns its authoritative external identity. these opaque handles
@@ -172,11 +231,14 @@ pub enum Failure {
     Exhausted,
     StaleSource,
     StaleChannel,
+    StaleOrigin,
+    InvalidOrigin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticKind {
     StaleSource,
+    StaleOrigin,
     Coalesced,
     GlobalQueueFull,
     ChannelQueueFull,
@@ -205,7 +267,7 @@ struct DeliveryChannel {
     revision: u64,
     live: Arc<AtomicBool>,
     registered: Arc<AtomicBool>,
-    next_delivery: BTreeMap<Option<Source>, Instant>,
+    next_delivery: BTreeMap<SchedulingKey, Instant>,
 }
 
 #[derive(Debug)]
@@ -213,10 +275,12 @@ pub struct Host {
     session: u64,
     live: Arc<AtomicBool>,
     next_source: u64,
+    next_origin: u64,
     next_channel: u64,
     last_event: u64,
     visual: Policy,
     sources: BTreeMap<u64, LiveSource>,
+    origins: BTreeMap<Origin, RegisteredOrigin>,
     channels: BTreeMap<Channel, DeliveryChannel>,
     pending: VecDeque<Job>,
     diagnostics: VecDeque<Diagnostic>,
@@ -233,10 +297,12 @@ impl Host {
             session: previous + 1,
             live: Arc::new(AtomicBool::new(true)),
             next_source: 0,
+            next_origin: 0,
             next_channel: 0,
             last_event: 0,
             visual: Policy::VISUAL_DEFAULT,
             sources: BTreeMap::new(),
+            origins: BTreeMap::new(),
             channels: BTreeMap::new(),
             pending: VecDeque::new(),
             diagnostics: VecDeque::new(),
@@ -274,6 +340,76 @@ impl Host {
         self.source(source.pane) == Some(source)
     }
 
+    /// trusted admission supplies identity and process generation, not wire data.
+    /// bounded live metadata is removed on retirement; it is not event history.
+    pub fn register_origin(
+        &mut self,
+        identity: &str,
+        generation: &str,
+    ) -> Result<(Origin, OriginLease), Failure> {
+        if identity.is_empty()
+            || identity.len() > 256
+            || generation.is_empty()
+            || generation.len() > 128
+            || identity
+                .chars()
+                .chain(generation.chars())
+                .any(char::is_control)
+        {
+            return Err(Failure::InvalidOrigin);
+        }
+        self.prune_origins();
+        if self.origins.len() >= MAX_ORIGINS {
+            return Err(Failure::Exhausted);
+        }
+        self.next_origin = self.next_origin.checked_add(1).ok_or(Failure::Exhausted)?;
+        let origin = Origin {
+            session: self.session,
+            id: self.next_origin,
+        };
+        let lease = OriginLease(Arc::new(AtomicBool::new(true)));
+        self.origins.insert(
+            origin,
+            RegisteredOrigin {
+                identity: OriginIdentity {
+                    identity: identity.into(),
+                    generation: generation.into(),
+                },
+                lease: lease.clone(),
+            },
+        );
+        Ok((origin, lease))
+    }
+
+    pub fn origin(&self, origin: Origin) -> Option<&OriginIdentity> {
+        self.origins
+            .get(&origin)
+            .filter(|registered| registered.lease.is_current())
+            .map(|registered| &registered.identity)
+    }
+
+    pub fn retire_origin(&mut self, origin: Origin) {
+        if let Some(registered) = self.origins.remove(&origin) {
+            registered.lease.revoke();
+        }
+        self.pending.retain(|job| job.event.origin != Some(origin));
+        for channel in self.channels.values_mut() {
+            channel.next_delivery.remove(&SchedulingKey::Origin(origin));
+        }
+    }
+
+    fn prune_origins(&mut self) {
+        let retired: Vec<_> = self
+            .origins
+            .iter()
+            .filter(|(_, registered)| !registered.lease.is_current())
+            .map(|(origin, _)| *origin)
+            .collect();
+        for origin in retired {
+            self.retire_origin(origin);
+        }
+    }
+
     pub fn detach(&mut self, source: Source) {
         if !self.is_live(source) {
             return;
@@ -283,7 +419,7 @@ impl Host {
         }
         self.pending.retain(|job| job.event.source != Some(source));
         for channel in self.channels.values_mut() {
-            channel.next_delivery.remove(&Some(source));
+            channel.next_delivery.remove(&SchedulingKey::Source(source));
         }
     }
 
@@ -344,29 +480,52 @@ impl Host {
             self.diagnose(DiagnosticKind::StaleSource);
             return Err(Failure::StaleSource);
         }
-        self.ingress(Kind::TerminalBell, Some(source), focus, now)
+        self.ingress(Kind::TerminalBell, Some(source), None, focus, now)
     }
 
     /// only host-authorized adapters may call this. absence of a target is not
     /// permission to substitute the selected terminal or create unread state.
     pub fn application_event(&mut self, focus: Focus, now: Instant) -> Result<Event, Failure> {
-        self.ingress(Kind::Application, None, focus, now)
+        self.ingress(Kind::Application, None, None, focus, now)
+    }
+
+    /// the adapter checks grants/targets first. this typed path cannot turn a
+    /// managed event into a bell or lose its origin when no source is present.
+    pub fn managed_event(
+        &mut self,
+        origin: Origin,
+        source: Option<Source>,
+        focus: Focus,
+        now: Instant,
+    ) -> Result<Event, Failure> {
+        if self.origin(origin).is_none() {
+            self.diagnose(DiagnosticKind::StaleOrigin);
+            return Err(Failure::StaleOrigin);
+        }
+        if source.is_some_and(|source| !self.is_live(source)) {
+            self.diagnose(DiagnosticKind::StaleSource);
+            return Err(Failure::StaleSource);
+        }
+        self.ingress(Kind::ManagedNotification, source, Some(origin), focus, now)
     }
 
     fn ingress(
         &mut self,
         kind: Kind,
         source: Option<Source>,
+        origin: Option<Origin>,
         focus: Focus,
         now: Instant,
     ) -> Result<Event, Failure> {
         self.prune_revoked_channels();
+        self.prune_origins();
         self.last_event = self.last_event.checked_add(1).ok_or(Failure::Exhausted)?;
         let event = Event {
             session: self.session,
             id: self.last_event,
             kind,
             source,
+            origin,
             received_at: now,
         };
         self.acknowledge(focus);
@@ -459,7 +618,8 @@ impl Host {
 
     fn enqueue(&mut self, job: Job) {
         if let Some(pending) = self.pending.iter_mut().find(|pending| {
-            pending.channel == job.channel && pending.event.source == job.event.source
+            pending.channel == job.channel
+                && pending.event.scheduling_key() == job.event.scheduling_key()
         }) {
             // keep its place: a continuous flood must not postpone another source.
             *pending = job;
@@ -475,11 +635,14 @@ impl Host {
         } else if self.pending.len() >= MAX_PENDING {
             // one source fanned out to many channels must not monopolize the
             // global budget. sacrifice its newest excess job for a quiet source.
-            let mut counts = BTreeMap::<Option<Source>, usize>::new();
+            let mut counts = BTreeMap::<SchedulingKey, usize>::new();
             for pending in &self.pending {
-                *counts.entry(pending.event.source).or_default() += 1;
+                *counts.entry(pending.event.scheduling_key()).or_default() += 1;
             }
-            let incoming = counts.get(&job.event.source).copied().unwrap_or(0);
+            let incoming = counts
+                .get(&job.event.scheduling_key())
+                .copied()
+                .unwrap_or(0);
             if let Some((source, _)) = counts
                 .into_iter()
                 .max_by_key(|(_, count)| *count)
@@ -488,7 +651,7 @@ impl Host {
                 if let Some(index) = self
                     .pending
                     .iter()
-                    .rposition(|pending| pending.event.source == source)
+                    .rposition(|pending| pending.event.scheduling_key() == source)
                 {
                     self.pending.remove(index);
                     self.pending.push_back(job);
@@ -518,24 +681,27 @@ impl Host {
     /// bell replaces one queued event, but cannot extend the source deadline.
     pub fn take_ready(&mut self, id: Channel, now: Instant) -> Option<Job> {
         self.prune_revoked_channels();
+        self.prune_origins();
         let channel = self.channels.get_mut(&id)?;
+        channel.next_delivery.retain(|_, next| now < *next);
         let index = self.pending.iter().position(|job| {
             job.channel == id
                 && channel
                     .next_delivery
-                    .get(&job.event.source)
+                    .get(&job.event.scheduling_key())
                     .is_none_or(|next| now >= *next)
         })?;
         let job = self.pending.remove(index)?;
         if let Some(next) = now.checked_add(COOLDOWN) {
-            channel.next_delivery.insert(job.event.source, next);
+            channel
+                .next_delivery
+                .insert(job.event.scheduling_key(), next);
         }
         Some(job)
     }
 
     pub fn is_current(&self, job: Job) -> bool {
-        job.event.session == self.session
-            && job.event.source.is_none_or(|source| self.is_live(source))
+        self.is_event_current(job.event)
             && self.channels.get(&job.channel).is_some_and(|channel| {
                 channel.policy.enabled
                     && channel.revision == job.revision
@@ -574,6 +740,14 @@ impl Host {
             .retain(|job| channels.contains_key(&job.channel));
     }
 
+    pub fn is_event_current(&self, event: Event) -> bool {
+        event.session == self.session
+            && event.source.is_none_or(|source| self.is_live(source))
+            && event
+                .origin
+                .is_none_or(|origin| self.origin(origin).is_some())
+    }
+
     pub fn diagnostics(&self) -> &VecDeque<Diagnostic> {
         &self.diagnostics
     }
@@ -605,6 +779,9 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         self.live.store(false, Ordering::Release);
+        for registered in self.origins.values() {
+            registered.lease.revoke();
+        }
     }
 }
 

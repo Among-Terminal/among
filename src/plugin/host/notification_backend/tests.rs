@@ -1,5 +1,5 @@
 use super::*;
-use among::notifications::{Eligibility, Focus, Host, Policy};
+use among::notifications::{Eligibility, Focus, Host, Kind, Policy};
 use backend::{Backend, DeliveryOutcome, Rejection as Refusal, Status};
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -24,6 +24,23 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn producer_event(&mut self, repository: u64, sequence: u64, pane: Option<u64>) {
+        let package = self.provider_package(repository);
+        let command = std::fs::read_to_string(package.join("next-command"))
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(1);
+        let source = pane.and_then(|pane| self.core.borrow().source(pane));
+        let message = json!({"type":"notification_event","session":"$session","generation":"$generation",
+            "event":{"sequence":sequence,"target":pane.map_or(json!({"kind":"application"}), |pane| json!({"kind":"pane","reference":pane.to_string()})),
+                "source_generation":source.map(|source| source.generation().to_string()),"message":"independent-producer"}});
+        let temporary = package.join(format!("pending-{command}.json"));
+        let destination = package.join(format!("input-{command}.json"));
+        std::fs::write(&temporary, message.to_string()).unwrap();
+        std::fs::rename(temporary, &destination).unwrap();
+        self.wait(|_| !destination.exists());
+    }
+
     fn new(grants: &[&str], attached: bool, enabled: bool) -> Self {
         Self::with_manifest(grants, attached, enabled, |_, _| {})
     }
@@ -242,7 +259,15 @@ fn ordinary_host_does_not_advertise_roles_and_disabled_inventory_edit_never_star
     assert!(!hello.to_string().contains("notifications."));
     ordinary.event(1, None);
     assert_eq!(ordinary.core.borrow().event_count(), 0);
-    let mut disabled = Fixture::new(ROLES, true, false);
+    let mut disabled = Fixture::new(
+        &[
+            "notifications.produce",
+            "notifications.ui",
+            "context.terminals",
+        ],
+        true,
+        false,
+    );
     assert_eq!(disabled.backend.borrow().inventory().len(), 2);
     disabled.policy("first", Eligibility::Always, true);
     for _ in 0..10 {
@@ -332,6 +357,372 @@ fn real_ingress_policies_identity_stamping_and_context_grants_change_actual_wire
         "Managed plugin diagnostic (payload omitted)"
     );
     assert_eq!(fixture.provider_deliveries(13).len(), 3);
+}
+
+#[test]
+fn real_targetless_producers_keep_core_origin_kind_fairness_and_revocable_authority() {
+    let mut fixture = Fixture::new(&["notifications.produce"], true, true);
+    fixture.admitted();
+    fixture.add_provider(13, &["notifications.deliver"]);
+    fixture.provider_policy(13, "first", Eligibility::Always, true);
+    let channel = fixture
+        .core
+        .borrow_mut()
+        .register_channel(Policy {
+            enabled: true,
+            eligibility: Eligibility::Always,
+        })
+        .unwrap();
+    fixture.event(1, None);
+    fixture.wait(|fixture| fixture.provider_deliveries(13).len() == 1);
+    let first = fixture
+        .core
+        .borrow_mut()
+        .take_ready(channel, Instant::now())
+        .unwrap();
+    assert_eq!(first.event().kind(), Kind::ManagedNotification);
+    let first_origin = first.event().origin().unwrap();
+    assert_eq!(
+        fixture.core.borrow().origin(first_origin).unwrap().identity,
+        KEY
+    );
+    assert_eq!(
+        fixture
+            .core
+            .borrow()
+            .origin(first_origin)
+            .unwrap()
+            .generation,
+        fixture.host.running_generation(KEY).unwrap()
+    );
+    // actual noisy process traffic begins before quiet ingress. these fresh
+    // sequences are rate-limited, not mistaken for authority to replay a job.
+    for sequence in 2..=20 {
+        fixture.event(sequence, None);
+    }
+    fixture.add_provider(14, &["notifications.produce"]);
+    fixture
+        .wait(|fixture| fixture.host.configuration("github:14/sample") == Configuration::Applied);
+    let start = Instant::now();
+    fixture.producer_event(14, 1, None);
+    fixture.wait_for(Duration::from_secs(1), |fixture| {
+        fixture
+            .provider_deliveries(13)
+            .iter()
+            .any(|job| job["delivery"]["event"]["origin"]["identity"] == "github:14/sample")
+    });
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(
+        Instant::now().duration_since(first.event().received_at()) < among::notifications::COOLDOWN
+    );
+    let quiet = fixture
+        .core
+        .borrow_mut()
+        .take_ready(channel, Instant::now())
+        .unwrap();
+    assert_eq!(quiet.event().kind(), Kind::ManagedNotification);
+    assert_ne!(quiet.event().origin(), Some(first_origin));
+    let authority = fixture
+        .backend
+        .borrow()
+        .authorize_delivery(quiet, Instant::now())
+        .unwrap();
+    assert_eq!(
+        authority.envelope().origin.as_ref().unwrap().identity,
+        "github:14/sample"
+    );
+    assert_eq!(
+        authority.envelope().origin.as_ref().unwrap().generation,
+        fixture.host.running_generation("github:14/sample").unwrap()
+    );
+    assert!(authority.is_current(&fixture.core.borrow(), Instant::now()));
+    let before = fixture.core.borrow().event_count();
+    fixture.host.disable("github:14/sample");
+    assert!(!authority.origin_lease().unwrap().is_current());
+    assert!(!authority.is_current(&fixture.core.borrow(), Instant::now()));
+    fixture.host.enable("github:14/sample");
+    fixture
+        .wait(|fixture| fixture.host.configuration("github:14/sample") == Configuration::Applied);
+    assert!(!authority.is_current(&fixture.core.borrow(), Instant::now()));
+    assert_eq!(fixture.core.borrow().event_count(), before);
+    fixture.producer_event(14, 1, None);
+    fixture.wait(|fixture| fixture.provider_deliveries(13).len() == 3);
+    let replacement = fixture
+        .core
+        .borrow_mut()
+        .take_ready(channel, Instant::now())
+        .unwrap();
+    assert_ne!(replacement.event().origin(), quiet.event().origin());
+    let replacement_authority = fixture
+        .backend
+        .borrow()
+        .authorize_delivery(replacement, Instant::now())
+        .unwrap();
+    assert_ne!(
+        replacement_authority.envelope().origin,
+        authority.envelope().origin
+    );
+    assert!(replacement_authority.is_current(&fixture.core.borrow(), Instant::now()));
+    assert_eq!(
+        fixture
+            .core
+            .borrow()
+            .aggregate([1, 2], Instant::now())
+            .unread_panes,
+        0
+    );
+}
+
+#[test]
+fn real_wire_cannot_choose_host_kind_or_another_producers_origin() {
+    for field in ["kind", "origin"] {
+        let mut fixture = Fixture::new(&["notifications.produce", "context.terminals"], true, true);
+        fixture.admitted();
+        let source = fixture.core.borrow().source(1).unwrap();
+        let mut event = json!({"sequence":1,"target":{"kind":"pane","reference":"1"},
+            "source_generation":source.generation().to_string(),"message":"untrusted-origin"});
+        event[field] = if field == "kind" {
+            json!("terminal_bell")
+        } else {
+            json!({"identity":"github:99/another","generation":"forged"})
+        };
+        fixture.send(json!({"type":"notification_event","session":"$session","generation":"$generation","event":event}));
+        assert_eq!(fixture.core.borrow().event_count(), 0);
+        assert_eq!(fixture.backend.borrow().event_count(), 0);
+        assert_eq!(
+            fixture
+                .core
+                .borrow()
+                .aggregate([1, 2], Instant::now())
+                .unread_panes,
+            0
+        );
+    }
+}
+
+#[test]
+fn conflicting_required_notification_roles_refuse_before_executing_the_entrypoint() {
+    let mut fixture = Fixture::with_manifest(ROLES, true, true, |manifest, _| {
+        manifest["required_features"] = json!([
+            "status",
+            "settings",
+            "notifications.produce",
+            "notifications.deliver"
+        ]);
+        manifest["optional_features"] = json!(["notifications.ui", "context.terminals"]);
+    });
+    for _ in 0..10 {
+        fixture.host.poll();
+    }
+    assert!(!fixture.package.join("executed").exists());
+    assert!(fixture.received().is_empty());
+    assert_eq!(fixture.host.supervised_count(), 0);
+    assert!(fixture.host.desired_enabled(KEY));
+    assert_eq!(
+        fixture.host.access_review(KEY).unwrap_err(),
+        managed::NotificationRoleConflict::RequiredRoles.problem()
+    );
+    assert!(fixture.host.overview()[0]
+        .declared
+        .contains("cannot both be required"));
+}
+
+#[test]
+fn explicit_identity_scoped_role_review_controls_real_hello_without_starting_or_enabling_channels()
+{
+    for (role, chosen, omitted) in [
+        (
+            managed::NotificationRole::Producer,
+            "notifications.produce",
+            "notifications.deliver",
+        ),
+        (
+            managed::NotificationRole::Delivery,
+            "notifications.deliver",
+            "notifications.produce",
+        ),
+    ] {
+        let mut fixture = Fixture::new(
+            &[
+                "notifications.produce",
+                "notifications.deliver",
+                "notifications.ui",
+            ],
+            true,
+            false,
+        );
+        assert_eq!(
+            fixture.host.access_review(KEY).unwrap_err(),
+            managed::NotificationRoleConflict::ReviewChoice.problem()
+        );
+        assert!(fixture.host.reviewed_notification_role(KEY).is_err());
+        let ambiguous = json!({"owner":"example","repository":"sample","features":["status","settings","notifications.produce","notifications.deliver","notifications.ui"]});
+        assert_eq!(
+            fixture.host.review_access(KEY, ambiguous).unwrap_err(),
+            managed::NotificationRoleConflict::ReviewChoice.problem()
+        );
+        let choice = json!({"owner":"example","repository":"sample","features":["status","settings",chosen,"notifications.ui"]});
+        fixture.host.review_access(KEY, choice).unwrap();
+        assert_eq!(
+            fixture.host.reviewed_notification_role(KEY).unwrap(),
+            Some(role)
+        );
+        assert_eq!(fixture.host.admitted_notification_role(KEY), None);
+        assert!(!fixture.package.join("executed").exists());
+        assert!(!fixture.host.desired_enabled(KEY));
+        assert!(fixture
+            .backend
+            .borrow()
+            .inventory()
+            .iter()
+            .all(|channel| !channel.policy.enabled));
+        fixture.host.enable(KEY);
+        fixture.admitted();
+        assert_eq!(fixture.host.admitted_notification_role(KEY), Some(role));
+        let hello = fixture
+            .received()
+            .into_iter()
+            .find(|frame| frame["type"] == "managed_hello")
+            .unwrap();
+        let features = hello["features"].as_array().unwrap();
+        assert!(features.iter().any(|feature| feature == chosen));
+        assert!(!features.iter().any(|feature| feature == omitted));
+        assert!(features.iter().any(|feature| feature == "notifications.ui"));
+        fixture.send(json!({"type":"notification_contribution","session":"$session","generation":"$generation",
+            "contribution":{"id":"ui","revision":1,"scope":{"slot":"app_header","target":{"kind":"application"}},"text":"independent UI"}}));
+        assert_eq!(
+            fixture.backend.borrow().contributions(Instant::now()).len(),
+            1
+        );
+        fixture.event(1, None);
+        if role == managed::NotificationRole::Producer {
+            assert_eq!(fixture.core.borrow().event_count(), 1);
+            assert!(fixture.deliveries().is_empty());
+        } else {
+            assert_eq!(fixture.core.borrow().event_count(), 0);
+            fixture.policy("first", Eligibility::Always, true);
+            let now = Instant::now();
+            let event = fixture
+                .core
+                .borrow_mut()
+                .application_event(Focus::default(), now)
+                .unwrap();
+            fixture
+                .backend
+                .borrow_mut()
+                .observe_host_event(event, None, Focus::default())
+                .unwrap();
+            fixture.wait(|fixture| !fixture.backend.borrow().completions().is_empty());
+            fixture.event(2, None);
+            assert_eq!(fixture.core.borrow().event_count(), 1);
+            assert_eq!(
+                fixture.host.admitted_notification_role(KEY),
+                Some(managed::NotificationRole::Delivery)
+            );
+        }
+    }
+}
+
+#[test]
+fn real_provider_active_at_metadata_cap_keeps_authority_and_credit_until_its_reply() {
+    let mut fixture = Fixture::new(&["notifications.deliver"], true, true);
+    fixture.admitted();
+    fixture.policy("first", Eligibility::Always, true);
+    std::fs::write(fixture.package.join("delivery-mode"), "late").unwrap();
+    let now = Instant::now();
+    let source = fixture.core.borrow().source(1).unwrap();
+    let first = fixture
+        .core
+        .borrow_mut()
+        .bell(source, Focus::default(), now)
+        .unwrap();
+    fixture
+        .backend
+        .borrow_mut()
+        .observe_host_event(first, Some(10), Focus::default())
+        .unwrap();
+    fixture.wait(|fixture| fixture.deliveries().len() == 1);
+    let job_id = fixture.deliveries()[0]["delivery"]["job_id"]
+        .as_u64()
+        .unwrap();
+    let index = fixture.host.find(KEY).unwrap();
+    assert!(fixture.host.plugins[index]
+        .runtime
+        .as_ref()
+        .unwrap()
+        .deliveries
+        .contains_key(&job_id));
+    let mut fresh = Vec::new();
+    for pane in 100..164 {
+        let source = fixture.core.borrow_mut().attach(pane).unwrap();
+        let event = fixture
+            .core
+            .borrow_mut()
+            .bell(source, Focus::default(), now)
+            .unwrap();
+        fixture
+            .backend
+            .borrow_mut()
+            .observe_host_event(event, Some(10), Focus::default())
+            .unwrap();
+        fresh.push(source);
+        assert!(fixture.backend.borrow().event_count() <= 64);
+        assert!(fixture.core.borrow().pending_count(None) <= 64);
+    }
+    fixture.backend.borrow_mut().housekeep(now);
+    assert_eq!(fixture.backend.borrow().event_count(), 64);
+    assert_eq!(fixture.backend.borrow().active_count(), 1);
+    assert!(fixture.backend.borrow().envelope(first, now).is_some());
+    assert!(fixture.backend.borrow().completions().is_empty());
+    // discard only new pending sources, never the active source or its policy.
+    for source in fresh {
+        fixture.core.borrow_mut().detach(source);
+    }
+    fixture.host.poll();
+    assert_eq!(fixture.core.borrow().pending_count(None), 0);
+    assert_eq!(
+        fixture.host.plugins[index]
+            .runtime
+            .as_ref()
+            .unwrap()
+            .deliveries
+            .len(),
+        1
+    );
+    assert!(fixture.host.plugins[index]
+        .runtime
+        .as_ref()
+        .unwrap()
+        .deliveries
+        .contains_key(&job_id));
+    assert!(!fixture
+        .received()
+        .iter()
+        .any(|frame| frame["type"] == "cancel_delivery" && frame["job_id"] == job_id));
+    std::fs::write(fixture.package.join("release-deliveries"), "release").unwrap();
+    fixture.wait(|fixture| {
+        fixture
+            .backend
+            .borrow()
+            .completions()
+            .iter()
+            .any(|completion| {
+                completion.job_id == job_id
+                    && completion.status == Status::Result(DeliveryOutcome::Accepted)
+            })
+    });
+    assert_eq!(fixture.backend.borrow().active_count(), 0);
+    assert!(fixture.host.plugins[index]
+        .runtime
+        .as_ref()
+        .unwrap()
+        .deliveries
+        .is_empty());
+    assert_eq!(fixture.deliveries().len(), 1);
+    assert!(!fixture
+        .received()
+        .iter()
+        .any(|frame| frame["type"] == "cancel_delivery"));
 }
 
 impl Fixture {
@@ -721,16 +1112,11 @@ fn cancelled_jobs_share_fifteen_retained_credits_and_preserve_reserved_enumerati
 }
 
 #[test]
-fn cyclic_dual_role_processes_cannot_hide_feedback_and_flood_is_contained() {
-    let mut fixture = Fixture::new(
-        &["notifications.produce", "notifications.deliver"],
-        true,
-        true,
-    );
+fn delivery_only_processes_cannot_hide_feedback_and_flood_is_contained() {
+    let mut fixture = Fixture::new(&["notifications.produce"], true, true);
     fixture.admitted();
-    fixture.add_provider(13, &["notifications.produce", "notifications.deliver"]);
+    fixture.add_provider(13, &["notifications.deliver"]);
     fixture.provider_policy(13, "first", Eligibility::Always, true);
-    fixture.policy("first", Eligibility::Always, true);
     std::fs::write(fixture.provider_package(13).join("delivery-mode"), "cycle").unwrap();
     fixture.event(1, None);
     fixture.wait(|fixture| {
@@ -738,11 +1124,11 @@ fn cyclic_dual_role_processes_cannot_hide_feedback_and_flood_is_contained() {
             .backend
             .borrow()
             .rejections()
-            .contains(&Refusal::CausalFeedback)
+            .contains(&Refusal::Unauthorized)
     });
     assert_eq!(fixture.core.borrow().event_count(), 1);
-    // the provider also attempts to disguise feedback as a fresh unsolicited
-    // event with no causal field; the host, not that field, remembers delivery.
+    // omission is not evidence of fresh intent: this process was never granted
+    // producer authority, before or after receiving a job.
     std::fs::write(
         fixture.provider_package(13).join("input-1.json"),
         json!({"type":"notification_event","session":"$session","generation":"$generation",
@@ -987,6 +1373,58 @@ fn native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood() {
             .attention(fixture.core.borrow().source(1).unwrap(), Instant::now())
             .unread
     );
+    // a separately admitted real producer must retain its kind/origin through
+    // the shared core as well as the provider wire in this actual-focus window.
+    fixture.add_provider(14, &["notifications.produce", "context.terminals"]);
+    fixture
+        .wait(|fixture| fixture.host.configuration("github:14/sample") == Configuration::Applied);
+    let observed = fixture
+        .core
+        .borrow_mut()
+        .register_channel(Policy {
+            enabled: true,
+            eligibility: Eligibility::Always,
+        })
+        .unwrap();
+    fixture.producer_event(14, 1, Some(1));
+    let job = fixture
+        .core
+        .borrow_mut()
+        .take_ready(observed, Instant::now())
+        .unwrap();
+    assert_eq!(job.event().kind(), Kind::ManagedNotification);
+    assert_eq!(job.event().source(), fixture.core.borrow().source(1));
+    let authority = fixture
+        .backend
+        .borrow()
+        .authorize_delivery(job, Instant::now())
+        .unwrap();
+    assert_eq!(
+        authority.envelope().origin.as_ref().unwrap().identity,
+        "github:14/sample"
+    );
+    assert!(authority.is_current(&fixture.core.borrow(), Instant::now()));
+    pump(
+        &mut fixture,
+        &|fixture| {
+            fixture
+                .deliveries()
+                .iter()
+                .any(|delivery| delivery["delivery"]["event"]["kind"] == "managed_notification")
+        },
+        Duration::from_secs(3),
+    );
+    assert!(terminals[1].has_focus() && window.is_active());
+    assert!(
+        !fixture
+            .core
+            .borrow()
+            .attention(fixture.core.borrow().source(2).unwrap(), Instant::now())
+            .unread
+    );
+    fixture.host.disable("github:14/sample");
+    assert!(!authority.origin_lease().unwrap().is_current());
+    assert!(!authority.is_current(&fixture.core.borrow(), Instant::now()));
     std::fs::write(fixture.package.join("delivery-mode"), "flood").unwrap();
     // a different actual bell source bypasses only the repeated-source cooldown,
     // not policy, supervised I/O or provider result handling.
@@ -1022,7 +1460,7 @@ fn native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood() {
     }
     pump(&mut fixture, &|_| exited.get() == 2, Duration::from_secs(3));
     window.destroy();
-    println!("PASS semantic VTE bell -> attached core -> actual provider; real sibling keyboard input {:?}; provider flood contained, PTYs exited", start.elapsed());
+    println!("PASS semantic VTE bell and typed managed origin -> shared core -> actual provider; origin revocation checked; real sibling keyboard input {:?}; provider flood contained, PTYs exited", start.elapsed());
 }
 
 #[test]
@@ -1070,15 +1508,7 @@ fn required_roles_refuse_execution_without_bridge_and_actual_pre_admission_ingre
 #[test]
 fn actual_provider_failed_uncertain_and_accepted_outcomes_are_distinct_and_uninstall_cannot_resurrect_authority(
 ) {
-    let mut fixture = Fixture::new(
-        &[
-            "notifications.deliver",
-            "notifications.produce",
-            "notifications.ui",
-        ],
-        true,
-        true,
-    );
+    let mut fixture = Fixture::new(&["notifications.deliver", "notifications.ui"], true, true);
     fixture.admitted();
     fixture.policy("first", Eligibility::Always, true);
     for (index, (mode, outcome)) in [
@@ -1119,6 +1549,15 @@ fn actual_provider_failed_uncertain_and_accepted_outcomes_are_distinct_and_unins
     }
     fixture.backend.borrow_mut().uninstall(KEY);
     fixture.event(1, None);
+    fixture.contribution(
+        1,
+        json!({"slot":"app_header","target":{"kind":"application"}}),
+    );
+    assert!(fixture
+        .backend
+        .borrow()
+        .contributions(Instant::now())
+        .is_empty());
     assert_eq!(fixture.core.borrow().event_count(), 3);
     let generation = fixture.host.running_generation(KEY).unwrap();
     let executed = std::fs::read(fixture.package.join("executed")).unwrap();

@@ -1,12 +1,14 @@
 //! explicit managed-plugin backend; ordinary application startup does not attach
 //! this bridge. the caller supplies the same core used by semantic bell ingress.
 
-use crate::notifications::{self as core, Channel, Event, Focus, Host, Job, Policy, Source};
+pub use crate::notifications::OriginLease;
+use crate::notifications::{
+    self as core, Channel, Event, Focus, Host, Job, Kind, Origin, Policy, Source,
+};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -69,20 +71,6 @@ pub struct Scope {
 pub struct Owner {
     pub identity: String,
     pub generation: String,
-}
-
-/// a delivery worker can observe origin revocation without borrowing GTK or the
-/// bridge. only revocation is public; an old process cannot re-enable this lease.
-#[derive(Clone, Debug)]
-pub struct OriginLease(Arc<AtomicBool>);
-
-impl OriginLease {
-    pub fn revoke(&self) {
-        self.0.store(false, Ordering::Release);
-    }
-    pub fn is_current(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -213,6 +201,35 @@ pub struct Envelope {
     pub message: Option<String>,
 }
 
+/// retain this snapshot only for one attempt. the owner must recheck core policy,
+/// source and origin authority before and during work, not just at serialization.
+#[derive(Clone, Debug)]
+pub struct DeliveryAuthorization {
+    envelope: Envelope,
+    job: Job,
+    origin: Option<OriginLease>,
+}
+
+impl DeliveryAuthorization {
+    pub fn envelope(&self) -> &Envelope {
+        &self.envelope
+    }
+
+    pub fn job(&self) -> Job {
+        self.job
+    }
+
+    pub fn origin_lease(&self) -> Option<OriginLease> {
+        self.origin.clone()
+    }
+
+    pub fn is_current(&self, core: &Host, now: Instant) -> bool {
+        core.is_current(self.job)
+            && now.saturating_duration_since(self.job.event().received_at()) < EVENT_LIFETIME
+            && self.origin.as_ref().is_none_or(OriginLease::is_current)
+    }
+}
+
 struct RememberedEvent {
     event: Event,
     envelope: Envelope,
@@ -229,9 +246,8 @@ pub struct Delivery {
 struct Active {
     owner: Owner,
     key: ChannelKey,
-    job: Job,
+    authorization: DeliveryAuthorization,
     deadline: Instant,
-    origin: Option<OriginLease>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -272,11 +288,12 @@ pub enum Rejection {
 
 struct Producer {
     owner: Owner,
+    origin: Origin,
     sequence: u64,
     next_event: Option<Instant>,
     revisions: BTreeMap<String, u64>,
     icon: Option<Icon>,
-    delivery_seen: bool,
+    delivery: bool,
     live: OriginLease,
 }
 
@@ -450,13 +467,14 @@ impl Backend {
             return Err(Rejection::Unavailable);
         }
         self.revoke(&owner.identity);
-        if delivery {
+        let (origin, live) = {
             let mut core = self
                 .core
                 .try_borrow_mut()
                 .map_err(|_| Rejection::Unavailable)?;
             for channel in self.channels.values_mut().filter(|channel| {
-                channel.view.declaration.key.identity == owner.identity
+                delivery
+                    && channel.view.declaration.key.identity == owner.identity
                     && channel.view.installed
                     && channel.view.plugin_enabled
             }) {
@@ -466,17 +484,19 @@ impl Backend {
                 );
                 channel.view.owner = Some(owner.clone());
             }
-        }
-        let live = OriginLease(Arc::new(AtomicBool::new(true)));
+            core.register_origin(&owner.identity, &owner.generation)
+                .map_err(|_| Rejection::Unavailable)?
+        };
         self.producers.insert(
             owner.identity.clone(),
             Producer {
                 owner,
+                origin,
                 sequence: 0,
                 next_event: None,
                 revisions: BTreeMap::new(),
                 icon,
-                delivery_seen: false,
+                delivery,
                 live: live.clone(),
             },
         );
@@ -484,9 +504,10 @@ impl Backend {
     }
 
     pub fn revoke(&mut self, identity: &str) {
-        if let Some(producer) = self.producers.remove(identity) {
+        let origin = self.producers.remove(identity).map(|producer| {
             producer.live.revoke();
-        }
+            producer.origin
+        });
         self.contributions
             .retain(|item| item.owner.identity != identity);
         self.actions
@@ -499,6 +520,9 @@ impl Backend {
                 .is_none_or(|owner| owner.identity != identity)
         });
         if let Ok(mut core) = self.core.try_borrow_mut() {
+            if let Some(origin) = origin {
+                core.retire_origin(origin);
+            }
             for channel in self
                 .channels
                 .values_mut()
@@ -565,8 +589,8 @@ impl Backend {
             .producers
             .get_mut(&owner.identity)
             .ok_or(Rejection::Unauthorized)?;
-        if producer.delivery_seen {
-            return Err(Rejection::CausalFeedback);
+        if producer.delivery {
+            return Err(Rejection::Unauthorized);
         }
         if input.sequence <= producer.sequence {
             return Err(Rejection::Stale);
@@ -576,6 +600,7 @@ impl Backend {
             return Err(Rejection::RateLimited);
         }
         producer.next_event = now.checked_add(core::COOLDOWN);
+        let origin = producer.origin;
         let (event, source) = {
             let mut core = self
                 .core
@@ -583,7 +608,7 @@ impl Backend {
                 .map_err(|_| Rejection::Unavailable)?;
             match input.target {
                 Target::Application => (
-                    core.application_event(self.focus, now)
+                    core.managed_event(origin, None, self.focus, now)
                         .map_err(|_| Rejection::Stale)?,
                     None,
                 ),
@@ -596,7 +621,7 @@ impl Backend {
                     }
                     let workspace = workspace.ok_or(Rejection::Unauthorized)?;
                     (
-                        core.bell(source, self.focus, now)
+                        core.managed_event(origin, Some(source), self.focus, now)
                             .map_err(|_| Rejection::Stale)?,
                         Some(SourceIdentity {
                             pane: reference.to_string(),
@@ -633,6 +658,14 @@ impl Backend {
         focus: Focus,
     ) -> Result<(), Rejection> {
         let core = self.core.try_borrow().map_err(|_| Rejection::Unavailable)?;
+        // a managed event cannot be reintroduced as host ingress after its
+        // envelope was revoked or evicted, even when its source remains live.
+        if event.origin().is_some() || event.kind() == Kind::ManagedNotification {
+            return Err(Rejection::Unauthorized);
+        }
+        if !core.is_event_current(event) {
+            return Err(Rejection::Stale);
+        }
         let source = match event.source() {
             Some(source) if core.is_live(source) => Some(SourceIdentity {
                 pane: source.pane().to_string(),
@@ -689,10 +722,23 @@ impl Backend {
                 || self
                     .active
                     .values()
-                    .any(|active| active.job.event() == old.event)
+                    .any(|active| active.authorization.job.event() == old.event)
         });
         if self.events.len() == MAX_EVENTS {
-            self.events.pop_front();
+            // at most two active IDs share this same 64-record budget. pin them
+            // against cap pressure as well as same-source replacement: losing
+            // metadata is not revocation of an otherwise valid live attempt.
+            let victim = self.events.iter().position(|old| {
+                !self
+                    .active
+                    .values()
+                    .any(|active| active.authorization.job.event() == old.event)
+            });
+            let Some(victim) = victim else {
+                self.reject(Rejection::Full);
+                return;
+            };
+            self.events.remove(victim);
         }
         self.events.push_back(RememberedEvent {
             event,
@@ -702,28 +748,52 @@ impl Backend {
     }
 
     pub fn envelope(&self, event: Event, now: Instant) -> Option<&Envelope> {
-        self.events
-            .iter()
-            .find(|record| {
-                record.event == event
-                    && now.saturating_duration_since(event.received_at()) < EVENT_LIFETIME
-                    && record
-                        .envelope
-                        .origin
-                        .as_ref()
-                        .is_none_or(|owner| self.current(owner))
-                    && event.source().is_none_or(|source| {
-                        self.core
-                            .try_borrow()
-                            .is_ok_and(|core| core.is_live(source))
+        let record = self.events.iter().find(|record| record.event == event)?;
+        let core = self.core.try_borrow().ok()?;
+        if now.saturating_duration_since(event.received_at()) >= EVENT_LIFETIME
+            || !core.is_event_current(event)
+        {
+            return None;
+        }
+        let attributed = match (event.kind(), event.origin(), &record.envelope.origin) {
+            (Kind::ManagedNotification, Some(origin), Some(owner)) => {
+                self.current(owner)
+                    && self
+                        .producers
+                        .get(&owner.identity)
+                        .is_some_and(|producer| producer.origin == origin)
+                    && core.origin(origin).is_some_and(|identity| {
+                        identity.identity == owner.identity
+                            && identity.generation == owner.generation
                     })
-            })
-            .map(|record| &record.envelope)
+            }
+            (Kind::TerminalBell | Kind::Application, None, None) => true,
+            _ => false,
+        };
+        attributed.then_some(&record.envelope)
     }
 
     pub fn origin_lease(&self, event: Event, now: Instant) -> Option<OriginLease> {
         let origin = self.envelope(event, now)?.origin.as_ref()?;
         Some(self.producers.get(&origin.identity)?.live.clone())
+    }
+
+    pub fn authorize_delivery(&self, job: Job, now: Instant) -> Option<DeliveryAuthorization> {
+        let envelope = self.envelope(job.event(), now)?.clone();
+        let origin = if job.event().origin().is_some() {
+            Some(self.origin_lease(job.event(), now)?)
+        } else {
+            None
+        };
+        let authorization = DeliveryAuthorization {
+            envelope,
+            job,
+            origin,
+        };
+        let core = self.core.try_borrow().ok()?;
+        authorization
+            .is_current(&core, now)
+            .then_some(authorization)
     }
 
     pub fn contribute(
@@ -956,11 +1026,12 @@ impl Backend {
                 if !self.core.try_borrow().ok()?.is_current(job) {
                     continue;
                 }
-                let Some(envelope) = self.envelope(job.event(), now) else {
+                let Some(authorization) = self.authorize_delivery(job, now) else {
                     self.reject(Rejection::Stale);
                     continue;
                 };
-                if envelope
+                if authorization
+                    .envelope
                     .origin
                     .as_ref()
                     .is_some_and(|origin| origin.identity == owner.identity)
@@ -968,17 +1039,12 @@ impl Backend {
                     self.reject(Rejection::CausalFeedback);
                     continue;
                 }
-                let mut envelope = envelope.clone();
+                let mut envelope = authorization.envelope.clone();
                 // notification delivery is not an alternate terminal enumeration
                 // grant. the runtime further strips source metadata without consent.
                 if job.event().source().is_none() {
                     envelope.source = None;
                 }
-                let origin = if envelope.origin.is_some() {
-                    Some(self.origin_lease(job.event(), now)?)
-                } else {
-                    None
-                };
                 self.next_job = self.next_job.checked_add(1)?;
                 let job_id = self.next_job;
                 self.active.insert(
@@ -986,14 +1052,10 @@ impl Backend {
                     Active {
                         owner: owner.clone(),
                         key: key.clone(),
-                        job,
+                        authorization,
                         deadline: now.checked_add(DEADLINE)?,
-                        origin,
                     },
                 );
-                if let Some(producer) = self.producers.get_mut(&owner.identity) {
-                    producer.delivery_seen = true;
-                }
                 return Some(Delivery {
                     job_id,
                     channel: key.channel.clone(),
@@ -1043,12 +1105,13 @@ impl Backend {
             .iter()
             .filter_map(|(id, active)| {
                 let current = self.current(&active.owner)
-                    && active.origin.as_ref().is_none_or(OriginLease::is_current)
                     && self
                         .core
                         .try_borrow()
-                        .is_ok_and(|core| core.is_current(active.job))
-                    && self.envelope(active.job.event(), now).is_some();
+                        .is_ok_and(|core| active.authorization.is_current(&core, now))
+                    && self
+                        .envelope(active.authorization.job.event(), now)
+                        .is_some();
                 if !current {
                     Some((*id, Status::CancelledUncertain))
                 } else if now >= active.deadline {
@@ -1083,7 +1146,7 @@ impl Backend {
             self.completions.push_back(Completion {
                 owner: active.owner,
                 job_id,
-                event_id: active.job.event().id(),
+                event_id: active.authorization.job.event().id(),
                 status,
             });
         }
