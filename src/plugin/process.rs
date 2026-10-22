@@ -534,7 +534,18 @@ fn member_group(path: &std::path::Path) -> io::Result<Option<i32>> {
             break;
         }
         match file.read(&mut bytes[used..]) {
-            Ok(0) => return stat_group(&bytes[..used]).map(Some),
+            Ok(0) => {
+                let (pid, group) = stat_group(&bytes[..used])?;
+                let directory_pid = path
+                    .parent()
+                    .and_then(std::path::Path::file_name)
+                    .and_then(|name| stat_number(name.as_encoded_bytes(), 1, i32::MAX.into()))
+                    .ok_or_else(|| io::Error::other("invalid procfs PID directory"))?;
+                if directory_pid != i128::from(pid) {
+                    return Err(io::Error::other("procfs PID identity mismatch"));
+                }
+                return Ok(Some(group));
+            }
             Ok(count) => used += count,
             Err(error) if gone(&error) => return Ok(None),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -544,33 +555,78 @@ fn member_group(path: &std::path::Path) -> io::Result<Option<i32>> {
     Err(io::Error::other("unconfirmed bounded procfs stat read"))
 }
 
-fn stat_group(bytes: &[u8]) -> io::Result<i32> {
+fn stat_group(bytes: &[u8]) -> io::Result<(i32, i32)> {
     let invalid = || io::Error::other("invalid procfs group observation");
+    if bytes.len() >= 4096 || bytes.contains(&0) {
+        return Err(invalid());
+    }
+    let space = bytes
+        .iter()
+        .position(|byte| *byte == b' ')
+        .ok_or_else(invalid)?;
+    let pid = stat_number(&bytes[..space], 1, i32::MAX.into()).ok_or_else(invalid)?;
+    if bytes.get(space + 1) != Some(&b'(') {
+        return Err(invalid());
+    }
     // comm can contain whitespace, ')' and non-UTF-8 bytes. only a full bounded
     // read through real EOF may establish its last ')' and the framed pgrp field.
     let end = bytes
         .iter()
         .rposition(|byte| *byte == b')')
         .ok_or_else(invalid)?;
-    let mut fields = bytes[end + 1..]
-        .split(|byte| byte.is_ascii_whitespace())
-        .filter(|field| !field.is_empty());
-    fields
-        .next()
-        .filter(|field| field.len() == 1)
-        .ok_or_else(invalid)?;
-    fields.next().ok_or_else(invalid)?; // parent PID is not our retirement authority.
-    let field = fields.next().ok_or_else(invalid)?;
-    fields.next().ok_or_else(invalid)?; // pgrp must end before another stat field.
-    if !field.iter().all(|byte| byte.is_ascii_digit()) {
+    if end < space + 2 {
         return Err(invalid());
     }
-    let group = std::str::from_utf8(field)
-        .ok()
-        .and_then(|field| field.parse::<i32>().ok())
-        .filter(|group| *group >= 0)
+    let tail = bytes[end + 1..]
+        .strip_prefix(b" ")
+        .and_then(|tail| tail.strip_suffix(b"\n"))
         .ok_or_else(invalid)?;
-    Ok(group)
+    let mut fields = tail.split(|byte| *byte == b' ');
+    if !matches!(
+        fields.next(),
+        Some(b"R" | b"S" | b"D" | b"Z" | b"T" | b"t" | b"X" | b"x" | b"K" | b"W" | b"P" | b"I")
+    ) {
+        return Err(invalid());
+    }
+    // validate the complete Linux 52-field record before classifying even a
+    // foreign group. truncated records and unknown future suffixes stay unknown;
+    // neither a plausible pgrp nor a mocked prefix establishes a valid record.
+    let mut group = 0;
+    for index in 4..=52 {
+        let (min, max) = match index {
+            4..=6 | 20 => (0, i32::MAX.into()),
+            7 | 8 | 38 | 39 | 52 => (i32::MIN.into(), i32::MAX.into()),
+            9 | 40 | 41 => (0, u32::MAX.into()),
+            16..=19 | 21 | 24 | 44 => (libc::c_long::MIN.into(), libc::c_long::MAX.into()),
+            14 | 15 | 22 | 42 | 43 => (0, u64::MAX.into()),
+            _ => (0, libc::c_ulong::MAX.into()),
+        };
+        let number =
+            stat_number(fields.next().ok_or_else(invalid)?, min, max).ok_or_else(invalid)?;
+        if index == 5 {
+            group = number as i32;
+        }
+    }
+    if fields.next().is_some() {
+        return Err(invalid());
+    }
+    Ok((pid as i32, group))
+}
+
+fn stat_number(field: &[u8], min: i128, max: i128) -> Option<i128> {
+    let digits = field.strip_prefix(b"-").unwrap_or(field);
+    if digits.is_empty()
+        || !digits.iter().all(u8::is_ascii_digit)
+        || (digits.len() > 1 && digits[0] == b'0')
+        || field == b"-0"
+    {
+        return None;
+    }
+    std::str::from_utf8(field)
+        .ok()?
+        .parse::<i128>()
+        .ok()
+        .filter(|value| (min..=max).contains(value))
 }
 
 #[cfg(test)]

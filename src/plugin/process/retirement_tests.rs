@@ -85,6 +85,48 @@ fn compile(root: &Path) -> PathBuf {
     executable
 }
 
+fn replace_stat_field(record: &[u8], index: usize, value: &[u8]) -> Vec<u8> {
+    let space = record.iter().position(|byte| *byte == b' ').unwrap();
+    let end = record.iter().rposition(|byte| *byte == b')').unwrap();
+    let mut output = Vec::new();
+    output.extend_from_slice(if index == 1 { value } else { &record[..space] });
+    output.extend_from_slice(b" (");
+    output.extend_from_slice(if index == 2 {
+        value
+    } else {
+        &record[space + 2..end]
+    });
+    output.extend_from_slice(b") ");
+    for (offset, field) in record[end + 2..]
+        .strip_suffix(b"\n")
+        .unwrap()
+        .split(|byte| *byte == b' ')
+        .enumerate()
+    {
+        if offset != 0 {
+            output.push(b' ');
+        }
+        output.extend_from_slice(if index == offset + 3 { value } else { field });
+    }
+    output.push(b'\n');
+    output
+}
+
+fn stat_record(pid: u32, group: i32, state: u8) -> Vec<u8> {
+    // retain a genuine kernel tail, not the old truncated positive prefixes.
+    let mut record = std::fs::read("/proc/self/stat").unwrap();
+    for (index, value) in [
+        (1, pid.to_string()),
+        (3, char::from(state).to_string()),
+        (4, "1".into()),
+        (5, group.to_string()),
+        (6, group.to_string()),
+    ] {
+        record = replace_stat_field(&record, index, value.as_bytes());
+    }
+    record
+}
+
 #[test]
 fn finished_never_precedes_term_ignoring_descendant_quiescence_under_scheduler_pressure() {
     retirement_cases(&["inherited", "group-tree"], 12, false);
@@ -181,11 +223,16 @@ fn retirement_cases(modes: &[&str], rounds: usize, threaded: bool) {
 #[test]
 fn stat_observation_handles_comm_bytes_and_never_guesses_a_truncated_group() {
     assert_eq!(
-        stat_group(b"8 (comm ) R 1 123 \xff) Z 4 77 77 0\n").unwrap(),
-        77
+        stat_group(&replace_stat_field(
+            &stat_record(8, 77, b'Z'),
+            2,
+            b"comm ) R 1 123 \xff"
+        ))
+        .unwrap(),
+        (8, 77)
     );
-    assert_eq!(stat_group(b"9 (fixture) R 4 77 77 0\n").unwrap(), 77);
-    assert_eq!(stat_group(b"9 (fixture) S 4 0 0 0\n").unwrap(), 0);
+    assert_eq!(stat_group(&stat_record(9, 77, b'R')).unwrap(), (9, 77));
+    assert_eq!(stat_group(&stat_record(9, 0, b'S')).unwrap(), (9, 0));
     for bytes in [
         b"".as_slice(),
         b"8 (fixture) R 1 77",
@@ -206,7 +253,7 @@ fn complete_bounded_scans_are_required_and_unknown_observations_are_not_quiet() 
     for pid in 1..=521 {
         let path = root.join(pid.to_string());
         std::fs::create_dir(&path).unwrap();
-        std::fs::write(path.join("stat"), format!("{pid} (fixture) R 1 44 44 0\n")).unwrap();
+        std::fs::write(path.join("stat"), stat_record(pid, 44, b'R')).unwrap();
     }
     let mut probe = GroupQuiescence::new(&root);
     for _ in 0..5 {
@@ -217,7 +264,7 @@ fn complete_bounded_scans_are_required_and_unknown_observations_are_not_quiet() 
     assert!(probe
         .poll(77, |_| panic!("foreign group must not open a pidfd"))
         .unwrap());
-    std::fs::write(root.join("1/stat"), b"1 (fixture) R 1 77 77 0\n").unwrap();
+    std::fs::write(root.join("1/stat"), stat_record(1, 77, b'R')).unwrap();
     let mut probe = GroupQuiescence::new(&root);
     for _ in 0..8 {
         assert!(!probe
@@ -227,7 +274,7 @@ fn complete_bounded_scans_are_required_and_unknown_observations_are_not_quiet() 
             })
             .unwrap());
     }
-    std::fs::write(root.join("1/stat"), b"1 (fixture) Z 1 77 77 0\n").unwrap();
+    std::fs::write(root.join("1/stat"), stat_record(1, 77, b'Z')).unwrap();
     let mut probe = GroupQuiescence::new(&root);
     for _ in 0..5 {
         assert!(!probe
@@ -276,7 +323,7 @@ fn missing_or_nonregular_procfs_observations_fail_closed_without_waiting_on_a_fi
 fn unavailable_pidfd_observations_cannot_confirm_quiescence() {
     let root = root();
     std::fs::create_dir(root.join("1")).unwrap();
-    std::fs::write(root.join("1/stat"), b"1 (fixture) Z 0 77 77 0\n").unwrap();
+    std::fs::write(root.join("1/stat"), stat_record(1, 77, b'Z')).unwrap();
     for errno in [
         libc::ENOSYS,
         libc::EPERM,
@@ -292,6 +339,250 @@ fn unavailable_pidfd_observations_cannot_confirm_quiescence() {
         assert!(!probe.poll(77, |_| Ok(true)).unwrap());
         assert!(probe.poll(77, |_| Ok(true)).unwrap());
     }
+}
+
+fn unknown_stat_case(label: &str, directory: &str, bytes: &[u8]) {
+    let root = root();
+    let path = root.join(directory);
+    std::fs::create_dir(&path).unwrap();
+    let stat = path.join("stat");
+    let mut probe = GroupQuiescence::new(&root);
+    // an earlier valid foreign observation must not survive corruption.
+    std::fs::write(&stat, stat_record(999, 44, b'S')).unwrap();
+    if directory == "999" {
+        assert!(!probe.poll(77, |_| panic!("foreign callback")).unwrap());
+    }
+    std::fs::write(&stat, bytes).unwrap();
+    let mut cold = GroupQuiescence::new(&root);
+    for scan in 1..=2 {
+        let result = cold.poll(77, |_| {
+            panic!("{label}: malformed cold record authorized pidfd")
+        });
+        assert!(result.is_err(), "{label} cold scan={scan}: {result:?}");
+        let result = probe.poll(77, |_| panic!("{label}: malformed record authorized pidfd"));
+        assert!(result.is_err(), "{label} scan={scan}: {result:?}");
+    }
+    println!("UNKNOWN label={label} directory={directory}: cold and prior-quiet first/subsequent scans Err; no pidfd callback; input={bytes:?}");
+}
+
+#[test]
+fn reviewer_r1_malformed_foreign_and_matching_records_never_establish_quiet() {
+    for group in [44, 77] {
+        let input = format!("not-a-pid (broken) ? not-a-ppid {group} not-a-session\n");
+        assert!(stat_group(input.as_bytes()).is_err());
+        unknown_stat_case(
+            &format!("reviewer-R1-group-{group}"),
+            "999",
+            input.as_bytes(),
+        );
+    }
+}
+
+#[test]
+fn malformed_stat_matrix_is_unknown_before_foreign_or_matching_classification() {
+    for group in [44, 77] {
+        let record = stat_record(999, group, b'S');
+        let mut variants = Vec::new();
+        for (label, field, value) in [
+            ("pid-text", 1, "not-a-pid"),
+            ("pid-zero", 1, "0"),
+            ("pid-negative", 1, "-999"),
+            ("pid-plus", 1, "+999"),
+            ("pid-leading-zero", 1, "0999"),
+            ("pid-overflow", 1, "2147483648"),
+            (
+                "pid-huge",
+                1,
+                "999999999999999999999999999999999999999999999",
+            ),
+            ("pid-directory-mismatch", 1, "998"),
+            ("state-unknown", 3, "?"),
+            ("state-multiple", 3, "RS"),
+            ("state-empty", 3, ""),
+            ("ppid-text", 4, "not-a-ppid"),
+            ("ppid-negative", 4, "-1"),
+            ("ppid-overflow", 4, "2147483648"),
+            ("ppid-minus-zero", 4, "-0"),
+            ("pgrp-text", 5, "bad"),
+            ("pgrp-negative", 5, "-77"),
+            ("pgrp-overflow", 5, "2147483648"),
+            ("pgrp-plus", 5, "+77"),
+            ("session-text", 6, "not-a-session"),
+            ("session-negative", 6, "-1"),
+            ("session-overflow", 6, "2147483648"),
+            ("session-missing", 6, ""),
+            ("tty-overflow", 7, "2147483648"),
+            ("flags-overflow", 9, "4294967296"),
+            ("unsigned-negative", 10, "-1"),
+            ("unsigned-overflow", 14, "18446744073709551616"),
+            ("signed-overflow", 16, "9223372036854775808"),
+            ("signed-underflow", 17, "-9223372036854775809"),
+            ("threads-negative", 20, "-1"),
+            ("tail-text", 52, "bad"),
+        ] {
+            variants.push((label, replace_stat_field(&record, field, value.as_bytes())));
+        }
+        let mut opening = record.clone();
+        opening[4] = b'[';
+        variants.push(("comm-opening", opening));
+        let end = record.iter().rposition(|byte| *byte == b')').unwrap();
+        let mut closing = record.clone();
+        closing[end] = b']';
+        variants.push(("comm-closing", closing));
+        let mut separator = record.clone();
+        separator[end + 1] = b'\t';
+        variants.push(("state-separator", separator));
+        variants.push(("comm-nul", replace_stat_field(&record, 2, b"bad\0comm")));
+        variants.push(("missing-newline", record[..record.len() - 1].to_vec()));
+        variants.push(("double-newline", [record.as_slice(), b"\n"].concat()));
+        variants.push(("suffix-text", [record.as_slice(), b"junk"].concat()));
+        variants.push((
+            "unknown-extra-field",
+            replace_stat_field(&record, 52, b"0 0"),
+        ));
+        variants.push((
+            "missing-last-field",
+            record[..record.iter().rposition(|byte| *byte == b' ').unwrap()].to_vec(),
+        ));
+        variants.push(("truncated-header", b"999 (fixture) S 1".to_vec()));
+        variants.push((
+            "truncated-after-session",
+            format!("999 (fixture) S 1 {group} 77\n").into_bytes(),
+        ));
+        let long = replace_stat_field(&record, 2, &vec![b'c'; 4096]);
+        variants.push(("length-over-bound", long));
+        for (label, bytes) in variants {
+            unknown_stat_case(&format!("group-{group}-{label}"), "999", &bytes);
+        }
+        for directory in [
+            "0",
+            "0999",
+            "2147483648",
+            "9999999999999999999999999999999999999999",
+        ] {
+            unknown_stat_case(
+                &format!("group-{group}-directory-identity"),
+                directory,
+                &record,
+            );
+        }
+        for cut in 0..record.len() {
+            assert!(
+                stat_group(&record[..cut]).is_err(),
+                "accepted truncation at {cut}"
+            );
+        }
+        println!(
+            "TRUNCATION group={group}: all {} proper byte prefixes rejected",
+            record.len()
+        );
+    }
+}
+
+#[test]
+fn genuine_kernel_records_gate_pidfd_admission_and_preserve_comm_bytes() {
+    let record = std::fs::read("/proc/self/stat").unwrap();
+    let pid = std::process::id();
+    let group = unsafe { libc::getpgrp() };
+    assert_eq!(stat_group(&record).unwrap(), (pid as i32, group));
+    println!("GENUINE self stat={record:?}");
+    let root = root();
+    let directory = root.join(pid.to_string());
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("stat"), &record).unwrap();
+    let mut foreign = GroupQuiescence::new(&root);
+    let other = if group == 77 { 78 } else { 77 };
+    assert!(!foreign
+        .poll(other, |_| panic!("genuine foreign record callback"))
+        .unwrap());
+    assert!(foreign
+        .poll(other, |_| panic!("genuine foreign record callback"))
+        .unwrap());
+    let mut matching = GroupQuiescence::new(&root);
+    let mut calls = 0;
+    for _ in 0..2 {
+        assert!(!matching
+            .poll(group, |observed| {
+                assert_eq!(observed, pid);
+                calls += 1;
+                member_exited(observed)
+            })
+            .unwrap());
+    }
+    assert_eq!(calls, 2);
+    let unusual = std::thread::spawn(|| {
+        let name = std::ffi::CString::new(b" ()(\xff\n".to_vec()).unwrap();
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr(), 0, 0, 0) },
+            0
+        );
+        let record = std::fs::read("/proc/thread-self/stat").unwrap();
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) } as i32;
+        assert_eq!(
+            stat_group(&record).unwrap(),
+            (tid, unsafe { libc::getpgrp() })
+        );
+        assert!(record
+            .windows(name.as_bytes().len())
+            .any(|window| window == name.as_bytes()));
+        record
+    })
+    .join()
+    .unwrap();
+    println!("GENUINE kernel positives: self PID={pid} pgrp={group}; foreign quiet without callback; matching live pidfd queried twice; unusual comm bytes record={unusual:?}");
+
+    let mut child = OwnedFixture(Some(
+        Command::new("/bin/true").process_group(0).spawn().unwrap(),
+    ));
+    let owned = child.0.as_mut().unwrap();
+    tests::until(|| child_exited(owned.id()).unwrap());
+    let zombie = std::fs::read(format!("/proc/{}/stat", owned.id())).unwrap();
+    let (zpid, zgroup) = stat_group(&zombie).unwrap();
+    println!("GENUINE exited child stat={zombie:?}");
+    assert_eq!(zpid as u32, owned.id());
+    assert_eq!(zgroup, zpid);
+    std::fs::remove_file(directory.join("stat")).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+    let directory = root.join(zpid.to_string());
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("stat"), &zombie).unwrap();
+    let mut matching = GroupQuiescence::new(&root);
+    assert!(!matching.poll(zgroup, member_exited).unwrap());
+    assert!(matching.poll(zgroup, member_exited).unwrap());
+    child.0.take().unwrap().wait().unwrap();
+    println!("GENUINE kernel exited member PID={zpid}: pidfd admitted and two quiet scans; direct child then reaped");
+}
+
+#[test]
+fn zero_identity_fields_known_states_and_exact_read_bound_remain_valid() {
+    let mut zero = stat_record(999, 0, b'S');
+    zero = replace_stat_field(&zero, 4, b"0");
+    assert_eq!(stat_group(&zero).unwrap(), (999, 0));
+    assert_eq!(
+        stat_group(&replace_stat_field(&zero, 2, b"")).unwrap(),
+        (999, 0)
+    );
+    for state in b"RSDZTtXxKWPI" {
+        assert_eq!(
+            stat_group(&replace_stat_field(&zero, 3, &[*state])).unwrap(),
+            (999, 0)
+        );
+    }
+    let end = zero.iter().rposition(|byte| *byte == b')').unwrap();
+    let comm_len = end - zero.iter().position(|byte| *byte == b'(').unwrap() - 1;
+    let bounded = replace_stat_field(&zero, 2, &vec![b'c'; 4095 - zero.len() + comm_len]);
+    assert_eq!(bounded.len(), 4095);
+    assert_eq!(stat_group(&bounded).unwrap(), (999, 0));
+    let root = root();
+    std::fs::create_dir(root.join("999")).unwrap();
+    let path = root.join("999/stat");
+    std::fs::write(&path, &bounded).unwrap();
+    assert_eq!(member_group(&path).unwrap(), Some(0));
+    let over = replace_stat_field(&bounded, 2, &vec![b'c'; 4096 - zero.len() + comm_len]);
+    assert_eq!(over.len(), 4096);
+    std::fs::write(&path, &over).unwrap();
+    assert!(member_group(&path).is_err());
+    println!("BOUNDS zero PPID/pgrp/session and known state bytes accepted; 4095-byte full record accepted, 4096 rejected");
 }
 
 #[test]
