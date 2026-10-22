@@ -306,3 +306,152 @@ fn a_reaped_leader_cannot_authorize_another_group_signal() {
     let error = signal_reserved_group(&child, libc::SIGKILL).unwrap_err();
     assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
 }
+
+struct OwnedFixture(Option<Child>);
+
+impl Drop for OwnedFixture {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            terminate_and_reap(child);
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Identity {
+    group: i32,
+    start: u64,
+}
+
+fn identity(pid: u32) -> Identity {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let fields: Vec<_> = stat
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .collect();
+    Identity {
+        group: fields[2].parse().unwrap(),
+        start: fields[19].parse().unwrap(),
+    }
+}
+
+fn descendant_from_stdout(child: &mut Child) -> u32 {
+    let mut stdout = child.stdout.take().unwrap();
+    nonblocking(stdout.as_raw_fd()).unwrap();
+    let (sender, frames) = sync_channel(MAX_QUEUE_FRAMES);
+    let mut decoder = FrameDecoder::default();
+    let mut buffer = [0; 1024];
+    let mut descendant = None;
+    tests::until(|| {
+        match stdout.read(&mut buffer) {
+            Ok(0) => panic!("fixture exited before publishing its descendant"),
+            Ok(count) => decoder.push(&buffer[..count], &sender).unwrap(),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("fixture stdout: {error}"),
+        }
+        for frame in frames.try_iter() {
+            let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            if value["type"] == "notify" {
+                descendant = value["message"].as_str().unwrap().parse::<u32>().ok();
+            }
+        }
+        descendant.is_some()
+    });
+    descendant.unwrap()
+}
+
+#[test]
+fn reserved_leader_identity_survives_group_signals_and_only_its_child_is_reaped() {
+    let root = root();
+    let fixture = compile(&root);
+    let cpu = cpu();
+    let mut leader = OwnedFixture(Some(
+        Command::new(fixture)
+            .args(["inherited", root.to_str().unwrap(), &cpu.to_string()])
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    ));
+    // This separate owned group is a canary, not an authority from the proc scan.
+    let sentinel = OwnedFixture(Some(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    ));
+    let child = leader.0.as_mut().unwrap();
+    let descendant = descendant_from_stdout(child);
+    let pid = child.id();
+    let leader_id = identity(pid);
+    let descendant_id = identity(descendant);
+    let sentinel_pid = sentinel.0.as_ref().unwrap().id();
+    let sentinel_id = identity(sentinel_pid);
+    let leader_exit = pidfd(pid);
+    let descendant_exit = pidfd(descendant);
+    let sentinel_exit = pidfd(sentinel_pid);
+    assert_eq!(leader_id.group, i32::try_from(pid).unwrap());
+    assert_eq!(descendant_id.group, leader_id.group);
+    assert_eq!(sentinel_id.group, i32::try_from(sentinel_pid).unwrap());
+    assert_ne!(sentinel_id.group, leader_id.group);
+    assert!(!exit_ready(&leader_exit));
+    assert!(!exit_ready(&descendant_exit));
+    let pressure = load(cpu);
+    std::fs::write(root.join("release-leader"), b"go").unwrap();
+    tests::until(|| child_exited(pid).unwrap());
+    assert!(exit_ready(&leader_exit));
+    assert_eq!(identity(pid), leader_id);
+    assert!(!exit_ready(&descendant_exit));
+    signal_reserved_group(child, libc::SIGTERM).unwrap();
+    std::thread::sleep(STOP_GRACE);
+
+    let mut probe = GroupQuiescence::new(Path::new("/proc"));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut signals = 0;
+    loop {
+        signal_reserved_group(child, libc::SIGKILL).unwrap();
+        signals += 1;
+        // WNOWAIT must still identify the original child after every group KILL;
+        // its PID cannot be recycled while its original start identity remains.
+        assert!(child_exited(pid).unwrap());
+        assert_eq!(identity(pid), leader_id);
+        assert_eq!(identity(sentinel_pid), sentinel_id);
+        assert!(!exit_ready(&sentinel_exit), "foreign group was signalled");
+        if probe.poll(leader_id.group, member_exited).unwrap() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "group observation did not progress"
+        );
+        std::thread::sleep(Duration::from_millis(IO_INTERVAL_MS as u64));
+    }
+    assert!(
+        exit_ready(&descendant_exit),
+        "group quiet before descendant exit"
+    );
+    assert_eq!(identity(pid), leader_id);
+    let mut child = leader.0.take().unwrap();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        child_exited(pid).unwrap_err().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+    assert_eq!(
+        signal_reserved_group(&child, libc::SIGKILL)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::ECHILD)
+    );
+    assert_eq!(identity(sentinel_pid), sentinel_id);
+    assert!(!exit_ready(&sentinel_exit));
+    println!("reserved leader={pid} identity={leader_id:?}, descendant={descendant} identity={descendant_id:?}, sentinel={sentinel_pid} identity={sentinel_id:?}, group_kills={signals}; descendant pidfd ready before direct reap; original leader reaped; later group signal refused with ECHILD; sentinel unchanged and live");
+    drop(pressure);
+}
