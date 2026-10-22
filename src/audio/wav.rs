@@ -116,6 +116,10 @@ impl Sound {
         format!("/proc/self/fd/{}", self.sealed.as_raw_fd())
     }
 
+    pub(crate) fn decoder_file(&self) -> std::io::Result<File> {
+        self.sealed.try_clone()
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, WavError> {
         if bytes.len() > MAX_BYTES {
             return Err(WavError::TooLarge);

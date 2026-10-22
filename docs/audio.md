@@ -42,13 +42,59 @@ later router adapter; do not retain an old admission decision across focus chang
 `cancel_event(id)` cancels only the matching active event request, not a newer
 event or a preview; retain its returned request ID with the originating live pane.
 
-There is one active MediaFile and **zero queued playback requests**. Busy events
-coalesce; explicit preview replaces the active sound. `cancel`, source change,
-`shutdown` and owner drop stop/clear the owned stream. A 13-second monotonic
-deadline bounds a decoder that never finishes; at most 32 bounded notices remain.
-`Requested`/`DecoderEnded` report native lifecycle, not proven audible output.
-The adapter checks decoder errors before ended/prepared state and never falls
-back to VTE's independent beep.
+There is one process-wide decoder slot and **zero queued playback requests**.
+Busy requests are not retained. Preview cancels the old operation, but returns
+`Busy` if its helper has not yet retired; the caller must explicitly request a
+new preview after capacity returns. No accepted policy/selection change replays
+that request. `cancel`, source change, revocation, `shutdown` and owner drop only
+cancel their owned operation token on the GTK thread; they never join a native
+decoder there. At most 32 bounded notices remain.
+`Cancelled` is emitted only after confirmed helper/group retirement, not merely
+after requesting it; unconfirmed cleanup emits `Failed` instead.
+
+### Supervised native lifetime
+
+GTK 4.14's `MediaFile::clear` can join a GStreamer thread without a timeout, and
+construction can block before a GUI watchdog exists. MediaFile construction,
+playback, clear and drop therefore live on the main thread of an owned decoder
+**process**, not on a worker thread holding a GTK object. The same host executable
+has a narrow early decoder dispatch; it does not initialize the application UI,
+notifications, commands or plugins. An inherited sealed memfd is revalidated in
+the helper; the original pathname is never reopened. This supervision boundary
+is not a sandbox.
+
+One fixed supervisor thread owns the child/process group and bounded nonblocking
+pipes. Its 13-second operation deadline includes construction and native
+retirement: an ended acknowledgement alone cannot report `DecoderEnded`.
+The helper also checks an absolute monotonic deadline before construction/play,
+so delayed OS launch or a native call returning after expiry cannot start output.
+`DecoderEnded` additionally requires exit status zero and observed
+process-group quiescence. Cancellation/deadline uses SIGKILL instead of waiting
+for a possibly blocked GTK clear. The unreaped leader pins the group identity;
+descendant observation uses kernel getpgid/pidfds, not a `/proc/stat` PID parser.
+
+Cleanup confirmation has a separate 500 ms bound. Failure to confirm is reported
+as uncertainty, **not** successful cancellation or extra capacity: the single
+slot/supervisor remains quarantined, every otherwise admissible request returns
+`Busy`, and no additional worker/reaper is created. The supervisor also owns the helper's
+temporary subtree, including any registry left behind by SIGKILL, and retains
+the slot if deleting it fails. If the kernel later confirms cleanup, only
+an explicit new request can play. No software timeout can honestly declare an
+unkillable kernel task gone, or interrupt a stuck spawn/proc/filesystem syscall;
+those retain the same slot and expose uncertainty without blocking GTK. After
+the UI loop has exited, the narrow host exit guard gives confirmation at most
+500 ms; it never runs inside a GTK callback and returns failure if cleanup is
+still unknown.
+
+`initialize_execution(root)` caches the packaged context before workers. The
+decoder dispatch belongs at the start of the executable; keep other early
+command-supervisor dispatches when joining changes. Do not restore the old
+GUI-side `initialize_packaged` media initialization. `decoder_snapshot()` exposes
+bounded observational diagnostics (512 KiB maps, 4 KiB stderr, owned PID/phase);
+PIDs are never an external cancellation authority. Acknowledgements are scoped
+to the operation object and cannot cancel or finish a newer owner's playback.
+`Requested`/`DecoderEnded` report lifecycle, not proven audible output. Decoder
+errors win over ended/prepared state; there is no VTE-beep fallback.
 
 ## Packaging and evidence boundaries
 
@@ -61,8 +107,10 @@ Snap stages the Ubuntu media/base/good route. AppImage preserves the GTK media
 module, ten declared GStreamer plugins and plugin scanner in their nested paths;
 linuxdeploy resolves/patches their dependency RUNPATHs before attribution.
 `data/audio/runtime-files.rs` is shared by packaging and startup requirements.
-Startup initializes private discovery with a fresh private GStreamer registry,
-then restores every GTK/GStreamer override before host shells/plugins can start.
+Startup caches only the execution root. Each owned helper initializes private
+discovery with a fresh GStreamer registry. Overrides stay in that short-lived
+helper: native initialization can start threads, so there is no later environment
+mutation to restore them. The GUI/terminal environment never receives them.
 No payload `LD_LIBRARY_PATH` is exported. Missing media/codec/scanner members
 fail explicitly instead of borrowing host backends to make a test appear green.
 
@@ -114,3 +162,14 @@ receives `(scenario, new-consumer-evidence, fixture-wav, payload-root)` inside t
 owned sink environment. It must drive the installed application's real controls
 and save that application's maps/diagnostics, rather than call `Audio` itself.
 No alternate production test flag or General control is introduced here.
+
+`examples/audio-retirement-probe.rs` adds a separate trusted test-only native-call
+interposer, never linked into Among. It stalls actual constructor/clear call
+sites, crashes a helper, injects a denied kill to exercise quarantine, and releases
+a delayed constructor after expiry to assert that it never reaches play. A real
+GTK window/heartbeat must keep running; cancellation/shutdown/selection/drop
+latency, one-slot capacity, helper/group retirement and explicit recovery are
+measured alongside actual captured sound after recovery. These are injected
+faults, not claims that a codec deadlock was discovered in a normal recording.
+`check-audio-retirement` reuses a checked package extraction and separately bound
+fault probe; the CI workflows retain its captures on both native architectures.

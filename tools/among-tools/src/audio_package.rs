@@ -12,7 +12,7 @@ use std::{
     collections::BTreeMap,
     fs::{self, File},
     os::unix::fs::{symlink, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -145,7 +145,12 @@ fn manifest(root: &Path, directory: &Path, entries: &mut BTreeMap<String, String
 }
 
 fn maps(root: &Path, evidence: &Path) -> Result<()> {
-    let text = fs::read_to_string(evidence.join("consumer/maps.txt"))?;
+    let decoder = evidence.join("consumer/decoder-maps.txt");
+    let text = fs::read_to_string(if decoder.is_file() {
+        decoder
+    } else {
+        evidence.join("consumer/maps.txt")
+    })?;
     for name in [
         "libgtk-4.so",
         "libgstreamer-1.0.so",
@@ -420,7 +425,9 @@ pub fn run(
             }
         }
         if kind != "appimage"
-            && !fs::read_to_string(evidence.join("consumer/maps.txt"))?.contains("/snap/core24/")
+            && !fs::read_to_string(evidence.join("consumer/decoder-maps.txt"))
+                .or_else(|_| fs::read_to_string(evidence.join("consumer/maps.txt")))?
+                .contains("/snap/core24/")
         {
             return Err("probe did not map the actual core24 loader/runtime".into());
         }
@@ -488,5 +495,154 @@ pub fn run(
         )?,
     )?;
     println!("Captured packaged audio ({kind}, {architecture}); evidence: {}. General controls and source acceptance are separate.",base.display());
+    Ok(())
+}
+
+/// reuse an already checked extraction, but bind the fault probe independently
+/// to the same actual artifact/source. No test interposer is shipped in it.
+pub fn retirement(
+    prepared: &Path,
+    artifact: &Path,
+    checkers: &Path,
+    commit: &str,
+    architecture: &str,
+    output: &Path,
+) -> Result<()> {
+    audio_capture::require_container()?;
+    let receipt = validate(checkers, artifact, commit, architecture)?;
+    let identity = storage::parse_json(&fs::read(prepared.join("identity.json"))?)?;
+    if identity["receipt"]["artifact_sha256"] != receipt.artifact_sha256
+        || identity["receipt"]["source_sha"] != commit
+        || identity["receipt"]["architecture"] != architecture
+    {
+        return Err("retirement fixture differs from checked package source/architecture".into());
+    }
+    let scope = identity["scope"]
+        .as_str()
+        .ok_or("prepared audio scope missing")?;
+    let payload = match scope {
+        "appimage" => prepared.join("squashfs-root"),
+        "snap-core24" => prepared.join("snap-payload"),
+        "snap-installed" => PathBuf::from("/snap/among/current"),
+        _ => return Err("unsupported retirement package scope".into()),
+    }
+    .canonicalize()?;
+    let lib = payload.join(if scope == "appimage" {
+        "usr/lib".to_string()
+    } else {
+        format!(
+            "usr/lib/{}",
+            if architecture == "amd64" {
+                "x86_64-linux-gnu"
+            } else {
+                "aarch64-linux-gnu"
+            }
+        )
+    });
+    let mut observed = BTreeMap::new();
+    manifest(&lib, &lib, &mut observed)?;
+    if serde_json::to_value(&observed)?
+        != storage::parse_json(&fs::read(prepared.join("native-files.json"))?)?
+    {
+        return Err("prepared native payload changed before retirement testing".into());
+    }
+    fs::create_dir(output)?;
+    let base = output.canonicalize()?;
+    let probe = base.join("retirement-probe");
+    fs::copy(checkers.join("audio-probe"), &probe)?;
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o755))?;
+    let app = payload.join(if scope == "appimage" {
+        "usr/bin/among"
+    } else {
+        "bin/among"
+    });
+    let origin = utf8(app.parent().ok_or("application origin missing")?)?;
+    let runpath = command(
+        "/usr/bin/patchelf",
+        &["--print-rpath", utf8(&app)?],
+        &base,
+        "application-runpath",
+    )?
+    .replace("${ORIGIN}", origin)
+    .replace("$ORIGIN", origin);
+    command(
+        "/usr/bin/patchelf",
+        &["--set-rpath", &runpath, utf8(&probe)?],
+        &base,
+        "probe-runpath",
+    )?;
+    if scope != "appimage" {
+        let interpreter = command(
+            "/usr/bin/patchelf",
+            &["--print-interpreter", utf8(&app)?],
+            &base,
+            "application-interpreter",
+        )?;
+        if !interpreter.starts_with("/snap/core24/") {
+            return Err("retirement test lacks actual core24 interpreter".into());
+        }
+        command(
+            "/usr/bin/patchelf",
+            &["--set-interpreter", &interpreter, utf8(&probe)?],
+            &base,
+            "probe-interpreter",
+        )?;
+    }
+    let input = prepared.join("fixtures/1-16.wav").canonicalize()?;
+    let mut results = Vec::new();
+    for scenario in [
+        "stall-construct-cancel",
+        "stall-retire-shutdown",
+        "stall-event-revoke",
+        "stall-source-replace",
+        "stall-owner-drop",
+        "stall-watchdog",
+        "helper-crash",
+        "stall-quarantine",
+        "late-expiry",
+    ] {
+        let evidence = base.join(scenario);
+        let signal = audio_capture::run(
+            &Invocation {
+                probe: &probe,
+                scenario,
+                input: &input,
+                payload: &payload,
+                installed: scope == "snap-installed",
+                expected_failure: None,
+                signal: true,
+            },
+            &evidence,
+        )?;
+        let measurements =
+            storage::parse_json(&fs::read(evidence.join("consumer/retirement.json"))?)?;
+        if measurements["scenario"] != scenario
+            || measurements["supervisor_threads"] != 1
+            || measurements["operation_temp_dirs_after"] != 0
+            || measurements["max_gtk_gap_ms"]
+                .as_u64()
+                .is_none_or(|gap| gap >= 250)
+            || measurements["gui_latency_us"]
+                .as_u64()
+                .is_none_or(|latency| latency >= 100_000)
+        {
+            return Err("retirement liveness measurements violated the contract".into());
+        }
+        maps(&payload, &evidence)?;
+        results.push(json!({"scenario":scenario,"capture":signal,"measurements":measurements}));
+    }
+    if digest(artifact)? != receipt.artifact_sha256 {
+        return Err("actual package changed during retirement tests".into());
+    }
+    fs::write(
+        base.join("result.json"),
+        serde_json::to_vec_pretty(
+            &json!({"source_sha":commit,"artifact_sha256":receipt.artifact_sha256,"scope":scope,"architecture":architecture,"injection":"trusted native-call and signal-failure interposers in external probe only","cases":results,"general_controls":false}),
+        )?,
+    )?;
+    println!(
+        "Captured decoder retirement/GTK heartbeat and real output after recovery: {}",
+        base.display()
+    );
     Ok(())
 }

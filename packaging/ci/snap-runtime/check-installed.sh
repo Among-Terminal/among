@@ -56,6 +56,7 @@ status=0
 # This external, artifact-bound probe enters the actual installed classic Snap
 # launcher and uses its real core24 interpreter; it is not General UI evidence.
 "$tool" check-audio-package snap-installed /input/among.snap /input/audio "$EXPECTED_SOURCE" "$EXPECTED_ARCH" "$checks/audio-package" || status=1
+"$tool" check-audio-retirement "$checks/audio-package" /input/among.snap /input/retirement "$EXPECTED_SOURCE" "$EXPECTED_ARCH" "$checks/audio-retirement" || status=1
 "$tool" ci-x11 "$tool" check-snap-runtime --github-hosted || status=1
 "$tool" ci-x11 "$tool" check-context-menu-snap "$clipboard" light --github-hosted || status=1
 "$tool" ci-x11 "$tool" check-context-menu-snap "$clipboard" dark --github-hosted || status=1

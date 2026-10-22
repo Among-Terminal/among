@@ -33,7 +33,7 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
       CARGO_HOME: /opt/among-cargo
       RUSTUP_HOME: /opt/among-rustup
-      CARGO_BUILD_JOBS: '2'
+      CARGO_BUILD_JOBS: '1'
       RUST_HOST: ${{ matrix.rust_host }}
       BUILD_ARCH: ${{ matrix.architecture }}
       REF_TYPE: ${{ github.ref_type }}
@@ -66,7 +66,7 @@ jobs:
       - name: Build the application, plugins and tooling
         run: |
           cargo build --release --locked
-          cargo build --release --locked --example audio-probe
+          cargo build --release --locked --example audio-probe --example audio-retirement-probe
           cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Name the candidate after the tag or the package version
@@ -114,9 +114,11 @@ jobs:
           source="$(git rev-parse HEAD)"
           tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-probe \
             "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/audio
+          tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-retirement-probe \
+            "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/retirement
           printf '%s\n' "$source" > appimage-checker/source-sha
           cd appimage-checker
-          sha256sum among-tools audio/audio-probe audio/audio-receipt.json source-sha > SHA256SUMS
+          sha256sum among-tools audio/audio-probe audio/audio-receipt.json retirement/audio-probe retirement/audio-receipt.json source-sha > SHA256SUMS
       - name: Retain build logs after a failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -241,6 +243,7 @@ jobs:
           appimage-checker/among-tools ci-appimage-install . "$HOST" "$BUILD_ARCH" \
             appimage-candidate appimage-runtime-evidence
       - name: Capture actual packaged backend output and missing-member failures
+        id: audio_capture
         if: ${{ !cancelled() }}
         env:
           BUILD_ARCH: ${{ matrix.architecture }}
@@ -257,6 +260,17 @@ jobs:
           runuser -u among-audio -- env RUNNER_ARCH="$RUNNER_ARCH" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             "$PWD/appimage-checker/among-tools" check-audio-package appimage "$PWD/$1" \
             "$PWD/appimage-checker/audio" "$EXPECTED_SOURCE" "$BUILD_ARCH" "$PWD/audio-package-evidence/run"
+      - name: Stall native decoder construction and retirement without blocking GTK
+        if: ${{ !cancelled() && steps.audio_capture.outcome == 'success' }}
+        env:
+          BUILD_ARCH: ${{ matrix.architecture }}
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -- appimage-candidate/*.AppImage
+          test "$#" -eq 1
+          runuser -u among-audio -- "$PWD/appimage-checker/among-tools" check-audio-retirement \
+            "$PWD/audio-package-evidence/run" "$PWD/$1" "$PWD/appimage-checker/retirement" \
+            "$EXPECTED_SOURCE" "$BUILD_ARCH" "$PWD/audio-package-evidence/retirement"
       - name: Retain audio capture and module maps even on failure
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

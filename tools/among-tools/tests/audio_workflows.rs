@@ -64,6 +64,14 @@ fn both_native_architectures_transfer_artifact_bound_audio_probes() -> Result<()
         Some("${{ !cancelled() }}")
     );
     assert!(runtime.contains("|| status=1"));
-    assert!(!runs(&snap["jobs"]["snap"]).contains("CARGO_BUILD_JOBS=1"));
+    assert!(runs(&snap["jobs"]["snap"]).contains("CARGO_BUILD_JOBS=1"));
+    assert_eq!(
+        appimage["jobs"]["build"]["env"]["CARGO_BUILD_JOBS"].as_str(),
+        Some("1")
+    );
+    assert!(runs(&appimage["jobs"]["build"]).contains("--example audio-retirement-probe"));
+    assert!(runs(&snap["jobs"]["snap"]).contains("--example audio-retirement-probe"));
+    assert!(runs(host).contains("check-audio-retirement"));
+    assert!(runtime.contains("check-audio-retirement"));
     Ok(())
 }
