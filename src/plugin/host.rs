@@ -3,17 +3,21 @@
 use super::process::{Failure, Process, SendError};
 use super::transport::{MAX_POLL_FRAMES, MAX_QUEUE_FRAMES};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
 
 use super::inventory;
+use super::managed;
 use super::protocol::{
     self, Context, EventKind, IncomingFragment, IncomingSummary, Rejection, Request, Response,
     PROTOCOL_MAJOR, PROTOCOL_MINOR,
 };
 use crate::slots::{Contribution, Fragment, Refresh, SlotStore, Style, Summary};
+
+mod managed_runtime;
+pub use managed_runtime::Configuration;
 
 /// How long a plugin has to answer before it is treated as faulted.
 ///
@@ -80,6 +84,7 @@ struct PluginIo {
     started: Instant,
     /// Set once the plugin has announced a compatible version.
     handshake_done: bool,
+    generation: String,
 }
 
 /// One plugin under management.
@@ -99,6 +104,7 @@ struct PluginEntry {
     after_stop: Option<PluginState>,
     managed: Option<inventory::Entry>,
     settings: Option<serde_json::Value>,
+    runtime: Option<managed_runtime::Runtime>,
 }
 
 use std::time::Instant;
@@ -113,8 +119,10 @@ pub struct PluginHost {
     results: Vec<PluginResult>,
     /// Notifications raised since the last poll.
     notices: Vec<(String, String, Option<String>)>,
+    invalidated_sources: BTreeSet<String>,
     next_poll: usize,
     starts_allowed: Rc<Cell<bool>>,
+    world: managed::World,
 }
 
 /// One plugin's answer, ready to become slot content.
@@ -135,6 +143,9 @@ fn stop_io(plugin: &mut PluginEntry) {
     }
     plugin.inflight.clear();
     plugin.scopes.clear();
+    if let Some(runtime) = plugin.runtime.as_mut() {
+        runtime.reset();
+    }
 }
 
 impl Default for PluginHost {
@@ -154,9 +165,20 @@ impl PluginHost {
             last_rejections: Vec::new(),
             results: Vec::new(),
             notices: Vec::new(),
+            invalidated_sources: Default::default(),
             next_poll: 0,
             starts_allowed,
+            world: managed::World {
+                session: glib::uuid_string_random().to_string(),
+                ..Default::default()
+            },
         }
+    }
+
+    pub fn drain_invalidated_sources(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.invalidated_sources)
+            .into_iter()
+            .collect()
     }
 
     /// Take the notifications raised since the last poll.
@@ -199,6 +221,7 @@ impl PluginHost {
             after_stop: None,
             managed: None,
             settings: None,
+            runtime: None,
         });
         self.start_by_name(name);
     }
@@ -222,6 +245,9 @@ impl PluginHost {
         if let Some(index) = self.find(&name) {
             self.plugins[index].managed = Some(entry);
             self.plugins[index].settings = local.and_then(|local| local.get("settings")).cloned();
+            self.plugins[index].runtime = Some(managed_runtime::Runtime::new(
+                local.and_then(|local| local.get("review")).cloned(),
+            ));
             self.plugins[index].spec.enabled = desired;
             self.start_by_name(name);
         }
@@ -246,6 +272,34 @@ impl PluginHost {
             .filter(|index| self.plugins[*index].managed.is_some())
         {
             self.plugins[index].settings = Some(stored);
+            self.settings_saved(index);
+        }
+    }
+
+    pub fn update_context(&mut self, workspaces: Vec<u64>, legacy: Context) {
+        let previous = self
+            .world
+            .workspaces
+            .get(self.world.legacy.active_workspace)
+            .copied();
+        self.world.workspaces = workspaces;
+        self.world.legacy = legacy;
+        self.world
+            .legacy
+            .terminals
+            .sort_by_key(|terminal| terminal.pane);
+        self.revoke_stale_targets();
+        if previous.is_some()
+            && previous
+                != self
+                    .world
+                    .workspaces
+                    .get(self.world.legacy.active_workspace)
+                    .copied()
+        {
+            if let Some(pane) = self.world.legacy.focused_pane {
+                self.broadcast_event(EventKind::WorkspaceActivated, pane, None);
+            }
         }
     }
 
@@ -331,17 +385,8 @@ impl PluginHost {
         if !self.plugins[index].spec.enabled || self.plugins[index].io.is_some() {
             return;
         }
-        if let Some(entry) = &self.plugins[index].managed {
-            let compatibility = entry
-                .inspected
-                .as_ref()
-                .map_err(|problem| *problem)
-                .and_then(|inspected| {
-                    inspected
-                        .manifest
-                        .compatibility(PROTOCOL_MAJOR, PROTOCOL_MINOR, &[])
-                });
-            if let Err(problem) = compatibility {
+        if self.plugins[index].managed.is_some() {
+            if let Err(problem) = self.prepare_managed(index) {
                 self.plugins[index].state = PluginState::Unavailable {
                     reason: problem.to_string(),
                 };
@@ -370,7 +415,12 @@ impl PluginHost {
 
         self.plugins[index].restart_at = None;
 
-        let command = self.plugins[index].spec.command.clone();
+        let command = self.plugins[index]
+            .managed
+            .as_ref()
+            .and_then(|entry| entry.inspected.as_ref().ok())
+            .map(|inspected| vec![inspected.executable.to_string_lossy().into_owned()])
+            .unwrap_or_else(|| self.plugins[index].spec.command.clone());
         if command.is_empty() {
             self.plugins[index].state = PluginState::Missing {
                 reason: "no command configured".into(),
@@ -378,8 +428,40 @@ impl PluginHost {
             return;
         }
 
-        let mut program = Command::new(&command[0]);
-        program.args(&command[1..]);
+        let mut program = if let Some(entry) = &self.plugins[index].managed {
+            match entry.executable_files() {
+                Ok((directory, executable)) => {
+                    super::process::pinned_program(directory, executable)
+                }
+                Err(problem) => {
+                    self.plugins[index].state = PluginState::Unavailable {
+                        reason: problem.to_string(),
+                    };
+                    return;
+                }
+            }
+        } else {
+            let mut program = Command::new(&command[0]);
+            program.args(&command[1..]);
+            program
+        };
+        if self.plugins[index].managed.is_some() {
+            program
+                .env_clear()
+                .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+                .env("LANG", "C.UTF-8");
+            for variable in [
+                "HOME",
+                "XDG_DATA_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_CACHE_HOME",
+                "XDG_RUNTIME_DIR",
+            ] {
+                if let Some(value) = std::env::var_os(variable) {
+                    program.env(variable, value);
+                }
+            }
+        }
         let spawned = Process::start(program);
 
         match spawned {
@@ -388,11 +470,17 @@ impl PluginHost {
                     process,
                     started: Instant::now(),
                     handshake_done: false,
+                    generation: glib::uuid_string_random().to_string(),
                 });
                 self.plugins[index].restart_at = None;
                 self.plugins[index].after_stop = None;
                 self.plugins[index].state = PluginState::Starting;
                 self.plugins[index].refresh = Refresh::IntervalMs(2000);
+
+                if self.plugins[index].managed.is_some() {
+                    self.send_managed_hello(index);
+                    return;
+                }
 
                 let hello = Request::Hello {
                     major: PROTOCOL_MAJOR,
@@ -468,6 +556,9 @@ impl PluginHost {
         if !self.plugins[index].state.is_healthy() {
             return None;
         }
+        if self.plugins[index].managed.is_some() {
+            return self.request_managed_status(index, scope);
+        }
         if self.plugins[index].inflight.len() >= MAX_INFLIGHT
             || self.plugins[index]
                 .scopes
@@ -518,6 +609,10 @@ impl PluginHost {
         };
         for index in 0..self.plugins.len() {
             if self.plugins[index].state.is_healthy() {
+                if self.plugins[index].managed.is_some() {
+                    self.send_managed_event(index, &request);
+                    continue;
+                }
                 self.send_to(index, &request);
             }
         }
@@ -640,6 +735,8 @@ impl PluginHost {
                 }
                 self.fault(index, "plugin did not answer within the timeout");
             }
+            self.configure_if_due(index);
+            self.enumerate_if_due(index);
         }
     }
 
@@ -660,6 +757,10 @@ impl PluginHost {
     }
 
     fn handle_line(&mut self, index: usize, line: &str) {
+        if self.plugins[index].managed.is_some() {
+            self.handle_managed_line(index, line);
+            return;
+        }
         let name = self.plugins[index].spec.name.clone();
         match protocol::parse_response(line) {
             Err(rejection) => {

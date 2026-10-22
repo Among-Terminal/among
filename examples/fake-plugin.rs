@@ -56,14 +56,237 @@ fn serve_with_delay(
     Ok(())
 }
 
+fn serve_managed(mode: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut output = std::io::stdout().lock();
+    let mut transcript = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open("transcript.jsonl")?;
+    std::fs::write("executed", std::process::id().to_string())?;
+    std::fs::write(
+        "credential-inherited",
+        if std::env::var_os("AMONG_MANAGED_TEST_CREDENTIAL").is_some() {
+            "yes"
+        } else {
+            "no"
+        },
+    )?;
+    let names: std::collections::BTreeSet<_> = std::env::vars_os()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    std::fs::write("environment-names.json", serde_json::to_vec(&names)?)?;
+    let mut label = "managed".to_string();
+    let mut enumerating = false;
+    let mut enumeration_id = 1000u64;
+    let mut previous_configuration: Option<Value> = None;
+    let mut previous_status: Option<Value> = None;
+    for line in std::io::stdin().lock().lines() {
+        let message: Value = serde_json::from_str(&line?)?;
+        writeln!(transcript, "{message}")?;
+        transcript.flush()?;
+        match message["type"].as_str() {
+            Some("managed_hello") => {
+                if mode == "managed-hanging" {
+                    continue;
+                }
+                if mode == "managed-before-admission" {
+                    send(
+                        &mut output,
+                        &json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":1,"fragments":[{"text":"premature"}]}),
+                    )?;
+                }
+                let mut response = message.clone();
+                if mode == "managed-wrong-generation" {
+                    response["generation"] = json!("old-generation");
+                }
+                if mode == "managed-wrong-identity" {
+                    response["identity"] = json!("github:999/other");
+                }
+                if mode == "managed-wrong-session" {
+                    response["session"] = json!("expired-session");
+                }
+                if mode == "managed-missing-required" {
+                    response["features"] = json!(["status"]);
+                }
+                if mode == "managed-ungranted-feature" {
+                    response["features"] = json!(["status", "settings", "context.title"]);
+                }
+                if mode == "managed-wrong-version" {
+                    response["minor"] = json!(99);
+                }
+                if mode == "managed-optional-subset" {
+                    response["features"] = Value::Array(
+                        response["features"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|feature| feature.as_str() != Some("context.title"))
+                            .cloned()
+                            .collect(),
+                    );
+                }
+                send(&mut output, &response)?;
+            }
+            Some("configure") => {
+                if mode == "managed-held-config"
+                    && !std::path::Path::new("allow-configuration").exists()
+                {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(7);
+                    while !std::path::Path::new("allow-configuration").exists()
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                }
+                if mode == "managed-stale-config" {
+                    if let Some(previous) = previous_configuration.take() {
+                        send(&mut output, &previous)?;
+                        std::fs::write("old-ack-sent", b"yes")?;
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(3);
+                        while !std::path::Path::new("allow-current-ack").exists()
+                            && std::time::Instant::now() < deadline
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                    } else {
+                        previous_configuration = Some(
+                            json!({"type":"configured","session":message["session"],"generation":message["generation"],"revision":message["revision"],"outcome":"applied"}),
+                        );
+                        continue;
+                    }
+                }
+                if mode == "managed-no-config-reply" {
+                    continue;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                if mode != "managed-reject" {
+                    label = message["values"]["label"]
+                        .as_str()
+                        .unwrap_or("managed")
+                        .into();
+                }
+                let outcome = match mode {
+                    "managed-reject" => "rejected",
+                    "managed-restart" => "restart_required",
+                    _ => "applied",
+                };
+                send(
+                    &mut output,
+                    &json!({"type":"configured","session":message["session"],"generation":message["generation"],"revision":message["revision"],"outcome":outcome,"reason":"invalid_configuration","message":message["values"]}),
+                )?;
+                if let Some(previous) = previous_status.take() {
+                    std::fs::write("new-settings-applied", b"yes")?;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    while !std::path::Path::new("release-old-status").exists()
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    send(&mut output, &previous)?;
+                    std::fs::write("old-status-released", b"yes")?;
+                }
+                if mode == "managed-reject" {
+                    send(
+                        &mut output,
+                        &json!({"type":"notify","message":message["values"]}),
+                    )?;
+                }
+            }
+            Some("status") => {
+                let held_summary =
+                    std::fs::read_to_string("hold-summary")
+                        .ok()
+                        .is_some_and(|reference| {
+                            message["scope"]["slot"] == "workspace_summary"
+                                && message["scope"]["target"]["reference"].as_str()
+                                    == Some(reference.as_str())
+                        });
+                if (mode == "managed-held-status" || held_summary)
+                    && !std::path::Path::new("allow-status").exists()
+                {
+                    std::fs::write("status-held", b"yes")?;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    while !std::path::Path::new("allow-status").exists()
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                }
+                let target_label = if std::path::Path::new("target-labels").exists()
+                    && message["scope"]["slot"] == "workspace_summary"
+                {
+                    format!(
+                        "workspace-{}",
+                        message["scope"]["target"]["reference"]
+                            .as_str()
+                            .unwrap_or_default()
+                    )
+                } else {
+                    label.clone()
+                };
+                let refresh = if mode.starts_with("managed-on-event") {
+                    Value::Null
+                } else {
+                    json!(1000)
+                };
+                let response = json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":message["request_id"],"refresh_ms":refresh,"fragments":[{"text":if held_summary {"retired-target-marker"} else {&target_label}}]});
+                if mode == "managed-on-event-held"
+                    && message["scope"]["slot"] == "app_footer"
+                    && !std::path::Path::new("old-status-held").exists()
+                {
+                    previous_status = Some(response);
+                    std::fs::write("old-status-held", b"yes")?;
+                    continue;
+                }
+                send(&mut output, &response)?;
+                if held_summary {
+                    std::fs::write("summary-released", b"yes")?;
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+                if mode == "managed-enumerate"
+                    && !enumerating
+                    && message["scope"]["slot"] == "app_header"
+                    && !message["context"]["next_cursor"].is_null()
+                {
+                    enumerating = true;
+                    send(
+                        &mut output,
+                        &json!({"type":"enumerate","session":message["session"],"generation":message["generation"],"request_id":enumeration_id,"scope":message["scope"],"cursor":message["context"]["next_cursor"]}),
+                    )?;
+                }
+            }
+            Some("context_page") if mode == "managed-enumerate" => {
+                if message["context"]["next_cursor"].is_null() {
+                    enumerating = false;
+                    std::fs::write("enumeration-complete", b"yes")?;
+                } else {
+                    enumeration_id += 1;
+                    send(
+                        &mut output,
+                        &json!({"type":"enumerate","session":message["session"],"generation":message["generation"],"request_id":enumeration_id,"scope":message["scope"],"cursor":message["context"]["next_cursor"]}),
+                    )?;
+                }
+            }
+            Some("shutdown") => return Ok(()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn main() -> std::io::Result<()> {
     // real discovery starts argv-less executables; only this unshipped fixture
     // reads the isolated test's environment to select that behaviour.
     let mode = std::env::args()
         .nth(1)
         .or_else(|| std::env::var("AMONG_FAKE_PLUGIN_MODE").ok())
+        .or_else(|| std::fs::read_to_string("among-fake-mode").ok())
         .unwrap_or_default();
     match mode.as_str() {
+        mode if mode.starts_with("managed-") => serve_managed(mode),
         "echo" => serve(true),
         "delayed" => serve_with_delay(true, std::time::Duration::from_millis(30), None),
         "rapid" => serve_with_delay(true, std::time::Duration::from_millis(1), Some(0)),
@@ -101,6 +324,16 @@ fn main() -> std::io::Result<()> {
             serve(true)
         }
         "never-read" | "stubborn" | "group-tree" | "inherited" => {
+            if mode == "never-read" {
+                use std::os::fd::AsRawFd;
+                // make a single large request block on every Linux pipe size,
+                // without consuming the host's entire frame queue first.
+                if unsafe { libc::fcntl(std::io::stdin().as_raw_fd(), libc::F_SETPIPE_SZ, 4096) }
+                    < 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
             if mode != "never-read" {
                 // the supervisor must escalate rather than assume TERM worked.
                 unsafe {

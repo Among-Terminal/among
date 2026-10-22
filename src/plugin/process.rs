@@ -17,6 +17,10 @@ use super::transport::{FrameDecoder, MAX_FRAME_BYTES, MAX_QUEUE_FRAMES};
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_GRACE: Duration = Duration::from_millis(500);
 const IO_INTERVAL_MS: i32 = 20;
+const SPAWN_BUSY_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(test)]
+mod spawn_tests;
 
 pub enum Failure {
     Missing(String),
@@ -27,6 +31,24 @@ pub enum Failure {
 pub enum SendError {
     Full,
     Fault(&'static str),
+}
+
+pub fn pinned_program(directory: std::fs::File, executable: std::fs::File) -> Command {
+    let mut program = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()));
+    program.current_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    // pin both descriptors through fork/exec. only the child's executable fd
+    // loses CLOEXEC so a shebang interpreter can open that exact admitted file;
+    // changing descriptor flags in pre_exec does not leak it from the host.
+    unsafe {
+        program.pre_exec(move || {
+            let _keep_package_open = &directory;
+            if libc::fcntl(executable.as_raw_fd(), libc::F_SETFD, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    program
 }
 
 struct Outbound {
@@ -69,10 +91,11 @@ impl Process {
                 if worker_cancel.load(Ordering::Acquire) {
                     return;
                 }
-                let mut child = match command.spawn() {
-                    Ok(child) => child,
-                    Err(err) => {
-                        let _ = failure_sender.try_send(Failure::Missing(err.to_string()));
+                let mut child = match start_child(&mut command, &worker_cancel) {
+                    Ok(Some(child)) => child,
+                    Ok(None) => return,
+                    Err(failure) => {
+                        let _ = failure_sender.try_send(failure);
                         return;
                     }
                 };
@@ -124,7 +147,7 @@ impl Process {
         self.outstanding.load(Ordering::Acquire) < MAX_QUEUE_FRAMES
     }
 
-    pub fn send(&self, request: &Request) -> Result<(), SendError> {
+    pub fn send(&self, request: &impl serde::Serialize) -> Result<(), SendError> {
         if self.cancel.load(Ordering::Acquire) {
             return Err(SendError::Fault("plugin is stopping"));
         }
@@ -170,6 +193,27 @@ impl Drop for Process {
 }
 
 struct BoundedFrame(Vec<u8>);
+
+fn start_child(command: &mut Command, cancel: &AtomicBool) -> Result<Option<Child>, Failure> {
+    let started = Instant::now();
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        match command.spawn() {
+            Ok(child) => return Ok(Some(child)),
+            // exec refuses an inode still open for writing. retry only ETXTBSY,
+            // off-loop and within the existing admission deadline.
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY)
+                    && started.elapsed() < SPAWN_BUSY_TIMEOUT =>
+            {
+                std::thread::sleep(Duration::from_millis(IO_INTERVAL_MS as u64))
+            }
+            Err(error) => return Err(Failure::Missing(error.to_string())),
+        }
+    }
+}
 
 impl Write for BoundedFrame {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -450,5 +494,40 @@ mod tests {
         until(|| healthy.finished());
         process.stop();
         until(|| process.finished());
+    }
+
+    #[test]
+    fn pinned_shebang_execution_keeps_the_admitted_inode_after_a_path_is_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir()
+            .join("opencode")
+            .join(format!("among-pinned-{}", glib::uuid_string_random()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("plugin");
+        std::fs::write(
+            &path,
+            b"#!/bin/sh\nprintf '{\"type\":\"hello\",\"major\":1,\"minor\":0}\\n'\nread keep\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let directory = super::super::data::owned_directory(&root).unwrap();
+        let executable = super::super::data::contained_file(&directory, "plugin").unwrap();
+        let program = pinned_program(directory, executable);
+        std::fs::rename(&path, root.join("admitted")).unwrap();
+        std::os::unix::fs::symlink("/bin/false", &path).unwrap();
+        let process = Process::start(program).unwrap();
+        let mut frame = None;
+        until(|| {
+            frame = process.frames.try_recv().ok().or(frame.take());
+            frame.is_some()
+        });
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&frame.unwrap()).unwrap()["type"],
+            "hello"
+        );
+        process.stop();
+        until(|| process.finished());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

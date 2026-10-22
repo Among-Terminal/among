@@ -11,13 +11,15 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::gdk;
 
-use crate::plugin::host::PluginState;
+use crate::plugin::host::{Configuration, PluginState};
 use crate::shortcuts::{self, Action, Bindings};
 
 mod plugin_settings;
 
 type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
 type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
+type ConfigurationQuery = dyn Fn(&str) -> Configuration;
+type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
 type SavePluginSettings =
     dyn Fn(&str, &str, &serde_json::Map<String, serde_json::Value>) -> Result<(), String>;
 
@@ -33,7 +35,8 @@ pub struct PreferencesContext {
     pub plugin_enabled: Rc<dyn Fn(&str) -> bool>,
     pub plugin_details: Rc<PluginDetailsQuery>,
     pub save_plugin_settings: Rc<SavePluginSettings>,
-    pub enable_plugin: Rc<dyn Fn(&str)>,
+    pub plugin_configuration: Rc<ConfigurationQuery>,
+    pub enable_plugin: Rc<EnablePlugin>,
     pub disable_plugin: Rc<dyn Fn(&str)>,
     /// Rebuilds the window's shortcut controller after a rebind.
     pub bindings_changed: Rc<dyn Fn()>,
@@ -281,6 +284,7 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
                 entry,
                 ctx.save_plugin_settings.clone(),
                 ctx.plugin_details.clone(),
+                ctx.plugin_configuration.clone(),
             );
         }
 
@@ -304,9 +308,19 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
         let plugin_name = name.clone();
         let listing = ctx.plugin_listing.clone();
         let weak_row = row.downgrade();
+        let updating = Rc::new(std::cell::Cell::new(false));
+        let signal_updating = updating.clone();
         switch.connect_active_notify(move |switch| {
+            if signal_updating.get() {
+                return;
+            }
             if switch.is_active() {
-                enable(&plugin_name);
+                enable(
+                    &plugin_name,
+                    switch
+                        .root()
+                        .and_then(|root| root.downcast::<gtk::Window>().ok()),
+                );
             } else {
                 disable(&plugin_name);
             }
@@ -321,6 +335,8 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
         // faults and restarts can happen without a switch interaction; stop
         // observing when the preferences row is destroyed.
         let weak_row = row.downgrade();
+        let weak_switch = switch.downgrade();
+        let desired = ctx.plugin_enabled.clone();
         let listing = ctx.plugin_listing.clone();
         gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
             let Some(row) = weak_row.upgrade() else {
@@ -330,6 +346,14 @@ fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
                 let text = describe_state(&state);
                 if row.subtitle().as_deref() != Some(text.as_str()) {
                     row.set_subtitle(&text);
+                }
+            }
+            if let Some(switch) = weak_switch.upgrade() {
+                let enabled = desired(&name);
+                if switch.is_active() != enabled {
+                    updating.set(true);
+                    switch.set_active(enabled);
+                    updating.set(false);
                 }
             }
             gtk::glib::ControlFlow::Continue
@@ -421,16 +445,30 @@ mod tests {
         let observed = state.clone();
         let enabled = state.clone();
         let disabled = state.clone();
+        let desired = Rc::new(std::cell::Cell::new(true));
         let page = plugins_page(&PreferencesContext {
             on_closed: Rc::new(|| {}),
             storage_status: gtk::StringList::new(&[]),
             bindings: Rc::new(RefCell::new(Bindings::defaults())),
             plugin_listing: Rc::new(move || vec![("clock".into(), observed.borrow().clone())]),
-            plugin_enabled: Rc::new(|_| true),
+            plugin_enabled: Rc::new({
+                let desired = desired.clone();
+                move |_| desired.get()
+            }),
             plugin_details: Rc::new(|_| None),
             save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
-            enable_plugin: Rc::new(move |_| *enabled.borrow_mut() = PluginState::Running),
-            disable_plugin: Rc::new(move |_| *disabled.borrow_mut() = PluginState::Disabled),
+            plugin_configuration: Rc::new(|_| Configuration::NotApplied),
+            enable_plugin: Rc::new({
+                let desired = desired.clone();
+                move |_, _| {
+                    desired.set(true);
+                    *enabled.borrow_mut() = PluginState::Running;
+                }
+            }),
+            disable_plugin: Rc::new(move |_| {
+                desired.set(false);
+                *disabled.borrow_mut() = PluginState::Disabled;
+            }),
             bindings_changed: Rc::new(|| {}),
         });
         fn find<T: IsA<gtk::Widget> + gtk::glib::object::IsClass>(

@@ -170,7 +170,9 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
         Duration::from_secs(2),
     );
     let started = std::time::Instant::now();
-    for _ in 0..8 {
+    // two frames exceed even a 64-KiB page-rounded fixture pipe, without
+    // racing the separate 16-frame overflow boundary.
+    for _ in 0..2 {
         ctx.state.borrow_mut().plugins.broadcast_event(
             EventKind::WorkingDirectoryChanged,
             1,
@@ -199,7 +201,25 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
     );
     wait_for(
         || {
-            ctx.state.borrow().plugins.listing().iter().any(|(name,state)|name=="blocked"&&matches!(state,PluginState::Faulted{reason} if reason.contains("two seconds")))
+            ctx.state
+                .borrow()
+                .plugins
+                .listing()
+                .iter()
+                .any(|(name, state)| {
+                    if name != "blocked" {
+                        return false;
+                    }
+                    if let PluginState::Stopping { reason, .. } | PluginState::Faulted { reason } =
+                        state
+                    {
+                        assert!(
+                            reason.contains("two seconds"),
+                            "blocked child stopped for a different reason: {state:?}"
+                        );
+                    }
+                    matches!(state,PluginState::Faulted{reason} if reason.contains("two seconds"))
+                })
         },
         Duration::from_secs(4),
     );
@@ -230,6 +250,525 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
     );
     println!(
         "PASS last-window destruction stays nonblocking and retains supervision until reaping"
+    );
+}
+
+#[test]
+#[ignore = "requires an isolated graphical session, built fake-plugin and real keyboard input"]
+fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_controls() {
+    const PHASE: &str = "AMONG_MANAGED_RUNTIME_TEST_PHASE";
+    let phase = std::env::var(PHASE).ok();
+    if phase.is_none() {
+        for phase in ["review-and-edit", "fresh-process"] {
+            let output=std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["app::plugin_tests::managed_access_review_runtime_settings_and_fresh_process_grants_use_real_controls","--exact","--ignored","--test-threads=1","--nocapture"])
+                .env(PHASE,phase).output().unwrap();
+            assert!(
+                output.status.success(),
+                "phase {phase}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+            println!("PASS managed native phase {phase}: actual fresh process exited successfully");
+        }
+        return;
+    }
+    fn widgets(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+        let mut result = vec![widget.clone()];
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            result.extend(widgets(&widget));
+            child = widget.next_sibling();
+        }
+        result
+    }
+    fn focus(window: &impl IsA<gtk::Window>) {
+        let title = format!("^{}$", window.as_ref().title().unwrap());
+        let ids = xdo(&[
+            "search",
+            "--onlyvisible",
+            "--pid",
+            &std::process::id().to_string(),
+            "--name",
+            &title,
+        ]);
+        let id = ids.lines().last().unwrap();
+        xdo(&["windowactivate", "--sync", id]);
+        xdo(&["windowfocus", "--sync", id]);
+        wait_for(|| window.as_ref().is_active(), Duration::from_secs(2));
+    }
+    fn press(button: &gtk::Button) {
+        wait_for(|| button.is_mapped(), Duration::from_secs(2));
+        assert!(button.grab_focus());
+        xdo(&["key", "--clearmodifiers", "space"]);
+        wait_for(
+            || !glib::MainContext::default().pending(),
+            Duration::from_secs(2),
+        );
+    }
+    fn frames(package: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(package.join("transcript.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+    let root = crate::plugin::inventory::root().unwrap();
+    crate::test_isolation::assert_below_check_root(&root);
+    let config = crate::settings::directory()
+        .unwrap()
+        .join("managed-plugins.json");
+    let package = if phase.as_deref() == Some("review-and-edit") {
+        let mut receipt = crate::plugin::inventory::tests::fixture(&root);
+        let package = receipt.package_path(&root);
+        std::fs::copy(fixture("managed-echo").remove(0), package.join("plugin")).unwrap();
+        std::fs::set_permissions(
+            package.join("plugin"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        std::fs::write(package.join("among-fake-mode"), "managed-on-event").unwrap();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(package.join("among-plugin.json")).unwrap())
+                .unwrap();
+        manifest["required_features"] = serde_json::json!(["status", "settings"]);
+        manifest["optional_features"] = serde_json::json!([
+            "context.terminals",
+            "context.cwd",
+            "context.title",
+            "context.process",
+            "events.terminal"
+        ]);
+        let bytes = manifest.to_string();
+        std::fs::write(package.join("among-plugin.json"), &bytes).unwrap();
+        receipt.manifest_sha256 = crate::plugin::inventory::checksum(bytes.as_bytes()).unwrap();
+        std::fs::write(
+            root.join("installed.json"),
+            serde_json::json!({"version":1,"installations":[receipt]}).to_string(),
+        )
+        .unwrap();
+        package
+    } else {
+        crate::plugin::inventory::read(&root).unwrap()[0]
+            .receipt
+            .package_path(&root)
+    };
+    let previous = std::fs::read(&config).ok();
+    let app = application("com.github.among-terminal.managed-runtime-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    // a saved layout may offer restoration in the second real process; the test
+    // explicitly chooses fresh shells rather than treating saved focus as input.
+    wait_for(
+        || ctx.state.borrow().session_ready || ctx.window.visible_dialog().is_some(),
+        Duration::from_secs(5),
+    );
+    if !ctx.state.borrow().session_ready {
+        let dialog = ctx
+            .window
+            .visible_dialog()
+            .unwrap()
+            .downcast::<adw::AlertDialog>()
+            .unwrap();
+        assert!(dialog
+            .heading()
+            .is_some_and(|heading| heading.contains("Restore")));
+        let fresh = widgets(dialog.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .find(|button| button.label().as_deref() == Some("Start new"))
+            .unwrap();
+        wait_for(|| fresh.is_mapped(), Duration::from_secs(2));
+        focus(&ctx.window);
+        press(&fresh);
+        wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    }
+    if phase.as_deref() == Some("fresh-process") {
+        wait_for(
+            || {
+                ctx.state.borrow().plugins.configuration("github:12/sample")
+                    == crate::plugin::host::Configuration::Applied
+                    && has_label(ctx.app_header.upcast_ref(), "runtime edit")
+            },
+            Duration::from_secs(6),
+        );
+        assert_eq!(
+            previous,
+            std::fs::read(&config).ok(),
+            "startup does not rewrite accepted settings/grants"
+        );
+        let hellos: Vec<_> = frames(&package)
+            .into_iter()
+            .filter(|frame| frame["type"] == "managed_hello")
+            .collect();
+        assert!(hellos.len() >= 2);
+        assert_ne!(hellos[0]["session"], hellos.last().unwrap()["session"]);
+        assert_eq!(
+            hellos.last().unwrap()["features"],
+            serde_json::json!(["context.cwd", "context.terminals", "settings", "status"])
+        );
+        println!("PASS fresh process: retained publisher/grants/settings admit the real plugin with a new session; accepted values reach the actual header without inspection writes");
+        ctx.window.destroy();
+        wait_for(
+            || ctx.state.borrow().plugins.is_stopped(),
+            Duration::from_secs(2),
+        );
+        return;
+    }
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
+    assert!(!package.join("executed").exists());
+    open_preferences(&ctx);
+    let preferences = gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .unwrap();
+    preferences.set_title(Some("Primary Preferences"));
+    let row = widgets(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| row.title() == "Sample")
+        .unwrap();
+    let page = row
+        .ancestor(adw::PreferencesPage::static_type())
+        .unwrap()
+        .downcast::<adw::PreferencesPage>()
+        .unwrap();
+    preferences.set_visible_page(&page);
+    let switch = widgets(row.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
+        .unwrap();
+    wait_for(|| switch.is_mapped(), Duration::from_secs(2));
+    focus(&preferences);
+    assert!(switch.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait_for(
+        || preferences.visible_dialog().is_some(),
+        Duration::from_secs(2),
+    );
+    let cancelled = preferences.visible_dialog().unwrap();
+    wait_for(
+        || {
+            widgets(cancelled.upcast_ref()).iter().any(|widget| {
+                widget.is_mapped()
+                    && widget
+                        .downcast_ref::<gtk::Button>()
+                        .is_some_and(|button| button.label().as_deref() == Some("Cancel"))
+            })
+        },
+        Duration::from_secs(2),
+    );
+    wait_for(
+        || {
+            cancelled
+                .root()
+                .and_then(|root| root.focus())
+                .is_some_and(|focus| focus.is_ancestor(&cancelled))
+        },
+        Duration::from_secs(2),
+    );
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(
+        || preferences.visible_dialog().is_none(),
+        Duration::from_secs(2),
+    );
+    assert!(!package.join("executed").exists());
+    assert_eq!(previous, std::fs::read(&config).ok());
+    wait_for(|| !switch.is_active(), Duration::from_secs(2));
+    assert!(switch.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait_for(
+        || preferences.visible_dialog().is_some(),
+        Duration::from_secs(2),
+    );
+    let dialog = preferences
+        .visible_dialog()
+        .unwrap()
+        .downcast::<adw::AlertDialog>()
+        .unwrap();
+    assert!(dialog
+        .heading()
+        .is_some_and(|heading| heading.contains("Review")));
+    assert!(!package.join("executed").exists());
+    assert_eq!(
+        previous,
+        std::fs::read(&config).ok(),
+        "opening access review does not grant, write or execute"
+    );
+    for feature in ["context.terminals", "context.cwd"] {
+        let control = widgets(dialog.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::CheckButton>().ok())
+            .find(|control| control.label().as_deref() == Some(feature))
+            .unwrap();
+        wait_for(|| control.is_mapped(), Duration::from_secs(2));
+        assert!(!control.is_active());
+        for _ in 0..16 {
+            if control.has_focus() {
+                break;
+            }
+            xdo(&["key", "--clearmodifiers", "Tab"]);
+            wait_for(
+                || !glib::MainContext::default().pending(),
+                Duration::from_secs(2),
+            );
+        }
+        assert!(
+            control.has_focus(),
+            "optional grant must be keyboard reachable: {feature}"
+        );
+        xdo(&["key", "--clearmodifiers", "space"]);
+        wait_for(|| control.is_active(), Duration::from_secs(2));
+    }
+    let accept = widgets(dialog.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Accept and enable"))
+        .unwrap();
+    press(&accept);
+    wait_for(
+        || {
+            ctx.state.borrow().plugins.configuration("github:12/sample")
+                == crate::plugin::host::Configuration::Applied
+                && has_label(ctx.app_header.upcast_ref(), "default")
+        },
+        Duration::from_secs(6),
+    );
+    assert!(package.join("executed").exists());
+    let accepted = std::fs::read(&config).unwrap();
+    // replay a retained native review's late callback; the first Cancel above
+    // and this generation's current Accept were driven by real keyboard input.
+    cancelled.emit_by_name::<()>("response", &[&"enable"]);
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        accepted,
+        "a stale review cannot persist grants that the running generation rejected"
+    );
+    let explanation = preferences
+        .visible_dialog()
+        .unwrap()
+        .downcast::<adw::AlertDialog>()
+        .unwrap();
+    assert!(explanation
+        .body()
+        .contains("stop the current plugin generation"));
+    let close = widgets(explanation.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Close"))
+        .unwrap();
+    press(&close);
+    println!("PASS a retained native access review cannot persist reduced grants through a late callback after real keyboard acceptance starts the current generation; rejection is visible and retained bytes stay unchanged");
+    let terminal = ctx
+        .state
+        .borrow()
+        .pane(PaneId(1))
+        .unwrap()
+        .terminal()
+        .clone();
+    let settings = widgets(row.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Settings…"))
+        .unwrap();
+    focus(&preferences);
+    press(&settings);
+    wait_for(
+        || {
+            gtk::Window::list_toplevels().iter().any(|window| {
+                window
+                    .downcast_ref::<adw::PreferencesWindow>()
+                    .is_some_and(|window| window.title().as_deref() == Some("Plugin settings"))
+            })
+        },
+        Duration::from_secs(2),
+    );
+    let editor = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .find(|window| window.title().as_deref() == Some("Plugin settings"))
+        .unwrap();
+    wait_for(|| editor.is_mapped(), Duration::from_secs(2));
+    focus(&editor);
+    let field = widgets(editor.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .unwrap();
+    assert!(field.grab_focus());
+    xdo(&["key", "--clearmodifiers", "ctrl+a"]);
+    xdo(&["type", "--clearmodifiers", "--delay", "0", "runtime edit"]);
+    wait_for(|| field.text() == "runtime edit", Duration::from_secs(2));
+    let save = widgets(editor.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Save"))
+        .unwrap();
+    press(&save);
+    wait_for(
+        || {
+            ctx.state.borrow().plugins.configuration("github:12/sample")
+                == crate::plugin::host::Configuration::Applied
+                && has_label(ctx.app_header.upcast_ref(), "runtime edit")
+        },
+        Duration::from_secs(6),
+    );
+    wait_for(
+        || has_label(editor.upcast_ref(), "applied by the current process"),
+        Duration::from_secs(2),
+    );
+    assert_eq!(
+        ctx.state.borrow().pane(PaneId(1)).unwrap().terminal(),
+        &terminal
+    );
+    editor.destroy();
+    preferences.destroy();
+    focus(&ctx.window);
+    apply_focus(&ctx);
+    wait_for(|| terminal.has_focus(), Duration::from_secs(2));
+    xdo(&[
+        "type",
+        "--clearmodifiers",
+        "--delay",
+        "0",
+        "printf '\\033]2;Managed target\\007' ; printf ready > \"$HOME/managed-input-proof\"",
+    ]);
+    xdo(&["key", "--clearmodifiers", "Return"]);
+    let proof =
+        std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join("managed-input-proof");
+    wait_for(|| proof.exists(), Duration::from_secs(2));
+    wait_for(
+        || {
+            frames(&package).iter().any(|frame| {
+                frame["type"] == "status"
+                    && frame["context"]["terminals"]
+                        .as_array()
+                        .is_some_and(|terminals| !terminals.is_empty())
+            })
+        },
+        Duration::from_secs(3),
+    );
+    for frame in frames(&package)
+        .into_iter()
+        .filter(|frame| frame["type"] == "status")
+    {
+        for terminal in frame["context"]["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            assert!(terminal.get("title").is_none());
+            assert!(terminal.get("running").is_none());
+            assert!(terminal.get("cwd").is_some());
+        }
+    }
+    let original = ctx.state.borrow().workspaces.active().reference;
+    xdo(&["key", "--clearmodifiers", "ctrl+shift+n"]);
+    wait_for(
+        || ctx.state.borrow().workspaces.active().panes().len() == 2,
+        Duration::from_secs(2),
+    );
+    assert!(terminal.grab_focus());
+    wait_for(
+        || ctx.state.borrow().workspaces.active().focused == PaneId(1),
+        Duration::from_secs(2),
+    );
+    xdo(&["key", "--clearmodifiers", "ctrl+shift+w"]);
+    wait_for(
+        || ctx.state.borrow().pane(PaneId(1)).is_none(),
+        Duration::from_secs(2),
+    );
+    assert_eq!(ctx.state.borrow().workspaces.active().reference, original);
+    xdo(&["key", "--clearmodifiers", "ctrl+shift+t"]);
+    wait_for(
+        || ctx.state.borrow().workspaces.len() == 2,
+        Duration::from_secs(2),
+    );
+    let survivor = ctx.state.borrow().workspaces.active().reference;
+    let surviving_terminal = ctx
+        .state
+        .borrow()
+        .pane(ctx.state.borrow().workspaces.active().focused)
+        .unwrap()
+        .terminal()
+        .clone();
+    std::fs::write(package.join("target-labels"), b"yes").unwrap();
+    let original_label = format!("workspace-{original}");
+    let survivor_label = format!("workspace-{survivor}");
+    // a summary can have just refreshed before the fixture changes. waiting
+    // exactly one interval races the next production tick and child I/O.
+    let summary_wait = Duration::from_millis(SUMMARY_REFRESH_MS + 2_000);
+    wait_for(
+        || {
+            has_label(ctx.workspace_list.upcast_ref(), &original_label)
+                && has_label(ctx.workspace_list.upcast_ref(), &survivor_label)
+        },
+        summary_wait,
+    );
+    std::fs::write(package.join("hold-summary"), original.to_string()).unwrap();
+    wait_for(|| package.join("status-held").exists(), summary_wait);
+    xdo(&["key", "--clearmodifiers", "alt+1"]);
+    wait_for(
+        || ctx.state.borrow().workspaces.active().reference == original,
+        Duration::from_secs(2),
+    );
+    xdo(&["key", "--clearmodifiers", "ctrl+shift+w"]);
+    wait_for(
+        || ctx.state.borrow().workspaces.len() == 1,
+        Duration::from_secs(2),
+    );
+    assert_eq!(ctx.state.borrow().workspaces.active().reference, survivor);
+    assert!(!has_label(ctx.workspace_list.upcast_ref(), &original_label));
+    assert!(
+        has_label(ctx.workspace_list.upcast_ref(), &survivor_label),
+        "cached content follows the surviving target before any new response"
+    );
+    let stale_seen = Rc::new(std::cell::Cell::new(false));
+    let seen = stale_seen.clone();
+    let sidebar = ctx.workspace_list.clone();
+    let observation = glib::timeout_add_local(Duration::from_millis(5), move || {
+        if has_label(sidebar.upcast_ref(), "retired-target-marker") {
+            seen.set(true);
+        }
+        glib::ControlFlow::Continue
+    });
+    let before_release = frames(&package).len();
+    let survivor_reference = survivor.to_string();
+    std::fs::write(package.join("allow-status"), b"yes").unwrap();
+    wait_for(
+        || package.join("summary-released").exists(),
+        Duration::from_secs(2),
+    );
+    wait_for(
+        || {
+            frames(&package).iter().skip(before_release).any(|frame| {
+                frame["type"] == "status"
+                    && frame["scope"]["slot"] == "workspace_summary"
+                    && frame["scope"]["target"]["reference"].as_str()
+                        == Some(survivor_reference.as_str())
+            }) && has_label(ctx.workspace_list.upcast_ref(), &survivor_label)
+        },
+        summary_wait,
+    );
+    observation.remove();
+    std::fs::remove_file(package.join("hold-summary")).unwrap();
+    assert!(
+        !stale_seen.get(),
+        "old summary must never appear on the replacement row"
+    );
+    assert_eq!(
+        ctx.state
+            .borrow()
+            .pane(ctx.state.borrow().workspaces.active().focused)
+            .unwrap()
+            .terminal(),
+        &surviving_terminal
+    );
+    println!("PASS real keyboard split/close preserves the birth-workspace reference; closing it and shifting its sibling to index zero discards the held old-target reply without replacing the surviving terminal");
+    println!("PASS actual native access review and optional grant controls precede execution; live Save/applied acknowledgement changes the real header, preserves the original terminal and allows real input without ungranted title/process disclosure");
+    ctx.window.destroy();
+    wait_for(
+        || ctx.state.borrow().plugins.is_stopped(),
+        Duration::from_secs(2),
     );
 }
 
@@ -393,10 +932,7 @@ fn managed_metadata_and_disabled_settings_are_inert_and_persist_real_edits() {
     );
     assert_eq!(saved["plugins"]["github:12/sample"]["future"], "keep");
     assert_eq!(saved["plugins"]["github:12/sample"]["enabled"], false);
-    assert!(has_label(
-        editor.upcast_ref(),
-        "Saved locally; not applied to a running process"
-    ));
+    assert!(has_label(editor.upcast_ref(), "Saved locally"));
     editor.destroy();
     focus(&preferences);
     press(&settings);
