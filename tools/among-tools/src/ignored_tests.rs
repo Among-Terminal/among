@@ -60,6 +60,10 @@ pub fn names(listing: &str) -> Result<Vec<String>> {
                 eprintln!("APT collection rewrites APT configuration as root and runs only in its dedicated offline audit container; this skip is not an acceptance pass");
                 continue;
             }
+            if name == "plugin::install::source::tests::installation_authority::cooperating_reinstall_worker" {
+                eprintln!("{name} is excluded from standalone graphics; this is not an acceptance pass; its owning parent regression supplies coverage");
+                continue;
+            }
             if !names.insert(name.to_string()) {
                 return Err("duplicate Rust test name".into());
             }

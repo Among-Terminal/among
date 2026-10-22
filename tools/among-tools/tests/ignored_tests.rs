@@ -38,6 +38,124 @@ fn phase_based_preferences_are_not_misrun_and_invalid_names_fail() -> among_tool
 }
 
 #[test]
+fn only_the_exact_parent_owned_worker_is_excluded() -> among_tools::Result<()> {
+    let worker =
+        "plugin::install::source::tests::installation_authority::cooperating_reinstall_worker";
+    let suffix = format!("{worker}_suffix");
+    let prefix = format!("other::{worker}");
+    let sibling =
+        "plugin::install::source::tests::installation_authority::ordinary_graphical_regression";
+    assert_eq!(
+        ignored_tests::names(&format!(
+            "z_last: test\n{suffix}: test\n{worker}: test\n{sibling}: test\n{prefix}: test\na_first: test\n6 tests, 0 benchmarks"
+        ))?,
+        ["a_first", &prefix, &suffix, sibling, "z_last"]
+    );
+    assert!(ignored_tests::names(": test").is_err());
+    assert!(ignored_tests::names(&format!("{suffix}: test\n{suffix}: test")).is_err());
+    assert!(ignored_tests::names(&format!("{worker}: test\n-bad: test")).is_err());
+    Ok(())
+}
+
+struct SelectionFixture(std::path::PathBuf);
+
+impl Drop for SelectionFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl SelectionFixture {
+    fn new(failing: bool) -> among_tools::Result<Self> {
+        let fixture = Self(among_tools::storage::private_directory(
+            &std::env::temp_dir(),
+            "among-ignored-selection-test",
+        )?);
+        let executable = fixture.0.join("tests");
+        let mut compile = std::process::Command::new("rustc");
+        compile
+            .args(["--edition=2021", "--test"])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/ignored-selection.rs"),
+            )
+            .arg("-o")
+            .arg(&executable);
+        if failing {
+            compile.args(["--cfg", "ordinary_failure"]);
+        }
+        let output = compile.output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::write(
+            fixture.0.join("cargo.jsonl"),
+            serde_json::to_vec(&serde_json::json!({
+                "reason": "compiler-artifact",
+                "profile": {"test": true},
+                "executable": executable,
+            }))?,
+        )?;
+        Ok(fixture)
+    }
+
+    fn run(&self) -> among_tools::Result<std::process::Output> {
+        Ok(
+            std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
+                .env("AMONG_CHECK_ROOT", self.0.join("checks"))
+                .arg("run-ignored-tests")
+                .arg(self.0.join("cargo.jsonl"))
+                .output()?,
+        )
+    }
+}
+
+#[test]
+#[ignore = "requires the isolated display test container; exercised through the Rust ignored-test runner"]
+fn actual_cli_excludes_only_the_worker_and_counts_real_standalone_tests() -> among_tools::Result<()>
+{
+    let fixture = SelectionFixture::new(false)?;
+    let output = fixture.run()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Executed 2 ignored tests, one owned display per test"),
+        "{stdout}"
+    );
+    assert!(stderr.contains("is excluded from standalone graphics; this is not an acceptance pass; its owning parent regression supplies coverage"), "{stderr}");
+    assert!(fixture.0.join("ordinary-ran").is_file());
+    assert!(fixture.0.join("near-name-ran").is_file());
+    assert!(!fixture.0.join("worker-ran").exists());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the isolated display test container; exercised through the Rust ignored-test runner"]
+fn actual_cli_still_fails_and_stops_on_an_ordinary_test_failure() -> among_tools::Result<()> {
+    let fixture = SelectionFixture::new(true)?;
+    let output = fixture.run()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(!output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("ordinary probe failed deliberately"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains("ignored graphical test failed: ordinary_standalone_probe"),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("Executed "), "{stdout}");
+    assert!(fixture.0.join("ordinary-ran").is_file());
+    assert!(!fixture.0.join("near-name-ran").exists());
+    assert!(!fixture.0.join("worker-ran").exists());
+    Ok(())
+}
+
+#[test]
 fn actual_cli_refuses_a_failed_test_listing() -> among_tools::Result<()> {
     let path =
         std::env::temp_dir().join(format!("among-cargo-listing-{}.jsonl", std::process::id()));
