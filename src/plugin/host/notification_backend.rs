@@ -97,7 +97,10 @@ impl PluginHost {
         let io = plugin.io.as_ref()?;
         if !io.handshake_done
             || io.generation != generation
-            || io.notification_live.as_ref().is_none_or(|live| !live.get())
+            || io
+                .notification_live
+                .as_ref()
+                .is_none_or(|live| !live.is_current())
         {
             return None;
         }

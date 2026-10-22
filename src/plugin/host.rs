@@ -88,7 +88,7 @@ struct PluginIo {
     /// Set once the plugin has announced a compatible version.
     handshake_done: bool,
     generation: String,
-    notification_live: Option<Rc<Cell<bool>>>,
+    notification_live: Option<among::plugin_notifications::OriginLease>,
 }
 
 /// One plugin under management.
@@ -146,7 +146,7 @@ pub struct PluginResult {
 fn stop_io(plugin: &mut PluginEntry) {
     if let Some(io) = plugin.io.as_ref() {
         if let Some(live) = &io.notification_live {
-            live.set(false);
+            live.revoke();
         }
         io.process.stop();
     }
