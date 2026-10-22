@@ -252,7 +252,7 @@ pub(super) fn supervise() -> u8 {
     let cleanup_started = Instant::now();
     let mut reported = false;
     loop {
-        if cleanup.poll() {
+        if cleanup.poll(&mut ProcfsCleanup) {
             if !reported {
                 let outcome = match reason {
                     Some(reason) => Outcome::Uncertain(reason),
@@ -393,6 +393,88 @@ struct Cleanup {
     status: Option<ExitStatus>,
 }
 
+const MAX_CHILD_BYTES: usize = 64 * 1024;
+
+fn signal_children(mut reader: impl Read, mut signal: impl FnMut(i32)) {
+    let mut remaining = MAX_CHILD_BYTES;
+    let mut buffer = [0; 4096];
+    let mut token = Some(0_i32);
+    // bound syscall attempts too: a short-read/EINTR stream cannot spin forever.
+    for _ in 0..MAX_CHILD_BYTES {
+        if remaining == 0 {
+            break;
+        }
+        let maximum = remaining.min(buffer.len());
+        match reader.read(&mut buffer[..maximum]) {
+            Ok(0) => {
+                if let Some(pid) = token.filter(|pid| *pid > 0) {
+                    signal(pid);
+                }
+                return;
+            }
+            Ok(count) => {
+                remaining -= count;
+                for byte in &buffer[..count] {
+                    if byte.is_ascii_whitespace() {
+                        if let Some(pid) = token.filter(|pid| *pid > 0) {
+                            signal(pid);
+                        }
+                        token = Some(0);
+                    } else {
+                        token = token.and_then(|pid| {
+                            if byte.is_ascii_digit() {
+                                pid.checked_mul(10)?.checked_add(i32::from(byte - b'0'))
+                            } else {
+                                None
+                            }
+                        });
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        }
+    }
+    // only whitespace or observed EOF frames a PID. never flush a cap/error
+    // suffix, or carry it across waitpid: reaping may change the next procfs list.
+    // the next poll starts fresh after this pass's bounded reap shrinks the prefix.
+}
+
+// keep the production poll body testable without sending synthetic PID signals
+// or reaping any test-runner children. production always uses this helper's procfs.
+trait CleanupIo {
+    type Children: Read;
+    fn children(&mut self) -> io::Result<Self::Children>;
+    fn kill(&mut self, pid: i32);
+    fn wait(&mut self) -> io::Result<(i32, i32)>;
+}
+
+struct ProcfsCleanup;
+
+impl CleanupIo for ProcfsCleanup {
+    type Children = File;
+
+    fn children(&mut self) -> io::Result<File> {
+        File::open(format!("/proc/self/task/{}/children", std::process::id()))
+    }
+
+    fn kill(&mut self, pid: i32) {
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+
+    fn wait(&mut self) -> io::Result<(i32, i32)> {
+        let mut status = 0;
+        let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+        if pid < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok((pid, status))
+        }
+    }
+}
+
 impl Cleanup {
     fn new(leader: u32) -> Self {
         unsafe {
@@ -406,48 +488,33 @@ impl Cleanup {
         }
     }
 
-    fn poll(&mut self) -> bool {
+    fn poll(&mut self, system: &mut impl CleanupIo) -> bool {
         if !self.killed {
             if self.started.elapsed() < CLEANUP_GRACE {
                 return false;
             }
             // no more group signals after reaping the leader: its ID could be reused.
-            unsafe {
-                libc::kill(-(self.leader as i32), libc::SIGKILL);
-            }
+            system.kill(-(self.leader as i32));
             self.killed = true;
         }
         // subreaping is scoped to this fresh helper. only it reaps these PIDs,
         // so direct-child identities remain reserved until our waitpid below.
-        let path = format!("/proc/self/task/{}/children", std::process::id());
-        if let Ok(file) = File::open(path) {
-            let mut bytes = String::new();
-            if file.take(64 * 1024).read_to_string(&mut bytes).is_ok() {
-                for pid in bytes
-                    .split_whitespace()
-                    .filter_map(|pid| pid.parse::<i32>().ok())
-                {
-                    if pid > 0 {
-                        unsafe {
-                            libc::kill(pid, libc::SIGKILL);
-                        }
-                    }
-                }
-            }
+        if let Ok(file) = system.children() {
+            signal_children(file, |pid| system.kill(pid));
         }
         for _ in 0..256 {
-            let mut status = 0;
-            let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-            if pid == self.leader as i32 {
-                self.status = Some(ExitStatus::from_raw(status));
-            }
-            if pid == 0 {
-                return false;
-            }
-            if pid < 0 {
-                return io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD);
+            match system.wait() {
+                Ok((0, _)) => return false,
+                Ok((pid, status)) if pid == self.leader as i32 => {
+                    self.status = Some(ExitStatus::from_raw(status));
+                }
+                Ok(_) => {}
+                Err(error) => return error.raw_os_error() == Some(libc::ECHILD),
             }
         }
         false
     }
 }
+
+#[cfg(test)]
+mod tests;
