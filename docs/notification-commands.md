@@ -5,10 +5,10 @@ Its core API is GTK-free. [General](preferences.md#general-notifications) accept
 and stores explicit configuration; the normal VTE adapter owns registration,
 shared-tick polling and retirement. No command is configured or enabled by default.
 
-**Security acceptance is blocked:** independent review found that the inherited
-procfs child parser can treat a truncated PID suffix as a complete PID. Its
-dedicated repair/re-review is pending; ordinary small-tree tests are not approval
-of that path. The common UI work does not repair or bypass the parser.
+The inherited procfs PID-truncation finding is closed by the framed-selector
+repair and its independent re-review. That disposition is specific to PID
+selection; it does not establish packaged self-exec, every exceptional cleanup
+path, combined UI acceptance or release readiness.
 
 ## Configuration and admission
 
@@ -153,7 +153,7 @@ close-on-exec support. Native execution is tested. AppImage loader paths under
 the deliberately cleared environment and Snap confinement permission for these
 operations still need concrete packaging validation; no packaging changes or
 packaged-command delivery claims are made here. Managed provider delivery and
-the dedicated PID safety repair/re-review remain separate acceptance boundaries.
+broader lifecycle/platform acceptance remain separate boundaries.
 
 ## Evidence boundary
 
@@ -184,4 +184,5 @@ Host access/configuration in that older test is test-only. The separate ignored
 `app::notification_ui_tests::general_controls_drive_production_commands_and_application_retirement`
 drives actual General keyboard controls, normal VTE registration/polling, lazy cwd
 preparation and a real no-window GApplication run held through small-tree cleanup.
-Neither test establishes the pending PID-parser security boundary or packaged delivery.
+The PID selector has separate repair/re-review evidence; neither native test
+establishes packaged delivery or every exceptional cleanup path.

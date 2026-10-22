@@ -365,14 +365,6 @@ impl Pane {
         container
             .header
             .update_property(&[gtk::accessible::Property::Label(&label)]);
-        self.terminal
-            .update_property(&[gtk::accessible::Property::Description(
-                if attention.unread {
-                    "Unread terminal bell"
-                } else {
-                    ""
-                },
-            )]);
     }
 
     fn wire(&self, signals: PaneSignals) {
