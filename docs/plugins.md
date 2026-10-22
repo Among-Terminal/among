@@ -141,9 +141,29 @@ application from starting:
 
 - A missing file, unparsable JSON, or a file without a `plugins` key means no
   plugins are loaded.
-- A plugin named in the configuration that is not installed is reported and
-  skipped; the rest still load.
+- A configured plugin whose file is absent remains an inspectable missing entry,
+  with its desired switch retained. It can still be disabled.
 - An entry without a `name` is skipped.
+- Legacy names must be single filenames, not paths or managed identity strings.
+  Duplicate configured names are registered once; stored unrelated data is not
+  rewritten during discovery. Installed but unconfigured legacy files appear
+  disabled, without adding defaults to configuration merely by inspection.
+
+### Native inventory
+
+Preferences → Plugins joins configured legacy entries, committed managed receipts
+and runtime observations by identity. Cards show description (or its absence),
+origin/version, declared compatibility and last observed wire API separately from
+desired enablement and Starting/Running/Stopping/fault state. A never-run plugin
+does not receive an observed-compatible badge. Equal display names retain separate
+origin-scoped settings and switches; invalid selected packages remain visible.
+
+Search matches name, description, identity and origin. Clearing search restores
+the same rows rather than redirecting an action to a sorted position. Background
+state changes update existing controls; they do not replace an open editor or
+discard unfinished settings text. Details/settings callbacks reject a removed or
+replaced package rather than silently retargeting an old action. This inventory
+does not itself implement repository browsing, download or uninstall.
 
 ### Updating an installed example
 
@@ -580,7 +600,7 @@ cargo build --release --locked
 install -m 755 target/release/my-status "$plugin_dir/my-status"
 ```
 
-Add `{"name": "my-status", "enabled": false}` to the `plugins` array in
+To retain an explicit choice, add `{"name": "my-status", "enabled": false}` to the `plugins` array in
 `${XDG_CONFIG_HOME:-$HOME/.config}/among/plugins.json`, preserving other entries
 and fields. If the file does not exist, create it with:
 
@@ -589,10 +609,11 @@ and fields. If the file does not exist, create it with:
 ```
 
 The configuration name is the installed filename, not a path or display title.
-The host reads registered names at startup and lists only those whose files
-exist in the plugin directory. Merely copying a file there does **not** add it
-to Settings. Restart Among Terminal when it is safe to close its terminal
-sessions, then open Settings → Plugins and enable `my-status`; `Hello` will
+At startup the host retains configured names even when their files are missing,
+and discovers unconfigured executable files in the legacy plugin directory as
+disabled entries. Copying a new file does not trigger live legacy discovery.
+Restart Among Terminal when it is safe to close its terminal sessions, then open
+Settings → Plugins and enable `my-status`; `Hello` will
 appear in the application header. A protocol or launch failure is shown as
 Faulted rather than Running. For an already registered plugin update, disable
 it, replace its file, then re-enable it; no host restart is needed.

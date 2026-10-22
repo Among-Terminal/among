@@ -18,6 +18,8 @@ use crate::slots::{Contribution, Fragment, Refresh, SlotStore, Style, Summary};
 
 mod managed_runtime;
 pub use managed_runtime::Configuration;
+mod overview;
+pub use overview::Overview;
 
 /// How long a plugin has to answer before it is treated as faulted.
 ///
@@ -105,6 +107,7 @@ struct PluginEntry {
     managed: Option<inventory::Entry>,
     settings: Option<serde_json::Value>,
     runtime: Option<managed_runtime::Runtime>,
+    observed: Option<super::manifest::Api>,
 }
 
 use std::time::Instant;
@@ -222,6 +225,7 @@ impl PluginHost {
             managed: None,
             settings: None,
             runtime: None,
+            observed: None,
         });
         self.start_by_name(name);
     }
@@ -769,6 +773,7 @@ impl PluginHost {
                 self.last_rejections.push((name, rejection));
             }
             Ok(Response::Hello { major, minor }) => {
+                self.plugins[index].observed = Some(super::manifest::Api { major, minor });
                 if protocol::version_is_compatible(major, minor) {
                     if let Some(io) = self.plugins[index]
                         .io
