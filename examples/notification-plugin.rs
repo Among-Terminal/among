@@ -25,6 +25,16 @@ fn substitute(value: &mut Value, hello: &Value) {
     }
 }
 
+fn write_owned(path: &str, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(bytes.as_ref())
+}
+
 fn main() -> std::io::Result<()> {
     let mut input = std::io::stdin();
     let flags = unsafe { libc::fcntl(input.as_raw_fd(), libc::F_GETFL) };
@@ -50,7 +60,7 @@ fn main() -> std::io::Result<()> {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(1);
     let mut held = Vec::new();
-    std::fs::write("executed", std::process::id().to_string())?;
+    write_owned("executed", std::process::id().to_string())?;
     loop {
         let mut bytes = [0; 4096];
         match input.read(&mut bytes) {
@@ -135,7 +145,7 @@ fn main() -> std::io::Result<()> {
                 send(&mut output, &mut sent, &message)?;
                 std::fs::remove_file(path)?;
                 command += 1;
-                std::fs::write("next-command", command.to_string())?;
+                write_owned("next-command", command.to_string())?;
             }
             if std::path::Path::new("release-deliveries").exists() {
                 for result in held.drain(..) {

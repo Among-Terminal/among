@@ -132,6 +132,7 @@ pub struct PluginHost {
     starts_allowed: Rc<Cell<bool>>,
     world: managed::World,
     notifications: Option<Rc<std::cell::RefCell<among::plugin_notifications::Backend>>>,
+    pending_notification_registrations: BTreeSet<String>,
 }
 
 /// One plugin's answer, ready to become slot content.
@@ -198,6 +199,7 @@ impl PluginHost {
                 ..Default::default()
             },
             notifications: None,
+            pending_notification_registrations: Default::default(),
         };
         host.notifications = notifications.filter(|backend| {
             backend
@@ -358,6 +360,7 @@ impl PluginHost {
             self.invalidated_sources.insert(key.clone());
         }
         self.plugins[index].managed = Some(entry);
+        self.declare_notification_channels(index);
         self.plugins[index].observed = None;
         self.plugins[index].restart_at = None;
         self.plugins[index].restart_attempts = 0;
@@ -416,6 +419,7 @@ impl PluginHost {
             if let Some(index) = self.find(&key) {
                 self.plugins[index].removing = true;
                 self.plugins[index].removed = true;
+                self.declare_notification_channels(index);
             }
         }
         self.plugins
@@ -557,6 +561,10 @@ impl PluginHost {
             return;
         }
         if self.plugins[index].managed.is_some() {
+            if self.pending_notification_registrations.contains(&name) {
+                self.plugins[index].state = PluginState::Waiting;
+                return;
+            }
             if self.plugins[index]
                 .managed
                 .as_ref()
@@ -708,6 +716,10 @@ impl PluginHost {
     fn stop_as(&mut self, index: usize, final_state: PluginState, reason: &str) {
         self.revoke_notifications(index);
         stop_io(&mut self.plugins[index]);
+        if self.plugins[index].managed.is_some() {
+            self.invalidated_sources
+                .insert(self.plugins[index].spec.name.clone());
+        }
         let name = &self.plugins[index].spec.name;
         self.results.retain(|result| &result.plugin != name);
         self.notices.retain(|(source, _, _)| source != name);
