@@ -82,6 +82,7 @@ mod tests {
             std::env::temp_dir().join(format!("among-origin-{}", glib::uuid_string_random()));
         let mut receipt = inventory::tests::fixture(&root);
         receipt.source = Some(SourceReceipt {
+            release_binding: None,
             publisher_id: 34,
             catalogue_revision: "a".repeat(40),
             catalogue_sha256: "b".repeat(64),

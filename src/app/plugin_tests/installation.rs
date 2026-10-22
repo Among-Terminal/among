@@ -149,6 +149,9 @@ fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
         .find(|window| window.title().as_deref() == Some("Plugin details") && window.is_visible())
         .unwrap();
     focus(&details);
+    assert!(has_label(details.upcast_ref(), "Release tag"));
+    assert!(has_label(details.upcast_ref(), "v1.0"));
+    assert!(has_label(details.upcast_ref(), "Resolved release commit"));
     press(&button(&details, "Uninstall…"));
     wait_for(
         || details.visible_dialog().is_some(),
@@ -549,7 +552,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     screenshot_dialog(&view.visible_dialog().unwrap(), "update-consent");
     press(&button(&view.visible_dialog().unwrap(), "Apply update"));
-    wait_for(|| server.requests().len() == 6, Duration::from_secs(5));
+    wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
     let old_path = first.package_path(&root);
     std::fs::remove_file(old_path.join("resource-observed")).unwrap();
     wait_for(
@@ -622,7 +625,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .for_update(&entry, stored.as_ref())
         .unwrap();
     let job = server.install(selected, root.clone()).unwrap();
-    wait_for(|| server.requests().len() == 6, Duration::from_secs(5));
+    wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
     ctx.state.borrow_mut().plugins.disable(KEY);
     ctx.state
         .borrow_mut()
@@ -816,7 +819,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
             root.clone(),
         )
         .unwrap();
-    wait_for(|| late_server.requests().len() == 6, Duration::from_secs(5));
+    wait_for(|| late_server.requests().len() == 8, Duration::from_secs(5));
     let details = open_details();
     press(&button(&details, "Uninstall…"));
     wait_for(
@@ -1408,7 +1411,7 @@ fn native_install(close_after_commit: bool) {
     assert_eq!(server.requests().len(), 3);
     press(&installs[0]);
     if close_after_commit {
-        wait_for(|| server.requests().len() == 6, Duration::from_secs(5));
+        wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
         release.store(true, std::sync::atomic::Ordering::Release);
         // hold the GUI loop while the worker commits, then destroy the view
         // before its polling callback has any chance to consume the outcome.
@@ -1456,7 +1459,7 @@ fn native_install(close_after_commit: bool) {
         retained
     );
     assert_eq!(crate::plugin::inventory::read(&root).unwrap().len(), 1);
-    assert_eq!(server.requests().len(), 6);
+    assert_eq!(server.requests().len(), 11);
     assert!(!server
         .requests()
         .iter()
