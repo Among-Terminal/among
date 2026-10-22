@@ -66,6 +66,7 @@ pub(super) fn active_count() -> usize {
 
 pub(super) struct Ticket {
     pub job: Job,
+    pub delivery: Option<crate::plugin_notifications::DeliveryAuthorization>,
     cancel: Arc<AtomicBool>,
     result: Receiver<Completion>,
 }
@@ -82,6 +83,7 @@ impl Ticket {
 struct Work {
     job: Job,
     authorization: Authorization,
+    delivery: Option<crate::plugin_notifications::DeliveryAuthorization>,
     cancel: Arc<AtomicBool>,
     result: SyncSender<Completion>,
     reservation: Reservation,
@@ -91,9 +93,25 @@ struct Work {
     admitted: Instant,
 }
 
+impl Work {
+    fn authorized(&self) -> bool {
+        self.authorization.is_current()
+            && self.delivery.as_ref().is_none_or(|delivery| {
+                delivery.job() == self.job
+                    && self.job.event().received_at().elapsed()
+                        < crate::plugin_notifications::EVENT_LIFETIME
+                    && delivery
+                        .origin_lease()
+                        .as_ref()
+                        .is_none_or(|lease| lease.is_current())
+            })
+    }
+}
+
 pub(super) fn submit(
     job: Job,
     authorization: Authorization,
+    delivery: Option<crate::plugin_notifications::DeliveryAuthorization>,
     config: Configuration,
     helper: PathBuf,
     cwd: OwnedDirectory,
@@ -101,7 +119,8 @@ pub(super) fn submit(
 ) -> Result<Ticket, Outcome> {
     let frame = protocol::encode(&protocol::Request {
         config,
-        payload: Payload::from_event(job.event()),
+        payload: Payload::from_event(job.event(), delivery.as_ref())
+            .map_err(|_| Outcome::NotStarted(Reason::Protocol))?,
     })
     .map_err(|_| Outcome::NotStarted(Reason::Protocol))?;
     let service = SERVICE
@@ -121,6 +140,7 @@ pub(super) fn submit(
         .try_send(Work {
             job,
             authorization,
+            delivery: delivery.clone(),
             cancel: cancel.clone(),
             result,
             reservation,
@@ -132,6 +152,7 @@ pub(super) fn submit(
         .map_err(|_| Outcome::NotStarted(Reason::ServiceUnavailable))?;
     Ok(Ticket {
         job,
+        delivery,
         cancel,
         result: receive,
     })
@@ -183,7 +204,7 @@ struct Attempt {
 
 impl Attempt {
     fn start(work: Work) -> Option<Self> {
-        if !work.authorization.is_current() || work.cancel.load(Ordering::Acquire) {
+        if !work.authorized() || work.cancel.load(Ordering::Acquire) {
             send(&work, Outcome::NotStarted(Reason::Revoked), 0, true);
             return None;
         }
@@ -221,6 +242,10 @@ impl Attempt {
                 }
                 exact.execute()
             });
+        }
+        if !work.authorized() || work.cancel.load(Ordering::Acquire) {
+            send(&work, Outcome::NotStarted(Reason::Revoked), 0, true);
+            return None;
         }
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -262,7 +287,7 @@ impl Attempt {
         if self.work.admitted.elapsed() >= DEADLINE {
             parent_reason.get_or_insert(Reason::Deadline);
         }
-        if !self.work.authorization.is_current() {
+        if !self.work.authorized() {
             parent_reason.get_or_insert(Reason::Revoked);
         }
         if self.work.cancel.load(Ordering::Acquire) {
@@ -289,7 +314,7 @@ impl Attempt {
         {
             // the permission check occurs after the real helper's ready handshake,
             // not merely at dequeue, and is repeated during the entire attempt.
-            if !self.work.authorization.is_current() || self.work.cancel.load(Ordering::Acquire) {
+            if !self.work.authorized() || self.work.cancel.load(Ordering::Acquire) {
                 self.reason = Some(Reason::Revoked);
             } else if let Some(stdin) = &mut self.stdin {
                 match stdin.write(b"G") {

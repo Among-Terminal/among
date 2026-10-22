@@ -33,7 +33,7 @@ impl PluginHost {
             }
         }
     }
-    pub(super) fn supported_features(&self) -> Vec<&'static str> {
+    pub(crate) fn supported_features(&self) -> Vec<&'static str> {
         let mut supported = managed::FEATURES.to_vec();
         if self.notifications.as_ref().is_some_and(|context| {
             context

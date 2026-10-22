@@ -262,17 +262,19 @@ Target-bearing delivery cooldown/unread/focus semantics remain source-based.
 3. General must consume typed inventory and call `set_policy` after accepted edits,
    with durable identity/channel-scoped storage and unknown-data preservation.
 4. Render contribution snapshots only in the existing plugin areas and activate
-    opaque handles. The current app renderer adds plain text, inspected icons,
+   opaque handles. The current app renderer adds plain text, inspected icons,
    named styles and native action buttons inside those areas; it never replaces
    the title, Restore control or workspace identity. Focused widgets are retained
    across unchanged snapshots/legacy slot refresh; bounded scrolling contains wide
    content. Native contribution/action acceptance remains evidence-dependent.
 5. Command/audio/app adapters must explicitly map `Kind::ManagedNotification` and
    consume `authorize_delivery(job, now)`, retaining/rechecking its origin authority
-   alongside their source/channel cancellation. **Those adapters are not joined or
-   accepted by this slice.** In particular an old exhaustive kind conversion needs
-   an explicit managed branch, not a fallback to terminal bell. The command backend
-   is neither duplicated nor changed here.
+   alongside their source/channel cancellation. The ordinary command consumer now
+   retains this snapshot through the I/O service and maps the managed kind/origin
+   explicitly. The audio owner retains/rechecks it before submission and on the
+   shared tick; helper-side off-thread revocation still needs the audio author's
+   compatible admission seam. Joining these consumers does not accept the combined
+   feature, helper cancellation or platform behavior.
 6. Join installer registration removal/replacement with host stop/reap and bridge
    uninstall/re-registration. Do not resurrect consent from retained settings.
 

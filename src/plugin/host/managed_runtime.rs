@@ -139,6 +139,13 @@ impl PluginHost {
         self.selected_grants(index).map(|_| ())
     }
 
+    pub(crate) fn reviewed_features(&self, name: &str) -> Result<BTreeSet<String>, Problem> {
+        let index = self
+            .find(name)
+            .ok_or(Problem("plugin is no longer registered"))?;
+        self.selected_grants(index)
+    }
+
     pub fn reviewed_notification_role(
         &self,
         name: &str,

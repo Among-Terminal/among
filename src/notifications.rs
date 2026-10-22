@@ -672,6 +672,15 @@ impl Host {
             .count()
     }
 
+    /// lazy adapters inspect authority before filesystem preparation without
+    /// dequeuing or retaining a second backlog. dispatch still uses take_ready.
+    pub fn pending_jobs(&self, channel: Channel) -> impl Iterator<Item = Job> + '_ {
+        self.pending
+            .iter()
+            .copied()
+            .filter(move |job| job.channel == channel && self.is_current(*job))
+    }
+
     /// zero-backlog adapters consume current admission only, never a later replay.
     pub fn discard_pending(&mut self, channel: Channel) {
         self.pending.retain(|job| job.channel != channel);

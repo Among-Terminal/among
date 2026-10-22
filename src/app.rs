@@ -3138,7 +3138,7 @@ fn open_preferences(ctx: &Window) {
                 if state.borrow().plugins.managed_details(name).is_some()
                     && state.borrow().plugins.access_review(name).is_err()
                 {
-                    review_managed_access(&window, name, parent.as_ref());
+                    review_managed_access(&window, name, parent.as_ref(), true);
                     return;
                 }
                 state.borrow_mut().plugins.enable(name);
@@ -3245,6 +3245,36 @@ fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
         providers: Rc::new({
             let backend = backend.clone();
             move || backend.provider_inventory()
+        }),
+        roles: Rc::new({
+            let state = ctx.state.clone();
+            move || {
+                let state = state.borrow();
+                state
+                    .plugins
+                    .overview()
+                    .into_iter()
+                    .filter(|entry| {
+                        state
+                            .plugins
+                            .managed_details(&entry.key)
+                            .is_some_and(|(entry, _)| {
+                                entry.inspected.as_ref().is_ok_and(|inspected| {
+                                    inspected
+                                        .manifest
+                                        .required_features
+                                        .iter()
+                                        .chain(&inspected.manifest.optional_features)
+                                        .any(|feature| prefs::notification_role::is_role(feature))
+                                })
+                            })
+                    })
+                    .collect()
+            }
+        }),
+        review_role: Rc::new({
+            let window = ctx.handle();
+            move |name, parent| review_managed_access(&window, name, parent.as_ref(), false)
         }),
         status: Rc::new(move || (backend.audio_status(), backend.command_status())),
     })
@@ -3382,7 +3412,7 @@ fn confirm_managed_restart(
     dialog.present(Some(&parent));
 }
 
-fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>) {
+fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>, enable: bool) {
     let Some((entry, _)) = ctx.state.borrow().plugins.managed_details(name) else {
         return;
     };
@@ -3393,15 +3423,81 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
         .body("This executable runs as your user, not in an OS sandbox. These controls limit only data and actions supplied by Among. Required access must be accepted; optional access starts off.").build();
     dialog.add_response("cancel", "Cancel");
     dialog.set_close_response("cancel");
+    dialog.set_default_response(Some("cancel"));
+    let busy = ctx
+        .state
+        .borrow()
+        .plugins
+        .overview()
+        .into_iter()
+        .find(|entry| entry.key == name)
+        .filter(|entry| {
+            entry.enabled
+                || matches!(
+                    entry.state,
+                    crate::plugin::host::PluginState::Starting
+                        | crate::plugin::host::PluginState::Running
+                        | crate::plugin::host::PluginState::Stopping { .. }
+                )
+        });
+    if let Some(busy) = busy {
+        dialog.set_body("Stop this plugin before changing its reviewed access. This revokes its current notification authority and disables automatic restart. After retirement, open Review role / access again. Channels and other plugins are not changed.");
+        if busy.enabled {
+            dialog.add_response("stop", "Stop and disable plugin");
+            dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+            let window = ctx.handle();
+            let key = name.to_string();
+            let receipt = entry.receipt.clone();
+            let parent = parent.downgrade();
+            dialog.connect_response(None, move |_, response| {
+                if response != "stop"
+                    || window.state.borrow().exiting
+                    || !parent.upgrade().is_some_and(|parent| parent.is_visible())
+                    || !window
+                        .state
+                        .borrow()
+                        .plugins
+                        .managed_details(&key)
+                        .is_some_and(|(entry, _)| entry.receipt == receipt)
+                {
+                    return;
+                }
+                let mut state = window.state.borrow_mut();
+                state.plugins.disable(&key);
+                let changed = state.store.remove_source(&key);
+                let result = state.settings.managed_enable_changed(
+                    &key,
+                    false,
+                    receipt.installation.as_deref(),
+                );
+                drop(state);
+                report_settings_save(&window, result);
+                if changed {
+                    refresh_slots(&window);
+                    rebuild_sidebar(&window, false);
+                }
+            });
+        }
+        dialog.present(Some(&parent));
+        return;
+    }
     let Ok(inspected) = entry.inspected.as_ref() else {
         dialog.set_body("The selected package is invalid or unavailable. No code will run.");
         dialog.present(Some(&parent));
         return;
     };
+    let supported = ctx.state.borrow().plugins.supported_features();
+    if let Err(problem) = crate::plugin::managed::required_notification_role(&inspected.manifest)
+        .map_err(crate::plugin::managed::NotificationRoleConflict::problem)
+    {
+        dialog.set_body(&problem.to_string());
+        dialog.present(Some(&parent));
+        return;
+    }
     if let Err(problem) = inspected.manifest.compatibility(
         crate::plugin::managed::MAJOR,
         crate::plugin::managed::MINOR,
-        crate::plugin::managed::FEATURES,
+        &supported,
     ) {
         dialog.set_body(&problem.to_string());
         dialog.present(Some(&parent));
@@ -3416,7 +3512,33 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
     )));
     origin.set_wrap(true);
     controls.append(&origin);
+    let reviewed = ctx.state.borrow().plugins.reviewed_notification_role(name);
+    let admitted = ctx.state.borrow().plugins.admitted_notification_role(name);
+    let status = gtk::Label::new(Some(&format!("Reviewed role: {} · Admitted role: {}. Stop the current generation before changing access; no restart is automatic.",
+        reviewed.as_ref().map(|role| prefs::notification_role::label(*role)).unwrap_or("Not accepted"),
+        prefs::notification_role::label(admitted))));
+    status.set_wrap(true);
+    status.set_widget_name("notification-reviewed-admitted-role");
+    controls.append(&status);
+    let role_picker =
+        match prefs::notification_role::Picker::new(&inspected.manifest, reviewed, &supported) {
+            Ok(picker) => picker,
+            Err(problem) => {
+                dialog.set_body(&problem.to_string());
+                dialog.present(Some(&parent));
+                return;
+            }
+        };
+    if let Some(picker) = &role_picker {
+        controls.append(&picker.group);
+    }
     let mut features = Vec::new();
+    let retained = ctx
+        .state
+        .borrow()
+        .plugins
+        .reviewed_features(name)
+        .unwrap_or_default();
     for (feature, required) in inspected
         .manifest
         .required_features
@@ -3430,7 +3552,10 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
                 .map(|feature| (feature, false)),
         )
     {
-        let available = crate::plugin::managed::FEATURES.contains(&feature.as_str());
+        if prefs::notification_role::is_role(feature) {
+            continue;
+        }
+        let available = supported.contains(&feature.as_str());
         let label = if required {
             format!("{feature} (required)")
         } else if available {
@@ -3439,13 +3564,32 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
             format!("{feature} (unavailable)")
         };
         let control = gtk::CheckButton::with_label(&label);
-        control.set_active(required);
+        control.set_active(required || (available && retained.contains(feature)));
         control.set_sensitive(available && !required);
         controls.append(&control);
         features.push((feature.clone(), control));
     }
     dialog.set_extra_child(Some(&controls));
-    dialog.add_response("enable", "Accept and enable");
+    dialog.add_response(
+        "enable",
+        if enable {
+            "Accept and enable"
+        } else {
+            "Save reviewed access"
+        },
+    );
+    if let Some(picker) = &role_picker {
+        dialog.set_response_enabled("enable", picker.selected().is_ok());
+        picker.row.connect_selected_notify({
+            let dialog = dialog.downgrade();
+            let picker = Rc::downgrade(picker);
+            move |_| {
+                if let (Some(dialog), Some(picker)) = (dialog.upgrade(), picker.upgrade()) {
+                    dialog.set_response_enabled("enable", picker.selected().is_ok());
+                }
+            }
+        });
+    }
     dialog.set_response_appearance("enable", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("cancel"));
     let window = ctx.handle();
@@ -3471,22 +3615,29 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
                     && current.receipt == entry.receipt
             });
         let Some((current, _)) = current else { return };
-        let review = current.receipt.review(
-            features
-                .iter()
-                .filter(|(_, control)| control.is_active())
-                .map(|(feature, _)| feature.clone())
-                .collect::<Vec<_>>(),
-        );
+        let mut selected: Vec<_> = features
+            .iter()
+            .filter(|(_, control)| control.is_active())
+            .map(|(feature, _)| feature.clone())
+            .collect();
+        if let Some(picker) = &role_picker {
+            match picker.selected() {
+                Ok(Some(role)) => selected.push(prefs::notification_role::feature(role).into()),
+                Ok(None) => {}
+                Err(_) => return,
+            }
+        }
+        let review = current.receipt.review(selected);
         let valid = current
             .inspected
             .as_ref()
             .map_err(|problem| *problem)
             .and_then(|inspected| {
-                crate::plugin::managed::granted_features(
+                crate::plugin::managed::granted_features_with(
                     &inspected.manifest,
                     &current.receipt,
                     Some(&serde_json::json!({"review":review})),
+                    &window.state.borrow().plugins.supported_features(),
                 )
             })
             .and_then(|_| {
@@ -3505,15 +3656,33 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
             explanation.present(Some(&parent));
             return;
         }
-        let result = window
-            .state
-            .borrow_mut()
-            .settings
-            .managed_review_for_installation(&key, review, current.receipt.installation.as_deref());
+        let result = if enable {
+            window
+                .state
+                .borrow_mut()
+                .settings
+                .managed_review_for_installation(
+                    &key,
+                    review,
+                    current.receipt.installation.as_deref(),
+                )
+        } else {
+            window
+                .state
+                .borrow_mut()
+                .settings
+                .managed_access_review_for_installation(
+                    &key,
+                    review,
+                    current.receipt.installation.as_deref(),
+                )
+        };
         // consent was accepted by the stopped runtime above; a persistence
         // failure is reported separately without revoking this session's consent.
         report_settings_save(&window, result);
-        window.state.borrow_mut().plugins.enable(&key);
+        if enable {
+            window.state.borrow_mut().plugins.enable(&key);
+        }
     });
     dialog.present(Some(&parent));
 }

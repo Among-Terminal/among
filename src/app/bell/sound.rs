@@ -10,7 +10,8 @@ struct Active {
     channel: Channel,
     event: Event,
     authorization: Authorization,
-    origin: Option<among::plugin_notifications::OriginLease>,
+    delivery: among::plugin_notifications::DeliveryAuthorization,
+    core: Weak<RefCell<Host>>,
 }
 
 #[cfg(test)]
@@ -116,25 +117,26 @@ impl Shared {
         let Some(authorization) = host.borrow().authorization(job) else {
             return;
         };
-        let bridge = bridge.borrow();
-        let Some(envelope) = bridge.envelope(job.event(), now) else {
+        let Some(delivery) = bridge
+            .try_borrow()
+            .ok()
+            .and_then(|bridge| bridge.authorize_delivery(job, now))
+        else {
             return;
         };
-        let origin = if envelope.origin.is_some() {
-            let Some(lease) = bridge.origin_lease(job.event(), now) else {
-                return;
-            };
-            Some(lease)
-        } else {
-            None
-        };
+        if !delivery.is_current(&host.borrow(), now) {
+            return;
+        }
         let Some(audio) = &self.audio else {
             return;
         };
         audio.set_event_admitted(
             self.ready.get()
                 && authorization.is_current()
-                && origin.as_ref().is_none_or(|lease| lease.is_current()),
+                && delivery
+                    .origin_lease()
+                    .as_ref()
+                    .is_none_or(|lease| lease.is_current()),
         );
         if let Ok(Request::Started(id)) = audio.event() {
             self.latest_playback.set(Some(id));
@@ -144,7 +146,8 @@ impl Shared {
                 channel,
                 event: job.event(),
                 authorization,
-                origin,
+                delivery,
+                core: Rc::downgrade(host),
             });
         }
     }
@@ -153,10 +156,11 @@ impl Shared {
         let mut active = self.active.borrow_mut();
         if let Some(event) = active.as_ref() {
             if !event.authorization.is_current()
-                || event
-                    .origin
-                    .as_ref()
-                    .is_some_and(|lease| !lease.is_current())
+                || !event.core.upgrade().is_some_and(|core| {
+                    core.try_borrow().is_ok_and(|core| {
+                        event.delivery.is_current(&core, std::time::Instant::now())
+                    })
+                })
                 || (event.channel == channel && !policy.permits(event.event.source(), focus))
             {
                 if let Some(audio) = &self.audio {
