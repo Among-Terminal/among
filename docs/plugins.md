@@ -356,6 +356,20 @@ decision; inspection never rewrites it. Local saving and runtime application
 are distinct: the editor does not report a saved value as applied to a process.
 Diagnostics use host-owned reason text, not submitted settings values.
 
+Optional fields without a stored value or default stay absent until edited;
+an untouched blank optional numeric field does not block saving another field.
+Invalid explicit edits are refused as a whole, with the declared key/type/bounds
+reason but no submitted value in the diagnostic. Unsupported secret fields never
+acquire ordinary editors or materialized defaults.
+
+Validated Save outcomes distinguish durable local saving, session-only acceptance
+after a storage failure, and a written replacement whose durability could not be
+confirmed. Session-only accepted values remain available in the current host and
+can be delivered to the current process when their apply mode permits it. A later
+managed preference edit retries pending identity-scoped settings/switch/review
+changes together, merging current unknown data rather than erasing it. Restarting
+the application before successful persistence can lose session-only changes.
+
 Managed installation selection is separate from legacy executables. The
 application reads only its committed `among/managed/installed.json` record in
 the XDG data directory, not arbitrary discovered manifests or staging files.
@@ -463,6 +477,13 @@ state. A manifest's `apply: restart` saves without sending live changes, and the
 next process receives them. Superseded revisions and stopped generations cannot
 mark a newer revision applied. Managed `notify` remains a generic, payload-omitted
 diagnostic; it never triggers notification routing or external delivery.
+
+When a running plugin needs restart, its form offers **Restart plugin…** with
+explicit confirmation. Cancel keeps the current process and accepted settings.
+Confirmation restarts only that plugin, preserving the desired switch and live
+terminals; it cannot implicitly enable a disabled plugin. The callback checks the
+current receipt and process generation, so a dialog from before replacement or a
+process restart cannot restart a different generation.
 
 A current `applied` acknowledgement invalidates that plugin's cached status and
 workspace summaries, including event-driven content. Pre-configuration status

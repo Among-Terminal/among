@@ -64,6 +64,9 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
         .append(true)
         .mode(0o600)
         .open("transcript.jsonl")?;
+    // a killed previous generation can leave an incomplete diagnostic record.
+    // delimit it so it cannot absorb this generation's actual hello.
+    transcript.write_all(b"\n")?;
     std::fs::write("executed", std::process::id().to_string())?;
     std::fs::write(
         "credential-inherited",
@@ -84,7 +87,9 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
     let mut previous_status: Option<Value> = None;
     for line in std::io::stdin().lock().lines() {
         let message: Value = serde_json::from_str(&line?)?;
-        writeln!(transcript, "{message}")?;
+        let mut record = serde_json::to_vec(&message)?;
+        record.push(b'\n');
+        transcript.write_all(&record)?;
         transcript.flush()?;
         match message["type"].as_str() {
             Some("managed_hello") => {

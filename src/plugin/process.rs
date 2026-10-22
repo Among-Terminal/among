@@ -399,16 +399,63 @@ mod tests {
     }
 
     fn live(pid: u32) -> bool {
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        live_from_stat(pid, std::fs::read_to_string(format!("/proc/{pid}/stat")))
+    }
+
+    fn live_from_stat(pid: u32, stat: io::Result<String>) -> bool {
+        match stat {
             Ok(stat) => !stat
                 .rsplit_once(')')
                 .unwrap()
                 .1
                 .trim_start()
                 .starts_with('Z'),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+            // procfs can open stat before the task vanishes, then return ESRCH
+            // from the read. both outcomes mean this owned fixture is gone.
+            Err(err)
+                if err.kind() == io::ErrorKind::NotFound
+                    || err.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                false
+            }
             Err(err) => panic!("cannot inspect owned fixture {pid}: {err}"),
         }
+    }
+
+    #[test]
+    fn an_open_proc_stat_for_a_reaped_fixture_is_not_live() {
+        let executable = std::env::current_exe().unwrap();
+        let path = executable
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("examples/fake-plugin");
+        let mut child = Command::new(path)
+            .arg("echo")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut stat = std::fs::File::open(format!("/proc/{pid}/stat")).unwrap();
+        assert!(live(pid));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let mut contents = String::new();
+        let result = stat.read_to_string(&mut contents).map(|_| contents);
+        assert_eq!(
+            result.as_ref().unwrap_err().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(!live_from_stat(pid, result));
+        assert!(!live(pid));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot inspect owned fixture")]
+    fn unrelated_proc_stat_errors_still_fail_the_observer() {
+        live_from_stat(0, Err(io::Error::from_raw_os_error(libc::EACCES)));
     }
 
     #[test]

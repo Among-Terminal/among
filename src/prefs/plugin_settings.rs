@@ -6,7 +6,7 @@ use crate::plugin::inventory::Entry;
 use crate::plugin::schema::{Apply, Kind};
 use serde_json::{Map, Value};
 
-type ReadValue = Box<dyn Fn() -> Result<Value, String>>;
+type ReadValue = Box<dyn Fn() -> Result<Option<Value>, String>>;
 
 pub(super) fn add_actions(
     row: &adw::ActionRow,
@@ -14,6 +14,7 @@ pub(super) fn add_actions(
     save: Rc<SavePluginSettings>,
     load: Rc<PluginDetailsQuery>,
     status: Rc<ConfigurationQuery>,
+    restart: Rc<RestartPlugin>,
 ) {
     let details = gtk::Button::with_label("Details…");
     details.set_valign(gtk::Align::Center);
@@ -137,13 +138,21 @@ pub(super) fn add_actions(
                 .and_then(|stored| stored.get("values"))
                 .and_then(|values| values.get(&field.key))
                 .or(field.default.as_ref());
+            let unset = value.is_none() && !field.required;
+            let dirty = Rc::new(std::cell::Cell::new(false));
             let read: ReadValue = match &field.kind {
                 Kind::Boolean => {
                     let row = adw::SwitchRow::new();
                     row.set_title(&escape_display(&field.label));
                     row.set_active(value.and_then(Value::as_bool).unwrap_or(false));
+                    row.connect_active_notify({
+                        let dirty = dirty.clone();
+                        move |_| dirty.set(true)
+                    });
                     group.add(&row);
-                    Box::new(move || Ok(Value::Bool(row.is_active())))
+                    Box::new(move || {
+                        Ok((!unset || dirty.get()).then(|| Value::Bool(row.is_active())))
+                    })
                 }
                 Kind::Enum { choices } => {
                     let row = adw::ComboRow::new();
@@ -157,14 +166,22 @@ pub(super) fn add_actions(
                             .position(|choice| {
                                 Some(choice.value.as_str()) == value.and_then(Value::as_str)
                             })
-                            .unwrap_or(0) as u32,
+                            .map(|index| index as u32)
+                            .unwrap_or(if unset { gtk::INVALID_LIST_POSITION } else { 0 }),
                     );
+                    row.connect_selected_notify({
+                        let dirty = dirty.clone();
+                        move |_| dirty.set(true)
+                    });
                     let choices = choices.clone();
                     group.add(&row);
                     Box::new(move || {
+                        if unset && !dirty.get() {
+                            return Ok(None);
+                        }
                         choices
                             .get(row.selected() as usize)
-                            .map(|choice| Value::String(choice.value.clone()))
+                            .map(|choice| Some(Value::String(choice.value.clone())))
                             .ok_or_else(|| "Select a declared value".into())
                     })
                 }
@@ -182,14 +199,23 @@ pub(super) fn add_actions(
                         })
                         .unwrap_or_default();
                     row.set_text(&text);
+                    row.connect_changed({
+                        let dirty = dirty.clone();
+                        move |_| dirty.set(true)
+                    });
                     group.add(&row);
                     Box::new(move || {
+                        if unset && !dirty.get() {
+                            return Ok(None);
+                        }
                         if string {
-                            Ok(Value::String(row.text().into()))
+                            Ok(Some(Value::String(row.text().into())))
                         } else {
-                            serde_json::from_str::<Value>(&row.text()).map_err(|_| {
-                                "Enter a finite number within the declared bounds".into()
-                            })
+                            serde_json::from_str::<Value>(&row.text())
+                                .map(Some)
+                                .map_err(|_| {
+                                    "Enter a finite number within the declared bounds".into()
+                                })
                         }
                     })
                 }
@@ -201,22 +227,87 @@ pub(super) fn add_actions(
                     continue;
                 }
             };
-            editors.push((field.key.clone(), read));
+            let checked = field.clone();
+            editors.push((
+                field.key.clone(),
+                Box::new(move || {
+                    let value = read().map_err(|_| {
+                        format!(
+                            "Setting {}: enter an accepted value of its declared type",
+                            checked.key
+                        )
+                    })?;
+                    if let Some(value) = &value {
+                        checked.validate(value).map_err(|_| {
+                            format!(
+                                "Setting {}: value is outside the declared type or bounds",
+                                checked.key
+                            )
+                        })?;
+                    }
+                    Ok(value)
+                }),
+            ));
         }
         let result = adw::ActionRow::new();
         result.set_title("Local changes");
         let runtime = adw::ActionRow::new();
         runtime.set_title("Runtime application");
         runtime.set_subtitle(status(&entry.key()).description());
+        let restart_button = gtk::Button::with_label("Restart plugin…");
+        restart_button.set_valign(gtk::Align::Center);
+        restart_button.set_visible(status(&entry.key()) == Configuration::RestartRequired);
+        restart_button.update_property(&[gtk::accessible::Property::Label(&format!(
+            "Restart plugin {}",
+            entry.key()
+        ))]);
+        let restart = restart.clone();
+        let restart_key = entry.key();
+        let restart_generation = entry.receipt.generation.clone();
+        let restart_receipt = entry.receipt.clone();
+        let restart_selection = load.clone();
+        restart_button.connect_clicked(move |button| {
+            if !restart_selection(&restart_key)
+                .is_some_and(|(current, _)| current.receipt == restart_receipt)
+            {
+                return;
+            }
+            restart(
+                &restart_key,
+                &restart_generation,
+                button
+                    .root()
+                    .and_then(|root| root.downcast::<gtk::Window>().ok()),
+            )
+        });
+        runtime.add_suffix(&restart_button);
         group.add(&runtime);
         let weak_runtime = runtime.downgrade();
+        let weak_restart = restart_button.downgrade();
         let status = status.clone();
         let status_key = entry.key();
+        let status_selection = load.clone();
+        let status_receipt = entry.receipt.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
             let Some(row) = weak_runtime.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            row.set_subtitle(status(&status_key).description());
+            if !status_selection(&status_key)
+                .is_some_and(|(current, _)| current.receipt == status_receipt)
+            {
+                row.set_subtitle(
+                    "The selected package changed or was removed. Reopen its current settings.",
+                );
+                if let Some(button) = weak_restart.upgrade() {
+                    button.set_visible(false);
+                }
+                return glib::ControlFlow::Break;
+            }
+            let configuration = status(&status_key);
+            row.set_subtitle(configuration.description());
+            if let Some(button) = weak_restart.upgrade() {
+                button.set_visible(configuration == Configuration::RestartRequired);
+            }
             glib::ControlFlow::Continue
         });
         let commit = gtk::Button::with_label("Save");
@@ -230,10 +321,22 @@ pub(super) fn add_actions(
         let schema = schema.clone();
         let result = result.clone();
         let stored = stored.clone();
+        let save_selection = load.clone();
+        let save_receipt = entry.receipt.clone();
         commit.connect_clicked(move |_| {
+            if !save_selection(&key).is_some_and(|(current, _)| current.receipt == save_receipt) {
+                result.set_subtitle(
+                    "The selected package changed or was removed. Reopen its current settings.",
+                );
+                return;
+            }
             let changes: Result<Map<_, _>, String> = editors
                 .iter()
-                .map(|(key, read)| read().map(|value| (key.clone(), value)))
+                .filter_map(|(key, read)| match read() {
+                    Ok(Some(value)) => Some(Ok((key.clone(), value))),
+                    Ok(None) => None,
+                    Err(problem) => Some(Err(problem)),
+                })
                 .collect();
             let outcome = changes.and_then(|changes| {
                 // validation errors are fixed host text and never echo values.
@@ -243,7 +346,7 @@ pub(super) fn add_actions(
                 save(&key, &generation, &changes)
             });
             result.set_subtitle(&escape_display(match &outcome {
-                Ok(()) => "Saved locally",
+                Ok(durability) => durability.description(),
                 Err(problem) => problem,
             }));
         });

@@ -21,8 +21,12 @@ type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value
 type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
 type ConfigurationQuery = dyn Fn(&str) -> Configuration;
 type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
-type SavePluginSettings =
-    dyn Fn(&str, &str, &serde_json::Map<String, serde_json::Value>) -> Result<(), String>;
+type RestartPlugin = dyn Fn(&str, &str, Option<gtk::Window>);
+type SavePluginSettings = dyn Fn(
+    &str,
+    &str,
+    &serde_json::Map<String, serde_json::Value>,
+) -> Result<crate::settings::Durability, String>;
 
 /// What the preferences window needs from the running application.
 ///
@@ -37,6 +41,7 @@ pub struct PreferencesContext {
     pub plugin_details: Rc<PluginDetailsQuery>,
     pub save_plugin_settings: Rc<SavePluginSettings>,
     pub plugin_configuration: Rc<ConfigurationQuery>,
+    pub restart_plugin: Rc<RestartPlugin>,
     pub enable_plugin: Rc<EnablePlugin>,
     pub disable_plugin: Rc<dyn Fn(&str)>,
     /// Rebuilds the window's shortcut controller after a rebind.
@@ -348,6 +353,7 @@ mod tests {
             plugin_details: Rc::new(|_| None),
             save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
             plugin_configuration: Rc::new(|_| Configuration::NotApplied),
+            restart_plugin: Rc::new(|_, _, _| {}),
             enable_plugin: Rc::new({
                 let desired = desired.clone();
                 move |_, _| {

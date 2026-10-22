@@ -153,6 +153,7 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
             ctx.save_plugin_settings.clone(),
             ctx.plugin_details.clone(),
             ctx.plugin_configuration.clone(),
+            ctx.restart_plugin.clone(),
         );
     } else {
         let icon = gtk::Image::from_icon_name("application-x-addon-symbolic");

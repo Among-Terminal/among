@@ -1,6 +1,8 @@
 use super::*;
 use crate::plugin::host::PluginState;
 
+mod settings;
+
 #[track_caller]
 fn wait_for(predicate: impl Fn() -> bool, timeout: Duration) {
     let deadline = std::time::Instant::now() + timeout;
@@ -523,6 +525,21 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
     let phase = std::env::var(PHASE).ok();
     if phase.is_none() {
         for phase in ["review-and-edit", "fresh-process"] {
+            if phase == "fresh-process" {
+                // a supervised stop can interrupt the fixture's diagnostic
+                // file mid-frame; that must not hide the next process's hello.
+                use std::io::Write;
+                let root = crate::plugin::inventory::root().unwrap();
+                let package = crate::plugin::inventory::read(&root).unwrap()[0]
+                    .receipt
+                    .package_path(&root);
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(package.join("transcript.jsonl"))
+                    .unwrap()
+                    .write_all(br#"{"type":"interrupted"#)
+                    .unwrap();
+            }
             let output=std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["app::plugin_tests::managed_access_review_runtime_settings_and_fresh_process_grants_use_real_controls","--exact","--ignored","--test-threads=1","--nocapture"])
                 .env(PHASE,phase).output().unwrap();
@@ -571,10 +588,10 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
         );
     }
     fn frames(package: &std::path::Path) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(package.join("transcript.jsonl"))
+        std::fs::read(package.join("transcript.jsonl"))
             .unwrap_or_default()
-            .lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| serde_json::from_slice(line).ok())
             .collect()
     }
     let root = crate::plugin::inventory::root().unwrap();

@@ -57,6 +57,12 @@ Repair malformed files or directory permissions before retrying. Startup errors
 are visible too.
 Plugin faults do not change the saved desired enabled state.
 
+Plugin forms show their own persistence result: **Saved locally**, **Accepted for
+this session; not saved locally**, or **Written locally; durability not confirmed**.
+That result is independent of pending/applied/rejected/restart-required process
+configuration. A plugin restart requires its own confirmation; opening a form or
+saving a restart-mode edit never restarts code automatically.
+
 Clock, resources and pane PWD remain optional and disabled by default. Only explicit
 user changes enable them. No terminal contents or workspace layouts are saved here.
 

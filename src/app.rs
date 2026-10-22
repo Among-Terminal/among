@@ -2926,18 +2926,30 @@ fn open_preferences(ctx: &Window) {
             let state = ctx.state.clone();
             move |name| state.borrow().plugins.configuration(name)
         }),
+        restart_plugin: Rc::new({
+            let window = ctx.handle();
+            move |name, generation, parent| {
+                confirm_managed_restart(&window, name, generation, parent.as_ref())
+            }
+        }),
         save_plugin_settings: Rc::new({
             let window = ctx.handle();
             move |name, generation, changes| {
-                let schema = window
+                let (entry, stored) = window
                     .state
                     .borrow()
                     .plugins
                     .managed_details(name)
                     .filter(|(entry, _)| entry.receipt.generation == generation)
-                    .and_then(|(entry, _)| entry.inspected.ok())
+                    .ok_or_else(|| "Settings are unavailable for this plugin".to_string())?;
+                let schema = entry
+                    .inspected
+                    .ok()
                     .and_then(|inspected| inspected.manifest.settings)
                     .ok_or_else(|| "Settings are unavailable for this plugin".to_string())?;
+                let accepted = schema
+                    .merge_edit(stored.as_ref(), changes)
+                    .map_err(|problem| problem.to_string())?;
                 let result = window
                     .state
                     .borrow_mut()
@@ -2951,11 +2963,21 @@ fn open_preferences(ctx: &Window) {
                             .plugins
                             .stored_settings_changed(name, stored);
                         report_settings_save(&window, Ok(()));
-                        Ok(())
+                        Ok(crate::settings::Durability::Durable)
                     }
                     Err(error) => {
+                        let durability = if error.replaced {
+                            crate::settings::Durability::Uncertain
+                        } else {
+                            crate::settings::Durability::SessionOnly
+                        };
+                        window
+                            .state
+                            .borrow_mut()
+                            .plugins
+                            .stored_settings_changed(name, accepted);
                         report_settings_save(&window, Err(error));
-                        Err("Settings were not durably saved; see Settings storage".into())
+                        Ok(durability)
                     }
                 }
             }
@@ -3020,6 +3042,69 @@ fn report_settings_save(ctx: &Window, result: Result<(), crate::settings::Storag
     if let Err(error) = result {
         eprintln!("among: settings save failed: {error}");
     }
+}
+
+fn confirm_managed_restart(
+    ctx: &Window,
+    name: &str,
+    generation: &str,
+    parent: Option<&gtk::Window>,
+) {
+    let state = ctx.state.borrow();
+    let Some((entry, _)) = state
+        .plugins
+        .managed_details(name)
+        .filter(|(entry, _)| entry.receipt.generation == generation)
+    else {
+        return;
+    };
+    if state.plugins.configuration(name) != crate::plugin::host::Configuration::RestartRequired {
+        return;
+    }
+    let Some(process_generation) = state.plugins.running_generation(name) else {
+        return;
+    };
+    drop(state);
+    let parent = parent
+        .cloned()
+        .unwrap_or_else(|| ctx.window.clone().upcast());
+    let dialog=adw::AlertDialog::builder().heading("Restart this plugin?")
+        .body("Only this plugin will restart to apply its accepted settings. Live terminals and the saved enabled choice are preserved.").build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("restart", "Restart plugin");
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let window = ctx.handle();
+    let key = name.to_string();
+    let weak_parent = parent.downgrade();
+    dialog.connect_response(None, move |_, response| {
+        if response != "restart"
+            || window.state.borrow().exiting
+            || !weak_parent
+                .upgrade()
+                .is_some_and(|parent| parent.is_visible())
+        {
+            return;
+        }
+        let mut state = window.state.borrow_mut();
+        if !state
+            .plugins
+            .managed_details(&key)
+            .is_some_and(|(current, _)| current.receipt == entry.receipt)
+            || state.plugins.configuration(&key)
+                != crate::plugin::host::Configuration::RestartRequired
+        {
+            return;
+        }
+        let restarted = state.plugins.restart_managed(&key, &process_generation);
+        let changed = restarted && state.store.remove_source(&key);
+        drop(state);
+        if changed {
+            refresh_slots(&window);
+            rebuild_sidebar(&window, false);
+        }
+    });
+    dialog.present(Some(&parent));
 }
 
 fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>) {
@@ -3107,9 +3192,10 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
             let explanation=adw::AlertDialog::builder().heading("Plugin access was not accepted").body(problem.to_string()).build();
             explanation.add_response("close","Close");explanation.present(Some(&parent));return;
         }
-        let result=window.state.borrow_mut().settings.managed_review_changed(&key,review.clone());
-        let saved=result.is_ok();report_settings_save(&window,result);
-        if !saved {return;}
+        let result=window.state.borrow_mut().settings.managed_review_changed(&key,review);
+        // consent was accepted by the stopped runtime above; a persistence
+        // failure is reported separately without revoking this session's consent.
+        report_settings_save(&window,result);
         window.state.borrow_mut().plugins.enable(&key);
     });
     dialog.present(Some(&parent));
@@ -5428,6 +5514,7 @@ mod tests {
                 plugin_details: Rc::new(|_| None),
                 save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
                 plugin_configuration: Rc::new(|_| crate::plugin::host::Configuration::NotApplied),
+                restart_plugin: Rc::new(|_, _, _| {}),
                 enable_plugin: Rc::new({
                     let desired = desired.clone();
                     move |_, _| desired.set(true)
