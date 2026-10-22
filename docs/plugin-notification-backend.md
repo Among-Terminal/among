@@ -87,10 +87,12 @@ The bridge stamps an envelope with event/root causal ID, core session, authorita
 plugin identity/process generation, optional source-generation/workspace identity,
 and kind `managed_notification`. Delivery-linked production (`causal_job`) is
 rejected, not recursively routed. **Fail-closed dual-role rule:** after a process
-generation has received any delivery job, further production from that generation
+generation has been assigned a delivery attempt, further production from that generation
 is rejected even if it omits `causal_job`. It can still deliver and contribute UI.
 This conservative restriction prevents disguised feedback; it is a contract-review
-point, not a claim of arbitrary dual-role workflow support. Self-delivery is omitted.
+point, not a claim of arbitrary dual-role workflow support. Assignment is conservative
+even if enqueue later fails; it is not a claim that a provider received bytes.
+Self-delivery is omitted.
 Results never become notification events. No automatic retry or reconnect replay.
 
 ## Contribution and action state
