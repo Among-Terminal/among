@@ -36,7 +36,9 @@ impl Fixture {
     ) -> Self {
         let root = std::env::var_os("AMONG_CHECK_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp/opencode"))
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/notification-api-evidence")
+            })
             .join(format!("notification-api-{}", glib::uuid_string_random()));
         let mut receipt = inventory::tests::fixture(&root);
         let package = receipt.package_path(&root);
