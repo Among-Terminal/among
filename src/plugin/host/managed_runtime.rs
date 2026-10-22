@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
 // one stdout frame remains available for the plugin's single enumeration request.
-const MAX_MANAGED_REPLIES: usize = MAX_INFLIGHT - 1;
+pub(super) const MAX_MANAGED_REPLIES: usize = MAX_INFLIGHT - 1;
 
 struct Enumeration {
     request_id: u64,
@@ -45,13 +45,14 @@ impl Configuration {
 
 pub(super) struct Runtime {
     review: Option<Value>,
-    grants: BTreeSet<String>,
+    pub(super) grants: BTreeSet<String>,
     scopes: HashMap<u64, managed::Scope>,
     configuration: Configuration,
     revision: u64,
     configure_sent: Option<Instant>,
-    configurations: HashMap<u64, Instant>,
+    pub(super) configurations: HashMap<u64, Instant>,
     enumeration: Option<Enumeration>,
+    pub(super) deliveries: HashMap<u64, Instant>,
 }
 
 impl Runtime {
@@ -65,6 +66,7 @@ impl Runtime {
             configure_sent: None,
             configurations: Default::default(),
             enumeration: None,
+            deliveries: Default::default(),
         }
     }
     pub(super) fn reset(&mut self) {
@@ -73,6 +75,7 @@ impl Runtime {
         self.configure_sent = None;
         self.configurations.clear();
         self.enumeration = None;
+        self.deliveries.clear();
     }
 }
 
@@ -150,10 +153,11 @@ impl PluginHost {
             .as_ref()
             .ok_or(Problem("legacy plugins do not use managed grants"))?;
         let inspected = entry.inspected.as_ref().map_err(|problem| *problem)?;
-        let grants = managed::granted_features(
+        let grants = managed::granted_features_with(
             &inspected.manifest,
             &entry.receipt,
             Some(&json!({"review":review})),
+            &self.supported_features(),
         )?;
         let runtime = self.plugins[index]
             .runtime
@@ -174,10 +178,18 @@ impl PluginHost {
             .runtime
             .as_ref()
             .ok_or(Problem("managed runtime is unavailable"))?;
-        managed::granted_features(
+        if self.notifications.is_none() {
+            return managed::granted_features(
+                &inspected.manifest,
+                &entry.receipt,
+                Some(&json!({"review":runtime.review})),
+            );
+        }
+        managed::granted_features_with(
             &inspected.manifest,
             &entry.receipt,
             Some(&json!({"review":runtime.review})),
+            &self.supported_features(),
         )
     }
 
@@ -234,7 +246,9 @@ impl PluginHost {
     pub(super) fn request_managed_status(&mut self, index: usize, scope: &str) -> Option<u64> {
         let runtime = self.plugins[index].runtime.as_ref()?;
         if !runtime.grants.contains("status")
-            || self.plugins[index].inflight.len() + runtime.configurations.len()
+            || self.plugins[index].inflight.len()
+                + runtime.configurations.len()
+                + runtime.deliveries.len()
                 >= MAX_MANAGED_REPLIES
         {
             return None;
@@ -247,7 +261,8 @@ impl PluginHost {
         if runtime.scopes.values().any(|pending| pending == &target) {
             return None;
         }
-        let context = self.world.context(&target, &runtime.grants)?;
+        let mut context = self.world.context(&target, &runtime.grants)?;
+        self.notification_context(index, &mut context);
         let request_id = self.plugins[index].next_request_id;
         let next = request_id.checked_add(1)?;
         let request = managed::Request::Status {
@@ -379,7 +394,10 @@ impl PluginHost {
         };
         // superseded configurations can still answer; reserve their reply credit
         // alongside statuses until replies or deadlines release it.
-        if self.plugins[index].inflight.len() + runtime.configurations.len() >= MAX_MANAGED_REPLIES
+        if self.plugins[index].inflight.len()
+            + runtime.configurations.len()
+            + runtime.deliveries.len()
+            >= MAX_MANAGED_REPLIES
         {
             return;
         }
@@ -463,6 +481,7 @@ impl PluginHost {
                     runtime.revision = runtime.revision.saturating_add(1);
                     runtime.configuration = Configuration::Pending;
                 }
+                self.admit_notifications(index);
                 self.configure_if_due(index);
             }
             managed::Response::Status {
@@ -557,6 +576,7 @@ impl PluginHost {
                     }
                 }
                 if applied {
+                    self.invalidate_notification_content(index);
                     // old status replies keep their transport credits, but no
                     // longer have authority to restore pre-configuration content.
                     self.plugins[index].scopes.clear();
@@ -611,6 +631,12 @@ impl PluginHost {
                 }
                 self.enumerate_if_due(index);
             }
+            response @ (managed::Response::NotificationEvent { .. }
+            | managed::Response::NotificationContribution { .. }
+            | managed::Response::WithdrawNotification { .. }
+            | managed::Response::DeliveryResult { .. }) => {
+                self.handle_notification_response(index, response)
+            }
             managed::Response::Notify {} => {
                 if io.handshake_done && self.notices.len() < MAX_POLL_FRAMES {
                     self.notices.push((
@@ -645,12 +671,13 @@ impl PluginHost {
         let context = self
             .world
             .page(&pending.scope, &runtime.grants, pending.cursor);
-        let Some(context) = context else {
+        let Some(mut context) = context else {
             if let Some(runtime) = self.plugins[index].runtime.as_mut() {
                 runtime.enumeration = None;
             }
             return;
         };
+        self.notification_context(index, &mut context);
         let page = managed::Request::ContextPage {
             session: self.world.session.clone(),
             generation: io.generation.clone(),

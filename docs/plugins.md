@@ -328,8 +328,11 @@ by the production parser in tests. It is data, not a ready-built plugin package.
 Static metadata and local settings can be inspected without executing code.
 API 1.2 adds the distinct managed profile below; legacy executables still use
 `hello` and the existing major-1 messages. Managed packages never fall back to
-legacy execution. Notification production, notification UI and delivery features
-remain unsupported and are not advertised.
+legacy execution. Ordinary application startup does not attach a notification
+bridge, so it does not advertise notification roles. The separately tested
+[explicit notification backend](plugin-notification-backend.md) implements managed
+production, contribution/action state and provider subprocess jobs; its normal
+application, General/storage and renderer integration remains open.
 
 Manifest `id` is lowercase ASCII letters/digits/hyphens, at most 64 bytes.
 `version`, `name` and `description` are bounded display metadata, not authority.
