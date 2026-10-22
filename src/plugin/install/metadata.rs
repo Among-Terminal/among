@@ -271,7 +271,12 @@ impl Artifact {
             Runtime::Script {
                 executable,
                 minimum,
-            } => installed_executable(executable, minimum.as_deref())?,
+            } => {
+                if executable == "/usr/bin/env" {
+                    return Err(Problem("env-based script runtimes are not modeled"));
+                }
+                installed_executable(executable, minimum.as_deref())?;
+            }
         }
         for dependency in &self.dependencies {
             installed_executable(&dependency.executable, dependency.minimum.as_deref())?;

@@ -120,7 +120,7 @@ pub(super) fn add_actions(
         }
         let package = adw::PreferencesGroup::new();
         package.set_title("Package provenance");
-        detail_row(&package, "Revision", &current.receipt.revision);
+        detail_row(&package, "Build revision (publisher-asserted)", &current.receipt.revision);
         detail_row(
             &package,
             "Release / asset",
@@ -134,7 +134,7 @@ pub(super) fn add_actions(
         detail_row(&package, "Selected generation", &current.receipt.generation);
         if let Some(receipt) = &current.receipt.source {
             detail_row(&source, "Numeric publisher identity", &receipt.publisher_id.to_string());
-            detail_row(&package, "Catalogue revision", &receipt.catalogue_revision);
+            detail_row(&package, "Resolved catalogue revision", &receipt.catalogue_revision);
             detail_row(&package, "Catalogue SHA-256", &receipt.catalogue_sha256);
         } else {
             detail_row(&source, "Numeric publisher identity", "Unconfirmed in this pre-installer receipt; an update requires renewed review");

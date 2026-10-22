@@ -309,4 +309,16 @@ fn script_runtimes_and_dependencies_need_installed_executables_not_guessed_versi
             json!({"kind":"script","executable":executable,"minimum":null});
         assert!(parse(&value).is_err());
     }
+    let mut value = single();
+    value["artifacts"][0]["runtime"] =
+        json!({"kind":"script","executable":"/usr/bin/env","minimum":null});
+    let catalogue = parse(&value).unwrap();
+    assert_eq!(
+        catalogue.plugins[0].versions[0].artifacts[0]
+            .compatibility(&host)
+            .unwrap_err()
+            .0,
+        "env-based script runtimes are not modeled",
+        "retained cache metadata remains parseable but unsupported wrapper selection is refused"
+    );
 }

@@ -756,9 +756,14 @@ It neither builds nor executes downloaded code.
 The preflight parser defines `among-plugins.json` schema 1. A root version
 envelope normalizes to one plugin/version; a multi-plugin root has
 `schema_version: 1` and a `plugins` list of independent `id`/`versions` entries.
-Each version embeds the existing shared plugin `manifest`, an exact 40-hex commit
-`revision`, `manifest_sha256`, numeric GitHub `release_id` and `artifacts`.
+Each version embeds the existing shared plugin `manifest`, a publisher-asserted
+40-hex build `revision`, `manifest_sha256`, numeric GitHub `release_id` and `artifacts`.
 Unknown fields, duplicate keys/IDs/version labels and executable hooks are refused.
+The version revision is retained exactly, but is not currently resolved against a
+release tag/commit or authenticated as the asset's build provenance. It is distinct
+from the actually resolved catalogue commit and exact cached catalogue digest.
+Neither a release's mutable `target_commitish` nor a colocated asset hash proves a
+reproducible build or independent publisher authentication.
 
 Artifacts declare `os: linux`, `architecture: amd64` or `arm64`, a `runtime`
 (`native` with `libc` and numeric `minimum`, or `script` with an explicit installed
@@ -793,6 +798,22 @@ gzip trailers are refused. The packaged manifest must match both its exact diges
 and the shared parsed preview. Shared icon inspection stays inert. Extraction has
 a ten-second read deadline, checks cancellation per member/128 KiB and bounds tar
 headers/padding in addition to declared expanded bytes.
+
+After extraction and digest verification, the contained entrypoint is checked as
+data against the selected runtime. Scripts require an LF-terminated first line
+within 256 bytes, exactly `#!` followed by the declared installed absolute
+`/usr/bin/<name>` interpreter. Whitespace/arguments, CRLF and `env` wrappers are
+not modeled and are refused. This binds the kernel's interpreter choice; it does
+not execute a probe or establish the interpreter's/plugin's behavior.
+
+Native entrypoints require little-endian Linux/System-V ELF64, the selected amd64
+or arm64 machine, executable/PIE type, valid bounded program/section table ranges
+and an entry address in an executable load segment. At most 128 program headers
+are read. A dynamic interpreter must be a matching installed standard glibc/musl
+loader for that architecture; duplicate/oversized interpreter records fail. This
+is format/runtime consistency, not complete dynamic-symbol/ISA validation or an
+OS sandbox. An incompatible entrypoint never reaches selection, including updates;
+previous selected files, consent and settings remain unchanged.
 
 The store bounds selection to 128 identities/256 KiB, package/staging bytes to
 2 GiB total/512 MiB staging, directory depth to 24, per-directory entries to 131,072

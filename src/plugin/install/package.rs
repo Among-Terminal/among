@@ -213,6 +213,11 @@ pub(super) fn extract(
         ));
     }
     check()?;
+    super::entrypoint::validate(
+        &data::contained_file(directory, &version.manifest.entrypoint)?,
+        artifact,
+        &check,
+    )?;
     let manifest_bytes = data::read_bounded(
         &data::contained_file(directory, "among-plugin.json")?,
         manifest::MAX_MANIFEST_BYTES,

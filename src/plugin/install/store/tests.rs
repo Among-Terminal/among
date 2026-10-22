@@ -629,7 +629,6 @@ fn detached_supervision_retains_real_process_lease_until_the_child_has_been_reap
         .commit_update(second.clone(), &first, || Ok(()), || Ok(()))
         .unwrap();
     drop(transaction);
-    host.reconcile_managed(inventory::read(&root.0).unwrap().remove(0), None);
     let (transaction, mut third) = prepared(&root.0);
     third.repository_id = 12;
     third.installation = first.installation.clone();
@@ -643,19 +642,47 @@ fn detached_supervision_retains_real_process_lease_until_the_child_has_been_reap
         0,
         "actual TERM-ignoring old child remains supervised during stop grace"
     );
+    let directory = open_existing_root(&root.0).unwrap();
+    let package = data::contained_directory(
+        &directory,
+        &format!(
+            "generations/{}/{}/{}",
+            first.repository_id, first.plugin_id, first.generation
+        ),
+    )
+    .unwrap();
+    let lease = data::contained_file(&package, ".among-lease").unwrap();
+    assert_ne!(
+        unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0,
+        "the dropped host cannot be the supervisor's last lease owner"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EWOULDBLOCK)
+    );
+    drop(lease);
     let transaction = Transaction::new(&root.0, 0, || Ok(())).unwrap();
     drop(transaction);
-    assert!(
-        first.package_path(&root.0).exists(),
-        "supervisor command, not the dropped host, owns this final lease"
-    );
+    if unsafe { libc::kill(pid as i32, 0) } == 0 {
+        assert!(
+            first.package_path(&root.0).exists(),
+            "cleanup cannot delete beneath the actual live old child"
+        );
+    }
     while unsafe { libc::kill(pid as i32, 0) } == 0 {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(2));
     }
-    let transaction = Transaction::new(&root.0, 0, || Ok(())).unwrap();
-    drop(transaction);
-    assert!(!first.package_path(&root.0).exists());
+    while first.package_path(&root.0).exists() {
+        assert!(
+            Instant::now() < deadline,
+            "cleanup must eventually observe release of the supervisor's final lease"
+        );
+        let transaction = Transaction::new(&root.0, 0, || Ok(())).unwrap();
+        drop(transaction);
+        std::thread::sleep(Duration::from_millis(2));
+    }
     println!("PASS real TERM-ignoring child retained lease after host drop; cleanup waited for bounded supervisor kill/reap");
 }
 
