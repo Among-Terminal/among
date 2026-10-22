@@ -1,8 +1,9 @@
-//! one cancellable worker owns spawn, nonblocking pipes and reaping. retaining
-//! its handle until exit prevents rapid toggles from accumulating generations.
+//! one cancellable worker owns spawn, nonblocking pipes and retirement. retaining
+//! its handle through group quiescence and leader reap prevents overlapping generations.
 
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -21,6 +22,9 @@ const SPAWN_BUSY_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
 mod spawn_tests;
+
+#[cfg(test)]
+mod retirement_tests;
 
 pub enum Failure {
     Missing(String),
@@ -359,12 +363,20 @@ fn terminate_and_reap(child: &mut Child) {
     // process_group(0) makes this owned child's PID its group ID. do not claim
     // control of a descendant that deliberately escapes the supervised group.
     if let Ok(pid) = i32::try_from(child.id()) {
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
+        let _ = signal_reserved_group(child, libc::SIGTERM);
         std::thread::sleep(STOP_GRACE);
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
+        let mut group = GroupQuiescence::new(std::path::Path::new("/proc"));
+        loop {
+            // retain the unreaped leader across every group signal, including
+            // retries for a fork already in flight when KILL was first queued.
+            if signal_reserved_group(child, libc::SIGKILL).is_ok()
+                && matches!(group.poll(pid, member_exited), Ok(true))
+            {
+                break;
+            }
+            // unknown procfs/ownership or an uninterruptible member retains this
+            // generation. never turn missing confirmation into finished() == true.
+            std::thread::sleep(Duration::from_millis(IO_INTERVAL_MS as u64));
         }
     } else {
         let _ = child.kill();
@@ -374,6 +386,191 @@ fn terminate_and_reap(child: &mut Child) {
     while child.wait().is_err() {
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn signal_reserved_group(child: &Child, signal: i32) -> io::Result<()> {
+    let group = i32::try_from(child.id()).map_err(|_| io::Error::other("invalid plugin PID"))?;
+    child_exited(child.id())?; // WNOWAIT also refuses a no-longer-owned/reaped PID.
+    if unsafe { libc::kill(-group, signal) } < 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+struct GroupQuiescence<'a> {
+    root: &'a std::path::Path,
+    entries: Option<std::fs::ReadDir>,
+    uncertain: bool,
+    prior_quiet: bool,
+}
+
+impl<'a> GroupQuiescence<'a> {
+    fn new(root: &'a std::path::Path) -> Self {
+        Self {
+            root,
+            entries: None,
+            uncertain: false,
+            prior_quiet: false,
+        }
+    }
+
+    fn poll(
+        &mut self,
+        group: i32,
+        mut exited: impl FnMut(u32) -> io::Result<bool>,
+    ) -> io::Result<bool> {
+        if self.entries.is_none() {
+            self.entries = match std::fs::read_dir(self.root) {
+                Ok(entries) => Some(entries),
+                Err(error) => {
+                    self.prior_quiet = false;
+                    return Err(error);
+                }
+            };
+            self.uncertain = false;
+        }
+        // scan incrementally: constant memory and at most 256 entries per worker
+        // interval, even on a host with many unrelated processes. no PID signals
+        // are derived from this scan; only the still-reserved group is signalled.
+        for _ in 0..256 {
+            let entry = self.entries.as_mut().and_then(Iterator::next);
+            let Some(entry) = entry else {
+                self.entries = None;
+                if self.uncertain {
+                    self.prior_quiet = false;
+                    return Err(io::Error::other("cannot confirm plugin group quiescence"));
+                }
+                // separate complete observations with another group KILL/poll,
+                // rather than treating one changing procfs traversal as atomic.
+                let confirmed = self.prior_quiet;
+                self.prior_quiet = true;
+                return Ok(confirmed);
+            };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    self.uncertain = true;
+                    continue;
+                }
+            };
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+                continue;
+            }
+            match member_group(&entry.path().join("stat")) {
+                Ok(Some(owner)) if owner == group => {
+                    match name.parse::<u32>().ok().map(&mut exited) {
+                        Some(Ok(true)) => {}
+                        Some(Ok(false)) => {
+                            self.entries = None;
+                            self.prior_quiet = false;
+                            return Ok(false);
+                        }
+                        _ => self.uncertain = true,
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => self.uncertain = true,
+            }
+        }
+        Ok(false)
+    }
+}
+
+fn member_exited(pid: u32) -> io::Result<bool> {
+    // a zombie main thread is not sufficient: other threads may still execute.
+    // pidfd readiness observes whole-process exit without waiting/reaping a child
+    // belonging to init/another subreaper. keep only this one fd during the check.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(true)
+        } else {
+            Err(error)
+        };
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd as RawFd) };
+    let mut poll = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if poll.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+        return Err(io::Error::other("cannot confirm plugin member exit"));
+    }
+    Ok(poll.revents & libc::POLLIN != 0)
+}
+
+fn member_group(path: &std::path::Path) -> io::Result<Option<i32>> {
+    let gone = |error: &io::Error| {
+        error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+    };
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if gone(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("procfs observation is not a regular file"));
+    }
+    let mut bytes = [0; 4096];
+    let mut used = 0;
+    for _ in 0..32 {
+        if used == bytes.len() {
+            break;
+        }
+        match file.read(&mut bytes[used..]) {
+            Ok(0) => return stat_group(&bytes[..used]).map(Some),
+            Ok(count) => used += count,
+            Err(error) if gone(&error) => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other("unconfirmed bounded procfs stat read"))
+}
+
+fn stat_group(bytes: &[u8]) -> io::Result<i32> {
+    let invalid = || io::Error::other("invalid procfs group observation");
+    // comm can contain whitespace, ')' and non-UTF-8 bytes. only a full bounded
+    // read through real EOF may establish its last ')' and the framed pgrp field.
+    let end = bytes
+        .iter()
+        .rposition(|byte| *byte == b')')
+        .ok_or_else(invalid)?;
+    let mut fields = bytes[end + 1..]
+        .split(|byte| byte.is_ascii_whitespace())
+        .filter(|field| !field.is_empty());
+    fields
+        .next()
+        .filter(|field| field.len() == 1)
+        .ok_or_else(invalid)?;
+    fields.next().ok_or_else(invalid)?; // parent PID is not our retirement authority.
+    let field = fields.next().ok_or_else(invalid)?;
+    fields.next().ok_or_else(invalid)?; // pgrp must end before another stat field.
+    if !field.iter().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let group = std::str::from_utf8(field)
+        .ok()
+        .and_then(|field| field.parse::<i32>().ok())
+        .filter(|group| *group >= 0)
+        .ok_or_else(invalid)?;
+    Ok(group)
 }
 
 #[cfg(test)]
@@ -394,7 +591,7 @@ mod tests {
         Process::start(command).unwrap()
     }
 
-    fn until(mut check: impl FnMut() -> bool) {
+    pub(super) fn until(mut check: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !check() {
             assert!(
@@ -405,7 +602,7 @@ mod tests {
         }
     }
 
-    fn live(pid: u32) -> bool {
+    pub(super) fn live(pid: u32) -> bool {
         live_from_stat(pid, std::fs::read_to_string(format!("/proc/{pid}/stat")))
     }
 
