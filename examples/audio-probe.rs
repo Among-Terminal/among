@@ -113,7 +113,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .next()
         .map(PathBuf::from)
         .ok_or("bounded fixture WAV required")?;
-    let root = args.next().map(PathBuf::from);
+    // Lifecycle replacements must retain the capture's supplied waveform, not
+    // silently switch to the built-in two-frequency alert.
+    let fixture = input.clone();
+    let root = args.next().filter(|arg| arg != "-").map(PathBuf::from);
     let keys = [
         "GTK_PATH",
         "GTK_MEDIA",
@@ -167,6 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             audio.shutdown();
             drop(audio);
             audio = Audio::new()?;
+            audio.select(Sound::read_local(&fixture)?)?;
             audio.set_event_admitted(true);
             let current = request_after_retirement(|| audio.event())?;
             assert_ne!(old, current);
@@ -187,7 +191,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             assert_eq!(audio.event()?, Request::Suppressed);
             if scenario == "snapshot" {
                 let path = output.join("owned-selection.wav");
-                fs::write(&path, Sound::builtin()?.bytes())?;
+                fs::copy(&fixture, &path)?;
                 let snapshot = Sound::read_local(&path)?;
                 audio.select(snapshot)?;
                 fs::remove_file(&path)?;
@@ -212,7 +216,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         assert_eq!(audio.preview().err(), Some(AudioError::Closed));
                     }
                     "replace" => {
-                        audio.select(Sound::builtin()?)?;
+                        audio.select(Sound::read_local(&fixture)?)?;
                         assert!(!audio.is_active());
                         request_after_retirement(|| audio.preview())?;
                     }
@@ -244,10 +248,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             let called = Rc::new(Cell::new(false));
             let callback = called.clone();
             let file = output.join("obsolete.wav");
-            fs::write(&file, Sound::builtin()?.bytes())?;
+            fs::copy(&fixture, &file)?;
             audio.select_local(file, move |_| callback.set(true))?;
             audio.cancel();
-            audio.select(Sound::builtin()?)?;
+            audio.select(Sound::read_local(&fixture)?)?;
             assert!(!audio.is_active());
             assert!(matches!(audio.preview()?, Request::Started(_)));
             spin(Duration::from_millis(500));

@@ -110,7 +110,14 @@ pub unsafe extern "C" fn gtk_media_file_new_for_filename(
     }
     let native: unsafe extern "C" fn(*const std::ffi::c_char) -> *mut gtk::ffi::GtkMediaFile =
         unsafe { std::mem::transmute(symbol) };
-    unsafe { native(filename) }
+    let media = unsafe { native(filename) };
+    if let Some(root) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        let _ = fs::write(
+            root.join("audio-native-returned"),
+            std::process::id().to_string(),
+        );
+    }
+    media
 }
 
 #[unsafe(no_mangle)]

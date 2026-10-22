@@ -590,7 +590,7 @@ pub fn retirement(
     }
     let input = prepared.join("fixtures/1-16.wav").canonicalize()?;
     let mut results = Vec::new();
-    for scenario in [
+    let positive = [
         "stall-construct-cancel",
         "stall-retire-shutdown",
         "stall-event-revoke",
@@ -600,17 +600,38 @@ pub fn retirement(
         "helper-crash",
         "stall-quarantine",
         "late-expiry",
-    ] {
-        let evidence = base.join(scenario);
+    ];
+    let cancellations = [
+        "cancel-before-spawn",
+        "cancel-late-spawn",
+        "cancel-constructor",
+        "cancel-pending-permit",
+        "cancel-late-spawn-event-revoke",
+        "cancel-late-spawn-source-replace",
+        "cancel-late-spawn-shutdown",
+        "cancel-late-spawn-owner-drop",
+    ];
+    let cases: Vec<_> = positive
+        .into_iter()
+        .map(|case| (case.to_string(), true))
+        .chain(cancellations.into_iter().flat_map(|case| {
+            [
+                (case.to_string(), false),
+                (format!("{case}-recovery"), true),
+            ]
+        }))
+        .collect();
+    for (scenario, expected_signal) in cases {
+        let evidence = base.join(&scenario);
         let signal = audio_capture::run(
             &Invocation {
                 probe: &probe,
-                scenario,
+                scenario: &scenario,
                 input: &input,
                 payload: &payload,
                 installed: scope == "snap-installed",
                 expected_failure: None,
-                signal: true,
+                signal: expected_signal,
             },
             &evidence,
         )?;
@@ -628,7 +649,9 @@ pub fn retirement(
         {
             return Err("retirement liveness measurements violated the contract".into());
         }
-        maps(&payload, &evidence)?;
+        if expected_signal {
+            maps(&payload, &evidence)?;
+        }
         let separated_output = if scenario == "stall-retire-shutdown" {
             Some(audio_capture::recovered_output(&fs::read(
                 evidence.join("capture.s16le"),
