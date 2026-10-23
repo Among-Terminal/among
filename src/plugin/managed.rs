@@ -22,6 +22,54 @@ pub const FEATURES: &[&str] = &[
     "events.terminal",
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationRole {
+    Producer,
+    Delivery,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationRoleConflict {
+    RequiredRoles,
+    ReviewChoice,
+}
+
+impl NotificationRoleConflict {
+    pub fn problem(self) -> Problem {
+        Problem(match self {
+            Self::RequiredRoles => {
+                "notification production and delivery cannot both be required by one process"
+            }
+            Self::ReviewChoice => {
+                "choose either notification production or delivery in the explicit access review"
+            }
+        })
+    }
+}
+
+/// the retained identity-scoped review.features list is the role choice. never
+/// infer preference from channel policy or silently delete one granted role.
+pub fn notification_role(
+    features: &BTreeSet<String>,
+) -> Result<Option<NotificationRole>, NotificationRoleConflict> {
+    match (
+        features.contains("notifications.produce"),
+        features.contains("notifications.deliver"),
+    ) {
+        (true, true) => Err(NotificationRoleConflict::ReviewChoice),
+        (true, false) => Ok(Some(NotificationRole::Producer)),
+        (false, true) => Ok(Some(NotificationRole::Delivery)),
+        (false, false) => Ok(None),
+    }
+}
+
+pub fn required_notification_role(
+    manifest: &Manifest,
+) -> Result<Option<NotificationRole>, NotificationRoleConflict> {
+    notification_role(&manifest.required_features.iter().cloned().collect())
+        .map_err(|_| NotificationRoleConflict::RequiredRoles)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub session: String,
@@ -29,32 +77,7 @@ pub struct World {
     pub legacy: Context,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Target {
-    Application,
-    Workspace {
-        #[serde(
-            serialize_with = "serialize_reference",
-            deserialize_with = "deserialize_reference"
-        )]
-        reference: u64,
-    },
-    Pane {
-        #[serde(
-            serialize_with = "serialize_reference",
-            deserialize_with = "deserialize_reference"
-        )]
-        reference: u64,
-    },
-}
-
-fn serialize_reference<S: serde::Serializer>(
-    reference: &u64,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(&reference.to_string())
-}
+pub use among::plugin_notifications::{Scope, Target};
 
 pub fn parse_reference(value: &str) -> Result<u64, Problem> {
     if value.len() > 20 {
@@ -67,20 +90,6 @@ pub fn parse_reference(value: &str) -> Result<u64, Problem> {
         return Err(Problem("noncanonical managed target or cursor"));
     }
     Ok(reference)
-}
-
-fn deserialize_reference<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<u64, D::Error> {
-    let value = String::deserialize(deserializer)?;
-    parse_reference(&value).map_err(serde::de::Error::custom)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Scope {
-    pub slot: String,
-    pub target: Target,
 }
 
 impl World {
@@ -301,7 +310,17 @@ pub fn granted_features(
     receipt: &super::inventory::Receipt,
     local: Option<&Value>,
 ) -> Result<BTreeSet<String>, Problem> {
-    manifest.compatibility(MAJOR, MINOR, FEATURES)?;
+    granted_features_with(manifest, receipt, local, FEATURES)
+}
+
+pub fn granted_features_with(
+    manifest: &Manifest,
+    receipt: &super::inventory::Receipt,
+    local: Option<&Value>,
+    supported: &[&str],
+) -> Result<BTreeSet<String>, Problem> {
+    required_notification_role(manifest).map_err(NotificationRoleConflict::problem)?;
+    manifest.compatibility(MAJOR, MINOR, supported)?;
     let review = local
         .and_then(|local| local.get("review"))
         .ok_or(Problem("explicit plugin access review is required"))?;
@@ -320,7 +339,7 @@ pub fn granted_features(
         let feature = grant
             .as_str()
             .ok_or(Problem("invalid retained plugin grant"))?;
-        if FEATURES.contains(&feature)
+        if supported.contains(&feature)
             && manifest
                 .required_features
                 .iter()
@@ -342,6 +361,7 @@ pub fn granted_features(
 }
 
 pub fn feature_dependencies(selected: &BTreeSet<String>) -> Result<(), Problem> {
+    notification_role(selected).map_err(NotificationRoleConflict::problem)?;
     if selected.iter().any(|feature| {
         matches!(
             feature.as_str(),
@@ -393,6 +413,23 @@ pub enum Request {
         generation: String,
         event: Value,
     },
+    Deliver {
+        session: String,
+        generation: String,
+        delivery: among::plugin_notifications::Delivery,
+    },
+    CancelDelivery {
+        session: String,
+        generation: String,
+        job_id: u64,
+    },
+    NotificationAction {
+        session: String,
+        generation: String,
+        contribution: String,
+        revision: u64,
+        action: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,6 +464,27 @@ pub enum Response {
         scope: Scope,
         cursor: Option<String>,
     },
+    NotificationEvent {
+        session: String,
+        generation: String,
+        event: among::plugin_notifications::EventInput,
+    },
+    NotificationContribution {
+        session: String,
+        generation: String,
+        contribution: among::plugin_notifications::ContributionInput,
+    },
+    WithdrawNotification {
+        session: String,
+        generation: String,
+        id: String,
+    },
+    DeliveryResult {
+        session: String,
+        generation: String,
+        job_id: u64,
+        outcome: among::plugin_notifications::DeliveryOutcome,
+    },
     Notify {},
     Error {},
 }
@@ -460,6 +518,30 @@ pub fn parse(bytes: &[u8]) -> Result<Response, Problem> {
 mod tests {
     use super::super::protocol::TerminalInfo;
     use super::*;
+
+    #[test]
+    fn explicit_role_choice_allows_ui_but_never_prefers_one_conflicting_grant() {
+        use NotificationRole::*;
+        for (features, expected) in [
+            (vec!["notifications.ui"], Ok(None)),
+            (
+                vec!["notifications.produce", "notifications.ui"],
+                Ok(Some(Producer)),
+            ),
+            (
+                vec!["notifications.deliver", "notifications.ui"],
+                Ok(Some(Delivery)),
+            ),
+            (
+                vec!["notifications.produce", "notifications.deliver"],
+                Err(NotificationRoleConflict::ReviewChoice),
+            ),
+        ] {
+            let features = features.into_iter().map(str::to_owned).collect();
+            assert_eq!(notification_role(&features), expected);
+            assert_eq!(feature_dependencies(&features).is_ok(), expected.is_ok());
+        }
+    }
 
     fn world() -> World {
         World {

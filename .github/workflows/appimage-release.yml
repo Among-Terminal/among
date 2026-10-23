@@ -33,7 +33,7 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
       CARGO_HOME: /opt/among-cargo
       RUSTUP_HOME: /opt/among-rustup
-      CARGO_BUILD_JOBS: '2'
+      CARGO_BUILD_JOBS: '1'
       RUST_HOST: ${{ matrix.rust_host }}
       BUILD_ARCH: ${{ matrix.architecture }}
       REF_TYPE: ${{ github.ref_type }}
@@ -41,13 +41,18 @@ jobs:
     steps:
       - name: Install the Ubuntu 24.04 build image packages
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates curl file build-essential \
+            apt-get update
+            # Refresh base runtimes too: an old SONAME-compatible dependency can
+            # satisfy installation while its exact source has left the index.
+            apt-get upgrade -y --no-install-recommends
+            apt-get install -y --no-install-recommends git ca-certificates curl file build-essential \
             pkg-config libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev desktop-file-utils \
-            libglib2.0-bin librsvg2-common adwaita-icon-theme gsettings-desktop-schemas shared-mime-info
+              libglib2.0-bin librsvg2-common adwaita-icon-theme gsettings-desktop-schemas shared-mime-info \
+              libgtk-4-media-gstreamer gstreamer1.0-plugins-base gstreamer1.0-plugins-good
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install pinned Rust toolchain in the build container
         run: |
           base="https://static.rust-lang.org/rustup/archive/1.28.2/${RUST_HOST}"
@@ -61,6 +66,7 @@ jobs:
       - name: Build the application, plugins and tooling
         run: |
           cargo build --release --locked
+          cargo build --release --locked --example audio-probe --example audio-retirement-probe
           cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Name the candidate after the tag or the package version
@@ -102,11 +108,21 @@ jobs:
           tools/among-tools/target/release/among-tools collect-appimage-sources \
             "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.audit.json" appimage-sources
       - name: Bind the checker for the clean hosts
+        env:
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir appimage-checker
           cp tools/among-tools/target/release/among-tools appimage-checker/among-tools
+          source="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+            GIT_CONFIG_VALUE_0="$(pwd -P)" git rev-parse HEAD^{commit})"
+          test "$source" = "$EXPECTED_SOURCE"
+          tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-probe \
+            "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/audio
+          tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-retirement-probe \
+            "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/retirement
+          printf '%s\n' "$source" > appimage-checker/source-sha
           cd appimage-checker
-          sha256sum among-tools > SHA256SUMS
+          sha256sum among-tools audio/audio-probe audio/audio-receipt.json retirement/audio-probe retirement/audio-receipt.json source-sha > SHA256SUMS
       - name: Retain build logs after a failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -201,12 +217,14 @@ jobs:
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates \
               fuse3 xvfb xauth openbox dbus-x11 xdotool x11-utils procps imagemagick \
               libwayland-client0 libx11-6 libxcb1 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
-              libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core
+              libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core \
+              libgl1 libegl1 libgles2 libgbm1 libdrm2 libx11-xcb1 pulseaudio pulseaudio-utils patchelf
           else
             dnf install -y git ca-certificates fuse3 xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo \
               xwininfo openbox dbus-x11 xdotool procps-ng ImageMagick util-linux shadow-utils glibc-common \
               libwayland-client libX11 libxcb fontconfig freetype harfbuzz fribidi expat gmp libgpg-error \
-              libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts
+              libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts \
+              libglvnd-glx libglvnd-egl libglvnd-gles mesa-libgbm libdrm libX11-xcb pulseaudio pulseaudio-utils patchelf
           fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -228,6 +246,43 @@ jobs:
           chmod 755 appimage-checker/among-tools
           appimage-checker/among-tools ci-appimage-install . "$HOST" "$BUILD_ARCH" \
             appimage-candidate appimage-runtime-evidence
+      - name: Capture actual packaged backend output and missing-member failures
+        id: audio_capture
+        if: ${{ !cancelled() }}
+        env:
+          BUILD_ARCH: ${{ matrix.architecture }}
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(cat appimage-checker/source-sha)" = "$EXPECTED_SOURCE"
+          (cd appimage-checker && sha256sum --check SHA256SUMS)
+          chmod 755 appimage-checker/among-tools appimage-checker/audio/audio-probe
+          useradd --create-home --shell /bin/bash among-audio
+          mkdir audio-package-evidence
+          chown among-audio:among-audio audio-package-evidence
+          set -- appimage-candidate/*.AppImage
+          test "$#" -eq 1
+          runuser -u among-audio -- env RUNNER_ARCH="$RUNNER_ARCH" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            "$PWD/appimage-checker/among-tools" check-audio-package appimage "$PWD/$1" \
+            "$PWD/appimage-checker/audio" "$EXPECTED_SOURCE" "$BUILD_ARCH" "$PWD/audio-package-evidence/run"
+      - name: Stall native decoder construction and retirement without blocking GTK
+        if: ${{ !cancelled() && steps.audio_capture.outcome == 'success' }}
+        env:
+          BUILD_ARCH: ${{ matrix.architecture }}
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -- appimage-candidate/*.AppImage
+          test "$#" -eq 1
+          runuser -u among-audio -- "$PWD/appimage-checker/among-tools" check-audio-retirement \
+            "$PWD/audio-package-evidence/run" "$PWD/$1" "$PWD/appimage-checker/retirement" \
+            "$EXPECTED_SOURCE" "$BUILD_ARCH" "$PWD/audio-package-evidence/retirement"
+      - name: Retain audio capture and module maps even on failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-audio-${{ matrix.host }}-${{ matrix.architecture }}
+          path: audio-package-evidence/
+          if-no-files-found: error
+          retention-days: 14
       - name: Retain display check evidence after a failure
         # The job log names the failed check; its application log, helper
         # output and screenshots live only under the check root.

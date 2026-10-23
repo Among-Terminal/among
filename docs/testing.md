@@ -51,6 +51,27 @@ describe the drag target; `sidebar_resize_rect=[edge:x+y+WxH]` and
 client-side shadow offsets, so real pointer events can target the narrow edge.
 `notices_recorded` counts logged terminal/plugin notices, not visible pop-ups.
 
+Bell backend probes report `bell_events`, `bell_application_active`,
+`bell_viewed`, per-pane `bell_panes` (unread/pulse state), current-member
+`bell_workspaces` aggregates and bounded `bell_diagnostics`. These are backend
+observations, not evidence that notification stripes or audio were presented.
+See [the implemented bell boundary and pending adapters](terminal-bell-backend.md).
+
+The ignored application test
+`app::bell_tests::live_bells_follow_terminal_focus_lifetime_and_owned_windows`
+requires the isolated X11 harness, a window manager and xdotool. It drives actual
+PTY bells and OSC terminators, native Preferences/menu focus, hidden terminals,
+Restore, unrelated-window activation and stale source callbacks. It checks
+backend state and real focus, not notification rendering or audio output.
+
+The command integration test `cargo test --locked --test notification_commands`
+compiles its synthetic Rust executable and retains process/stdin/environment
+evidence under `AMONG_COMMAND_TEST_ROOT` (or `target/notification-command-tests`).
+It uses the production ten-second deadline and 32-KiB combined output budget.
+Run it before the ignored native command-input test described in the
+[command backend contract](notification-commands.md), so the isolated display
+can use the cached fixture without needing a compiler in its stripped environment.
+
 See [contributor checks](../CONTRIBUTING.md#checking-changes) for isolated X11 tests.
 
 ## Where checks keep their evidence
@@ -72,6 +93,23 @@ The display harness passes `AMONG_CHECK_ROOT` to every command it runs. The
 application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
+
+## Notification accessibility consumers
+
+Checks selects the unique application test executable from real Cargo records
+and runs four exact notification UI cases on individual owned displays: the
+positive/negative accessibility guard, provider controls/actions, explicit role
+review/restoration and visual attention/geometry. The ordinary package tests
+prepare the command fixture; the workflow also builds the notification plugin.
+Missing fixtures, absent/ambiguous test selection, a failed process or anything
+other than one passing test per invocation fails the step.
+
+These tests set `GTK_A11Y=test` before GTK initialization and require an actual
+AT context and property before comparing accessible values. An outer environment
+variable is not sufficient because the generic display runner disables a11y by
+default. The ordinary ignored-test suite is still mandatory and unchanged;
+these targeted cases do not replace its other tests or establish audio output,
+packaged behavior or whole-release acceptance.
 
 ## Installer ENOSPC context
 

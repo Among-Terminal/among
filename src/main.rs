@@ -25,9 +25,20 @@ use gtk::{gio, glib};
 use vte::prelude::*;
 
 fn main() -> glib::ExitCode {
+    if let Some(code) = among::notifications::commands::supervisor_entry() {
+        return glib::ExitCode::from(code);
+    }
+    if let Some(code) = among::audio::decoder_dispatch() {
+        return code;
+    }
     if let Err(error) = packaged::initialize()
         .and_then(|()| initialize_packaged_schemas())
         .and_then(|()| initialize_packaged_images())
+        .and_then(|()| {
+            // cache only execution context here; decoder construction/discovery
+            // and native teardown belong to the supervised helper, not GTK UI.
+            among::audio::initialize_execution(packaged::root())
+        })
     {
         eprintln!("among: {error}");
         return glib::ExitCode::FAILURE;
@@ -51,7 +62,14 @@ fn main() -> glib::ExitCode {
         .build();
 
     app.connect_activate(move |app| app::build(app, requested));
-    app.run()
+    let code = app.run();
+    // GUI callbacks never wait for native teardown. This post-loop guard only
+    // confirms the owned helper's bounded retirement before the host exits.
+    if !among::audio::finish_execution_shutdown() {
+        eprintln!("among: audio cleanup is unconfirmed at host shutdown");
+        return glib::ExitCode::FAILURE;
+    }
+    code
 }
 
 fn initialize_packaged_schemas() -> Result<(), String> {

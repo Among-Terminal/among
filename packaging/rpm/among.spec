@@ -11,7 +11,8 @@ Source0:        %{name}-%{version}.tar.gz
 # vX_Y feature of gtk4, libadwaita and vte4 in Cargo.toml); the linked
 # executable carries no version of its own for these libraries. check-rpm-spec
 # refuses a floor below that level. Runtime requirements are the soname
-# dependencies rpmbuild generates from the linked executables.
+# dependencies rpmbuild generates from the linked executables. Dynamically
+# discovered WAV plugins need explicit requirements as well.
 BuildRequires:  pkgconfig(gtk4) >= 4.12
 BuildRequires:  pkgconfig(libadwaita-1) >= 1.5
 BuildRequires:  pkgconfig(vte-2.91-gtk4) >= 0.76
@@ -26,6 +27,13 @@ Requires:       librsvg2
 Requires:       adwaita-icon-theme
 Requires:       hicolor-icon-theme
 Requires:       gsettings-desktop-schemas
+# Fedora's gtk4 package includes the GStreamer media implementation (built into
+# libgtk on current Fedora); WAV parsing and pulsesink are in plugins-good.
+Requires:       gtk4 >= 4.12
+Requires:       gstreamer1-plugins-good
+# The media paintable uses GLES even for audio-only input; this dlopen is not a
+# DT_NEEDED dependency and minimal Fedora installs otherwise abort in libepoxy.
+Requires:       libglvnd-gles
 
 %description
 Organize live terminals in resizable panes and persistent project workspaces.
