@@ -70,6 +70,12 @@ fn type_entry(row: &adw::EntryRow, text: &str) {
 fn app() -> (adw::Application, Window) {
     let config = PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap());
     crate::test_isolation::assert_below_check_root(&config);
+    assert!(
+        !gtk::is_initialized(),
+        "notification UI tests require a fresh process before GTK initialization"
+    );
+    // the owned-display runner disables a11y; GTK caches that choice at init.
+    std::env::set_var("GTK_A11Y", "test");
     let app = adw::Application::builder()
         .application_id("com.github.among-terminal.notification-ui-test")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
@@ -108,13 +114,25 @@ fn accessible_property(
     expected: &str,
 ) {
     use glib::translate::*;
+    assert_eq!(std::env::var("GTK_A11Y").as_deref(), Ok("test"));
+    let accessible = widget.as_ref().to_glib_none().0;
+    let context = unsafe { gtk::ffi::gtk_accessible_get_at_context(accessible) };
+    assert!(
+        !context.is_null(),
+        "accessible property comparison requires a live AT context"
+    );
+    unsafe {
+        glib::gobject_ffi::g_object_unref(context.cast());
+    }
+    // check_property can return null for a missing context, not only success.
+    assert_ne!(
+        unsafe { gtk::ffi::gtk_test_accessible_has_property(accessible, property) },
+        0,
+        "expected accessible property is absent"
+    );
     let text = std::ffi::CString::new(expected).unwrap();
     let error = unsafe {
-        gtk::ffi::gtk_test_accessible_check_property(
-            widget.as_ref().to_glib_none().0,
-            property,
-            text.as_ptr(),
-        )
+        gtk::ffi::gtk_test_accessible_check_property(accessible, property, text.as_ptr())
     };
     if !error.is_null() {
         let problem = unsafe { std::ffi::CStr::from_ptr(error) }
@@ -123,8 +141,42 @@ fn accessible_property(
         unsafe {
             glib::ffi::g_free(error.cast());
         }
-        panic!("accessible label mismatch: {problem}");
+        panic!("accessible property mismatch: {problem}");
     }
+}
+
+#[test]
+#[ignore = "requires an owned X11 display/WM and private XDG roots; sets GTK_A11Y=test before initialization"]
+fn accessibility_checks_reject_missing_and_incorrect_properties() {
+    let (app, ctx) = app();
+    let button = gtk::Button::with_label("Accessibility guard");
+    let window = gtk::Window::builder()
+        .application(&app)
+        .transient_for(&ctx.window)
+        .child(&button)
+        .build();
+    window.present();
+    pump_for(Duration::from_millis(150));
+    assert!(button.is_mapped());
+    button.update_property(&[gtk::accessible::Property::Description("guarded value")]);
+    let check = |expected| {
+        accessible_property(
+            &button,
+            gtk::ffi::GTK_ACCESSIBLE_PROPERTY_DESCRIPTION,
+            expected,
+        );
+    };
+    check("guarded value");
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check("wrong value"))).is_err()
+    );
+    button.reset_property(gtk::AccessibleProperty::Description);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check("guarded value"))).is_err()
+    );
+    window.destroy();
+    ctx.window.destroy();
+    println!("PASS live accessibility comparison accepts the expected property and rejects mismatched or absent values");
 }
 
 #[test]
