@@ -2,6 +2,7 @@ use crate::{process::OwnedProcess, storage, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -12,6 +13,82 @@ pub const MANIFESTS: [&str; 3] = [
     "examples/plugins/Cargo.toml",
     "tools/among-tools/Cargo.toml",
 ];
+
+fn locked_download_identity(root: &Path, manifest: &str, diagnostic: &str) -> Option<String> {
+    let identity = diagnostic.lines().find_map(|line| {
+        line.strip_prefix("error: failed to download `")?
+            .strip_suffix('`')
+    })?;
+    let (name, version) = identity.split_once(" v")?;
+    if name.len() > 64
+        || version.len() > 64
+        || name.is_empty()
+        || version.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b".+-".contains(&byte))
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::open(root.join(manifest).with_file_name("Cargo.lock"))
+        .ok()?
+        .take(256 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 256 * 1024 {
+        return None;
+    }
+    let lock = toml::from_str::<toml::Value>(std::str::from_utf8(&bytes).ok()?).ok()?;
+    lock.get("package")?.as_array()?.iter().find(|package| {
+        package.get("name").and_then(toml::Value::as_str) == Some(name)
+            && package.get("version").and_then(toml::Value::as_str) == Some(version)
+    })?;
+    Some(format!("{name} v{version}"))
+}
+
+fn metadata_failure(
+    root: &Path,
+    base: &Path,
+    index: usize,
+    manifest: &str,
+    status: &std::process::ExitStatus,
+) -> Result<String> {
+    let stderr = base.join(format!("metadata-{index}.stderr"));
+    let mut prefix = Vec::new();
+    File::open(&stderr)?.take(8192).read_to_end(&mut prefix)?;
+    let text = String::from_utf8_lossy(&prefix);
+    // cargo can echo authenticated URLs, local configuration and terminal escapes;
+    // only fixed diagnoses and identities already in this locked graph may leave scratch.
+    let diagnostic = if text.contains("failed to download") && text.contains("--offline") {
+        match locked_download_identity(root, manifest, &text) {
+            Some(identity) => {
+                format!("offline metadata requires download of locked crate {identity}")
+            }
+            None => "offline metadata requires an unavailable download".into(),
+        }
+    } else {
+        "Cargo diagnostic withheld; inspect the private raw stderr".into()
+    };
+    fs::write(
+        base.join("metadata-failure.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema": 1,
+            "graph_index": index,
+            "manifest": manifest,
+            "status": status.to_string(),
+            "stderr_bytes": fs::metadata(stderr)?.len(),
+            "diagnostic": diagnostic,
+        }))?,
+    )?;
+    Ok(format!(
+        "locked Cargo metadata failed for graph {index} ({manifest}); {status}; {diagnostic}; raw stderr retained privately under the notice check root"
+    ))
+}
+
 pub fn inventory(
     graphs: &[(&str, Value)],
     root: &Path,
@@ -178,10 +255,9 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
             &log,
             &errors,
         )?;
-        if !process.wait(Duration::from_secs(180))?.success() {
-            return Err(
-                format!("locked Cargo metadata failed; evidence: {}", base.display()).into(),
-            );
+        let status = process.wait(Duration::from_secs(180))?;
+        if !status.success() {
+            return Err(metadata_failure(root, &base, index, manifest, &status)?.into());
         }
         graphs.push((*manifest, storage::parse_json(&fs::read(output)?)?));
     }

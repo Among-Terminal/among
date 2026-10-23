@@ -22,6 +22,7 @@ pub mod display;
 pub mod gnome_desktop;
 pub mod ignored_tests;
 pub mod installation;
+pub mod installer_enospc;
 pub mod live_focus;
 pub mod live_resize;
 pub mod live_status;
