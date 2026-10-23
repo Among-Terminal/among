@@ -94,6 +94,23 @@ application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
 
+## Notification accessibility consumers
+
+Checks selects the unique application test executable from real Cargo records
+and runs four exact notification UI cases on individual owned displays: the
+positive/negative accessibility guard, provider controls/actions, explicit role
+review/restoration and visual attention/geometry. The ordinary package tests
+prepare the command fixture; the workflow also builds the notification plugin.
+Missing fixtures, absent/ambiguous test selection, a failed process or anything
+other than one passing test per invocation fails the step.
+
+These tests set `GTK_A11Y=test` before GTK initialization and require an actual
+AT context and property before comparing accessible values. An outer environment
+variable is not sufficient because the generic display runner disables a11y by
+default. The ordinary ignored-test suite is still mandatory and unchanged;
+these targeted cases do not replace its other tests or establish audio output,
+packaged behavior or whole-release acceptance.
+
 ## Installer ENOSPC context
 
 `among-tools check-installer-enospc-from-cargo CARGO_TEST_RECORDS` selects the
