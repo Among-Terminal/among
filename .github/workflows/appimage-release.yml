@@ -113,7 +113,8 @@ jobs:
         run: |
           mkdir appimage-checker
           cp tools/among-tools/target/release/among-tools appimage-checker/among-tools
-          source="$(git -c "safe.directory=$(pwd -P)" rev-parse --verify 'HEAD^{commit}')"
+          source="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+            GIT_CONFIG_VALUE_0="$(pwd -P)" git rev-parse HEAD^{commit})"
           test "$source" = "$EXPECTED_SOURCE"
           tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-probe \
             "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/audio
