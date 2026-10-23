@@ -156,7 +156,7 @@ fn accessibility_checks_reject_missing_and_incorrect_properties() {
         .child(&button)
         .build();
     window.present();
-    pump_for(Duration::from_millis(150));
+    wait(|| button.is_mapped(), "accessibility guard mapping");
     assert!(button.is_mapped());
     button.update_property(&[gtk::accessible::Property::Description("guarded value")]);
     let check = |expected| {
