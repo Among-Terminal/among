@@ -107,7 +107,7 @@ the DEB of the same build depends on; on Debian 13 and Ubuntu 24.04 this
 installs them:
 
 ```sh
-sudo apt-get install --no-install-recommends libgtk-4-1 libadwaita-1-0 libvte-2.91-gtk4-0 librsvg2-common
+sudo apt-get install --no-install-recommends libgtk-4-1 libadwaita-1-0 libvte-2.91-gtk4-0 librsvg2-common libgtk-4-media-gstreamer gstreamer1.0-plugins-good
 ```
 
 Extract into a new directory and start Among:
@@ -139,14 +139,17 @@ these are the hosts its release checks start it on. It needs GNU C library
 2.39 or newer, because it is built on Ubuntu 24.04. Some libraries are not
 bundled and must come from the host: the C and C++ runtime, X11 and XCB,
 Wayland client, fontconfig, FreeType, HarfBuzz, FriBidi, Expat, GMP,
-libgpg-error, com_err and zlib. The release checks install them on otherwise
+libgpg-error, com_err, zlib and the host OpenGL/EGL/GLES, GBM and DRM stack.
+The release checks install them on otherwise
 clean hosts with:
 
 ```sh
 sudo apt-get install libwayland-client0 libx11-6 libxcb1 libfontconfig1 libfreetype6 libharfbuzz0b \
-  libfribidi0 libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core
+  libfribidi0 libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core \
+  libgl1 libegl1 libgles2 libgbm1 libdrm2 libx11-xcb1
 sudo dnf install libwayland-client libX11 libxcb fontconfig freetype harfbuzz fribidi expat gmp \
-  libgpg-error libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts
+  libgpg-error libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts \
+  libglvnd-glx libglvnd-egl libglvnd-gles mesa-libgbm libdrm libX11-xcb
 ```
 
 The first line is for Debian and Ubuntu, the second for Fedora.
