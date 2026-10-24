@@ -7,7 +7,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 
 const KEY: &str = "github:1431055733/protocol-fixture";
-const CLIENT_REVISION: &str = "e70970ba88b32fc9210cd9ca01f87027bb745e13";
+const CLIENT_REVISION: &str = "f4d2dc1584b095532740bb55cd2afc5de15fcd92";
 
 struct Fixture {
     host: PluginHost,

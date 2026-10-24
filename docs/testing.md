@@ -82,7 +82,7 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`e70970ba88b32fc9210cd9ca01f87027bb745e13`, verifies its public repository identity,
+`f4d2dc1584b095532740bb55cd2afc5de15fcd92`, verifies its public repository identity,
 and independently builds its `managed-status` **protocol fixture**, not a
 production clock/resource/cwd package. It records both sources, native compiler
 hosts and executable hashes. This tests real `PluginHost`, inventory inspection,

@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_BUILD_JOBS: '1'
-      CLIENT_REVISION: e70970ba88b32fc9210cd9ca01f87027bb745e13
+      CLIENT_REVISION: f4d2dc1584b095532740bb55cd2afc5de15fcd92
       EXPECTED_KERNEL: ${{ matrix.kernel }}
       EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
     steps:
