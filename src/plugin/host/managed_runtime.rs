@@ -6,6 +6,9 @@ use crate::plugin::data::Problem;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
+#[cfg(all(test, feature = "managed-transport-interop"))]
+mod transport_interop;
+
 // one stdout frame remains available for the plugin's single enumeration request.
 const MAX_MANAGED_REPLIES: usize = MAX_INFLIGHT - 1;
 
