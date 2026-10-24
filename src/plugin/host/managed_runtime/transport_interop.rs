@@ -1,13 +1,15 @@
-//! cross-repository protocol fixture, not repository installation or production
-//! plugin acceptance. every response below originates in the real supervised child.
+//! protocol-fixture and separately identified production-clock interoperability.
+//! synthetic receipts do not establish authenticated release installation.
 
 use super::*;
 use crate::plugin::inventory::Receipt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 
+mod clock;
+
 const KEY: &str = "github:1431055733/protocol-fixture";
-const CLIENT_REVISION: &str = "f4d2dc1584b095532740bb55cd2afc5de15fcd92";
+const CLIENT_REVISION: &str = "39141b2d6eb7ce5374c0352f54cc41ec5650b6e1";
 
 struct Fixture {
     host: PluginHost,
@@ -17,6 +19,22 @@ struct Fixture {
 
 impl Fixture {
     fn new(plugin: &str, required: &[&str], optional: &[&str]) -> Self {
+        Self::with_binary(
+            plugin,
+            required,
+            optional,
+            "AMONG_MANAGED_TRANSPORT_FIXTURE",
+            "AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256",
+        )
+    }
+
+    fn with_binary(
+        plugin: &str,
+        required: &[&str],
+        optional: &[&str],
+        source_variable: &str,
+        digest_variable: &str,
+    ) -> Self {
         let parent =
             PathBuf::from(std::env::var_os("AMONG_CHECK_ROOT").expect("explicit owned check root"));
         assert!(parent.is_absolute());
@@ -24,8 +42,7 @@ impl Fixture {
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let source = PathBuf::from(
-            std::env::var_os("AMONG_MANAGED_TRANSPORT_FIXTURE")
-                .expect("build the pinned companion fixture first"),
+            std::env::var_os(source_variable).expect("build the pinned companion binary first"),
         );
         let metadata = std::fs::symlink_metadata(&source).unwrap();
         assert!(source.is_absolute() && metadata.is_file() && metadata.mode() & 0o111 != 0);
@@ -34,8 +51,7 @@ impl Fixture {
         let checksum = inventory::checksum(&bytes).unwrap();
         assert_eq!(
             checksum,
-            std::env::var("AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256")
-                .expect("explicit compiled fixture digest")
+            std::env::var(digest_variable).expect("explicit compiled companion binary digest")
         );
         let manifest = json!({"schema_version":1,"id":plugin,"version":"protocol-fixture",
             "name":"Managed transport fixture","description":"Not a production plugin package",
