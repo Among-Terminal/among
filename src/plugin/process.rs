@@ -20,6 +20,8 @@ const IO_INTERVAL_MS: i32 = 20;
 const SPAWN_BUSY_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
+mod retirement_diagnostics;
+#[cfg(test)]
 mod spawn_tests;
 
 pub enum Failure {
@@ -72,10 +74,23 @@ pub struct Process {
     cancel: Arc<AtomicBool>,
     pid: Arc<AtomicU32>,
     worker: JoinHandle<()>,
+    #[cfg(test)]
+    diagnostics: Option<Arc<retirement_diagnostics::Trace>>,
 }
 
 impl Process {
-    pub fn start(mut command: Command) -> io::Result<Self> {
+    pub fn start(command: Command) -> io::Result<Self> {
+        Self::start_worker(
+            command,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn start_worker(
+        mut command: Command,
+        #[cfg(test)] diagnostics: Option<Arc<retirement_diagnostics::Trace>>,
+    ) -> io::Result<Self> {
         command
             .process_group(0)
             .stdin(Stdio::piped())
@@ -90,6 +105,8 @@ impl Process {
         let worker_cancel = cancel.clone();
         let worker_outstanding = outstanding.clone();
         let worker_pid = pid.clone();
+        #[cfg(test)]
+        let worker_diagnostics = diagnostics.clone();
         // spawn the worker before the child, so a thread-creation failure cannot
         // strand a child or force a GUI-thread wait in the error path.
         let worker = std::thread::Builder::new()
@@ -107,16 +124,33 @@ impl Process {
                     }
                 };
                 worker_pid.store(child.id(), Ordering::Release);
-                if let Err(reason) = pump(
+                #[cfg(test)]
+                if let Some(trace) = &worker_diagnostics {
+                    let _ = trace.observe("leader-after-spawn", child.id());
+                }
+                let result = pump(
                     &mut child,
                     requests,
                     frame_sender,
                     &worker_cancel,
                     &worker_outstanding,
-                ) {
+                );
+                #[cfg(test)]
+                if let Some(trace) = &worker_diagnostics {
+                    trace.event("pump-returned", serde_json::json!({"result": result}));
+                }
+                if let Err(reason) = result {
                     let _ = failure_sender.try_send(Failure::Fault(reason));
                 }
-                terminate_and_reap(&mut child);
+                terminate_and_reap(
+                    &mut child,
+                    #[cfg(test)]
+                    worker_diagnostics.as_deref(),
+                );
+                #[cfg(test)]
+                if let Some(trace) = &worker_diagnostics {
+                    trace.event("worker-returning", serde_json::Value::Null);
+                }
             })?;
         Ok(Self {
             frames,
@@ -126,6 +160,8 @@ impl Process {
             cancel,
             pid,
             worker,
+            #[cfg(test)]
+            diagnostics,
         })
     }
 
@@ -355,23 +391,40 @@ fn child_exited(pid: u32) -> io::Result<bool> {
     Ok(unsafe { info.si_pid() } != 0)
 }
 
-fn terminate_and_reap(child: &mut Child) {
+fn terminate_and_reap(
+    child: &mut Child,
+    #[cfg(test)] diagnostics: Option<&retirement_diagnostics::Trace>,
+) {
     // process_group(0) makes this owned child's PID its group ID. do not claim
     // control of a descendant that deliberately escapes the supervised group.
     if let Ok(pid) = i32::try_from(child.id()) {
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
+        let _result = unsafe { libc::kill(-pid, libc::SIGTERM) };
+        #[cfg(test)]
+        if let Some(trace) = diagnostics {
+            trace.signal("group-term-returned", -pid, libc::SIGTERM, _result);
         }
         std::thread::sleep(STOP_GRACE);
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
+        let _result = unsafe { libc::kill(-pid, libc::SIGKILL) };
+        #[cfg(test)]
+        if let Some(trace) = diagnostics {
+            // no procfs read or diagnostic file I/O between KILL and wait: a
+            // slow observation here could hide the completion race under test.
+            trace.signal("group-kill-returned", -pid, libc::SIGKILL, _result);
         }
     } else {
         let _ = child.kill();
     }
     // an uninterruptible child holds this worker/generation, not the GUI. the
     // caller must not replace it until this function really observes reaping.
-    while child.wait().is_err() {
+    loop {
+        let result = child.wait();
+        #[cfg(test)]
+        if let Some(trace) = diagnostics {
+            trace.wait_result(&result);
+        }
+        if result.is_ok() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -391,7 +444,15 @@ mod tests {
         assert!(path.is_file(), "build fake-plugin before filtered tests");
         let mut command = Command::new(path);
         command.arg(mode);
-        Process::start(command).unwrap()
+        if matches!(mode, "group-tree" | "inherited") {
+            Process::start_worker(
+                command,
+                Some(Arc::new(retirement_diagnostics::Trace::new())),
+            )
+            .unwrap()
+        } else {
+            Process::start(command).unwrap()
+        }
     }
 
     fn until(mut check: impl FnMut() -> bool) {
@@ -504,15 +565,52 @@ mod tests {
                 descendant.is_some()
             });
             let child = descendant.unwrap();
-            assert!(live(child));
+            let trace = process.diagnostics.as_ref().unwrap();
+            assert!(live_from_stat(
+                child,
+                trace.observe("descendant-before-stop", child)
+            ));
+            trace.event(
+                "fixture-ready",
+                serde_json::json!({"mode": mode, "leader": process.pid(), "descendant": child}),
+            );
             let start = Instant::now();
             if mode == "group-tree" {
                 process.stop();
                 assert!(start.elapsed() < Duration::from_millis(100));
             } // inherited's leader exits while its descendant retains stdout.
             until(|| process.finished());
-            assert!(!live(process.pid()), "leader still live");
-            assert!(!live(child), "descendant still live after {mode}");
+            // keep both immediate observations, with the existing classifier;
+            // no trace locking, serialization or file writes before these reads.
+            let finished_observed_at_us = trace.timestamp_us();
+            let leader = trace.sample(process.pid());
+            let descendant = trace.sample(child);
+            trace.event(
+                "worker-finished-observed",
+                serde_json::json!({"observed_at_us": finished_observed_at_us}),
+            );
+            let leader_live = live_from_stat(
+                process.pid(),
+                trace.record_observation("leader-after-finished", leader),
+            );
+            let descendant_live = live_from_stat(
+                child,
+                trace.record_observation("descendant-after-finished", descendant),
+            );
+            trace.event(
+                "immediate-classification",
+                serde_json::json!({"leader_live": leader_live, "descendant_live": descendant_live}),
+            );
+            let (report, retention) = trace.retain(mode);
+            assert!(!leader_live, "leader still live; {report}");
+            assert!(
+                !descendant_live,
+                "descendant still live after {mode}; {report}"
+            );
+            assert!(
+                retention.is_ok(),
+                "could not retain retirement diagnostics; {report}"
+            );
         }
     }
 

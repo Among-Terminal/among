@@ -73,6 +73,20 @@ application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
 
+The process-cancellation unit test retains bounded, test-only observations below
+`AMONG_CHECK_ROOT/plugin-retirement-diagnostics` when that root is configured.
+Checks uploads these JSON files on success or failure on each native architecture.
+They include owned fixture PID/start-time identity, PGID, SID, raw `/proc` state
+or read error, monotonic signal results/errno, leader wait, worker return and the
+immediate post-finished observations. Both `group-tree` and `inherited` fixtures
+keep their original liveness classification and immediate assertions. Reports are
+written only after those observations; a failed retirement liveness assertion
+also includes its trace inline. Without `AMONG_CHECK_ROOT`, those failures still
+include inline diagnostics.
+Instrumentation can perturb scheduling: a passing diagnostic run is not proof of
+descendant retirement, and application builds gain no new completion gate or
+procfs/pidfd support requirement from this test-only instrumentation.
+
 ## Cross-repository managed transport
 
 The `managed-transport-interop` Cargo feature only compiles additional internal
