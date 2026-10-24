@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_BUILD_JOBS: '1'
-      CLIENT_REVISION: f4d2dc1584b095532740bb55cd2afc5de15fcd92
+      CLIENT_REVISION: 39141b2d6eb7ce5374c0352f54cc41ec5650b6e1
       EXPECTED_KERNEL: ${{ matrix.kernel }}
       EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
     steps:
@@ -42,7 +42,7 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustc +1.98.1 --version --verbose
           test "$(rustc +1.98.1 --version --verbose | sed -n 's/^host: //p')" = "$EXPECTED_RUST_HOST"
-      - name: Build the exact independently owned protocol fixture
+      - name: Build the exact companion fixture and production clock entrypoints
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/managed-transport-interop"
@@ -59,12 +59,22 @@ jobs:
           test -z "$(git -C "$client" status --porcelain=v1)"
           git rev-parse HEAD > "$root/host-source.txt"
           git -C "$client" rev-parse HEAD > "$root/client-source.txt"
-          cargo +1.98.1 build --locked --manifest-path "$client/Cargo.toml" --example managed-status
+          cargo +1.98.1 build --locked --manifest-path "$client/Cargo.toml" \
+            --example managed-status --bin clock-managed --bin clock
           fixture="$client/target/debug/examples/managed-status"
           test -f "$fixture" && test -x "$fixture" && test ! -L "$fixture"
           sha256sum "$fixture" | tee "$root/client-sha256.txt"
           echo "AMONG_MANAGED_TRANSPORT_FIXTURE=$fixture" >> "$GITHUB_ENV"
           echo "AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256=$(cut -d ' ' -f 1 "$root/client-sha256.txt")" >> "$GITHUB_ENV"
+          for entrypoint in clock-managed clock; do
+            binary="$client/target/debug/$entrypoint"
+            test -f "$binary" && test -x "$binary" && test ! -L "$binary"
+            sha256sum "$binary" | tee "$root/$entrypoint-sha256.txt"
+          done
+          echo "AMONG_MANAGED_CLOCK_BINARY=$client/target/debug/clock-managed" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_CLOCK_SHA256=$(cut -d ' ' -f 1 "$root/clock-managed-sha256.txt")" >> "$GITHUB_ENV"
+          echo "AMONG_LEGACY_CLOCK_BINARY=$client/target/debug/clock" >> "$GITHUB_ENV"
+          echo "AMONG_LEGACY_CLOCK_SHA256=$(cut -d ' ' -f 1 "$root/clock-sha256.txt")" >> "$GITHUB_ENV"
       - name: Check the opt-in host test code
         run: |
           cargo +1.98.1 fmt --all --check
@@ -84,6 +94,20 @@ jobs:
           sha256sum "$app_test" > "$root/host-test-sha256.txt"
           "$app_test" --list > "$root/test-names.txt"
           mkdir -m 700 "$root/cases" "$root/home" "$root/data" "$root/config" "$root/cache" "$root/run"
+          for environment_case in \
+            managed_timezone_absent_and_empty_remain_distinct_in_actual_children \
+            managed_timezone_budget_accepts_1024_bytes_and_rejects_the_next_byte \
+            managed_timezone_preserves_posix_file_and_non_utf8_bytes \
+            managed_timezone_rejects_every_ascii_control_before_command_mutation; do
+            name="plugin::host::environment::tests::$environment_case"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/environment-$environment_case.log"
+            env -u TZ AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+          done
           for case_name in \
             real_companion_admits_only_after_review_and_publishes_correlated_status \
             real_companion_negotiates_subset_and_scoped_cwd_without_sibling_fields \
@@ -93,13 +117,49 @@ jobs:
             name="plugin::host::managed_runtime::transport_interop::$case_name"
             test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
             log="$root/$case_name.log"
-            env AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+            env -u TZ AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
               XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
               XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
               "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
             grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
             grep -Fq "client_revision=$CLIENT_REVISION fixture_sha256=$AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256" "$log"
             grep -Fq 'retirement_confirmed identity=' "$log"
+          done
+          # isolate host TZ input per exact test process, never through an
+          # in-process environment mutation or a serial substitute for old tests.
+          for clock_case in utc tokyo unset empty too_long control; do
+            timezone=()
+            case "$clock_case" in
+              utc) timezone=(TZ=UTC) ;;
+              tokyo) timezone=(TZ=Asia/Tokyo) ;;
+              unset) ;;
+              empty) timezone=(TZ=) ;;
+              too_long) printf -v oversized '%*s' 1025 ''; timezone=("TZ=${oversized// /x}") ;;
+              control) timezone=($'TZ=UTC\x1frefused') ;;
+              *) exit 1 ;;
+            esac
+            case "$clock_case" in
+              too_long|control) case_name=invalid_host_timezone_refuses_clock_before_spawn ;;
+              *) case_name=real_clock_reports_application_footer_in_inherited_timezone ;;
+            esac
+            name="plugin::host::managed_runtime::transport_interop::clock::$case_name"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/clock-$clock_case.log"
+            env -u TZ "${timezone[@]}" AMONG_CLOCK_CASE="$clock_case" \
+              AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            grep -Fq "client_revision=$CLIENT_REVISION fixture_sha256=$AMONG_MANAGED_CLOCK_SHA256 identity=github:1431055733/clock" "$log"
+            grep -Fq "clock_case=$clock_case" "$log"
+            grep -Fq 'retirement_confirmed identity=github:1431055733/clock' "$log"
+            case "$clock_case" in
+              too_long|control) grep -Fq 'refused_before_spawn=true' "$log" ;;
+              *)
+                grep -Fq "clock_sha256=$AMONG_MANAGED_CLOCK_SHA256 legacy_clock_sha256=$AMONG_LEGACY_CLOCK_SHA256 footer_time_observed=true" "$log"
+                ;;
+            esac
           done
       - name: Retain source-bound protocol evidence
         if: always()

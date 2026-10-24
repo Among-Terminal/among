@@ -82,12 +82,13 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`f4d2dc1584b095532740bb55cd2afc5de15fcd92`, verifies its public repository identity,
-and independently builds its `managed-status` **protocol fixture**, not a
-production clock/resource/cwd package. It records both sources, native compiler
-hosts and executable hashes. This tests real `PluginHost`, inventory inspection,
-pinned-descriptor spawn, access review, API 1.2 admission, scoped status and
-supervised retirement against that external executable.
+`39141b2d6eb7ce5374c0352f54cc41ec5650b6e1`, verifies its public repository identity,
+and independently builds its `managed-status` **protocol fixture**, production
+`clock-managed` and legacy `clock` reference. It records both sources, native
+compiler hosts and all executable hashes. The original five fixture cases still
+test real `PluginHost`, inventory inspection, pinned-descriptor spawn, access
+review, API 1.2 admission, scoped status and stopping against the external fixture.
+They are not relabelled as production clock or authenticated package acceptance.
 
 Feature-enabled tests require `AMONG_MANAGED_TRANSPORT_FIXTURE` (an absolute,
 regular executable path), its independently computed SHA-256 in
@@ -98,6 +99,31 @@ as the workflow does, without changing process-global environment inside tests.
 The copied fixture and its synthetic receipt/manifest stay below the check root.
 Those receipts are local protocol setup, not authenticated Release installation.
 
+The separately labelled clock cases also require absolute regular executable
+paths `AMONG_MANAGED_CLOCK_BINARY`, `AMONG_LEGACY_CLOCK_BINARY` and their compiled
+digests `AMONG_MANAGED_CLOCK_SHA256`, `AMONG_LEGACY_CLOCK_SHA256`. Missing/wrong
+setup fails. The managed binary is copied and inspected under synthetic clock
+identity metadata before the real host reviews access and spawns it; the legacy
+binary is only the unchanged renderer reference, not a managed fallback.
+
+The workflow launches each exact clock case in its own test process with
+`AMONG_CLOCK_CASE` and child-only `TZ` setup. UTC/Tokyo output is checked against
+actual request-time UTC fences; unset/empty behavior is checked against the real
+legacy renderer under the same environment. Both real host footer observations
+must advance, carry the 1000-ms refresh and leave the application header empty;
+valid pane/workspace targets remain unavailable without their grants. Over-budget
+and control-byte cases must refuse before any supervisor is created. No Rust test
+changes the parent process environment, and the data cases are not an alternate
+serial run of an original failing suite.
+
+Four ordinary host tests additionally observe actual child environment bytes:
+unset versus empty, 1024/1025-byte boundaries, every ASCII control refusal and
+unchanged POSIX/file/non-UTF-8 values, with the original allowlist retained. These
+tests also execute in default host testing without a companion checkout. Dedicated
+interop CI explicitly selects those four, the original five fixture cases and
+six isolated clock data cases on each native architecture. It checks each exact
+name and one real pass per invocation; filtered tests receive no credit.
+
 The stale-target/generation controls hold an unchanged response actually read
 from the supervised child's output channel before normal host polling consumes
 it, revoke authority, and deliver it through the production handler. Follow-up
@@ -105,11 +131,13 @@ live responses must publish; replay must not. Additional isolated wrong-binding
 controls modify only the named field of a genuine current response. Captured
 replay and synthetic refusal controls are distinguished in the test source.
 
-CI requires each exact test name and one actual pass per case on both native
-architectures. Missing selection, setup, timeout or assertion is failure. These
-tests do not establish production-plugin parity, GUI/terminal continuity, package
-installation, publisher authenticity, migration, audio behavior or release
-readiness. A fixed source pin is a compatibility checkpoint; update it through
+Missing selection, setup, timeout or assertion is failure. Protocol-fixture results
+cannot substitute for the labelled production-clock cases. Even real host clock
+status/TZ observations do not establish all-plugin parity, GUI/terminal continuity,
+authenticated installation, publisher authenticity, migration, audio behavior or
+release readiness. All ordinary full PR workflows remain mandatory; this slice
+does not fix or waive a separate main retirement failure. A fixed source pin is
+a compatibility checkpoint; update it through
 review when changing the client, not through an unresolved latest URL.
 
 ## Installer ENOSPC context

@@ -16,6 +16,7 @@ use super::protocol::{
 };
 use crate::slots::{Contribution, Fragment, Refresh, SlotStore, Style, Summary};
 
+mod environment;
 mod managed_runtime;
 pub use managed_runtime::Configuration;
 mod overview;
@@ -600,20 +601,11 @@ impl PluginHost {
             program
         };
         if self.plugins[index].managed.is_some() {
-            program
-                .env_clear()
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-                .env("LANG", "C.UTF-8");
-            for variable in [
-                "HOME",
-                "XDG_DATA_HOME",
-                "XDG_CONFIG_HOME",
-                "XDG_CACHE_HOME",
-                "XDG_RUNTIME_DIR",
-            ] {
-                if let Some(value) = std::env::var_os(variable) {
-                    program.env(variable, value);
-                }
+            if let Err(reason) = environment::configure(&mut program) {
+                self.plugins[index].state = PluginState::Unavailable {
+                    reason: reason.into(),
+                };
+                return;
             }
         }
         let spawned = Process::start(program);
