@@ -1,0 +1,117 @@
+name: Managed transport interoperability
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-interop:
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            kernel: x86_64
+            rust_host: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            kernel: aarch64
+            rust_host: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CLIENT_REVISION: e70970ba88b32fc9210cd9ca01f87027bb745e13
+      EXPECTED_KERNEL: ${{ matrix.kernel }}
+      EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          test "$(uname -m)" = "$EXPECTED_KERNEL"
+      - name: Pinned native Rust
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+          rustc +1.98.1 --version --verbose
+          test "$(rustc +1.98.1 --version --verbose | sed -n 's/^host: //p')" = "$EXPECTED_RUST_HOST"
+      - name: Build the exact independently owned protocol fixture
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/managed-transport-interop"
+          mkdir -m 700 "$root"
+          echo "INTEROP_ROOT=$root" >> "$GITHUB_ENV"
+          curl --fail --silent --show-error --connect-timeout 15 --max-time 60 \
+            https://api.github.com/repos/Among-Terminal/among-plugins > "$root/client-repository.json"
+          jq -e '.id == 1431055733 and .owner.id == 339567100 and .private == false' "$root/client-repository.json"
+          client="$root/client"
+          git init "$client"
+          git -C "$client" fetch --no-tags --depth=1 https://github.com/Among-Terminal/among-plugins.git "$CLIENT_REVISION"
+          git -C "$client" switch --detach FETCH_HEAD
+          test "$(git -C "$client" rev-parse HEAD)" = "$CLIENT_REVISION"
+          test -z "$(git -C "$client" status --porcelain=v1)"
+          git rev-parse HEAD > "$root/host-source.txt"
+          git -C "$client" rev-parse HEAD > "$root/client-source.txt"
+          cargo +1.98.1 build --locked --manifest-path "$client/Cargo.toml" --example managed-status
+          fixture="$client/target/debug/examples/managed-status"
+          test -f "$fixture" && test -x "$fixture" && test ! -L "$fixture"
+          sha256sum "$fixture" | tee "$root/client-sha256.txt"
+          echo "AMONG_MANAGED_TRANSPORT_FIXTURE=$fixture" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256=$(cut -d ' ' -f 1 "$root/client-sha256.txt")" >> "$GITHUB_ENV"
+      - name: Check the opt-in host test code
+        run: |
+          cargo +1.98.1 fmt --all --check
+          cargo +1.98.1 clippy --locked --all-targets --features managed-transport-interop -- -D warnings
+          cargo +1.98.1 test --locked --features managed-transport-interop --bin among --no-run --message-format=json > "$INTEROP_ROOT/host-tests.jsonl"
+      - name: Drive actual supervised admission and stale-response controls
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$root/host-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -f "$app_test" && test -x "$app_test" && test ! -L "$app_test"
+          sha256sum "$app_test" > "$root/host-test-sha256.txt"
+          "$app_test" --list > "$root/test-names.txt"
+          mkdir -m 700 "$root/cases" "$root/home" "$root/data" "$root/config" "$root/cache" "$root/run"
+          for case_name in \
+            real_companion_admits_only_after_review_and_publishes_correlated_status \
+            real_companion_negotiates_subset_and_scoped_cwd_without_sibling_fields \
+            real_companion_identity_mismatch_never_becomes_admitted \
+            real_companion_closed_target_reply_releases_credit_without_publishing \
+            real_companion_retired_generation_reply_cannot_consume_current_credit; do
+            name="plugin::host::managed_runtime::transport_interop::$case_name"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/$case_name.log"
+            env AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            grep -Fq "client_revision=$CLIENT_REVISION fixture_sha256=$AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256" "$log"
+            grep -Fq 'retirement_confirmed identity=' "$log"
+          done
+      - name: Retain source-bound protocol evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: managed-transport-interop-${{ matrix.kernel }}
+          path: |
+            ${{ runner.temp }}/managed-transport-interop/*.log
+            ${{ runner.temp }}/managed-transport-interop/*.txt
+            ${{ runner.temp }}/managed-transport-interop/*.json
+            ${{ runner.temp }}/managed-transport-interop/*.jsonl
+            ${{ runner.temp }}/managed-transport-interop/cases/**/installed.json
+            ${{ runner.temp }}/managed-transport-interop/cases/**/among-plugin.json
+          if-no-files-found: error
+          retention-days: 5

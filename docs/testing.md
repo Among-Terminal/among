@@ -73,6 +73,45 @@ application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
 
+## Cross-repository managed transport
+
+The `managed-transport-interop` Cargo feature only compiles additional internal
+tests when `cfg(test)` is also active. It changes no runtime capability or user
+preference. Default host builds and tests require no companion checkout. The
+dedicated native interoperability workflow enables the feature explicitly;
+ordinary package, native and graphical gates remain unchanged and mandatory.
+
+The workflow checks out the exact companion commit
+`e70970ba88b32fc9210cd9ca01f87027bb745e13`, verifies its public repository identity,
+and independently builds its `managed-status` **protocol fixture**, not a
+production clock/resource/cwd package. It records both sources, native compiler
+hosts and executable hashes. This tests real `PluginHost`, inventory inspection,
+pinned-descriptor spawn, access review, API 1.2 admission, scoped status and
+supervised retirement against that external executable.
+
+Feature-enabled tests require `AMONG_MANAGED_TRANSPORT_FIXTURE` (an absolute,
+regular executable path), its independently computed SHA-256 in
+`AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256`, and an existing absolute owned
+`AMONG_CHECK_ROOT`. Missing setup fails; it never skips or silently falls back to
+the in-tree fake plugin. Run the compiled tests with private HOME/XDG directories
+as the workflow does, without changing process-global environment inside tests.
+The copied fixture and its synthetic receipt/manifest stay below the check root.
+Those receipts are local protocol setup, not authenticated Release installation.
+
+The stale-target/generation controls hold an unchanged response actually read
+from the supervised child's output channel before normal host polling consumes
+it, revoke authority, and deliver it through the production handler. Follow-up
+live responses must publish; replay must not. Additional isolated wrong-binding
+controls modify only the named field of a genuine current response. Captured
+replay and synthetic refusal controls are distinguished in the test source.
+
+CI requires each exact test name and one actual pass per case on both native
+architectures. Missing selection, setup, timeout or assertion is failure. These
+tests do not establish production-plugin parity, GUI/terminal continuity, package
+installation, publisher authenticity, migration, audio behavior or release
+readiness. A fixed source pin is a compatibility checkpoint; update it through
+review when changing the client, not through an unresolved latest URL.
+
 ## Installer ENOSPC context
 
 `among-tools check-installer-enospc-from-cargo CARGO_TEST_RECORDS` selects the
