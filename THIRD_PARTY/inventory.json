@@ -3874,14 +3874,14 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "texts": [
         {
-          "path": "texts/tokio-1.54.0/LICENSE",
+          "path": "texts/tokio-1.54.1/LICENSE",
           "sha256": "253cd04c6714889df2d32f3f64d669179a1c95c76ac43c40882c52eb06bc3552"
         }
       ],
       "trees": [
         "Cargo.toml"
       ],
-      "version": "1.54.0"
+      "version": "1.54.1"
     },
     {
       "license": "MIT",
