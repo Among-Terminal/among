@@ -1631,6 +1631,28 @@ fn contained(
     window: &impl IsA<gtk::Window>,
 ) -> gtk::graphene::Rect {
     let bounds = widget.as_ref().compute_bounds(window.as_ref()).unwrap();
+    eprintln!(
+        "native_layout_bounds type={} name={} label={:?} rect={}+{}+{}x{} window={:?} viewport={}x{} mapped={} focus={}",
+        widget.as_ref().type_().name(),
+        widget.as_ref().widget_name(),
+        widget.as_ref().downcast_ref::<gtk::Button>().and_then(|button| button.label()),
+        bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+        window.as_ref().title(), window.as_ref().width(), window.as_ref().height(),
+        widget.as_ref().is_mapped(), widget.as_ref().has_focus(),
+    );
+    if bounds.y() + bounds.height() > window.as_ref().height() as f32 {
+        // retain the pre-assert scene without focus/resize/settling changes: the
+        // strict original oracle must still fail on the observed geometry.
+        let path = crate::test_isolation::check_root().join("repository-layout-overflow.png");
+        let captured = std::process::Command::new("import")
+            .args(["-window", "root"])
+            .arg(&path)
+            .status();
+        eprintln!(
+            "native_layout_overflow_capture={} status={captured:?}",
+            path.display()
+        );
+    }
     assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0);
     assert!(bounds.x() + bounds.width() <= window.as_ref().width() as f32);
     assert!(bounds.y() + bounds.height() <= window.as_ref().height() as f32);
