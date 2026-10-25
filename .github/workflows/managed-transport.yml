@@ -58,6 +58,7 @@ jobs:
           test "$(git -C "$client" rev-parse HEAD)" = "$CLIENT_REVISION"
           test "$(git -C "$client" rev-parse 'HEAD^{tree}')" = e9d7a98a8162a3b58154b4a9122c70cddaa1db16
           test -z "$(git -C "$client" status --porcelain=v1)"
+          grep -Fx "const CLIENT: &str = \"$CLIENT_REVISION\";" src/app/plugin_tests/resources.rs
           git rev-parse HEAD > "$root/host-source.txt"
           git -C "$client" rev-parse HEAD > "$root/client-source.txt"
           cargo +1.98.1 build --locked --manifest-path "$client/Cargo.toml" \
