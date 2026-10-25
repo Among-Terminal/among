@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_BUILD_JOBS: '1'
-      CLIENT_REVISION: 276e1d29b0ec912e4a34b44a07f7c1b195d02374
+      CLIENT_REVISION: 306839e144d7a4c98432c6c68dad016c412dd656
       EXPECTED_KERNEL: ${{ matrix.kernel }}
       EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
     steps:
@@ -56,20 +56,21 @@ jobs:
           git -C "$client" fetch --no-tags --depth=1 https://github.com/Among-Terminal/among-plugins.git "$CLIENT_REVISION"
           git -C "$client" switch --detach FETCH_HEAD
           test "$(git -C "$client" rev-parse HEAD)" = "$CLIENT_REVISION"
+          test "$(git -C "$client" rev-parse 'HEAD^{tree}')" = e9d7a98a8162a3b58154b4a9122c70cddaa1db16
           test -z "$(git -C "$client" status --porcelain=v1)"
           git rev-parse HEAD > "$root/host-source.txt"
           git -C "$client" rev-parse HEAD > "$root/client-source.txt"
           cargo +1.98.1 build --locked --manifest-path "$client/Cargo.toml" \
-            --example managed-status --bin clock-managed --bin clock --bin system-status-managed
+            --example managed-status --example managed-pages --bin clock-managed --bin clock --bin system-status-managed --bin pane-pwd-managed
           fixture="$client/target/debug/examples/managed-status"
           test -f "$fixture" && test -x "$fixture" && test ! -L "$fixture"
           sha256sum "$fixture" | tee "$root/client-sha256.txt"
           echo "AMONG_MANAGED_TRANSPORT_FIXTURE=$fixture" >> "$GITHUB_ENV"
           echo "AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256=$(cut -d ' ' -f 1 "$root/client-sha256.txt")" >> "$GITHUB_ENV"
-          for entrypoint in clock-managed clock system-status-managed; do
+          for entrypoint in clock-managed clock system-status-managed pane-pwd-managed examples/managed-pages; do
             binary="$client/target/debug/$entrypoint"
             test -f "$binary" && test -x "$binary" && test ! -L "$binary"
-            sha256sum "$binary" | tee "$root/$entrypoint-sha256.txt"
+            sha256sum "$binary" | tee "$root/$(basename "$entrypoint")-sha256.txt"
           done
           echo "AMONG_MANAGED_CLOCK_BINARY=$client/target/debug/clock-managed" >> "$GITHUB_ENV"
           echo "AMONG_MANAGED_CLOCK_SHA256=$(cut -d ' ' -f 1 "$root/clock-managed-sha256.txt")" >> "$GITHUB_ENV"
@@ -77,6 +78,10 @@ jobs:
           echo "AMONG_LEGACY_CLOCK_SHA256=$(cut -d ' ' -f 1 "$root/clock-sha256.txt")" >> "$GITHUB_ENV"
           echo "AMONG_MANAGED_SYSTEM_BINARY=$client/target/debug/system-status-managed" >> "$GITHUB_ENV"
           echo "AMONG_MANAGED_SYSTEM_SHA256=$(cut -d ' ' -f 1 "$root/system-status-managed-sha256.txt")" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_PWD_BINARY=$client/target/debug/pane-pwd-managed" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_PWD_SHA256=$(cut -d ' ' -f 1 "$root/pane-pwd-managed-sha256.txt")" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_PAGES_FIXTURE=$client/target/debug/examples/managed-pages" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_PAGES_SHA256=$(cut -d ' ' -f 1 "$root/managed-pages-sha256.txt")" >> "$GITHUB_ENV"
       - name: Check the opt-in host test code
         run: |
           cargo +1.98.1 fmt --all --check
@@ -190,6 +195,53 @@ jobs:
             grep -Fq 'meter_text_equal=true refresh_ms=1000' "$log"
             grep -Fq 'retirement_confirmed identity=github:1431055733/system-status' "$log"
           done
+      - name: Drive real SDK paging and production pane lifecycle
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$root/host-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -f "$app_test" && test -x "$app_test" && test ! -L "$app_test"
+          sha256sum -c "$root/host-test-sha256.txt"
+          for binary in "$AMONG_MANAGED_PWD_BINARY" "$AMONG_MANAGED_PAGES_FIXTURE"; do
+            case "$EXPECTED_KERNEL" in
+              x86_64) machine='Advanced Micro Devices X86-64' ;;
+              aarch64) machine=AArch64 ;;
+              *) exit 1 ;;
+            esac
+            readelf -h "$binary" > "$root/$(basename "$binary")-elf.txt"
+            grep -Eq "Machine: *$machine$" "$root/$(basename "$binary")-elf.txt"
+          done
+          for case_name in \
+            pwd::real_pwd_requires_all_grants_and_keeps_focused_hidden_unicode_paths_separate \
+            pwd::real_pwd_unknown_empty_and_host_unavailable_cwd_never_fall_back \
+            pwd::real_pwd_closed_and_retired_replies_cannot_overwrite_live_panes \
+            pages::real_sdk_application_count_paging_interleaves_a_live_pane_through_the_host \
+            pages::real_sdk_hidden_workspace_byte_paging_uses_all_pages_without_sibling_records \
+            pages::real_sdk_closed_workspace_continuation_fails_without_publishing_empty_success \
+            pages::real_sdk_retired_enumeration_cannot_attach_to_a_new_host_generation; do
+            name="plugin::host::managed_runtime::transport_interop::$case_name"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/${case_name//::/-}.log"
+            env -u TZ AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            case "$case_name" in
+              pwd::*) identity=pane-pwd; digest="$AMONG_MANAGED_PWD_SHA256"; witness=host_pwd ;;
+              pages::*) identity=sdk-pages-fixture; digest="$AMONG_MANAGED_PAGES_SHA256"; witness=host_sdk ;;
+              *) exit 1 ;;
+            esac
+            grep -Fq "client_revision=$CLIENT_REVISION fixture_sha256=$digest identity=github:1431055733/$identity" "$log"
+            grep -Fq "$witness " "$log"
+            grep -Fq "retirement_confirmed identity=github:1431055733/$identity" "$log"
+          done
+          sha256sum -c "$root/pane-pwd-managed-sha256.txt" "$root/managed-pages-sha256.txt"
       - name: Retain source-bound protocol evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

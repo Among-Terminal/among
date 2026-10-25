@@ -82,9 +82,11 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`276e1d29b0ec912e4a34b44a07f7c1b195d02374`, verifies its public repository identity,
+`306839e144d7a4c98432c6c68dad016c412dd656` (tree
+`e9d7a98a8162a3b58154b4a9122c70cddaa1db16`), verifies its public repository identity,
 and independently builds its `managed-status` **protocol fixture**, production
-`clock-managed`, legacy `clock` reference and production `system-status-managed`.
+`clock-managed`, legacy `clock` reference, production `system-status-managed`,
+production `pane-pwd-managed` and the labelled `managed-pages` SDK reducer fixture.
 It records both sources, native
 compiler hosts and all executable hashes. The original five fixture cases still
 test real `PluginHost`, inventory inspection, pinned-descriptor spawn, access
@@ -158,6 +160,29 @@ per-source N/A and sampling-rate assertions remain required in its repository;
 resource-host tests neither replace them nor claim a graphical bar was rendered.
 Synthetic receipts are still not authenticated release installation. Actual GTK
 meters, installed lifecycle, terminal continuity and whole task2.3 remain separate.
+
+Seven additional invocations retain all seventeen above. Three run production
+pane-pwd against the actual host's focused/hidden model context, changed focus,
+long Unicode cwd, unknown/empty/over-budget fields, required-access refusal and
+closed/retired targets. Every real output is checked for exact scope, full tooltip,
+480-character truncation and 1000-ms refresh; unrelated slots stay empty. These
+are not observations of mapped GTK panes or terminal input.
+
+Four use the external scalar `managed-pages` fixture. Authentic child enumeration
+frames pass unchanged to the production host's page handler: application 32+1
+count pages with an interleaved real pane reply, and hidden workspace 7+7+3
+byte-limited pages with sibling exclusion. Completion depends on later pages.
+Closed workspace continuation must fail before the host deadline, publish no
+empty-success status and retain ordinary restart/backoff accounting. A genuine
+retired enumeration cannot attach to the re-enabled generation. The same host
+supervisor must explicitly reach stopped ownership; child exit alone is not proof.
+
+Setup requires `AMONG_MANAGED_PWD_BINARY`/`AMONG_MANAGED_PWD_SHA256` and
+`AMONG_MANAGED_PAGES_FIXTURE`/`AMONG_MANAGED_PAGES_SHA256`. Missing, linked,
+non-executable or digest-mismatched setup fails, never falls back to another binary.
+CI also checks the exact source tree and native ELF machine. Source-built binaries
+and synthetic receipts do not establish authenticated official packages,
+installation, package upgrades/rollback or whole tasks2.1/2.4 acceptance.
 
 ## Installer ENOSPC context
 

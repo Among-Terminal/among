@@ -7,10 +7,12 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 
 mod clock;
+mod pages;
+mod pwd;
 mod resources;
 
 const KEY: &str = "github:1431055733/protocol-fixture";
-const CLIENT_REVISION: &str = "276e1d29b0ec912e4a34b44a07f7c1b195d02374";
+const CLIENT_REVISION: &str = "306839e144d7a4c98432c6c68dad016c412dd656";
 
 struct Fixture {
     host: PluginHost,
