@@ -46,6 +46,7 @@ fn focus(window: &impl IsA<gtk::Window>) -> String {
     wait_for(|| window.as_ref().is_mapped(), Duration::from_secs(2));
     let ids = xdo(&[
         "search",
+        "--all",
         "--onlyvisible",
         "--pid",
         &std::process::id().to_string(),
