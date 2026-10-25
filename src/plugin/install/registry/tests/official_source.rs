@@ -106,6 +106,7 @@ fn thirty_two_custom_sources_plus_cached_official_keep_every_custom_generation_a
     }
     let custom = list(&root.0);
     assert_eq!(custom.len(), 32);
+    let custom_before = std::fs::read(root.0.join("sources.json")).unwrap();
     let (entries, problem) = effective(&root.0);
     assert!(problem.is_none());
     assert_eq!(entries.len(), 33);
@@ -121,7 +122,15 @@ fn thirty_two_custom_sources_plus_cached_official_keep_every_custom_generation_a
         || Ok(()),
     )
     .unwrap();
-    assert_eq!(list(&root.0).len(), 33);
+    assert_eq!(list(&root.0).len(), 32);
+    assert_eq!(
+        std::fs::read(root.0.join("sources.json")).unwrap(),
+        custom_before
+    );
+    let persisted: Value = serde_json::from_slice(&custom_before).unwrap();
+    assert_eq!(persisted["version"], 1);
+    assert_eq!(persisted["registrations"].as_array().unwrap().len(), 32);
+    assert!(root.0.join("official.json").is_file());
     let (entries, problem) = effective(&root.0);
     assert!(problem.is_none());
     assert_eq!(entries.len(), 33);
@@ -180,7 +189,7 @@ fn official_removal_stale_refresh_and_generic_publisher_approval_never_change_st
     .unwrap();
     let current = effective(&root.0).0.remove(0);
     assert_ne!(old.revision, current.revision);
-    let before = std::fs::read(root.0.join("sources.json")).unwrap();
+    let before = std::fs::read(root.0.join("official.json")).unwrap();
     let mut renamed = current.clone();
     renamed.origin.owner = "renamed".into();
     for request in [
@@ -201,7 +210,8 @@ fn official_removal_stale_refresh_and_generic_publisher_approval_never_change_st
         },
     ] {
         assert!(run(&root.0, request, || Ok(()), || Ok(())).is_err());
-        assert_eq!(std::fs::read(root.0.join("sources.json")).unwrap(), before);
+        assert_eq!(std::fs::read(root.0.join("official.json")).unwrap(), before);
+        assert!(!root.0.join("sources.json").exists());
     }
     let fresh = OwnedRoot::new();
     assert!(run(
@@ -215,6 +225,7 @@ fn official_removal_stale_refresh_and_generic_publisher_approval_never_change_st
     )
     .is_err());
     assert!(!fresh.0.join("sources.json").exists());
+    assert!(!fresh.0.join("official.json").exists());
 }
 
 #[test]
@@ -258,7 +269,7 @@ fn transferred_cached_official_is_unavailable_without_blocking_custom_sources_or
         || Ok(()),
     )
     .unwrap();
-    let path = root.0.join("sources.json");
+    let path = root.0.join("official.json");
     let mut document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     document["registrations"][0]["origin"]["publisher_id"] = json!(99);
     document["registrations"][0]["snapshots"][0]["origin"]["publisher_id"] = json!(99);

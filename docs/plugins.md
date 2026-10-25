@@ -760,21 +760,38 @@ pre-commit boundary, so a valid cached catalogue does not waive a visible transf
 These observations do not promise immunity to an unobservable later transfer, and
 source operations do not rewrite or revoke an already installed selection.
 
-Registrations and exact raw catalogue bytes live in the owned data directory
-`among/plugin-sources/sources.json`, separate from managed selections and config.
-The total metadata storage budget is 16 MiB: the committed document is capped at
-8 MiB, reserving the other half for its flushed atomic replacement. There are at
-most 32 custom repositories plus the official repository and four snapshots per
-repository. The built-in row exists without a persisted cache record and does not
-consume a custom slot. Old snapshots can be evicted for cache quota without deleting
-registrations, settings or installed generations. A refreshed duplicate revision/
-digest replaces its retrieval observation rather than consuming another slot.
-Publisher reapproval drops the previous publisher's cached snapshots.
+User registrations and their exact raw catalogues remain in the owned data file
+`among/plugin-sources/sources.json`, with the legacy version-1, at-most-32-entry
+contract. New official metadata is stored separately in `official.json` in that
+directory; an official refresh does not rewrite the user registry or its generations.
+Both files are separate from managed selections and configuration.
+
+An existing user registration for the official numeric repository keeps its
+legacy slot and cache unchanged. Its valid cache is used until separate official
+metadata exists; thereafter the separate cache takes presentation precedence.
+Only one official row is displayed. No automatic migration removes the old user
+entry, and the built-in source adds no new user-registry entry. Missing metadata
+still leaves the built-in row visible without installation or execution consent.
+Damaged official metadata is reported, not silently replaced with a stale duplicate;
+custom source operations remain separate. Unsafe or corrupt user bytes are not
+rewritten to create official metadata.
+
+Each document is capped at 8 MiB. Current source edits account both retained
+documents and their actual flushed replacement against the unchanged 16-MiB total
+metadata budget. There are at most four snapshots per repository. Old snapshots
+in the document being edited can be evicted for cache quota without deleting
+registrations, settings or installed generations. If the refreshed snapshot cannot
+fit, the operation refuses publication and retains both files. A refreshed duplicate
+revision/digest replaces its retrieval observation rather than consuming another
+slot. Custom publisher reapproval drops that publisher's previous snapshots;
+restoration to the compiled official publisher pin rotates its generation and cache.
 
 Source edits use no-follow owned storage, a bounded worker/shared two-credit
 budget, advisory serialization, flushed atomic replacement and an exact previous
-document/root-inode check. Written-but-unconfirmed durability is reported separately.
-Only safe files in the reserved `sources-<64-hex>` temporary namespace are recovered;
+document/root-inode check, including the other file's measured identity before
+publication. Both kinds share the existing `sources.lock`. Written-but-unconfirmed
+durability is reported separately. Only safe files in the reserved
+`sources-<64-hex>` and `official-<64-hex>` temporary namespaces are recovered;
 links/unsafe entries refuse cleanup, unrelated files remain untouched. Directory
 enumeration is capped at 256 entries; one active atomic temporary is bounded by
 the same 8-MiB document cap. Each registration has a fresh token and edit revision;

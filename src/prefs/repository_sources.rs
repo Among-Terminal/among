@@ -324,7 +324,11 @@ impl Panel {
                     panel.render(registrations);
                     if let Some(problem) = problem {
                         panel.feedback(
-                            "User source storage is unavailable; official source remains built in",
+                            if problem == registry::OFFICIAL_STORAGE_PROBLEM {
+                                "Official metadata is unavailable; custom sources remain available"
+                            } else {
+                                "User source storage is unavailable; official source remains built in"
+                            },
                             problem.0,
                         );
                     } else {
@@ -339,12 +343,24 @@ impl Panel {
                 Ok(Outcome::Changed {
                     registrations,
                     durability,
+                    problem,
                 }) => {
                     panel.render(registrations);
                     if panel.generation.get() == generation {
                         panel.clear();
                     }
-                    panel.feedback(if durability == crate::settings::Durability::Durable { "Source change saved" } else { "Source change written; durability uncertain" }, "No installed package, enabled switch or local plugin settings were changed.");
+                    if let Some(problem) = problem {
+                        panel.feedback(
+                            if durability == crate::settings::Durability::Durable {
+                                "Source change saved; other source storage is unavailable"
+                            } else {
+                                "Source change written; durability uncertain and other source storage unavailable"
+                            },
+                            problem.0,
+                        );
+                    } else {
+                        panel.feedback(if durability == crate::settings::Durability::Durable { "Source change saved" } else { "Source change written; durability uncertain" }, "No installed package, enabled switch or local plugin settings were changed.");
+                    }
                 }
                 Ok(Outcome::Cached {
                     inspection,

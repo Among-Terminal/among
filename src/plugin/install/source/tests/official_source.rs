@@ -67,7 +67,8 @@ fn actual_official_numeric_refresh_rejects_transfer_before_fetching_any_catalogu
         || Ok(()),
     )
     .unwrap();
-    let before = std::fs::read(root.0.join("sources.json")).unwrap();
+    let before = std::fs::read(root.0.join("official.json")).unwrap();
+    assert!(!root.0.join("sources.json").exists());
     assert_eq!(server.requests().len(), 3);
     transferred.store(true, Ordering::Release);
     let refresh = server.refresh(official::REPOSITORY_ID).unwrap();
@@ -84,7 +85,8 @@ fn actual_official_numeric_refresh_rejects_transfer_before_fetching_any_catalogu
         4,
         "transferred publisher cannot fetch catalogue bytes"
     );
-    assert_eq!(std::fs::read(root.0.join("sources.json")).unwrap(), before);
+    assert_eq!(std::fs::read(root.0.join("official.json")).unwrap(), before);
+    assert!(!root.0.join("sources.json").exists());
 }
 
 #[test]

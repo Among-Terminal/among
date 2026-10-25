@@ -4,6 +4,7 @@ use crate::plugin::install::{
     TestRoot as OwnedRoot,
 };
 use glib::translate::{from_glib_full, ToGlibPtr};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -263,5 +264,63 @@ fn official_row_survives_offline_refresh_custom_removal_reopen_and_corrupt_stora
         "no background retry after offline refresh"
     );
     println!("PASS official_source_widget built_in=true no_remove_control=true exact_accessible_refresh_label=true real_space_refresh_and_custom_remove=true offline_no_retry=true corrupt_bytes_retained=true installed_and_settings_bytes_unchanged=true");
+    window.destroy();
+
+    let isolated = OwnedRoot::new();
+    let sources = isolated.0.join("sources");
+    let custom = Server::new(crate::plugin::install::source::tests::normal)
+        .inspect(true)
+        .unwrap();
+    let save = registry::Job::start(sources.clone(), Request::Add(Box::new(custom))).unwrap();
+    let mut saved = None;
+    pump(|| {
+        if let Some(outcome) = save.poll() {
+            saved = Some(outcome);
+        }
+        saved.is_some()
+    });
+    assert!(matches!(saved.unwrap(), Ok(Outcome::Changed { .. })));
+    let damaged = sources.join("official.json");
+    let damaged_bytes = b"preserve damaged official metadata";
+    std::fs::write(&damaged, damaged_bytes).unwrap();
+    std::fs::set_permissions(&damaged, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let (window, panel) = show(
+        sources.clone(),
+        Rc::new({
+            let network = network.clone();
+            move |id| network.refresh(id)
+        }),
+    );
+    assert!(panel
+        .status
+        .upgrade()
+        .unwrap()
+        .title()
+        .contains("Official metadata is unavailable"));
+    official(&panel);
+    let custom = panel
+        .rows
+        .borrow()
+        .iter()
+        .find(|row| row.title() != "Official plugins for Among Terminal")
+        .unwrap()
+        .clone();
+    assert!(button(&custom, "Cached").is_sensitive());
+    activate(&button(&custom, "Remove source"));
+    pump(|| !panel.busy.get() && panel.rows.borrow().len() == 1);
+    assert!(panel
+        .status
+        .upgrade()
+        .unwrap()
+        .title()
+        .contains("Source change saved; other source storage is unavailable"));
+    assert_eq!(std::fs::read(damaged).unwrap(), damaged_bytes);
+    official(&panel);
+    assert_eq!(
+        network.requests().len(),
+        1,
+        "damaged cache cannot introduce network retries"
+    );
+    println!("PASS official_source_separate_storage real_keyboard_custom_remove_with_bad_official_cache=true custom_cached_action_available=true bad_bytes_unchanged=true truthful_saved_warning=true no_network_retry=true");
     window.destroy();
 }
