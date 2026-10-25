@@ -1,5 +1,7 @@
 //! Launching plugins, talking to them, and surviving their failures.
 
+pub use super::admission::Admission;
+use super::admission::Busy;
 use super::process::{Failure, Process, SendError};
 use super::transport::{MAX_POLL_FRAMES, MAX_QUEUE_FRAMES};
 use std::cell::Cell;
@@ -27,7 +29,8 @@ pub use overview::Overview;
 /// Generous enough for a slow `git status` on a cold cache, short enough that a
 /// wedged plugin is noticed rather than silently poisoning a slot forever.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_PROCESSES: usize = 32;
+#[cfg(test)]
+use super::admission::MAX_PROCESSES;
 const MAX_RESTARTS: u32 = 3;
 // one reply per accepted status request must fit the bounded stdout queue even
 // if the plugin answers every request before GTK next gets a chance to poll.
@@ -106,6 +109,7 @@ struct PluginEntry {
     restart_at: Option<Instant>,
     restart_attempts: u32,
     after_stop: Option<PluginState>,
+    stopping_reason: Option<String>,
     managed: Option<inventory::Entry>,
     settings: Option<serde_json::Value>,
     runtime: Option<managed_runtime::Runtime>,
@@ -129,6 +133,7 @@ pub struct PluginHost {
     invalidated_sources: BTreeSet<String>,
     next_poll: usize,
     starts_allowed: Rc<Cell<bool>>,
+    admission: Admission,
     world: managed::World,
 }
 
@@ -163,10 +168,17 @@ impl Default for PluginHost {
 
 impl PluginHost {
     pub fn new() -> Self {
-        Self::with_start_gate(Rc::new(Cell::new(true)))
+        Self::with_admission(Admission::default())
     }
 
+    #[cfg(test)]
     pub fn with_start_gate(starts_allowed: Rc<Cell<bool>>) -> Self {
+        let mut host = Self::new();
+        host.starts_allowed = starts_allowed;
+        host
+    }
+
+    pub fn with_admission(admission: Admission) -> Self {
         Self {
             plugins: Vec::new(),
             last_rejections: Vec::new(),
@@ -174,7 +186,8 @@ impl PluginHost {
             notices: Vec::new(),
             invalidated_sources: Default::default(),
             next_poll: 0,
-            starts_allowed,
+            starts_allowed: Rc::new(Cell::new(true)),
+            admission,
             world: managed::World {
                 session: glib::uuid_string_random().to_string(),
                 ..Default::default()
@@ -226,6 +239,7 @@ impl PluginHost {
             restart_at: None,
             restart_attempts: 0,
             after_stop: None,
+            stopping_reason: None,
             managed: None,
             settings: None,
             runtime: None,
@@ -368,8 +382,10 @@ impl PluginHost {
     }
 
     pub fn supervised_stopped(&self, key: &str) -> bool {
-        self.find(key)
-            .is_none_or(|index| self.plugins[index].io.is_none())
+        !self.admission.held(key)
+            && self
+                .find(key)
+                .is_none_or(|index| self.plugins[index].io.is_none())
     }
 
     pub fn removal_failed(&mut self, key: &str) {
@@ -515,6 +531,26 @@ impl PluginHost {
             .collect()
     }
 
+    #[cfg(test)]
+    pub fn supervised_identities(&self) -> BTreeSet<String> {
+        self.plugins
+            .iter()
+            .filter(|plugin| plugin.io.is_some())
+            .map(|plugin| plugin.spec.name.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_retirement(
+        &self,
+        key: &str,
+        errno: Option<i32>,
+    ) -> Option<super::process::ProofHold> {
+        self.find(key)
+            .and_then(|index| self.plugins[index].io.as_ref())
+            .map(|io| io.process.hold_group_proof(errno))
+    }
+
     /// Spawn a plugin process.
     ///
     /// Failure to start is not an error for the host: it is recorded as the
@@ -554,20 +590,6 @@ impl PluginHost {
             self.plugins[index].restart_at = None;
             return;
         }
-        if self
-            .plugins
-            .iter()
-            .filter(|plugin| plugin.io.is_some())
-            .count()
-            >= MAX_PROCESSES
-        {
-            self.plugins[index].state = PluginState::Faulted {
-                reason: "32 supervised plugins already active".into(),
-            };
-            self.plugins[index].restart_at = None;
-            return;
-        }
-
         self.plugins[index].restart_at = None;
 
         let command = self.plugins[index]
@@ -608,7 +630,25 @@ impl PluginHost {
                 return;
             }
         }
-        let spawned = Process::start(program);
+        let reservation = match self.admission.acquire(&self.plugins[index].spec.name) {
+            Ok(reservation) => reservation,
+            Err(busy) => {
+                self.plugins[index].state = match busy {
+                    Busy::Identity(reason) => PluginState::Stopping {
+                        reason: format!("previous generation: {reason}"),
+                        enabled: self.plugins[index].spec.enabled,
+                    },
+                    Busy::Capacity => PluginState::Faulted {
+                        reason: "32 supervised plugins already active across application windows"
+                            .into(),
+                    },
+                    Busy::Borrowed => PluginState::Waiting,
+                };
+                self.plugins[index].restart_at = None;
+                return;
+            }
+        };
+        let spawned = Process::start_admitted(program, reservation);
 
         match spawned {
             Ok(process) => {
@@ -675,6 +715,7 @@ impl PluginHost {
         self.notices.retain(|(source, _, _)| source != name);
         if self.plugins[index].io.is_some() {
             self.plugins[index].after_stop = Some(final_state);
+            self.plugins[index].stopping_reason = Some(reason.into());
             self.plugins[index].state = PluginState::Stopping {
                 reason: reason.into(),
                 enabled: self.plugins[index].spec.enabled,
@@ -812,6 +853,7 @@ impl PluginHost {
                 .is_some_and(|io| io.process.finished())
             {
                 self.plugins[index].io = None;
+                self.plugins[index].stopping_reason = None;
                 self.plugins[index].state =
                     self.plugins[index]
                         .after_stop
@@ -827,6 +869,26 @@ impl PluginHost {
                 }
             }
             if matches!(self.plugins[index].state, PluginState::Stopping { .. }) {
+                if let Some(reason) = self.plugins[index]
+                    .io
+                    .as_ref()
+                    .and_then(|io| io.process.retirement_reason())
+                {
+                    let cause = self.plugins[index]
+                        .stopping_reason
+                        .as_deref()
+                        .unwrap_or("stopping");
+                    let reason = format!("{cause}; {reason}");
+                    if let PluginState::Stopping {
+                        reason: current, ..
+                    } = &mut self.plugins[index].state
+                    {
+                        *current = reason;
+                    }
+                } else if self.plugins[index].io.is_none() && self.plugins[index].spec.enabled {
+                    let name = self.plugins[index].spec.name.clone();
+                    self.start_by_name(name);
+                }
                 continue;
             }
             if self.plugins[index].io.is_none() {
@@ -1538,6 +1600,98 @@ mod tests {
             .plugins
             .iter()
             .all(|plugin| plugin.io.is_none())));
+    }
+
+    #[test]
+    fn unresolved_identity_retirement_does_not_block_unrelated_replacement_window_plugins() {
+        let admission = Admission::default();
+        let mut retiring = PluginHost::with_admission(admission.clone());
+        retiring.register(spec(fake_plugin("stubborn")));
+        assert!(wait_for(&mut retiring, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        let hold = retiring
+            .hold_retirement("probe", Some(libc::EPERM))
+            .unwrap();
+        retiring.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while hold.observations() < 2 {
+            retiring.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!retiring.is_stopped());
+        assert!(!retiring.supervised_stopped("probe"));
+        let mut replacement = PluginHost::with_admission(admission);
+        replacement.register(spec(echo_plugin()));
+        replacement.register(PluginSpec {
+            name: "unrelated".into(),
+            command: echo_plugin(),
+            enabled: true,
+        });
+        assert!(wait_for(&mut replacement, |host| host.plugins[1]
+            .state
+            .is_healthy()));
+        assert!(
+            matches!(&replacement.plugins[0].state, PluginState::Stopping { reason, .. } if reason.contains("permission denied"))
+        );
+        assert!(
+            replacement.plugins[0].io.is_none(),
+            "same identity started before owned retirement proof"
+        );
+        assert!(
+            !replacement.supervised_stopped("probe"),
+            "replacement window falsely acknowledged the old identity's stop"
+        );
+        assert_eq!(
+            retiring.supervised_count() + replacement.supervised_count(),
+            2
+        );
+        replacement.disable("probe");
+        assert!(
+            !replacement.supervised_stopped("probe"),
+            "disable without local IO is not a global stop acknowledgement"
+        );
+        replacement.enable("probe");
+        assert!(replacement.plugins[0].io.is_none());
+        drop(hold);
+        assert!(wait_for(&mut retiring, PluginHost::is_stopped));
+        assert!(wait_for(&mut replacement, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        assert_eq!(replacement.supervised_count(), 2);
+        replacement.shutdown();
+        assert!(wait_for(&mut replacement, PluginHost::is_stopped));
+    }
+
+    #[test]
+    fn a_detached_unproven_worker_keeps_its_shared_identity_reservation() {
+        let admission = Admission::default();
+        let mut retiring = PluginHost::with_admission(admission.clone());
+        retiring.register(spec(fake_plugin("stubborn")));
+        assert!(wait_for(&mut retiring, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        let hold = retiring.hold_retirement("probe", None).unwrap();
+        retiring.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while hold.observations() < 2 {
+            retiring.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(retiring);
+        assert!(admission.held("probe"));
+        let mut replacement = PluginHost::with_admission(admission);
+        replacement.register(spec(echo_plugin()));
+        assert!(replacement.plugins[0].io.is_none());
+        assert!(!replacement.supervised_stopped("probe"));
+        drop(hold);
+        assert!(wait_for(&mut replacement, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        replacement.shutdown();
+        assert!(wait_for(&mut replacement, PluginHost::is_stopped));
     }
 
     #[test]
