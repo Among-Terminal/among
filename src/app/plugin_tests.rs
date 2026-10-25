@@ -2,6 +2,8 @@ use super::*;
 use crate::plugin::host::PluginState;
 
 mod installation;
+#[cfg(feature = "managed-transport-interop")]
+mod resources;
 mod settings;
 
 #[track_caller]

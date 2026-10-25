@@ -242,6 +242,43 @@ jobs:
             grep -Fq "retirement_confirmed identity=github:1431055733/$identity" "$log"
           done
           sha256sum -c "$root/pane-pwd-managed-sha256.txt" "$root/managed-pages-sha256.txt"
+      - name: Native resource-widget test prerequisites
+        run: |
+          sudo apt-get install -y xvfb openbox xdotool dbus-x11 imagemagick x11-utils xauth fonts-dejavu-core
+          CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 build --locked --manifest-path tools/among-tools/Cargo.toml
+      - name: Observe real resource widgets and keyboard lifecycle
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$root/host-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          sha256sum -c "$root/host-test-sha256.txt"
+          name="app::plugin_tests::resources::real_resource_meters_review_keyboard_input_and_disabled_restart"
+          test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+          for scheme in light dark; do
+            gui="$root/gui/$scheme"
+            mkdir -p "$gui/screenshots"
+            AMONG_CHECK_ROOT="$gui" "$PWD/target/debug/among-tools" ci-x11 \
+              /usr/bin/env GTK_A11Y=test AMONG_COLOR_SCHEME="$scheme" \
+              AMONG_MANAGED_SYSTEM_BINARY="$AMONG_MANAGED_SYSTEM_BINARY" \
+              AMONG_MANAGED_SYSTEM_SHA256="$AMONG_MANAGED_SYSTEM_SHA256" \
+              AMONG_RESOURCE_GUI_SCREENSHOTS="$gui/screenshots" \
+              "$app_test" "$name" --exact --ignored --test-threads=1 --nocapture --color=never \
+              2>&1 | tee "$root/gui-$scheme.log"
+            # one selected case controls two fresh child processes. do not count
+            # those three successful harness results as three distinct tests.
+            test "$(grep -Fc 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$root/gui-$scheme.log")" -eq 3
+            grep -Fq 'PASS resource_gui real_keyboard_review_cancel_accept_disable=true' "$root/gui-$scheme.log"
+            grep -Fq 'PASS resource_gui fresh_disabled=true no_spawn=true no_bars=true saved_bytes_unchanged=true' "$root/gui-$scheme.log"
+            test "$(grep -Fc 'role=ProgressBar accessible_label_exact=true focusable=false' "$root/gui-$scheme.log")" -eq 3
+            for state in enabled disabled fresh-disabled; do
+              test -s "$gui/screenshots/resource-$scheme-$state.png"
+            done
+          done
       - name: Retain source-bound protocol evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -254,5 +291,8 @@ jobs:
             ${{ runner.temp }}/managed-transport-interop/*.jsonl
             ${{ runner.temp }}/managed-transport-interop/cases/**/installed.json
             ${{ runner.temp }}/managed-transport-interop/cases/**/among-plugin.json
+            ${{ runner.temp }}/managed-transport-interop/gui/**/*.png
+            ${{ runner.temp }}/managed-transport-interop/gui/**/*.log
+            ${{ runner.temp }}/managed-transport-interop/gui/**/post-disable-managed.json
           if-no-files-found: error
           retention-days: 5
