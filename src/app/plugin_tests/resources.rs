@@ -465,6 +465,27 @@ fn real_resource_meters_review_keyboard_input_and_disabled_restart() {
         || preferences.visible_dialog().is_some(),
         Duration::from_secs(2),
     );
+    let cancelled = preferences.visible_dialog().unwrap();
+    wait_for(
+        || {
+            widgets(cancelled.upcast_ref()).iter().any(|widget| {
+                widget.is_mapped()
+                    && widget
+                        .downcast_ref::<gtk::Button>()
+                        .is_some_and(|button| button.label().as_deref() == Some("Cancel"))
+            })
+        },
+        Duration::from_secs(2),
+    );
+    wait_for(
+        || {
+            cancelled
+                .root()
+                .and_then(|root| root.focus())
+                .is_some_and(|focus| focus.is_ancestor(&cancelled))
+        },
+        Duration::from_secs(2),
+    );
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     assert_eq!(std::fs::read(&config).ok(), before);
     xdo(&["key", "--clearmodifiers", "Escape"]);
