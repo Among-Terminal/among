@@ -93,9 +93,11 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`276e1d29b0ec912e4a34b44a07f7c1b195d02374`, verifies its public repository identity,
+`306839e144d7a4c98432c6c68dad016c412dd656` (tree
+`e9d7a98a8162a3b58154b4a9122c70cddaa1db16`), verifies its public repository identity,
 and independently builds its `managed-status` **protocol fixture**, production
-`clock-managed`, legacy `clock` reference and production `system-status-managed`.
+`clock-managed`, legacy `clock` reference, production `system-status-managed`,
+production `pane-pwd-managed` and the labelled `managed-pages` SDK reducer fixture.
 It records both sources, native
 compiler hosts and all executable hashes. The original five fixture cases still
 test real `PluginHost`, inventory inspection, pinned-descriptor spawn, access
@@ -169,6 +171,61 @@ per-source N/A and sampling-rate assertions remain required in its repository;
 resource-host tests neither replace them nor claim a graphical bar was rendered.
 Synthetic receipts are still not authenticated release installation. Actual GTK
 meters, installed lifecycle, terminal continuity and whole task2.3 remain separate.
+
+Seven additional invocations retain all seventeen above. Three run production
+pane-pwd against the actual host's focused/hidden model context, changed focus,
+long Unicode cwd, unknown/empty/over-budget fields, required-access refusal and
+closed/retired targets. Every real output is checked for exact scope, full tooltip,
+480-character truncation and 1000-ms refresh; unrelated slots stay empty. These
+are not observations of mapped GTK panes or terminal input.
+
+Four use the external scalar `managed-pages` fixture. Authentic child enumeration
+frames pass unchanged to the production host's page handler: application 32+1
+count pages with an interleaved real pane reply, and hidden workspace 7+7+3
+byte-limited pages with sibling exclusion. Completion depends on later pages.
+Closed workspace continuation must fail before the host deadline, publish no
+empty-success status and retain ordinary restart/backoff accounting. A genuine
+retired enumeration cannot attach to the re-enabled generation. The same host
+supervisor must explicitly reach stopped ownership; child exit alone is not proof.
+The closed-workspace case observes a timely host fault/backoff, not the numeric
+child exit code; direct SDK exit-status observations are a separate boundary.
+
+Setup requires `AMONG_MANAGED_PWD_BINARY`/`AMONG_MANAGED_PWD_SHA256` and
+`AMONG_MANAGED_PAGES_FIXTURE`/`AMONG_MANAGED_PAGES_SHA256`. Missing, linked,
+non-executable or digest-mismatched setup fails, never falls back to another binary.
+CI also checks the exact source tree and native ELF machine. Source-built binaries
+and synthetic receipts do not establish authenticated official packages,
+installation, package upgrades/rollback or whole tasks2.1/2.4 acceptance.
+
+The separately selected ignored resource-widget case uses the same exact real
+binary with explicitly synthetic local metadata, never an authenticated Release.
+It drives Cancel/Escape, Accept and enable, then disable through native keyboard
+controls; actual terminal input must still reach the same PTY before review,
+while running and after disable. Three mapped, allocated GTK ProgressBars must
+match the real percentage labels/fractions. A fresh process must restore disabled
+state without spawning, rendering bars or rewriting saved bytes; the legacy
+document remains byte-identical throughout.
+The disabled document must exist, retain the accepted status-only review and
+match the post-disable bytes carried across the process boundary; the installed
+identity must still be registered as disabled. PTY continuity uses the retained
+Pty object, not a reusable numeric descriptor. Labels and bars must be mapped,
+allocated and contained within the visible header/window bounds. Input checks
+explicitly place window/terminal focus before native typing; they do not establish
+automatic focus restoration, complete Tab traversal or absence of focus stealing.
+
+Interop CI runs this one case in light and dark profiles through the existing
+owned-display harness, after all24 transport/clock/resource/pane/SDK invocations
+(the original17 plus seven pane/SDK cases).
+Each profile's controller starts two fresh test processes; these are not three
+distinct test definitions or a replacement for earlier tests. The case requires
+`AMONG_RESOURCE_GUI_SCREENSHOTS` below `AMONG_CHECK_ROOT` and retains real enabled,
+disabled and fresh-disabled window captures. Missing display/tools/source/digests
+or screenshots fail rather than silently skip. `GTK_A11Y=test` selects GTK's test
+accessibility context so actual progressbar roles and exact stored accessible
+labels are checked; this is not AT-SPI traversal or a real screen-reader/whole-
+WCAG assessment. Screenshots supplement those property checks, not replace them.
+These source-bound local-receipt checks still do not establish repository package
+installation, update/uninstall or full packaged/platform acceptance.
 
 ## Installer ENOSPC context
 
