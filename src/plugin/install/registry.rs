@@ -558,21 +558,22 @@ pub(super) fn run(
             "the application-owned official source cannot be removed or assigned a different publisher",
         ));
     }
-    if matches!(&request, Request::EffectiveList) {
+    let effective = matches!(&request, Request::EffectiveList);
+    let request = if effective { Request::List } else { request };
+    if matches!(&request, Request::List | Request::Cached(_)) {
         let outcome = read(root, &check);
         check()?;
-        let (registrations, problem) = match outcome {
-            Ok((document, _)) => (effective_sources(document.registrations), None),
-            Err(problem) => (effective_sources(Vec::new()), Some(problem)),
-        };
-        return Ok(Outcome::EffectiveList {
-            registrations,
-            problem,
-        });
-    }
-    if matches!(&request, Request::List | Request::Cached(_)) {
-        let (document, _) = read(root, &check)?;
-        check()?;
+        if effective {
+            let (registrations, problem) = match outcome {
+                Ok((document, _)) => (effective_sources(document.registrations), None),
+                Err(problem) => (effective_sources(Vec::new()), Some(problem)),
+            };
+            return Ok(Outcome::EffectiveList {
+                registrations,
+                problem,
+            });
+        }
+        let (document, _) = outcome?;
         return match request {
             Request::List => Ok(Outcome::List(document.registrations)),
             Request::Cached(expected) => {
