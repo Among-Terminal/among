@@ -64,6 +64,10 @@ pub fn names(listing: &str) -> Result<Vec<String>> {
                 eprintln!("{name} is excluded from standalone graphics; this is not an acceptance pass; its owning parent regression supplies coverage");
                 continue;
             }
+            if name == "plugin::install::registry::tests::official_source::effective_sources_fresh_process_worker" {
+                eprintln!("{name} is excluded from standalone graphics; this is not an acceptance pass; a_fresh_process_reconstructs_official_authority_after_manual_omission supplies its root and coverage");
+                continue;
+            }
             if name == crate::installer_enospc::TEST {
                 eprintln!("{name} requires check-installer-enospc-from-cargo in its mandatory bounded tmpfs CI container; exclusion from graphics is not an acceptance pass");
                 continue;
@@ -108,7 +112,21 @@ pub fn run(records: &Path, scratch: &Path) -> Result<usize> {
             return Err("test executable listing failed".into());
         }
         for name in names(&fs::read_to_string(&log_path)?)? {
-            let args = vec![
+            let mut args = Vec::new();
+            if name == "prefs::repository_sources::tests::official_row_survives_offline_refresh_custom_removal_reopen_and_corrupt_storage" {
+                // the display defaults deliberately disable accessibility. only
+                // this exact case needs gtk's test backend and owned captures.
+                let temporary = storage::private_directory(&base, "official-source-widget")?;
+                let captures = temporary.join("captures");
+                fs::DirBuilder::new().mode(0o700).create(&captures)?;
+                args.extend([
+                    "/usr/bin/env".into(),
+                    "GTK_A11Y=test".into(),
+                    format!("TMPDIR={}", temporary.to_str().ok_or("test temporary path is not UTF-8")?),
+                    format!("AMONG_OFFICIAL_SOURCE_CAPTURES={}", captures.to_str().ok_or("test capture path is not UTF-8")?),
+                ]);
+            }
+            args.extend([
                 executable
                     .to_str()
                     .ok_or("test executable path is not UTF-8")?
@@ -118,7 +136,7 @@ pub fn run(records: &Path, scratch: &Path) -> Result<usize> {
                 "--ignored".into(),
                 "--test-threads=1".into(),
                 "--nocapture".into(),
-            ];
+            ]);
             let status = crate::display::run(
                 crate::display::Mode::Ci,
                 &args,

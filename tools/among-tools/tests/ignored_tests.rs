@@ -69,6 +69,23 @@ fn only_the_exact_dedicated_enospc_case_is_routed_out_of_graphics() -> among_too
     Ok(())
 }
 
+#[test]
+fn only_the_exact_official_source_parent_worker_is_excluded() -> among_tools::Result<()> {
+    let worker =
+        "plugin::install::registry::tests::official_source::effective_sources_fresh_process_worker";
+    let suffix = format!("{worker}_suffix");
+    let prefix = format!("other::{worker}");
+    let widget = "prefs::repository_sources::tests::official_row_survives_offline_refresh_custom_removal_reopen_and_corrupt_storage";
+    assert_eq!(
+        ignored_tests::names(&format!(
+            "{worker}: test\n{suffix}: test\n{prefix}: test\n{widget}: test"
+        ))?,
+        [prefix, suffix, widget.into()]
+    );
+    assert!(ignored_tests::names(&format!("{suffix}: test\n{suffix}: test")).is_err());
+    Ok(())
+}
+
 struct SelectionFixture(std::path::PathBuf);
 
 impl Drop for SelectionFixture {
@@ -79,6 +96,10 @@ impl Drop for SelectionFixture {
 
 impl SelectionFixture {
     fn new(failing: bool) -> among_tools::Result<Self> {
+        Self::from_source("ignored-selection.rs", failing)
+    }
+
+    fn from_source(source: &str, failing: bool) -> among_tools::Result<Self> {
         let fixture = Self(among_tools::storage::private_directory(
             &std::env::temp_dir(),
             "among-ignored-selection-test",
@@ -89,7 +110,8 @@ impl SelectionFixture {
             .args(["--edition=2021", "--test"])
             .arg(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/fixtures/ignored-selection.rs"),
+                    .join("tests/fixtures")
+                    .join(source),
             )
             .arg("-o")
             .arg(&executable);
@@ -164,6 +186,33 @@ fn actual_cli_still_fails_and_stops_on_an_ordinary_test_failure() -> among_tools
     assert!(fixture.0.join("ordinary-ran").is_file());
     assert!(!fixture.0.join("near-name-ran").exists());
     assert!(!fixture.0.join("worker-ran").exists());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the isolated display test container; exercised through the Rust ignored-test runner"]
+fn actual_cli_routes_only_exact_official_source_case_with_owned_accessibility_captures(
+) -> among_tools::Result<()> {
+    let fixture = SelectionFixture::from_source("official-ignored-selection.rs", false)?;
+    let output = fixture.run()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("Executed 3 ignored tests, one owned display per test"),
+        "{stdout}"
+    );
+    assert!(stderr.contains("a_fresh_process_reconstructs_official_authority_after_manual_omission supplies its root and coverage"), "{stderr}");
+    assert!(!fixture.0.join("official-worker-ran").exists());
+    assert!(fixture.0.join("official-worker-near-name-ran").is_file());
+    assert!(fixture.0.join("official-widget-near-name-ran").is_file());
+    let capture = std::fs::read_to_string(fixture.0.join("official-capture-path"))?;
+    let capture = std::path::PathBuf::from(capture);
+    assert!(capture.starts_with(fixture.0.join("checks")));
+    assert_eq!(
+        std::fs::read(capture)?,
+        b"observed exact owned capture route"
+    );
     Ok(())
 }
 

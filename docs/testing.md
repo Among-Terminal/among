@@ -73,6 +73,17 @@ application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
 
+The official-source registry's ignored fresh-process worker is parent-owned:
+`a_fresh_process_reconstructs_official_authority_after_manual_omission` selects it
+in the regular suite and supplies its private root. The graphical runner excludes
+only that exact helper name; the exclusion is not another accepted test.
+The exact official-source Preferences widget case still runs through the mandatory
+ignored-test route. That runner supplies `GTK_A11Y=test`, a private `TMPDIR` and
+`AMONG_OFFICIAL_SOURCE_CAPTURES` below it, without changing other graphical cases'
+default accessibility backend or accepting inherited capture paths. The three
+PNG files remain below the check root. GTK's test backend is not AT-SPI or a
+screen-reader/WCAG acceptance claim.
+
 ## Cross-repository managed transport
 
 The `managed-transport-interop` Cargo feature only compiles additional internal
