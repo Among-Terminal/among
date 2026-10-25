@@ -1,7 +1,8 @@
-//! the source document is discovery authority only. it never selects installed
-//! code, rewrites local preferences or grants runtime access.
+//! user registrations/cache are separate from application-owned source authority.
+//! neither selects installed code, rewrites preferences or grants runtime access.
 
 use super::{
+    official,
     source::{Inspection, Permit},
     store,
 };
@@ -67,6 +68,26 @@ pub struct Registration {
 }
 
 impl Registration {
+    pub fn is_official(&self) -> bool {
+        self.origin.repository_id == official::REPOSITORY_ID
+    }
+    pub fn display_origin(&self) -> Origin {
+        if self.is_official() {
+            official::origin()
+        } else {
+            self.origin.clone()
+        }
+    }
+    pub fn display_title(&self) -> String {
+        if self.is_official() {
+            official::TITLE.into()
+        } else {
+            format!("{}/{}", self.origin.owner, self.origin.repository)
+        }
+    }
+    pub fn available(&self) -> Result<(), Problem> {
+        official::validate(&self.origin)
+    }
     pub fn snapshot_count(&self) -> usize {
         self.snapshots.len()
     }
@@ -81,6 +102,27 @@ impl Registration {
     }
 }
 
+pub fn official_source() -> Registration {
+    Registration {
+        origin: official::origin(),
+        // a stable virtual generation permits a first explicit refresh without
+        // persisting a registration merely because preferences was opened.
+        token: "0".repeat(64),
+        revision: "0".repeat(64),
+        snapshots: Vec::new(),
+    }
+}
+
+pub fn effective_sources(mut registrations: Vec<Registration>) -> Vec<Registration> {
+    let official = registrations
+        .iter()
+        .position(Registration::is_official)
+        .map(|index| registrations.remove(index))
+        .unwrap_or_else(official_source);
+    registrations.insert(0, official);
+    registrations
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
@@ -89,7 +131,10 @@ struct Document {
 }
 
 pub enum Request {
+    // retain the persisted user-registry view; application source discovery uses
+    // the separate overlay so neither corrupt storage nor omission revokes it.
     List,
+    EffectiveList,
     Add(Box<Inspection>),
     Refresh {
         expected: Registration,
@@ -105,6 +150,10 @@ pub enum Request {
 
 pub enum Outcome {
     List(Vec<Registration>),
+    EffectiveList {
+        registrations: Vec<Registration>,
+        problem: Option<Problem>,
+    },
     Changed {
         registrations: Vec<Registration>,
         durability: Durability,
@@ -256,7 +305,15 @@ fn read(
             registrations: Vec::new(),
         },
     };
-    if document.version != 1 || document.registrations.len() > MAX_REPOSITORIES {
+    if document.version != 1
+        || document.registrations.len() > MAX_REPOSITORIES + 1
+        || document
+            .registrations
+            .iter()
+            .filter(|source| !source.is_official())
+            .count()
+            > MAX_REPOSITORIES
+    {
         return Err(Problem(
             "unsupported source registry version or repository count",
         ));
@@ -495,19 +552,38 @@ pub(super) fn run(
     begin_commit: impl FnOnce() -> Result<(), Problem>,
 ) -> Result<Outcome, Problem> {
     check()?;
+    if matches!(&request, Request::Remove(expected) | Request::ApprovePublisher { expected, .. } if expected.is_official())
+    {
+        return Err(Problem(
+            "the application-owned official source cannot be removed or assigned a different publisher",
+        ));
+    }
+    if matches!(&request, Request::EffectiveList) {
+        let outcome = read(root, &check);
+        check()?;
+        let (registrations, problem) = match outcome {
+            Ok((document, _)) => (effective_sources(document.registrations), None),
+            Err(problem) => (effective_sources(Vec::new()), Some(problem)),
+        };
+        return Ok(Outcome::EffectiveList {
+            registrations,
+            problem,
+        });
+    }
     if matches!(&request, Request::List | Request::Cached(_)) {
         let (document, _) = read(root, &check)?;
         check()?;
         return match request {
             Request::List => Ok(Outcome::List(document.registrations)),
             Request::Cached(expected) => {
-                let current = document
-                    .registrations
+                let registrations = effective_sources(document.registrations);
+                let current = registrations
                     .iter()
                     .find(|source| **source == expected)
                     .ok_or(Problem(
                         "source was removed or changed; reopen its current registration",
                     ))?;
+                current.available()?;
                 let snapshot = current.snapshots.first().ok_or(Problem(
                     "no retained metadata snapshot; refresh this source when online",
                 ))?;
@@ -539,15 +615,33 @@ pub(super) fn run(
         _ => return Err(Problem("invalid source write request")),
     };
     let index = if let Some(expected) = &expected {
-        Some(
+        if expected.is_official() {
+            let current = document
+                .registrations
+                .iter()
+                .find(|source| source.is_official())
+                .cloned()
+                .unwrap_or_else(official_source);
+            if &current != expected {
+                return Err(Problem(
+                    "source was removed or changed; stale operation was refused",
+                ));
+            }
             document
                 .registrations
                 .iter()
-                .position(|source| source == expected)
-                .ok_or(Problem(
-                    "source was removed or changed; stale operation was refused",
-                ))?,
-        )
+                .position(Registration::is_official)
+        } else {
+            Some(
+                document
+                    .registrations
+                    .iter()
+                    .position(|source| source == expected)
+                    .ok_or(Problem(
+                        "source was removed or changed; stale operation was refused",
+                    ))?,
+            )
+        }
     } else {
         None
     };
@@ -566,6 +660,15 @@ pub(super) fn run(
             return Err(Problem("invalid metadata retrieval time"));
         }
         let origin = inspection.origin();
+        official::validate(&origin)?;
+        if expected
+            .as_ref()
+            .is_some_and(|expected| expected.origin.repository_id != origin.repository_id)
+        {
+            return Err(Problem(
+                "numeric source identity changed; add it as a separate source explicitly",
+            ));
+        }
         let snapshot = Snapshot {
             origin: origin.clone(),
             revision: inspection.catalogue_revision.clone(),
@@ -591,7 +694,14 @@ pub(super) fn run(
                         "repository is already registered; use its Refresh action",
                     ));
                 }
-                if document.registrations.len() >= MAX_REPOSITORIES {
+                if origin.repository_id != official::REPOSITORY_ID
+                    && document
+                        .registrations
+                        .iter()
+                        .filter(|source| !source.is_official())
+                        .count()
+                        >= MAX_REPOSITORIES
+                {
                     return Err(Problem(
                         "source repository limit is 32; remove an unused registration first",
                     ));
@@ -610,7 +720,7 @@ pub(super) fn run(
         };
         match origin.compare(&registration.origin) {
             Change::IdentityChanged => return Err(Problem("numeric source identity changed; add it as a separate source explicitly")),
-            Change::PublisherChanged if !approve => return Err(Problem("publisher changed; inspect it and explicitly approve the new publisher before saving")),
+            Change::PublisherChanged if !approve && !registration.is_official() => return Err(Problem("publisher changed; inspect it and explicitly approve the new publisher before saving")),
             Change::PublisherChanged => { registration.token = store::token(); registration.snapshots.clear(); }
             _ => {}
         }

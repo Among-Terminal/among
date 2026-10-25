@@ -83,6 +83,10 @@ impl Panel {
                 };
                 let request = match expected {
                     None => Request::Add(Box::new(inspection)),
+                    Some(expected) if expected.is_official() => Request::Refresh {
+                        expected,
+                        inspection: Box::new(inspection),
+                    },
                     Some(expected)
                         if inspection.origin().compare(&expected.origin)
                             == Change::PublisherChanged =>
@@ -100,7 +104,8 @@ impl Panel {
                 panel.storage(request, "Saving explicitly approved source metadata");
             }
         });
-        panel.storage(Request::List, "Loading source registrations");
+        panel.render(Vec::new());
+        panel.storage(Request::EffectiveList, "Loading source registrations");
         panel
     }
 
@@ -137,13 +142,21 @@ impl Panel {
         save.set_visible(candidate.is_some());
         save.set_sensitive(!self.busy.get());
         if let Some((inspection, previous)) = candidate.as_ref() {
+            let valid = inspection.validate_source().is_ok();
+            save.set_sensitive(!self.busy.get() && valid);
             let change = previous
                 .as_ref()
                 .map(|previous| inspection.origin().compare(&previous.origin));
-            save.set_label(match change {
-                None => "Add source",
-                Some(Change::PublisherChanged) => "Approve publisher change",
-                _ => "Save metadata refresh",
+            save.set_label(if !valid {
+                "Official source identity mismatch"
+            } else if previous.as_ref().is_some_and(Registration::is_official) {
+                "Save official metadata refresh"
+            } else {
+                match change {
+                    None => "Add source",
+                    Some(Change::PublisherChanged) => "Approve publisher change",
+                    _ => "Save metadata refresh",
+                }
             });
             save.set_tooltip_text(Some(&format!("Repository {} / publisher {}. This saves discovery metadata only; no plugin is installed, enabled or granted runtime access.", inspection.repository_id, inspection.publisher_id)));
         }
@@ -157,6 +170,7 @@ impl Panel {
     }
 
     fn render(self: &Rc<Self>, registrations: Vec<Registration>) {
+        let registrations = registry::effective_sources(registrations);
         let Some(group) = self.group.upgrade() else {
             return;
         };
@@ -168,10 +182,7 @@ impl Panel {
         for source in registrations {
             let source = Rc::new(source);
             let row = adw::ActionRow::builder()
-                .title(escape_display(&format!(
-                    "{}/{}",
-                    source.origin.owner, source.origin.repository
-                )))
+                .title(escape_display(&source.display_title()))
                 .build();
             row.set_subtitle_lines(0);
             let freshness = source
@@ -188,22 +199,37 @@ impl Panel {
                     )
                 })
                 .unwrap_or_else(|| "No retained snapshot; refresh when online".into());
+            let origin = source.display_origin();
+            let protection = if source.is_official() {
+                "Application-owned official source; cannot be removed. Discovery does not install, enable or grant access.\n"
+            } else {
+                ""
+            };
+            let unavailable = source
+                .available()
+                .err()
+                .map(|problem| format!("\nUnavailable: {}", problem.0))
+                .unwrap_or_default();
             row.set_subtitle(&escape_display(&format!(
-                "Repository {} · publisher {} · {} cached snapshots\n{freshness}",
-                source.origin.repository_id,
-                source.origin.publisher_id,
+                "{protection}{}/{} · repository {} · publisher {} · {} cached snapshots\n{freshness}{unavailable}",
+                origin.owner,
+                origin.repository,
+                origin.repository_id,
+                origin.publisher_id,
                 source.snapshot_count()
             )));
             for (label, operation) in [("Cached", 0), ("Refresh", 1), ("Remove source", 2)] {
+                if operation == 2 && source.is_official() {
+                    continue;
+                }
                 let button = gtk::Button::with_label(label);
                 button.set_valign(gtk::Align::Center);
-                button.set_sensitive(
-                    !self.busy.get() && (operation != 0 || source.snapshot_count() > 0),
-                );
-                self.buttons.borrow_mut().push((
-                    button.downgrade(),
-                    operation != 0 || source.snapshot_count() > 0,
-                ));
+                let available =
+                    operation != 0 || (source.snapshot_count() > 0 && source.available().is_ok());
+                button.set_sensitive(!self.busy.get() && available);
+                self.buttons
+                    .borrow_mut()
+                    .push((button.downgrade(), available));
                 button.update_property(&[gtk::accessible::Property::Label(&format!(
                     "{label} repository {}",
                     source.origin.repository_id
@@ -290,6 +316,20 @@ impl Panel {
             }
             panel.busy.set(false);
             match outcome {
+                Ok(Outcome::EffectiveList {
+                    registrations,
+                    problem,
+                }) => {
+                    panel.render(registrations);
+                    if let Some(problem) = problem {
+                        panel.feedback(
+                            "User source storage is unavailable; official source remains built in",
+                            problem.0,
+                        );
+                    } else {
+                        panel.feedback("Source registrations loaded", "The official source is application-owned. Cached metadata is not an online check; no plugin was installed or granted access.");
+                    }
+                }
                 Ok(Outcome::List(registrations)) => {
                     let empty = registrations.is_empty();
                     panel.render(registrations);
@@ -369,6 +409,11 @@ impl Panel {
             }
             match outcome {
                 Ok(inspection) => {
+                    if let Err(problem) = inspection.validate_source() {
+                        panel.feedback("Official source identity mismatch", problem.0);
+                        panel.update_save();
+                        return glib::ControlFlow::Break;
+                    }
                     let change = inspection.origin().compare(&expected.origin);
                     if generation == panel.generation.get() {
                         (panel.show)(inspection.clone());
@@ -376,7 +421,9 @@ impl Panel {
                             .candidate
                             .replace(Some((inspection.clone(), Some(expected.clone()))));
                     }
-                    if matches!(change, Change::PublisherChanged | Change::IdentityChanged) {
+                    if change == Change::IdentityChanged
+                        || (change == Change::PublisherChanged && !expected.is_official())
+                    {
                         panel.feedback("Source approval was not changed", change.description());
                     } else {
                         panel.storage(
@@ -398,3 +445,6 @@ impl Panel {
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

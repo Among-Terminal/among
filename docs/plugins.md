@@ -167,8 +167,9 @@ replaced package rather than silently retargeting an old action. The separate
 Plugin sources section opens repository inspection with a separate explicit
 Install disabled action for each compatible version; the search field filters
 only installed/configured plugins. Merely inspecting metadata never installs or
-enables code. Registered sources have explicit Cached, Refresh and Remove source
-actions; source removal does not uninstall anything. Existing identities have a
+enables code. Sources have explicit Cached and Refresh actions; custom sources
+also have Remove source, which does not uninstall anything. The application-owned
+official source cannot be removed. Existing identities have a
 separate Apply update action. Managed Details exposes explicit recovery/removal;
 these do not modify legacy executables.
 
@@ -721,7 +722,21 @@ not full installer acceptance: integrated notification providers, separate setti
 deletion, independent security review, supported-platform observations and CI gates
 remain separate from the local managed-process workflows.
 
-**Add source** explicitly saves the inspected numeric repository/publisher identity
+**Official plugins for Among Terminal** is an application-owned source, present
+without Add source even when user source storage is missing or unreadable. Its
+trusted numeric repository/publisher IDs are `1431055733` / `339567100`; names,
+URLs and user-supplied flags do not grant official status. A previous registration
+of that repository is shown once, retaining its valid metadata cache. The row
+explains its protection instead of exposing a removal action; backend removal and
+generic publisher reassignment refuse too. Corrupt user storage is reported and
+left unchanged, not silently replaced by an empty document.
+
+Source permanence does not promise catalogue availability: without retained
+metadata there are no embedded plugin cards. Use explicit **Refresh** to request
+metadata; opening the current source list does not make a network request. Source
+discovery never installs, enables, grants access or restores an uninstalled plugin.
+
+For custom repositories, **Add source** explicitly saves the inspected numeric repository/publisher identity
 and validated snapshot. Inspection or address edits alone never register it.
 Registered sources reopen from bounded local storage without network access.
 **Cached** displays the actual retrieval timestamp, whether the snapshot is at least
@@ -729,7 +744,7 @@ Registered sources reopen from bounded local storage without network access.
 is stale/uncertain, not fresh. No cache is a promise of network availability.
 
 **Refresh** requests the registered numeric GitHub repository ID, never the old
-owner/name alias. A rename retains identity. A changed numeric publisher requires
+owner/name alias. A rename retains identity. For custom sources, a changed numeric publisher requires
 the explicit **Approve publisher change** action; refresh does not silently approve
 it or grant installed code any access. Reusing an owner/repository spelling with a
 different numeric repository ID is a separate explicit addition, not an update.
@@ -737,11 +752,21 @@ Failed/rate-limited/cancelled refresh keeps the committed cache and installed
 selection/switch/settings unchanged. **Remove source** removes discovery and its
 cache only; it neither disables nor uninstalls a selected package.
 
+The official publisher pin cannot be adopted through **Approve publisher change**.
+A mismatch leaves that source unavailable and refuses new selection/installation;
+a reviewed application change is required to change its trust anchor. Installation
+also checks the live pinned repository/publisher before staging and again at its
+pre-commit boundary, so a valid cached catalogue does not waive a visible transfer.
+These observations do not promise immunity to an unobservable later transfer, and
+source operations do not rewrite or revoke an already installed selection.
+
 Registrations and exact raw catalogue bytes live in the owned data directory
 `among/plugin-sources/sources.json`, separate from managed selections and config.
 The total metadata storage budget is 16 MiB: the committed document is capped at
 8 MiB, reserving the other half for its flushed atomic replacement. There are at
-most 32 repositories and four snapshots per repository. Old snapshots can be evicted for cache quota without deleting
+most 32 custom repositories plus the official repository and four snapshots per
+repository. The built-in row exists without a persisted cache record and does not
+consume a custom slot. Old snapshots can be evicted for cache quota without deleting
 registrations, settings or installed generations. A refreshed duplicate revision/
 digest replaces its retrieval observation rather than consuming another slot.
 Publisher reapproval drops the previous publisher's cached snapshots.

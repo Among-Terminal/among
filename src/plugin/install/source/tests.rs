@@ -4,6 +4,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 
 mod installation_authority;
+mod official_source;
 mod release_binding;
 
 pub(crate) static JOB_TESTS: Mutex<()> = Mutex::new(());
