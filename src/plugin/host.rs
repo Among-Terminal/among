@@ -713,7 +713,7 @@ impl PluginHost {
         let name = &self.plugins[index].spec.name;
         self.results.retain(|result| &result.plugin != name);
         self.notices.retain(|(source, _, _)| source != name);
-        if self.plugins[index].io.is_some() {
+        if self.plugins[index].io.is_some() || self.admission.held(name) {
             self.plugins[index].after_stop = Some(final_state);
             self.plugins[index].stopping_reason = Some(reason.into());
             self.plugins[index].state = PluginState::Stopping {
@@ -885,9 +885,24 @@ impl PluginHost {
                     {
                         *current = reason;
                     }
-                } else if self.plugins[index].io.is_none() && self.plugins[index].spec.enabled {
+                } else if self.plugins[index].io.is_none() {
                     let name = self.plugins[index].spec.name.clone();
-                    self.start_by_name(name);
+                    if let Some(reason) = self.admission.reason(&name) {
+                        if let PluginState::Stopping {
+                            reason: current, ..
+                        } = &mut self.plugins[index].state
+                        {
+                            *current = format!("previous generation: {reason}");
+                        }
+                    } else {
+                        self.plugins[index].state = self.plugins[index]
+                            .after_stop
+                            .take()
+                            .unwrap_or(PluginState::Disabled);
+                    }
+                    if self.plugins[index].spec.enabled {
+                        self.start_by_name(name);
+                    }
                 }
                 continue;
             }
@@ -1648,6 +1663,10 @@ mod tests {
             2
         );
         replacement.disable("probe");
+        assert!(matches!(
+            replacement.plugins[0].state,
+            PluginState::Stopping { .. }
+        ));
         assert!(
             !replacement.supervised_stopped("probe"),
             "disable without local IO is not a global stop acknowledgement"
@@ -1686,7 +1705,13 @@ mod tests {
         replacement.register(spec(echo_plugin()));
         assert!(replacement.plugins[0].io.is_none());
         assert!(!replacement.supervised_stopped("probe"));
+        replacement.disable("probe");
         drop(hold);
+        assert!(wait_for(&mut replacement, |host| host
+            .supervised_stopped("probe")
+            && host.plugins[0].state == PluginState::Disabled));
+        assert!(replacement.plugins[0].io.is_none());
+        replacement.enable("probe");
         assert!(wait_for(&mut replacement, |host| host.plugins[0]
             .state
             .is_healthy()));

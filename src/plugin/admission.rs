@@ -87,6 +87,17 @@ impl Admission {
             .get(identity)
             .is_some_and(|lease| lease.strong_count() != 0)
     }
+
+    pub(super) fn reason(&self, identity: &str) -> Option<&'static str> {
+        let Ok(leases) = self.leases.try_borrow() else {
+            return Some("shared plugin admission is busy");
+        };
+        leases.get(identity).and_then(Weak::upgrade).map(|lease| {
+            lease
+                .reason()
+                .unwrap_or("previous generation is still supervised")
+        })
+    }
 }
 
 #[cfg(test)]
