@@ -1,11 +1,12 @@
 //! one process-wide decoder slot. GTK never constructs or retires a decoder in
 //! the caller; uncertain cleanup quarantines this slot instead of spawning more.
 use super::{authorization::Authorization, Sound};
+use crate::notifications::{EffectAuthorization, ProcessEffectAuthorization};
 use std::{
     fs::File,
     io::{Read, Write},
     os::{
-        fd::{AsRawFd, FromRawFd},
+        fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::process::CommandExt,
     },
     path::{Path, PathBuf},
@@ -63,11 +64,20 @@ struct Report {
 pub(crate) struct Operation {
     cancel: AtomicBool,
     authority: Arc<Authorization>,
+    effect: Option<EffectAuthorization>,
     cancelled_micros: AtomicU64,
     started: Instant,
     report: Mutex<Report>,
 }
 impl Operation {
+    fn permitted(&self) -> bool {
+        !self.cancel.load(Ordering::Acquire)
+            && !SHUTTING_DOWN.load(Ordering::Acquire)
+            && self
+                .effect
+                .as_ref()
+                .is_none_or(|effect| effect.is_current(Instant::now()))
+    }
     pub(crate) fn cancel(&self) {
         // shared revocation wins even while the supervisor is inside spawn.
         self.authority.revoke();
@@ -115,6 +125,7 @@ struct Job {
     operation: Arc<Operation>,
     sound: Sound,
     started: Instant,
+    process_effect: Option<ProcessEffectAuthorization>,
 }
 struct Slot;
 impl Drop for Slot {
@@ -160,9 +171,19 @@ fn worker() -> Result<&'static SyncSender<Job>, String> {
         .map_err(Clone::clone)
 }
 
-pub(crate) fn start(id: u64, sound: Sound) -> Result<Option<Arc<Operation>>, &'static str> {
+pub(crate) fn start(
+    id: u64,
+    sound: Sound,
+    effect: Option<EffectAuthorization>,
+) -> Result<Option<Arc<Operation>>, &'static str> {
     if SHUTTING_DOWN.load(Ordering::Acquire) {
         return Err("Audio execution has been shut down.");
+    }
+    if effect
+        .as_ref()
+        .is_some_and(|effect| !effect.is_current(Instant::now()))
+    {
+        return Err("The audio event authority is no longer current.");
     }
     let sender = worker().map_err(|_| "The audio supervisor is unavailable.")?;
     if BUSY
@@ -172,7 +193,22 @@ pub(crate) fn start(id: u64, sound: Sound) -> Result<Option<Arc<Operation>>, &'s
         return Ok(None);
     }
     let started = Instant::now();
-    let authority = match Authorization::new(id) {
+    let process_effect = match effect
+        .as_ref()
+        .map(EffectAuthorization::export_process)
+        .transpose()
+    {
+        Ok(exported) => exported,
+        Err(_) => {
+            BUSY.store(false, Ordering::Release);
+            return Err("The audio event authority could not be exported.");
+        }
+    };
+    let authorization = match &process_effect {
+        Some(effect) => Authorization::new_bound(id, effect.binding()),
+        None => Authorization::new(id),
+    };
+    let authority = match authorization {
         Ok(authority) => Arc::new(authority),
         Err(_) => {
             BUSY.store(false, Ordering::Release);
@@ -190,6 +226,7 @@ pub(crate) fn start(id: u64, sound: Sound) -> Result<Option<Arc<Operation>>, &'s
     let operation = Arc::new(Operation {
         cancel: AtomicBool::new(false),
         authority,
+        effect,
         cancelled_micros: AtomicU64::new(0),
         started,
         report: Mutex::new(Report {
@@ -208,6 +245,7 @@ pub(crate) fn start(id: u64, sound: Sound) -> Result<Option<Arc<Operation>>, &'s
             operation: operation.clone(),
             sound,
             started,
+            process_effect,
         })
         .is_err()
     {
@@ -335,7 +373,7 @@ struct Wire {
     state: u8,
     maps: Option<String>,
 }
-fn packet(state: u8, maps: bool) -> Result<(), String> {
+fn packet(state: u8, maps: bool, check: &impl Fn() -> Result<(), String>) -> Result<(), String> {
     let maps = if maps {
         let mut text = String::new();
         File::open("/proc/self/maps")
@@ -345,14 +383,36 @@ fn packet(state: u8, maps: bool) -> Result<(), String> {
     } else {
         None
     };
-    let bytes = serde_json::to_vec(&Wire { state, maps })
+    let mut bytes = serde_json::to_vec(&Wire { state, maps })
         .map_err(|_| "Decoder protocol serialization failed.")?;
+    bytes.push(b'\n');
     let mut output = std::io::stdout().lock();
-    output
-        .write_all(&bytes)
-        .and_then(|()| output.write_all(b"\n"))
-        .and_then(|()| output.flush())
-        .map_err(|_| "Decoder supervisor disconnected.".into())
+    let mut remaining = bytes.as_slice();
+    // maps can exceed pipe capacity while the real supervisor is parked. A
+    // blocking write would hide direct scope revocation during active output.
+    while !remaining.is_empty() {
+        check()?;
+        match output.write(remaining) {
+            Ok(0) => return Err("Decoder supervisor disconnected.".into()),
+            Ok(count) => remaining = &remaining[count..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Err("Decoder supervisor disconnected.".into()),
+        }
+    }
+    loop {
+        check()?;
+        match output.flush() {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Err("Decoder supervisor disconnected.".into()),
+        }
+    }
 }
 
 fn monotonic_ns() -> std::io::Result<u64> {
@@ -368,8 +428,65 @@ fn monotonic_ns() -> std::io::Result<u64> {
         .ok_or_else(|| std::io::Error::other("invalid monotonic clock"))
 }
 
+fn hex_binding(binding: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(binding.len() * 2);
+    for &byte in binding {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 15)]));
+    }
+    encoded
+}
+
+fn parse_binding(encoded: &str) -> Result<Vec<u8>, String> {
+    if encoded.is_empty()
+        || encoded.len() > crate::notifications::MAX_EFFECT_BINDING * 2
+        || !encoded.len().is_multiple_of(2)
+        || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Invalid bounded audio effect binding.".into());
+    }
+    encoded
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).map_err(|_| "Invalid binding byte.")?;
+            u8::from_str_radix(text, 16).map_err(|_| "Invalid binding byte.".into())
+        })
+        .collect()
+}
+
+fn parse_effect_fds(list: &str, operation_fd: i32) -> Result<Vec<OwnedFd>, String> {
+    if list.len() > 96 {
+        return Err("Audio effect descriptor list exceeds its bound.".into());
+    }
+    let mut raw = Vec::new();
+    for item in list.split(',') {
+        let fd = item
+            .parse::<i32>()
+            .map_err(|_| "Invalid audio effect descriptor.")?;
+        if fd < 3
+            || fd == operation_fd
+            || raw.contains(&fd)
+            || raw.len() > crate::notifications::MAX_EFFECT_SCOPES
+            || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0
+        {
+            return Err("Missing, aliased or invalid audio effect descriptor.".into());
+        }
+        raw.push(fd);
+    }
+    // no OwnedFd is constructed before the complete numeric set is validated;
+    // duplicates or an operation-FD alias must never cause double ownership.
+    Ok(raw
+        .into_iter()
+        .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+        .collect())
+}
+
 fn supervise(job: &Job) -> Outcome {
-    if job.operation.cancel.load(Ordering::Acquire) || SHUTTING_DOWN.load(Ordering::Acquire) {
+    if !job.operation.permitted() {
         return Outcome::Cancelled;
     }
     // SIGKILL cannot run the helper's registry-directory destructor. The fixed
@@ -395,9 +512,7 @@ fn supervise(job: &Job) -> Outcome {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    if matches!(outcome, Outcome::Ended)
-        && (job.operation.cancel.load(Ordering::Acquire) || SHUTTING_DOWN.load(Ordering::Acquire))
-    {
+    if matches!(outcome, Outcome::Ended) && !job.operation.permitted() {
         return Outcome::Cancelled;
     }
     if matches!(outcome, Outcome::Ended) && job.started.elapsed() >= DEADLINE {
@@ -407,13 +522,29 @@ fn supervise(job: &Job) -> Outcome {
 }
 
 fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
-    if job.operation.cancel.load(Ordering::Acquire) || SHUTTING_DOWN.load(Ordering::Acquire) {
+    if !job.operation.permitted() {
         return Outcome::Cancelled;
     }
     if job.started.elapsed() >= DEADLINE {
         return Outcome::Failed("Audio expired before decoder construction.");
     }
     let result = (|| -> std::io::Result<Child> {
+        let descriptors = job
+            .process_effect
+            .as_ref()
+            .map(ProcessEffectAuthorization::duplicate_fds)
+            .transpose()
+            .map_err(|_| std::io::Error::other("audio event descriptor export failed"))?;
+        let inherited: Vec<i32> = descriptors
+            .as_ref()
+            .map(|descriptors| {
+                descriptors
+                    .as_slice()
+                    .iter()
+                    .map(AsRawFd::as_raw_fd)
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut command = Command::new(std::env::current_exe()?);
         let deadline = monotonic_ns()?
             .checked_add(DEADLINE.saturating_sub(job.started.elapsed()).as_nanos() as u64)
@@ -435,6 +566,15 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        if let Some(effect) = &job.process_effect {
+            command.arg(hex_binding(effect.binding())).arg(
+                inherited
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
         for key in [
             "HOME",
             "LANG",
@@ -471,6 +611,11 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
                 if libc::fcntl(authority_fd, libc::F_SETFD, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
+                for &fd in &inherited {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -480,7 +625,16 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
                 Ok(())
             });
         }
-        command.spawn()
+        if !job.operation.permitted() {
+            return Err(std::io::Error::other(
+                "audio authority revoked before spawn",
+            ));
+        }
+        let child = command.spawn();
+        // retain the library's FD budget reservation through the actual spawn
+        // return, including delayed parent-side spawn observation.
+        drop(descriptors);
+        child
     })();
     let child = match result {
         Ok(child) => child,
@@ -519,10 +673,7 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
     }
     // no grant exists until real spawn observation, owned group identity and
     // bounded pipes are established. Revocation cannot transition back to granted.
-    if !job.operation.cancel.load(Ordering::Acquire)
-        && !SHUTTING_DOWN.load(Ordering::Acquire)
-        && job.started.elapsed() < DEADLINE
-    {
+    if job.operation.permitted() && job.started.elapsed() < DEADLINE {
         job.operation.authority.grant();
     }
     let mut buffer = Vec::new();
@@ -535,7 +686,7 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
     let mut protocol_phase = 0;
     loop {
         let now = Instant::now();
-        if job.operation.cancel.load(Ordering::Acquire) || SHUTTING_DOWN.load(Ordering::Acquire) {
+        if !job.operation.permitted() {
             terminal = Some(Outcome::Cancelled);
             retire_at = Some(now);
         }
@@ -617,9 +768,7 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
             if output_closed && child.group_quiet().unwrap_or(false) {
                 if let Ok(Some(status)) = child.child.try_wait() {
                     child.reaped = true;
-                    if job.operation.cancel.load(Ordering::Acquire)
-                        || SHUTTING_DOWN.load(Ordering::Acquire)
-                    {
+                    if !job.operation.permitted() {
                         return Outcome::Cancelled;
                     }
                     if job.started.elapsed() >= DEADLINE {
@@ -713,7 +862,7 @@ pub fn dispatch() -> Option<glib::ExitCode> {
         return None;
     }
     let result = (|| -> Result<(), String> {
-        if args.len() != 6 {
+        if !matches!(args.len(), 6 | 8) {
             return Err("Invalid audio decoder invocation.".into());
         }
         let id = args[4]
@@ -725,19 +874,59 @@ pub fn dispatch() -> Option<glib::ExitCode> {
             .and_then(|value| value.parse::<i32>().ok())
             .filter(|&fd| fd >= 3 && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0)
             .ok_or("Invalid audio authority descriptor.")?;
-        let authority = Authorization::receive(unsafe { File::from_raw_fd(fd) }, id)
-            .map_err(|error| error.to_string())?;
+        let binding = match args.get(6) {
+            Some(encoded) => {
+                parse_binding(encoded.to_str().ok_or("Invalid effect binding encoding.")?)?
+            }
+            None => Vec::new(),
+        };
+        let authority_file = unsafe { File::from_raw_fd(fd) };
+        let authority = if binding.is_empty() {
+            Authorization::receive(authority_file, id)
+        } else {
+            Authorization::receive_bound(authority_file, id, &binding)
+        }
+        .map_err(|error| error.to_string())?;
+        let process_effect = match args.get(7) {
+            Some(list) => {
+                let fds =
+                    parse_effect_fds(list.to_str().ok_or("Invalid effect descriptor list.")?, fd)?;
+                Some(
+                    ProcessEffectAuthorization::import_for_helper(&binding, fds)
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            None => None,
+        };
+        nonblocking(&std::io::stdout()).map_err(|_| "Decoder protocol output is unavailable.")?;
         let deadline = args[3]
             .to_str()
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or("Invalid decoder deadline.")?;
         let check_deadline = || -> Result<(), String> {
+            let mut protocol = libc::pollfd {
+                fd: 1,
+                events: 0,
+                revents: 0,
+            };
+            let result = unsafe { libc::poll(&mut protocol, 1, 0) };
+            if result < 0
+                || protocol.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
+            {
+                return Err("Decoder supervisor disconnected.".into());
+            }
             if authority.revoked() {
                 return Err("Audio operation was cancelled before playback.".into());
             }
             let now = monotonic_ns().map_err(|_| "Decoder monotonic clock is unavailable.")?;
             if now >= deadline || deadline - now > DEADLINE.as_nanos() as u64 {
                 return Err("Decoder operation expired or has an invalid deadline.".into());
+            }
+            if process_effect
+                .as_ref()
+                .is_some_and(|effect| !effect.is_current_monotonic(now))
+            {
+                return Err("Audio event authority was revoked or expired.".into());
             }
             Ok(())
         };
@@ -750,7 +939,7 @@ pub fn dispatch() -> Option<glib::ExitCode> {
         }
         let sound =
             Sound::read_local(Path::new("/proc/self/fd/0")).map_err(|error| error.to_string())?;
-        packet(1, false)?;
+        packet(1, false, &check_deadline)?;
         if args[2] != "-" {
             unsafe {
                 super::runtime::initialize_packaged(Path::new(&args[2]))?;
@@ -765,13 +954,26 @@ pub fn dispatch() -> Option<glib::ExitCode> {
         media.set_volume(1.0);
         loop {
             check_deadline()?;
-            if authority.claim()? {
+            for _ in 0..100 {
+                if !glib::MainContext::default().iteration(false) {
+                    break;
+                }
+            }
+            if media.error().is_some() {
+                return Err("The WAV decoder or audio output is unavailable.".into());
+            }
+            if media.is_prepared() && authority.claim()? {
+                if let Some(effect) = &process_effect {
+                    effect
+                        .validate_after_claim()
+                        .map_err(|_| "Audio event authority failed post-claim validation.")?;
+                }
+                media.play();
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        media.play();
-        packet(2, true)?;
+        packet(2, true, &check_deadline)?;
         loop {
             check_deadline()?;
             for _ in 0..100 {
@@ -783,7 +985,7 @@ pub fn dispatch() -> Option<glib::ExitCode> {
                 return Err("The WAV decoder or audio output is unavailable.".into());
             }
             if media.is_ended() {
-                packet(3, true)?;
+                packet(3, true, &check_deadline)?;
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));

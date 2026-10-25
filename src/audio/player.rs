@@ -2,6 +2,7 @@ use super::{
     execution::{self, Operation, Outcome},
     Sound, WavError, WavInfo,
 };
+use crate::notifications::EffectAuthorization;
 use std::{
     cell::RefCell,
     collections::VecDeque,
@@ -338,19 +339,37 @@ impl Audio {
     }
 
     pub fn preview(&self) -> Result<Request, AudioError> {
-        self.start(PlaybackKind::Preview)
+        self.start(PlaybackKind::Preview, None)
     }
 
+    /// legacy admission-only route for consumers not yet migrated to the owned
+    /// core capability. This does not provide process-visible core revocation.
     pub fn event(&self) -> Result<Request, AudioError> {
-        self.start(PlaybackKind::Event)
+        self.start(PlaybackKind::Event, None)
     }
 
-    fn start(&self, kind: PlaybackKind) -> Result<Request, AudioError> {
+    /// consumes the exact privately issued delivery capability without retaining
+    /// GUI/core/backend borrows. The dispatcher must assign a delivery only once;
+    /// clones are not permission to replay it as another audio operation.
+    pub fn event_authorized(&self, authority: EffectAuthorization) -> Result<Request, AudioError> {
+        self.start(PlaybackKind::Event, Some(authority))
+    }
+
+    fn start(
+        &self,
+        kind: PlaybackKind,
+        authority: Option<EffectAuthorization>,
+    ) -> Result<Request, AudioError> {
         let mut state = self.state.borrow_mut();
         if state.closed {
             return Err(AudioError::Closed);
         }
-        if kind == PlaybackKind::Event && !state.admitted {
+        if kind == PlaybackKind::Event
+            && (!state.admitted
+                || authority
+                    .as_ref()
+                    .is_some_and(|authority| !authority.is_current(Instant::now())))
+        {
             return Ok(Request::Suppressed);
         }
         if state.loading || (kind == PlaybackKind::Event && state.active.is_some()) {
@@ -358,7 +377,7 @@ impl Audio {
         }
         state.stop();
         let id = NEXT_OPERATION.fetch_add(1, Ordering::Relaxed);
-        let operation = match execution::start(id, state.selected.clone()) {
+        let operation = match execution::start(id, state.selected.clone(), authority) {
             Ok(Some(operation)) => operation,
             Ok(None) => return Ok(Request::Busy),
             Err(reason) => {
