@@ -207,17 +207,11 @@ fn screenshot(window: &impl IsA<gtk::Window>, state: &str) {
 }
 
 fn visible_bounds(widget: &gtk::Widget, ancestor: &gtk::Widget) -> gtk::graphene::Rect {
-    assert!(widget.is_mapped() && widget.allocated_width() > 0 && widget.allocated_height() > 0);
-    assert!(
-        ancestor.is_mapped() && ancestor.allocated_width() > 0 && ancestor.allocated_height() > 0
-    );
+    assert!(widget.is_mapped() && widget.width() > 0 && widget.height() > 0);
+    assert!(ancestor.is_mapped() && ancestor.width() > 0 && ancestor.height() > 0);
     let bounds = widget.compute_bounds(ancestor).unwrap();
-    let viewport = gtk::graphene::Rect::new(
-        0.0,
-        0.0,
-        ancestor.allocated_width() as f32,
-        ancestor.allocated_height() as f32,
-    );
+    let viewport =
+        gtk::graphene::Rect::new(0.0, 0.0, ancestor.width() as f32, ancestor.height() as f32);
     assert!(bounds.width() > 0.0 && bounds.height() > 0.0 && viewport.contains_rect(&bounds));
     bounds
 }
@@ -303,7 +297,7 @@ fn snapshot_meters(header: &gtk::Widget, window: &gtk::Widget) {
         }
         println!(
             "resource_gui_meter text={text:?} fraction={} allocation={}x{} role=ProgressBar accessible_label_exact=true focusable=false bar_header_bounds=[{},{},{},{}] label_header_bounds=[{},{},{},{}] within_window=true",
-            bar.fraction(), bar.allocated_width(), bar.allocated_height(), bar_bounds.x(), bar_bounds.y(), bar_bounds.width(), bar_bounds.height(), label_bounds.x(), label_bounds.y(), label_bounds.width(), label_bounds.height()
+            bar.fraction(), bar.width(), bar.height(), bar_bounds.x(), bar_bounds.y(), bar_bounds.width(), bar_bounds.height(), label_bounds.x(), label_bounds.y(), label_bounds.width(), label_bounds.height()
         );
     }
 }
@@ -504,9 +498,9 @@ fn real_resource_meters_review_keyboard_input_and_disabled_restart() {
         || {
             let meters = bars(ctx.app_header.upcast_ref());
             meters.len() == 3
-                && meters.iter().all(|bar| {
-                    bar.is_mapped() && bar.allocated_width() > 0 && bar.allocated_height() > 0
-                })
+                && meters
+                    .iter()
+                    .all(|bar| bar.is_mapped() && bar.width() > 0 && bar.height() > 0)
         },
         Duration::from_secs(2),
     );
