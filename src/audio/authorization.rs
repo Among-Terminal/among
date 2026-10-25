@@ -1,7 +1,10 @@
 //! per-operation shared start authority, independent of spawn observation.
 use std::{
     fs::File,
-    os::fd::{AsRawFd, FromRawFd},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::FileExt,
+    },
     sync::atomic::{AtomicU32, Ordering},
 };
 
@@ -31,6 +34,15 @@ unsafe impl Sync for Authorization {}
 
 impl Authorization {
     pub(super) fn new(id: u64) -> std::io::Result<Self> {
+        Self::new_bound(id, &[])
+    }
+
+    pub(super) fn new_bound(id: u64, binding: &[u8]) -> std::io::Result<Self> {
+        if binding.len() > crate::notifications::MAX_EFFECT_BINDING {
+            return Err(std::io::Error::other(
+                "audio effect binding exceeds its bound",
+            ));
+        }
         let fd = unsafe {
             libc::memfd_create(
                 c"among-audio-authority".as_ptr(),
@@ -50,7 +62,15 @@ impl Authorization {
             }
             file = unsafe { File::from_raw_fd(reserved) };
         }
-        file.set_len(std::mem::size_of::<Control>() as u64)?;
+        let payload = if binding.is_empty() {
+            0
+        } else {
+            crate::notifications::MAX_EFFECT_BINDING
+        };
+        file.set_len((std::mem::size_of::<Control>() + payload) as u64)?;
+        if !binding.is_empty() {
+            file.write_all_at(binding, std::mem::size_of::<Control>() as u64)?;
+        }
         let authority = Self::map(file)?;
         unsafe {
             authority.control.write(Control {
@@ -66,12 +86,38 @@ impl Authorization {
     }
 
     pub(super) fn receive(file: File, id: u64) -> std::io::Result<Self> {
+        Self::receive_bound(file, id, &[])
+    }
+
+    pub(super) fn receive_bound(file: File, id: u64, binding: &[u8]) -> std::io::Result<Self> {
+        if binding.len() > crate::notifications::MAX_EFFECT_BINDING {
+            return Err(std::io::Error::other("invalid audio effect binding length"));
+        }
+        let payload = if binding.is_empty() {
+            0
+        } else {
+            crate::notifications::MAX_EFFECT_BINDING
+        };
         let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
         if seals < 0
             || seals & SEALS != SEALS
-            || file.metadata()?.len() != std::mem::size_of::<Control>() as u64
+            || file.metadata()?.len() != (std::mem::size_of::<Control>() + payload) as u64
         {
             return Err(std::io::Error::other("invalid audio start authority"));
+        }
+        if !binding.is_empty() {
+            // the trusted owned-operation route supplies these expected bytes;
+            // received scope FDs cannot choose their own expected binding or
+            // downgrade a bound event to the legacy/explicit-preview protocol.
+            let mut expected = [0_u8; crate::notifications::MAX_EFFECT_BINDING];
+            file.read_exact_at(&mut expected, std::mem::size_of::<Control>() as u64)?;
+            if &expected[..binding.len()] != binding
+                || expected[binding.len()..].iter().any(|byte| *byte != 0)
+            {
+                return Err(std::io::Error::other(
+                    "audio operation/effect binding mismatch",
+                ));
+            }
         }
         // the scanner and other native exec children must not inherit authority.
         if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
@@ -189,6 +235,21 @@ mod tests {
         assert!(child.claim().is_err());
         assert!(current.file.set_len(0).is_err());
         assert!(current.file.set_len(32).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_bound_operation_cannot_substitute_or_omit_its_trusted_binding() -> std::io::Result<()> {
+        let binding = [41_u8; 328];
+        let operation = Authorization::new_bound(11, &binding)?;
+        assert!(Authorization::receive(operation.file.try_clone()?, 11).is_err());
+        assert!(Authorization::receive_bound(operation.file.try_clone()?, 12, &binding).is_err());
+        assert!(Authorization::receive_bound(operation.file.try_clone()?, 11, &[42; 328]).is_err());
+        let imported = Authorization::receive_bound(operation.file.try_clone()?, 11, &binding)?;
+        assert!(operation.grant());
+        assert_eq!(imported.claim(), Ok(true));
+        assert!(imported.claim().is_err());
+        assert!(!operation.grant());
         Ok(())
     }
 }

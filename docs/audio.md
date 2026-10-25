@@ -42,6 +42,15 @@ later router adapter; do not retain an old admission decision across focus chang
 `cancel_event(id)` cancels only the matching active event request, not a newer
 event or a preview; retain its returned request ID with the originating live pane.
 
+`event_authorized(EffectAuthorization)` is the owned core/backend delivery route.
+The caller first obtains the capability from its privately issued exact delivery
+and matching core Authorization, releases core/backend borrows, then transfers
+the owned value. It still requires event admission; it never renews the original
+received-at +10-second event expiry. The dispatcher must assign that delivery
+once, not replay clones as new operations. The older `event()` remains the legacy
+admission-only route for unmigrated consumers; it is not upgraded by this API.
+General's actual ingress migration and producer-to-output acceptance are separate.
+
 There is one process-wide decoder slot and **zero queued playback requests**.
 Busy requests are not retained. Preview cancels the old operation, but returns
 `Busy` if its helper has not yet retired; the caller must explicitly request a
@@ -77,6 +86,30 @@ revocation/deadline and atomically consumes its single-use grant immediately bef
 calling play. Revocation cannot be regranted; a stale operation retains a different
 mapping and cannot authorize or revoke its replacement. The inherited descriptor
 is marked close-on-exec before native scanner children can start.
+
+For an authorized event, its exact immutable core binding is also stored with the
+one writable operation token. The trusted operation route supplies the expected
+binding; a received FD set cannot self-authenticate or replace that binding.
+The separate core export contributes up to five read-only scopes plus one sealed
+manifest, at most six read-only descriptors and 512 binding bytes. Its bounded
+`EffectDescriptors` wrapper remains owned through the real spawn return, and
+helper import restores CLOEXEC before any native scanner can start. The original
+expiry, exact Job/source/origin and live terminal scopes remain attached through
+preparation, spawn, grant, native construction, active output and retirement.
+
+The helper finishes import, mappings, protocol and native preparation before
+claim. Immediately after the one successful SeqCst operation CAS it calls
+`validate_after_claim()` for ordered terminal-scope reads and fresh local monotonic
+time, then directly plays the prepared media. Failure never plays/regrants/retries.
+Active helper checks read the original core scope mappings without GUI/backend or
+supervisor polling. The 13-second operation budget remains separate from the
+original event deadline. This preserves parent-death/deadline handling: abrupt
+owner death does not rely on core Drop running or revoke all retained mappings.
+Protocol writes are nonblocking and keep checking authority/deadlines while their
+pipe is full; a parked reader must not hide revocation during active output.
+The helper also checks for its owned supervisor pipe disconnect before claim and
+during protocol/output. Pipe checks/native preparation precede final claim; no
+protocol I/O is inserted between post-claim core validation and prepared play.
 
 The atomic claim is the playback-start linearization point: cancellation ordered
 before it prevents a first play; cancellation after it retires already-started
@@ -194,3 +227,34 @@ before issuing any recovery. Cancel-only and explicit-recovery runs have separat
 captures: the former requires nonempty silence, the latter actual 880 Hz output.
 They cover pending grants, event-policy revocation, selection, shutdown and owner
 drop without queuing a replacement; denied kill is confined to its named fixture.
+
+## Owned effect boundary probes
+
+`audio-effect-probe` uses privately issued managed backend/core deliveries, not
+invented host authority. Its external barriers park the owner and supervisor
+around real spawn, pending grant, construction and active output. Targeted and
+targetless cases revoke each applicable original scope or wait for original
+expiry, then require a separate explicitly issued recovery.
+
+`audio-input-probe` forwards actual owned audio operations through test-only
+malformed argument/FD injection, supervisor-pipe disconnect and abrupt owner
+death. These interposers are never linked into Among. Malformed input must refuse
+before native construction/play; disconnect/death cases must retire any already
+started output. Recovery must use new authority. Preview remains
+explicitly testable while event admission is off.
+
+`audio-effect-capture` records an owned private null sink on separately labeled
+default and copy routes. It requires observed PCM readiness and settling,
+continuous process/PCM progress, at most 300 ms between observations, bounded
+whole-window clock/sample skew, and both 2500 ms and 120000 fresh 48-kHz tail
+frames. A recovery waits for newly observed quiet PCM before issuance and has
+its own signal-analysis segment; a preceding active tone cannot satisfy it.
+Dead/stalled recorders and missing terminal notices fail rather than supply
+silence. Recovery/retirement snapshots and notices are saved before their
+assertions and on timeout.
+
+These probes require an isolated device-free container and genuinely usable
+native media/plugin paths, or an explicitly bound packaged runtime. Package
+metadata and tool existence alone do not establish native discovery. Their
+results are audio-library/helper evidence, not General/VTE ingress or release
+acceptance.
