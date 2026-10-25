@@ -415,8 +415,21 @@ The host rechecks the selected manifest digest and contained executable and pins
 open package/executable descriptors through spawn. It clears the child environment,
 sets `PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C.UTF-8`, and copies only `HOME` and
 `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` when present.
-Tokens, display/session-bus variables and other parent environment values are not
-implicitly inherited. This is not protection against the plugin independently
+It also snapshots `TZ` once per managed-child construction. An absent value stays
+absent; an empty value stays explicitly empty. Accepted bytes are copied unchanged,
+without UTF-8 replacement, trimming, path lookup or timezone parsing. The raw value
+may contain at most 1024 bytes and no NUL or ASCII control byte (`0x01`–`0x1f`,
+`0x7f`); other bytes, including non-UTF-8 bytes, are preserved. An invalid envelope
+makes that plugin Unavailable before spawn, rather than silently substituting a
+timezone or failing terminal startup. This ordinary managed-child rule is not an
+official-plugin privilege or an additional context grant.
+
+`TZDIR`, tokens, loader variables, display/session-bus values and other environment
+entries are not implicitly inherited. Passing `TZ` does not promise identical
+interpretation by every plugin runtime, or bound the size/read latency of a
+timezone file a plugin may choose to open. In particular, clock uses its existing
+`chrono::Local` renderer rather than a host timezone parser.
+This is not protection against the plugin independently
 reading files or contacting services as the same user.
 
 The host starts with:
