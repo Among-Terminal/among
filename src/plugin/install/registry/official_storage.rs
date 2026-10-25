@@ -34,13 +34,16 @@ pub(super) fn overlay(
 fn effective(
     root: &Path,
     check: &impl Fn() -> Result<(), Problem>,
-) -> (Vec<Registration>, Option<Problem>) {
-    let (user, problem) = match read(root, check) {
-        Ok((document, _)) => (document.registrations, None),
+) -> Result<(Vec<Registration>, Option<Problem>), Problem> {
+    let (user, problem) = match run_user(root, Request::List, check, || {
+        Err(Problem("source listing cannot publish metadata"))
+    }) {
+        Ok(Outcome::List(registrations)) => (registrations, None),
+        Ok(_) => return Err(Problem("unexpected user source listing outcome")),
         Err(problem) => (Vec::new(), Some(problem)),
     };
     let (registrations, official_problem) = overlay(user, cached(root, check));
-    (registrations, problem.or(official_problem))
+    Ok((registrations, problem.or(official_problem)))
 }
 
 fn current(root: &Path, check: &impl Fn() -> Result<(), Problem>) -> Result<Registration, Problem> {
@@ -69,7 +72,7 @@ pub(crate) fn run(
         ));
     }
     if matches!(&request, Request::EffectiveList) {
-        let (registrations, problem) = effective(root, &check);
+        let (registrations, problem) = effective(root, &check)?;
         check()?;
         return Ok(Outcome::EffectiveList {
             registrations,

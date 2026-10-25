@@ -448,7 +448,7 @@ struct BudgetEntry {
     mode: u32,
     owner: u32,
     group: u32,
-    links: u64,
+    links: libc::nlink_t,
     modified: (i64, i64),
     changed: (i64, i64),
 }
