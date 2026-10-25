@@ -1,4 +1,4 @@
-//! protocol-fixture and separately identified production-clock interoperability.
+//! protocol-fixture and separately identified production-status interoperability.
 //! synthetic receipts do not establish authenticated release installation.
 
 use super::*;
@@ -7,9 +7,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 
 mod clock;
+mod resources;
 
 const KEY: &str = "github:1431055733/protocol-fixture";
-const CLIENT_REVISION: &str = "39141b2d6eb7ce5374c0352f54cc41ec5650b6e1";
+const CLIENT_REVISION: &str = "276e1d29b0ec912e4a34b44a07f7c1b195d02374";
 
 struct Fixture {
     host: PluginHost,
