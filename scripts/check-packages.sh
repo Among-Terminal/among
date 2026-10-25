@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+cargo test --locked --example fake-plugin
 cargo build --release --locked
 cargo fmt --check --manifest-path examples/plugins/Cargo.toml
 cargo clippy --locked --all-targets --manifest-path examples/plugins/Cargo.toml -- -D warnings
