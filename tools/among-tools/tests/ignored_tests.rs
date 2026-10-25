@@ -80,7 +80,7 @@ fn only_the_exact_official_source_parent_worker_is_excluded() -> among_tools::Re
         ignored_tests::names(&format!(
             "{worker}: test\n{suffix}: test\n{prefix}: test\n{widget}: test"
         ))?,
-        [prefix, suffix, widget.into()]
+        [prefix.as_str(), suffix.as_str(), widget]
     );
     assert!(ignored_tests::names(&format!("{suffix}: test\n{suffix}: test")).is_err());
     Ok(())
