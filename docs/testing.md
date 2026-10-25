@@ -82,9 +82,10 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`39141b2d6eb7ce5374c0352f54cc41ec5650b6e1`, verifies its public repository identity,
+`276e1d29b0ec912e4a34b44a07f7c1b195d02374`, verifies its public repository identity,
 and independently builds its `managed-status` **protocol fixture**, production
-`clock-managed` and legacy `clock` reference. It records both sources, native
+`clock-managed`, legacy `clock` reference and production `system-status-managed`.
+It records both sources, native
 compiler hosts and all executable hashes. The original five fixture cases still
 test real `PluginHost`, inventory inspection, pinned-descriptor spawn, access
 review, API 1.2 admission, scoped status and stopping against the external fixture.
@@ -139,6 +140,24 @@ release readiness. All ordinary full PR workflows remain mandatory; this slice
 does not fix or waive a separate main retirement failure. A fixed source pin is
 a compatibility checkpoint; update it through
 review when changing the client, not through an unresolved latest URL.
+
+The two separately labelled resource cases require absolute regular executable
+`AMONG_MANAGED_SYSTEM_BINARY` and digest `AMONG_MANAGED_SYSTEM_SHA256`; missing or
+wrong setup fails. The same real inventory/review/admission/supervision path uses
+only status authority. It observes initial CPU N/A and then actual numeric
+CPU/MEM/root-DISK header fragments, exact text/meter agreement, priorities,
+tooltips and 1000-ms refresh. Footer output stays empty; existing pane/workspace
+targets remain unavailable without context grants. A withheld genuine retired
+reply and a separately labelled isolated stale-generation control cannot consume
+current request credit or overwrite a re-enabled header. Both cases explicitly
+observe normal stop ownership; they do not repair the separate retirement defect.
+
+These add two invocations after all original fifteen fixture/environment/clock
+invocations per native architecture. The companion's own independent measurement,
+per-source N/A and sampling-rate assertions remain required in its repository;
+resource-host tests neither replace them nor claim a graphical bar was rendered.
+Synthetic receipts are still not authenticated release installation. Actual GTK
+meters, installed lifecycle, terminal continuity and whole task2.3 remain separate.
 
 ## Installer ENOSPC context
 
