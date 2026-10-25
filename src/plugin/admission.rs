@@ -64,6 +64,13 @@ impl Admission {
             return Err(Busy::Borrowed);
         };
         leases.retain(|_, lease| lease.strong_count() != 0);
+        Self::reserve(&mut leases, identity)
+    }
+
+    fn reserve(
+        leases: &mut BTreeMap<String, Weak<Lease>>,
+        identity: &str,
+    ) -> Result<Arc<Lease>, Busy> {
         if let Some(lease) = leases.get(identity).and_then(Weak::upgrade) {
             return Err(Busy::Identity(
                 lease
@@ -71,6 +78,10 @@ impl Admission {
                     .unwrap_or("previous generation is still supervised"),
             ));
         }
+        // A detached worker can drop its last strong reference after retain
+        // inspected it. Its now-expired same-key entry must not count as a full
+        // budget and permanently fault the replacement instead of admitting it.
+        leases.remove(identity);
         if leases.len() >= MAX_PROCESSES {
             return Err(Busy::Capacity);
         }
@@ -138,5 +149,26 @@ mod tests {
         drop(borrowed);
         assert!(!admission.held("probe"));
         assert!(admission.acquire("probe").is_ok());
+    }
+
+    #[test]
+    fn worker_expiry_between_prune_and_reserve_cannot_fault_its_own_replacement_as_full() {
+        let admission = Admission::default();
+        let other: Vec<_> = (0..MAX_PROCESSES - 1)
+            .map(|index| admission.acquire(&format!("p{index}")).ok().unwrap())
+            .collect();
+        let old = admission.acquire("replacement").ok().unwrap();
+        let mut snapshot = admission.leases.borrow_mut();
+        snapshot.retain(|_, lease| lease.strong_count() != 0);
+        // This is the actual map state if the worker's final reference expires
+        // after acquire's prune but before its identity lookup/capacity check.
+        drop(old);
+        assert_eq!(snapshot.len(), MAX_PROCESSES);
+        let replacement = Admission::reserve(&mut snapshot, "replacement")
+            .ok()
+            .unwrap();
+        assert_eq!(snapshot.len(), MAX_PROCESSES);
+        assert_eq!(other.len() + 1, MAX_PROCESSES);
+        drop(replacement);
     }
 }
