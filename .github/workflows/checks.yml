@@ -168,3 +168,11 @@ jobs:
           tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/tool-tests.jsonl"
           cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/test-executables.jsonl"
           tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/test-executables.jsonl"
+      - name: Retain actual protected-source widget captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: protected-source-widget-${{ matrix.runner }}
+          path: ${{ runner.temp }}/among-checks/among-ignored-*/official-source-widget-*/captures/*.png
+          if-no-files-found: error
+          retention-days: 5
