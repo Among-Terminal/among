@@ -1128,7 +1128,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         || has_label(view.upcast_ref(), "Cached source registrations loaded"),
         Duration::from_secs(5),
     );
-    press(&button(&view, "Cached"));
+    press(&registered_source_button(&view, 12, "Cached"));
     wait_for(
         || has_label(view.upcast_ref(), "Cached metadata; not an online check"),
         Duration::from_secs(5),
@@ -1150,7 +1150,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         || has_label(view.upcast_ref(), "Cached source registrations loaded"),
         Duration::from_secs(5),
     );
-    press(&button(&view, "Cached"));
+    press(&registered_source_button(&view, 12, "Cached"));
     wait_for(
         || {
             has_label(
@@ -1167,7 +1167,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     screenshot(&view, "source-stale-offline");
     mode.store(1, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&registered_source_button(&view, 12, "Refresh"));
     wait_for(
         || {
             source()["registrations"][0]["origin"]["repository"] == "renamed"
@@ -1189,7 +1189,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     let renamed = std::fs::read(source_root.join("sources.json")).unwrap();
     mode.store(2, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&registered_source_button(&view, 12, "Refresh"));
     wait_for(
         || has_label(view.upcast_ref(), "Source approval was not changed"),
         Duration::from_secs(5),
@@ -1215,7 +1215,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     let transferred = std::fs::read(source_root.join("sources.json")).unwrap();
     mode.store(3, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&registered_source_button(&view, 12, "Refresh"));
     wait_for(
         || {
             has_label(
@@ -1229,18 +1229,18 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         std::fs::read(source_root.join("sources.json")).unwrap(),
         transferred
     );
-    press(&button(&view, "Cached"));
+    press(&registered_source_button(&view, 12, "Cached"));
     wait_for(
         || has_label(view.upcast_ref(), "Cached metadata; not an online check"),
         Duration::from_secs(5),
     );
     mode.store(4, Ordering::Release);
     let before = server.requests().len();
-    press(&button(&view, "Refresh"));
+    press(&registered_source_button(&view, 12, "Refresh"));
     wait_for(|| server.requests().len() > before, Duration::from_secs(5));
-    assert!(!button(&view, "Cached").is_sensitive());
-    assert!(!button(&view, "Refresh").is_sensitive());
-    assert!(!button(&view, "Remove source").is_sensitive());
+    assert!(!registered_source_button(&view, 12, "Cached").is_sensitive());
+    assert!(!registered_source_button(&view, 12, "Refresh").is_sensitive());
+    assert!(!registered_source_button(&view, 12, "Remove source").is_sensitive());
     screenshot(&view, "source-refresh-cancellable");
     press(&button(&view, "Cancel source request"));
     wait_for(
@@ -1256,7 +1256,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         std::fs::read(source_root.join("sources.json")).unwrap(),
         transferred
     );
-    press(&button(&view, "Remove source"));
+    press(&registered_source_button(&view, 12, "Remove source"));
     wait_for(
         || {
             source()["registrations"].as_array().unwrap().is_empty()
@@ -1280,6 +1280,23 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     view.destroy();
     ctx.window.destroy();
     println!("PASS actual source Add, fresh-view offline cache, numeric Refresh/rename, explicit transferred publisher approval, actual rate-limit/cancellation and Remove without changing selected installation, enablement or settings. Native window hierarchy retained; simultaneous terminal input is exercised separately.");
+}
+
+fn registered_source_button(
+    root: &impl IsA<gtk::Widget>,
+    repository: u64,
+    label: &str,
+) -> gtk::Button {
+    // identical labels now coexist with the permanent official row. keep every
+    // old custom-source oracle, but address its stable numeric row, not the first.
+    let identity = format!(" · repository {repository} · ");
+    let rows: Vec<_> = widgets(root.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .filter(|row| row.subtitle().is_some_and(|text| text.contains(&identity)))
+        .collect();
+    assert_eq!(rows.len(), 1, "expected exactly one numeric source row");
+    button(&rows[0], label)
 }
 
 #[test]

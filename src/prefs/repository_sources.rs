@@ -320,6 +320,7 @@ impl Panel {
                     registrations,
                     problem,
                 }) => {
+                    let has_custom = registrations.iter().any(|source| !source.is_official());
                     panel.render(registrations);
                     if let Some(problem) = problem {
                         panel.feedback(
@@ -327,7 +328,7 @@ impl Panel {
                             problem.0,
                         );
                     } else {
-                        panel.feedback("Source registrations loaded", "The official source is application-owned. Cached metadata is not an online check; no plugin was installed or granted access.");
+                        panel.feedback(if has_custom { "Cached source registrations loaded" } else { "Source registrations loaded" }, "The official source is application-owned. Cached metadata is not an online check; no plugin was installed or granted access.");
                     }
                 }
                 Ok(Outcome::List(registrations)) => {
