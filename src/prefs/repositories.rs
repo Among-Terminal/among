@@ -226,9 +226,11 @@ fn present_complete(
             packages.set_visible(true);
         }
     });
+    // Keep request feedback and cancellation beside the entry; the built-in
+    // source row and an expanding custom-source list must not push them offscreen.
+    page.add(&feedback);
     let sources =
         super::repository_sources::Panel::new(&page, &preview, source_root, refresh, show.clone());
-    page.add(&feedback);
     page.add(&preview);
     page.add(&packages);
     window.add(&page);
