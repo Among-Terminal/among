@@ -555,15 +555,16 @@ impl PluginHost {
     ///
     /// Failure to start is not an error for the host: it is recorded as the
     /// plugin's state and every other plugin continues.
-    fn start_by_name(&mut self, name: String) {
+    /// a deferred admission is not a crash-restart attempt.
+    fn start_by_name(&mut self, name: String) -> bool {
         let Some(index) = self.find(&name) else {
-            return;
+            return false;
         };
         if !self.plugins[index].spec.enabled
             || self.plugins[index].io.is_some()
             || self.plugins[index].removing
         {
-            return;
+            return false;
         }
         if self.plugins[index].managed.is_some() {
             if self.plugins[index]
@@ -575,20 +576,20 @@ impl PluginHost {
                     reason: "uninstall is still active for this installation".into(),
                 };
                 self.plugins[index].restart_at = None;
-                return;
+                return false;
             }
             if let Err(problem) = self.prepare_managed(index) {
                 self.plugins[index].state = PluginState::Unavailable {
                     reason: problem.to_string(),
                 };
                 self.plugins[index].restart_at = None;
-                return;
+                return false;
             }
         }
         if !self.starts_allowed.get() {
             self.plugins[index].state = PluginState::Waiting;
             self.plugins[index].restart_at = None;
-            return;
+            return false;
         }
         self.plugins[index].restart_at = None;
 
@@ -602,7 +603,7 @@ impl PluginHost {
             self.plugins[index].state = PluginState::Missing {
                 reason: "no command configured".into(),
             };
-            return;
+            return false;
         }
 
         let mut program = if let Some(entry) = &self.plugins[index].managed {
@@ -614,7 +615,7 @@ impl PluginHost {
                     self.plugins[index].state = PluginState::Unavailable {
                         reason: problem.to_string(),
                     };
-                    return;
+                    return false;
                 }
             }
         } else {
@@ -627,7 +628,7 @@ impl PluginHost {
                 self.plugins[index].state = PluginState::Unavailable {
                     reason: reason.into(),
                 };
-                return;
+                return false;
             }
         }
         let reservation = match self.admission.acquire(&self.plugins[index].spec.name) {
@@ -638,14 +639,13 @@ impl PluginHost {
                         reason: format!("previous generation: {reason}"),
                         enabled: self.plugins[index].spec.enabled,
                     },
-                    Busy::Capacity => PluginState::Faulted {
-                        reason: "32 supervised plugins already active across application windows"
-                            .into(),
-                    },
-                    Busy::Borrowed => PluginState::Waiting,
+                    // capacity is temporary across windows, not a plugin crash.
+                    // poll retries this identity while enabled, without a new
+                    // generation until an actual shared slot is available.
+                    Busy::Capacity | Busy::Borrowed => PluginState::Waiting,
                 };
                 self.plugins[index].restart_at = None;
-                return;
+                return false;
             }
         };
         let spawned = Process::start_admitted(program, reservation);
@@ -670,7 +670,7 @@ impl PluginHost {
 
                 if self.plugins[index].managed.is_some() {
                     self.send_managed_hello(index);
-                    return;
+                    return true;
                 }
 
                 let hello = Request::Hello {
@@ -689,6 +689,7 @@ impl PluginHost {
                 self.plugins[index].state = PluginState::Missing { reason };
             }
         }
+        true
     }
 
     fn send_to(&mut self, index: usize, request: &Request) -> bool {
@@ -901,7 +902,11 @@ impl PluginHost {
                             .unwrap_or(PluginState::Disabled);
                     }
                     if self.plugins[index].spec.enabled {
-                        self.start_by_name(name);
+                        if self.plugins[index].restart_at.is_some() {
+                            self.restart_if_due(index, now);
+                        } else {
+                            self.start_by_name(name);
+                        }
                     }
                 }
                 continue;
@@ -911,8 +916,12 @@ impl PluginHost {
                     && self.plugins[index].spec.enabled
                     && self.starts_allowed.get()
                 {
-                    let name = self.plugins[index].spec.name.clone();
-                    self.start_by_name(name);
+                    if self.plugins[index].restart_at.is_some() {
+                        self.restart_if_due(index, now);
+                    } else {
+                        let name = self.plugins[index].spec.name.clone();
+                        self.start_by_name(name);
+                    }
                 } else {
                     self.restart_if_due(index, now);
                 }
@@ -980,9 +989,21 @@ impl PluginHost {
             && self.starts_allowed.get()
             && self.plugins[index].restart_attempts < MAX_RESTARTS
         {
+            let retry_at = self.plugins[index].restart_at;
+            let attempts = self.plugins[index].restart_attempts;
             self.plugins[index].restart_attempts += 1;
             let name = self.plugins[index].spec.name.clone();
-            self.start_by_name(name);
+            if !self.start_by_name(name) {
+                self.plugins[index].restart_attempts = attempts;
+                if matches!(
+                    self.plugins[index].state,
+                    PluginState::Waiting | PluginState::Stopping { .. }
+                ) {
+                    // keep a deferred restart distinct from a first startup:
+                    // charge it exactly once when spawning becomes possible.
+                    self.plugins[index].restart_at = retry_at;
+                }
+            }
         }
     }
 
@@ -1598,9 +1619,7 @@ mod tests {
             command: echo_plugin(),
             enabled: true,
         });
-        assert!(
-            matches!(&host.plugins[MAX_PROCESSES].state, PluginState::Faulted { reason } if reason.contains("32"))
-        );
+        assert_eq!(host.plugins[MAX_PROCESSES].state, PluginState::Waiting);
         assert_eq!(
             host.plugins
                 .iter()
@@ -1608,6 +1627,11 @@ mod tests {
                 .count(),
             MAX_PROCESSES
         );
+        assert!(wait_for(&mut host, |host| host.plugins[MAX_PROCESSES]
+            .state
+            .is_healthy()));
+        assert_eq!(host.plugins[MAX_PROCESSES].restart_attempts, 0);
+        assert_eq!(host.supervised_count(), MAX_PROCESSES);
         let start = Instant::now();
         host.shutdown();
         assert!(start.elapsed() < Duration::from_millis(500));
@@ -1681,6 +1705,158 @@ mod tests {
         assert_eq!(replacement.supervised_count(), 2);
         replacement.shutdown();
         assert!(wait_for(&mut replacement, PluginHost::is_stopped));
+    }
+
+    #[test]
+    fn changed_identities_retry_after_a_full_retiring_window_releases_capacity() {
+        let admission = Admission::default();
+        let mut retiring = PluginHost::with_admission(admission.clone());
+        for index in 0..MAX_PROCESSES {
+            retiring.register(PluginSpec {
+                name: format!("retiring-{index}"),
+                command: fake_plugin("stubborn"),
+                enabled: true,
+            });
+        }
+        assert!(wait_for(&mut retiring, |host| host.healthy().len() == MAX_PROCESSES));
+        let mut holds: Vec<_> = (0..MAX_PROCESSES)
+            .map(|index| {
+                retiring
+                    .hold_retirement(&format!("retiring-{index}"), None)
+                    .unwrap()
+            })
+            .collect();
+        retiring.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while holds.iter().any(|hold| hold.observations() < 2) {
+            retiring.poll();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut replacement = PluginHost::with_admission(admission);
+        for index in 0..MAX_PROCESSES {
+            replacement.register(PluginSpec {
+                name: format!("replacement-{index}"),
+                command: echo_plugin(),
+                enabled: true,
+            });
+        }
+        for _ in 0..20 {
+            retiring.poll();
+            replacement.poll();
+            assert_eq!(
+                retiring.supervised_count() + replacement.supervised_count(),
+                MAX_PROCESSES
+            );
+            assert!(replacement.plugins.iter().all(|plugin| plugin.spec.enabled
+                && plugin.state == PluginState::Waiting
+                && plugin.restart_attempts == 0
+                && plugin.restart_at.is_none()));
+        }
+
+        drop(holds.pop());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            retiring.poll();
+            replacement.poll();
+            assert!(retiring.supervised_count() + replacement.supervised_count() <= MAX_PROCESSES);
+            assert!(replacement.supervised_count() <= 1);
+            if replacement.healthy().len() == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the first free slot was not reused"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(retiring.supervised_count(), MAX_PROCESSES - 1);
+        drop(holds);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            retiring.poll();
+            replacement.poll();
+            assert!(retiring.supervised_count() + replacement.supervised_count() <= MAX_PROCESSES);
+            assert!(replacement
+                .plugins
+                .iter()
+                .all(|plugin| plugin.restart_attempts == 0));
+            if retiring.is_stopped() && replacement.healthy().len() == MAX_PROCESSES {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "changed identities did not start after capacity became free"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        println!("PASS changed-identity replacement: 32 real retiring generations held capacity; 32 new identities waited and all started after real retirement without exceeding the budget or consuming crash restarts");
+        replacement.shutdown();
+        assert!(wait_for(&mut replacement, PluginHost::is_stopped));
+    }
+
+    #[test]
+    fn capacity_deferral_does_not_spend_a_scheduled_crash_restart() {
+        let admission = Admission::default();
+        let mut reservations: Vec<_> = (0..MAX_PROCESSES)
+            .map(|index| {
+                admission
+                    .acquire(&format!("occupied-{index}"))
+                    .ok()
+                    .unwrap()
+            })
+            .collect();
+        let mut host = PluginHost::with_admission(admission);
+        let mut registration = spec(echo_plugin());
+        registration.enabled = false;
+        host.register(registration);
+        host.plugins[0].spec.enabled = true;
+        host.plugins[0].state = PluginState::Faulted {
+            reason: "prior crash".into(),
+        };
+        host.plugins[0].restart_attempts = MAX_RESTARTS - 1;
+        let due = Instant::now() - Duration::from_millis(1);
+        host.plugins[0].restart_at = Some(due);
+        for _ in 0..20 {
+            host.poll();
+            assert_eq!(host.plugins[0].state, PluginState::Waiting);
+            assert_eq!(host.plugins[0].restart_attempts, MAX_RESTARTS - 1);
+            assert_eq!(host.plugins[0].restart_at, Some(due));
+            assert!(host.plugins[0].io.is_none());
+        }
+        drop(reservations.pop());
+        assert!(wait_for(&mut host, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        assert_eq!(host.plugins[0].restart_attempts, MAX_RESTARTS);
+        assert!(host.plugins[0].restart_at.is_none());
+        host.shutdown();
+        assert!(wait_for(&mut host, PluginHost::is_stopped));
+    }
+
+    #[test]
+    fn disabling_a_capacity_waiter_prevents_late_startup() {
+        let admission = Admission::default();
+        let reservations: Vec<_> = (0..MAX_PROCESSES)
+            .map(|index| {
+                admission
+                    .acquire(&format!("occupied-{index}"))
+                    .ok()
+                    .unwrap()
+            })
+            .collect();
+        let mut host = PluginHost::with_admission(admission);
+        host.register(spec(echo_plugin()));
+        assert_eq!(host.plugins[0].state, PluginState::Waiting);
+        host.disable("probe");
+        drop(reservations);
+        for _ in 0..20 {
+            host.poll();
+            assert_eq!(host.plugins[0].state, PluginState::Disabled);
+            assert!(host.plugins[0].io.is_none());
+            assert_eq!(host.plugins[0].restart_attempts, 0);
+        }
     }
 
     #[test]

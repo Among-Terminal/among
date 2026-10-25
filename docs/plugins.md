@@ -550,6 +550,10 @@ slot until both its process object and its actual supervisor have retired. A
 replacement of that identity cannot overlap it, including across windows or after
 a host handle is dropped. Unrelated identities may use other free slots; one
 unresolved retirement does not close an application-wide startup gate.
+When all 32 slots are occupied, other enabled identities wait and are retried as
+capacity becomes free, including after a replacement window loads a different
+plugin set. Capacity contention is not a crash and consumes no crash-restart
+allowance. Disabling a waiting plugin cancels its pending startup.
 
 Starting is separate from Running: a compatible handshake is required within
 five seconds. Legacy plugins allow at most 16 outstanding statuses, one per scope.
