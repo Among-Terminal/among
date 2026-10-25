@@ -159,6 +159,35 @@ resource-host tests neither replace them nor claim a graphical bar was rendered.
 Synthetic receipts are still not authenticated release installation. Actual GTK
 meters, installed lifecycle, terminal continuity and whole task2.3 remain separate.
 
+The separately selected ignored resource-widget case uses the same exact real
+binary with explicitly synthetic local metadata, never an authenticated Release.
+It drives Cancel/Escape, Accept and enable, then disable through native keyboard
+controls; actual terminal input must still reach the same PTY before review,
+while running and after disable. Three mapped, allocated GTK ProgressBars must
+match the real percentage labels/fractions. A fresh process must restore disabled
+state without spawning, rendering bars or rewriting saved bytes; the legacy
+document remains byte-identical throughout.
+The disabled document must exist, retain the accepted status-only review and
+match the post-disable bytes carried across the process boundary; the installed
+identity must still be registered as disabled. PTY continuity uses the retained
+Pty object, not a reusable numeric descriptor. Labels and bars must be mapped,
+allocated and contained within the visible header/window bounds. Input checks
+explicitly place window/terminal focus before native typing; they do not establish
+automatic focus restoration, complete Tab traversal or absence of focus stealing.
+
+Interop CI runs this one case in light and dark profiles through the existing
+owned-display harness, after the original17 transport/clock/resource invocations.
+Each profile's controller starts two fresh test processes; these are not three
+distinct test definitions or a replacement for earlier tests. The case requires
+`AMONG_RESOURCE_GUI_SCREENSHOTS` below `AMONG_CHECK_ROOT` and retains real enabled,
+disabled and fresh-disabled window captures. Missing display/tools/source/digests
+or screenshots fail rather than silently skip. `GTK_A11Y=test` selects GTK's test
+accessibility context so actual progressbar roles and exact stored accessible
+labels are checked; this is not AT-SPI traversal or a real screen-reader/whole-
+WCAG assessment. Screenshots supplement those property checks, not replace them.
+These source-bound local-receipt checks still do not establish repository package
+installation, update/uninstall or full packaged/platform acceptance.
+
 ## Installer ENOSPC context
 
 `among-tools check-installer-enospc-from-cargo CARGO_TEST_RECORDS` selects the
