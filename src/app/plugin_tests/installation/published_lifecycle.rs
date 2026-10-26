@@ -270,7 +270,7 @@ pub(super) fn run() {
         let row = widgets(view.upcast_ref())
             .into_iter()
             .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-            .find(|row| row.subtitle().as_deref() == Some(&expected))
+            .find(|row| row.subtitle().as_deref() == Some(expected.as_str()))
             .unwrap();
         assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
         press(&button(&row, "Install disabled"));

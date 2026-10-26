@@ -1337,7 +1337,7 @@ mod tests {
         assert!(wait_for(&mut host, |host| host.listing()[0].1.is_healthy()));
         let request_id = host.request_status(KEY, "app_header").unwrap();
         let reply = serde_json::json!({"type":"status","session":host.world.session,"generation":host.plugins[0].io.as_ref().unwrap().generation,"request_id":request_id,"fragments":[{"text":"late"}]}).to_string();
-        assert!(managed::parse_response(&reply).is_ok());
+        assert!(managed::parse(reply.as_bytes()).is_ok());
         host.plugins[0].inflight.insert(
             request_id,
             Instant::now() - REQUEST_TIMEOUT - Duration::from_millis(1),
@@ -1403,7 +1403,7 @@ mod tests {
         assert!(host.drain_results().is_empty());
         let old_id = host.request_status(KEY, "app_header").unwrap();
         let old_reply = serde_json::json!({"type":"status","session":host.world.session,"generation":host.plugins[0].io.as_ref().unwrap().generation,"request_id":old_id,"fragments":[{"text":"stale"}]}).to_string();
-        assert!(managed::parse_response(&old_reply).is_ok());
+        assert!(managed::parse(old_reply.as_bytes()).is_ok());
         assert!(wait_for(&mut host, |host| !host.results.is_empty()));
         host.disable(KEY);
         assert!(

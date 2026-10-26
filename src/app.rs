@@ -207,11 +207,6 @@ fn slot_area(class: &str) -> gtk::Box {
     box_
 }
 
-#[cfg(test)]
-fn plugin_config_path() -> Option<std::path::PathBuf> {
-    crate::settings::directory().map(|directory| directory.join("plugins.json"))
-}
-
 /// The terminal list handed to plugins on every request.
 fn plugin_context(state: &AppState) -> Context {
     let terminals = state
@@ -5073,6 +5068,89 @@ mod tests {
     #[test]
     #[ignore = "requires isolated XDG directories, display and xdotool; driven by among-tools check-preferences"]
     fn preferences_persist_across_fresh_processes() {
+        const CLOCK: &str = "github:1431055733/clock";
+        fn seed_preferences_fixture() {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            let root = crate::plugin::inventory::root().unwrap();
+            crate::test_isolation::assert_below_check_root(&root);
+            if root.join("installed.json").exists() {
+                return;
+            }
+            let inputs =
+                std::path::PathBuf::from(std::env::var_os("AMONG_OFFICIAL_PLUGIN_INPUTS").unwrap());
+            let catalogue_bytes = std::fs::read(inputs.join("among-plugins.json")).unwrap();
+            assert_eq!(
+                crate::plugin::inventory::checksum(&catalogue_bytes).unwrap(),
+                "510bdef3b532ed266d10fd925bf15a0d7d536c1889f2454e8d9a7cb446cf8a5b"
+            );
+            let catalogue =
+                crate::plugin::install::metadata::Catalogue::parse(&catalogue_bytes).unwrap();
+            let platform = crate::plugin::install::metadata::Platform::current().unwrap();
+            let mut receipts = Vec::new();
+            for (index, plugin) in catalogue.plugins.iter().enumerate() {
+                let version = &plugin.versions[0];
+                let artifact = version.select(&platform).unwrap();
+                // Persistence fixture only: real published executable/resource
+                // bytes, synthetic local receipts, never installation acceptance.
+                let receipt = crate::plugin::inventory::Receipt {
+                    repository_id: 1431055733,
+                    owner: "fixture".into(),
+                    repository: "preferences".into(),
+                    plugin_id: plugin.id.clone(),
+                    revision: version.revision.clone(),
+                    manifest_sha256: version.manifest_sha256.clone(),
+                    package_sha256: artifact.sha256.clone(),
+                    release_id: 1,
+                    asset_id: 2,
+                    generation: format!("{:064x}", index + 1),
+                    installation: None,
+                    source: None,
+                };
+                let package = receipt.package_path(&root);
+                for member in &artifact.members {
+                    let source = inputs.join(&plugin.id).join(&member.path);
+                    let metadata = std::fs::symlink_metadata(&source).unwrap();
+                    assert!(
+                        metadata.is_file()
+                            && metadata.len() == member.size
+                            && metadata.len() <= 64 * 1024 * 1024
+                    );
+                    let bytes = std::fs::read(&source).unwrap();
+                    assert_eq!(
+                        crate::plugin::inventory::checksum(&bytes).unwrap(),
+                        member.sha256
+                    );
+                    let target = package.join(&member.path);
+                    std::fs::DirBuilder::new()
+                        .recursive(true)
+                        .mode(0o700)
+                        .create(target.parent().unwrap())
+                        .unwrap();
+                    std::fs::write(&target, bytes).unwrap();
+                    std::fs::set_permissions(
+                        target,
+                        std::fs::Permissions::from_mode(if member.executable {
+                            0o700
+                        } else {
+                            0o600
+                        }),
+                    )
+                    .unwrap();
+                }
+                receipts.push(receipt);
+            }
+            std::fs::write(
+                root.join("installed.json"),
+                serde_json::json!({"version":1,"installations":receipts}).to_string(),
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                root.join("installed.json"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+            assert_eq!(crate::plugin::inventory::read(&root).unwrap().len(), 3);
+        }
         fn pump() {
             let end = std::time::Instant::now() + Duration::from_millis(450);
             while std::time::Instant::now() < end {
@@ -5126,18 +5204,48 @@ mod tests {
                 .find(|row| row.title() == title)
                 .unwrap()
         }
+        fn accept_review(prefs: &adw::PreferencesWindow) {
+            let Some(dialog) = prefs.visible_dialog() else {
+                return;
+            };
+            let accept = descendants(dialog.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+                .find(|button| button.label().as_deref() == Some("Accept and enable"))
+                .unwrap();
+            assert!(accept.grab_focus());
+            xdo(&["key", "Return"]);
+            pump();
+        }
         let phase = std::env::var("AMONG_PREFERENCES_TEST_PHASE").unwrap();
-        let path = plugin_config_path().unwrap();
+        let path = crate::settings::directory()
+            .unwrap()
+            .join("managed-plugins.json");
         crate::test_isolation::assert_below_check_root(&path);
+        seed_preferences_fixture();
+        let entries =
+            crate::plugin::inventory::read(&crate::plugin::inventory::root().unwrap()).unwrap();
+        let name = |id: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.receipt.plugin_id == id)
+                .unwrap()
+                .inspected
+                .as_ref()
+                .unwrap()
+                .manifest
+                .name
+                .clone()
+        };
         glib::set_prgname(Some("among-settings-test"));
         let app = adw::Application::builder()
             .application_id("com.github.among-terminal.settings-test")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
-        build(&app, None);
+        let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
         pump();
-        let window = app.active_window().unwrap();
+        let window = ctx.window.clone();
         window.activate_action("win.preferences", None).unwrap();
         pump();
         let prefs = gtk::Window::list_toplevels()
@@ -5160,7 +5268,7 @@ mod tests {
                 .subtitle()
                 .unwrap()
                 .contains(if phase == "invalid-plugins" {
-                    "plugins.json"
+                    "managed-plugins.json"
                 } else {
                     "shortcuts.json"
                 }));
@@ -5181,7 +5289,7 @@ mod tests {
             pump();
             if phase != "invalid-plugins" {
                 assert!(storage.subtitle().unwrap().contains("session-only"));
-                let plugin = row(&prefs, "clock");
+                let plugin = row(&prefs, &name("clock"));
                 let switch = descendants(plugin.upcast_ref())
                     .into_iter()
                     .find_map(|node| node.downcast::<gtk::Switch>().ok())
@@ -5196,9 +5304,10 @@ mod tests {
                 assert!(switch.grab_focus());
                 xdo(&["key", "space"]);
                 pump();
+                accept_review(&prefs);
                 assert_eq!(
-                    crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                        ["plugins"][0]["enabled"],
+                    crate::settings::load(&path, crate::settings::Document::ManagedPlugins)
+                        .unwrap()["plugins"][CLOCK]["enabled"],
                     true
                 );
             } else {
@@ -5240,26 +5349,22 @@ mod tests {
             window.destroy();
             return;
         }
-        let plugin_row = row(&prefs, "clock");
-        for name in ["system-status", "pane-pwd"] {
-            let plugin = row(&prefs, name);
+        let plugin_row = row(&prefs, &name("clock"));
+        for id in ["system-status", "pane-pwd"] {
+            let plugin = row(&prefs, &name(id));
             let toggle = descendants(plugin.upcast_ref())
                 .into_iter()
                 .find_map(|node| node.downcast::<gtk::Switch>().ok())
                 .unwrap();
             assert!(
                 !toggle.is_active(),
-                "untouched plugin choice remains disabled: {name}"
+                "untouched plugin choice remains disabled: {id}"
             );
         }
         if matches!(phase.as_str(), "edit" | "off" | "failure") {
-            let output = std::process::Command::new("pgrep")
-                .args(["-P", &std::process::id().to_string(), "-x", "clock"])
-                .output()
-                .unwrap();
             assert_eq!(
-                output.status.code(),
-                Some(1),
+                ctx.state.borrow().plugins.supervised_count(),
+                0,
                 "disabled plugin must not be spawned"
             );
         }
@@ -5287,13 +5392,14 @@ mod tests {
             assert!(switch.grab_focus());
             xdo(&["key", "space"]);
             pump();
+            accept_review(&prefs);
             assert!(switch.is_active());
             assert_eq!(
-                crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                    ["plugins"][0]["enabled"],
+                crate::settings::load(&path, crate::settings::Document::ManagedPlugins).unwrap()
+                    ["plugins"][CLOCK]["enabled"],
                 true
             );
-            let resource = row(&prefs, "system-status");
+            let resource = row(&prefs, &name("system-status"));
             let resource_switch = descendants(resource.upcast_ref())
                 .into_iter()
                 .find_map(|node| node.downcast::<gtk::Switch>().ok())
@@ -5301,6 +5407,7 @@ mod tests {
             assert!(resource_switch.grab_focus());
             xdo(&["key", "space"]);
             pump();
+            accept_review(&prefs);
             pump();
             assert!(resource_switch.is_active());
             assert!(
@@ -5377,8 +5484,8 @@ mod tests {
                 pump();
                 assert!(!switch.is_active());
                 assert_eq!(
-                    crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                        ["plugins"][0]["enabled"],
+                    crate::settings::load(&path, crate::settings::Document::ManagedPlugins)
+                        .unwrap()["plugins"][CLOCK]["enabled"],
                     false
                 );
             }
@@ -5409,8 +5516,8 @@ mod tests {
                 xdo(&["key", "space"]);
                 pump();
                 assert_eq!(
-                    crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                        ["plugins"][0]["enabled"],
+                    crate::settings::load(&path, crate::settings::Document::ManagedPlugins)
+                        .unwrap()["plugins"][CLOCK]["enabled"],
                     true
                 );
                 assert!(
@@ -5422,15 +5529,14 @@ mod tests {
                 );
             }
             if phase == "fault" {
-                let pid = std::process::id().to_string();
-                let output = std::process::Command::new("pgrep")
-                    .args(["-P", &pid, "-x", "clock"])
-                    .output()
-                    .unwrap();
-                assert!(output.status.success(), "enabled plugin process exists");
-                let child = String::from_utf8(output.stdout).unwrap();
+                let pids = ctx.state.borrow().plugins.supervised_pids();
+                assert_eq!(
+                    pids.len(),
+                    1,
+                    "only the explicitly enabled clock process exists"
+                );
                 assert!(std::process::Command::new("kill")
-                    .args(["-KILL", child.trim()])
+                    .args(["-KILL", &pids[0].to_string()])
                     .status()
                     .unwrap()
                     .success());
@@ -5443,7 +5549,7 @@ mod tests {
                     .into_iter()
                     .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
                     .unwrap();
-                let fault_row = row(&reopened, "clock");
+                let fault_row = row(&reopened, &name("clock"));
                 assert!(fault_row.subtitle().unwrap().contains("Stopped"));
                 assert!(descendants(fault_row.upcast_ref())
                     .into_iter()
@@ -5451,8 +5557,8 @@ mod tests {
                     .unwrap()
                     .is_active());
                 assert_eq!(
-                    crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                        ["plugins"][0]["enabled"],
+                    crate::settings::load(&path, crate::settings::Document::ManagedPlugins)
+                        .unwrap()["plugins"][CLOCK]["enabled"],
                     true
                 );
                 reopened.destroy();

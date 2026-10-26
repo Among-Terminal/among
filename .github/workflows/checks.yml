@@ -123,7 +123,7 @@ jobs:
             "$AMONG_CHECK_ROOT/official-plugin-inputs"
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-preferences-from-cargo \
-            "$RUNNER_TEMP/preferences-tests.jsonl" examples/plugins/target/release
+            "$RUNNER_TEMP/preferences-tests.jsonl" "$AMONG_CHECK_ROOT/official-plugin-inputs"
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-sessions target/release/among
           tools/among-tools/target/release/among-tools ci-x11 \

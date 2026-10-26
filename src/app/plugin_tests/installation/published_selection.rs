@@ -202,7 +202,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
         .downcast::<adw::AlertDialog>()
         .unwrap();
     assert!(dialog.body().starts_with(&format!("{clock_description}\n")));
-    assert!(!dialog.body_use_markup());
+    assert!(!dialog.is_body_use_markup());
     let body = widgets(dialog.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
