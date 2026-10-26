@@ -102,7 +102,7 @@ pub fn snapshot(config: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
 }
 
 fn defaults() -> Value {
-    json!({"plugins":[{"name":"clock","enabled":false},{"name":"unavailable","enabled":true},{"name":"system-status","enabled":false},{"name":"pane-pwd","enabled":false}],"keep":42})
+    json!({"version":1,"plugins":{"github:1431055733/clock":{"enabled":false},"github:999/unavailable":{"enabled":true,"future":"keep"},"github:1431055733/system-status":{"enabled":false},"github:1431055733/pane-pwd":{"enabled":false}},"keep":42})
 }
 
 pub fn verify(
@@ -113,11 +113,12 @@ pub fn verify(
     if phase != "invalid-plugins" {
         let settings = storage::parse_json(
             after
-                .get("plugins.json")
+                .get("managed-plugins.json")
                 .ok_or("plugin settings disappeared")?,
         )?;
         if settings["keep"] != 42
-            || settings["plugins"][1] != json!({"name":"unavailable","enabled":true})
+            || settings["plugins"]["github:999/unavailable"]
+                != json!({"enabled":true,"future":"keep"})
         {
             return Err("Preferences lost unrelated plugin settings".into());
         }
@@ -132,6 +133,7 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
     owned_display()?;
     let executable = executable.canonicalize()?;
     let plugins_source = plugins_source.canonicalize()?;
+    crate::plugin_install::release::verify(&plugins_source)?;
     fs::create_dir_all(scratch)?;
     let base = storage::private_directory(scratch, "among-preferences")?;
     for directory in [
@@ -140,7 +142,6 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
         "config/among",
         "data",
         "data/among",
-        "data/among/plugins",
         "cache",
         "state",
     ] {
@@ -149,17 +150,9 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
             .create(base.join(directory))?;
     }
     let config = base.join("config/among");
-    let plugins = base.join("data/among/plugins");
-    for name in ["clock", "system-status", "pane-pwd"] {
-        let source = storage::safe_path(&plugins_source, Path::new(name))?;
-        if !source.is_file() {
-            return Err(format!("missing prebuilt plugin: {name}").into());
-        }
-        storage::atomic_write(&plugins, Path::new(name), &fs::read(source)?, 0o755)?;
-    }
     storage::atomic_write(
         &config,
-        Path::new("plugins.json"),
+        Path::new("managed-plugins.json"),
         &serde_json::to_vec(&defaults())?,
         0o600,
     )?;
@@ -201,6 +194,10 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
         env.insert(key.into(), value.into());
     }
     env.insert("SHELL".into(), base.join("shell").into_os_string());
+    env.insert(
+        "AMONG_OFFICIAL_PLUGIN_INPUTS".into(),
+        plugins_source.into_os_string(),
+    );
     // The application test refuses to touch configuration outside this root.
     env.insert(
         crate::scratch::VARIABLE.into(),
@@ -216,7 +213,7 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
         if phase.starts_with("invalid-") {
             storage::atomic_write(
                 &config,
-                Path::new("plugins.json"),
+                Path::new("managed-plugins.json"),
                 &serde_json::to_vec(&defaults())?,
                 0o600,
             )?;
@@ -227,7 +224,10 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
                 0o600,
             )?;
             let (file, bytes) = match *phase {
-                "invalid-plugins" => ("plugins.json", b"malformed plugin settings".as_slice()),
+                "invalid-plugins" => (
+                    "managed-plugins.json",
+                    b"malformed managed settings".as_slice(),
+                ),
                 "invalid-shortcuts" => ("shortcuts.json", b"malformed shortcuts".as_slice()),
                 _ => (
                     "shortcuts.json",

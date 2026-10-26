@@ -491,6 +491,8 @@ impl PluginHost {
                         .push((self.plugins[index].spec.name.clone(), Rejection::Malformed));
                     return;
                 };
+                let request_id = valid.request_id;
+                let refresh_ms = valid.refresh_ms;
                 let Some(sent) = self.plugins[index].inflight.remove(&request_id) else {
                     return;
                 };

@@ -8,8 +8,8 @@ that is the whole point: a plugin that segfaults, hangs, or misbehaves takes onl
 itself down, while the live terminals — which hold whatever the user is running —
 stay up.
 
-The cost is a process spawn and messaging round trips. Compiled examples also
-require a build step, unlike a script that can be copied with its runtime available.
+The cost is a process spawn and messaging round trips. Repository installation
+downloads ready-built packages; it does not compile plugins on the user's machine.
 
 The exchange is newline-delimited JSON on the plugin's stdin and stdout. Nothing
 else is shared. There is no GTK type, no widget handle, and no function pointer
@@ -17,7 +17,7 @@ crossing the boundary, so there is no ABI for either side to break.
 
 ## Live status examples
 
-Host protocol 1.1 adds optional `meter` on a fragment: a finite fraction from 0
+Managed API 1.2 supports optional `meter` on a fragment: a finite fraction from 0
 to 1 rendered as a compact GTK bar. Keep a readable percentage in `text`.
 Bars are 50 pixels wide. Their whole track and fill share a continuously changing
 hue: green at 0%, yellow at 50%, red at 100%; the track is translucent so the
@@ -26,7 +26,8 @@ The host's shared application header and footer use bold monospace by default,
 including the clock and N/A labels. Footer text has opacity 0.7; the upper panel
 and individual pane footers are not dimmed. Plugins do not select this typography.
 Omit or set `meter` to null for N/A. Values outside this range are rejected.
-Major 1 is unchanged; 1.0 hosts ignore the field and show only the text.
+Text-only fragments remain valid. Pre-0.2 executables and legacy wire handshakes
+are not a supported execution profile.
 
 `clock` shows local 24-hour HH:MM:SS once at the right of the shared application
 footer every second, demonstrating a different slot than the resource header.
@@ -79,79 +80,32 @@ their own prompt hook; no untested zsh/fish integration is claimed here.
 
 ## Installing
 
-Preferences saves explicit enable/disable choices immediately to `plugins.json`
+Preferences saves explicit enable/disable choices to `managed-plugins.json`
 and restores them on startup. A Faulted process remains desired-enabled until
 you disable it. Save failures are reported as session-only changes; see
 [Preferences storage](preferences.md).
 
-`cargo run --release` builds only the application. It does **not** build this
-independent example package, replace installed plugin files or enable new ones.
-To build all examples, back up installed copies and add only missing default
-configuration entries, run from the repository:
+Open Preferences → Plugins → Inspect repository. Inspect a public repository,
+choose a compatible version and use **Install disabled**. The row identifies the
+chosen manifest version, OS/architecture, exact asset ID and size. Selection uses
+the actual host architecture and declared runtime/libc requirements, not filenames.
+Native amd64 and arm64 packages are separate downloads; the source archive is not
+an installation payload. Packages also contain manifests and licensing material.
 
-```sh
-sh scripts/install-plugins.sh --enable-new
-```
+Installation checks the numeric Release/asset membership, size, SHA-256 and exact
+release-tag/source binding before committing an immutable generation. It does not
+grant access or enable code. Enable separately through the manager's access review.
+An installed script still requires its declared interpreter; the installer neither
+compiles code nor runs arbitrary installation commands.
 
-Existing configuration fields and enabled/disabled entries are preserved. Backups
-are created before replacement. All three plugins are disabled by default;
-enable wanted plugins explicitly in Preferences.
-Existing explicitly enabled examples stay enabled during upgrades; turn them off
-in Preferences if no longer wanted. Backups
-are stored under `${XDG_DATA_HOME:-$HOME/.local/share}/among/plugin-backups/`.
-To update only selected binaries without changing configuration:
-
-```sh
-sh scripts/install-plugins.sh system-status clock
-```
-
-Disable/re-enable running plugins in Preferences after replacement. Newly added
-configuration names load on the next host startup. A rebuilt host does not
-replace an already running single-instance process: another `cargo run --release`
-may activate that process. Restart the host only when it is safe to end its live
-terminal sessions. Plugin updates alone do not close any terminal.
-
-Merge plugin configuration entries with existing settings rather than replacing
-them. Clock and resource plugins are optional demonstrations of status slots.
-
-Plugins are executables in `$XDG_DATA_HOME/among/plugins` (`~/.local/share/among/plugins`),
-named after the plugin:
-
-```sh
-cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
-plugin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/among/plugins"
-mkdir -p "$plugin_dir"
-install -m 755 examples/plugins/target/release/clock "$plugin_dir/clock"
-install -m 755 examples/plugins/target/release/system-status "$plugin_dir/system-status"
-install -m 755 examples/plugins/target/release/pane-pwd "$plugin_dir/pane-pwd"
-```
-
-Then register them in `$XDG_CONFIG_HOME/among/plugins.json` (`~/.config/among/plugins.json`):
-
-```json
-{"plugins": [
-  {"name": "clock", "enabled": false},
-  {"name": "system-status", "enabled": false},
-  {"name": "pane-pwd", "enabled": false}
-]}
-```
-
-Configuration is read leniently, because one broken entry must not stop the
-application from starting:
-
-- A missing file, unparsable JSON, or a file without a `plugins` key means no
-  plugins are loaded.
-- A configured plugin whose file is absent remains an inspectable missing entry,
-  with its desired switch retained. It can still be disabled.
-- An entry without a `name` is skipped.
-- Legacy names must be single filenames, not paths or managed identity strings.
-  Duplicate configured names are registered once; stored unrelated data is not
-  rewritten during discovery. Installed but unconfigured legacy files appear
-  disabled, without adding defaults to configuration merely by inspection.
+Only committed managed installation records supply inventory. Copying a file into
+`among/plugins`, retaining a filename in `plugins.json`, or placing an arbitrary
+manifest on disk does not install or authorize it. Missing/changed manifests refuse
+execution without a fallback. Refusal does not delete unrelated files or settings.
 
 ### Native inventory
 
-Preferences → Plugins joins configured legacy entries, committed managed receipts
+Preferences → Plugins joins committed managed receipts
 and runtime observations by identity. Cards show origin/version and runtime state
 beside the desired enablement switch. Details shows the description (or its
 absence), declared compatibility, last observed wire API and package provenance;
@@ -166,70 +120,26 @@ discard unfinished settings text. Details/settings callbacks reject a removed or
 replaced package rather than silently retargeting an old action. The separate
 Plugin sources section opens repository inspection with a separate explicit
 Install disabled action for each compatible version; the search field filters
-only installed/configured plugins. Merely inspecting metadata never installs or
+only installed plugins. Merely inspecting metadata never installs or
 enables code. Registered sources have explicit Cached, Refresh and Remove source
 actions; source removal does not uninstall anything. Existing identities have a
 separate Apply update action. Managed Details exposes explicit recovery/removal;
 these do not modify legacy executables.
 
-### Updating an installed example
+### Updating an installed package
 
-Changing an example in this repository does not update the installed copy.
-Build first, then replace the selected installed executable at the same name:
-
-```sh
-cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
-install -m 755 examples/plugins/target/release/clock "${XDG_DATA_HOME:-$HOME/.local/share}/among/plugins/clock"
-```
-
-Disable and re-enable `clock` in preferences to start the updated copy
-without closing any terminals.
-Replacing an old script with the binary does not require deleting it first.
-An already-running process keeps executing its old code until restarted.
+Inspect its repository and choose **Apply update…** for the desired version.
+The confirmation includes the selected version/target and access requirements.
+Only the selected plugin may restart. Publisher/access changes still require
+renewed review; changing an on-disk filename cannot inherit another identity.
+The installer retains the previous verified generation for explicit recovery.
 
 ## Protocol
 
-### Host to plugin
-
-Every message has a `type` field.
-
-```jsonc
-// Sent once when the plugin starts.
-{"type": "hello", "major": 1, "minor": 2}
-
-// Collect data now. Answer with a status message carrying the same request_id.
-{"type": "status", "request_id": 7, "scope": "pane_header:1", "context": {
-  "active_workspace": 0,
-  "workspace_count": 2,
-  "focused_pane": 1,
-  "terminals": [
-    {"pane": 1, "workspace": 0, "cwd": "/home/demo/projects", "title": "bash", "running": true}
-  ]
-}}
-
-// Something happened the plugin may care about.
-{"type": "event", "event": {"kind": "working_directory_changed"}, "pane": 1, "detail": "/tmp"}
-
-// The host is stopping.
-{"type": "shutdown"}
-```
-
-Event kinds are `pane_opened`, `pane_closed`, `process_exited`, `working_directory_changed`,
-and `workspace_activated`.
-
-### Plugin to host
-
-```jsonc
-// Reply to hello. The major version must match the host's.
-{"type": "hello", "major": 1, "minor": 0}
-
-// The answer to a status request.
-{"type": "status", "request_id": 7, "refresh_ms": 2000,
- "fragments": [
-   {"icon": "git-branch-symbolic", "text": "main*", "style": "warning", "priority": 20,
-    "tooltip": "Uncommitted changes present"}
- ]}
-```
+Every message has a `type` field. The managed handshake, scoped status/context and
+configuration messages are specified under [Managed admission](#managed-admission-context-and-settings-api-12).
+Legacy `hello`, unbound status replies and `notify` cannot establish admission,
+expose context or route notifications, regardless of a claimed major/minor number.
 
 `refresh_ms` is how often the data changes:
 
@@ -316,10 +226,9 @@ data never reshuffles a slot.
 The protocol version is negotiated at start-up and is independent of the
 application's version.
 
-- The **major** version must match exactly. A plugin whose major differs is
-  reported as incompatible and its data is ignored — the host does not guess.
-- Legacy **minor** versions may be lower or higher: the legacy profile checks
-  major equality only. Managed admission separately checks its API and features.
+- Declared minimum API and required features must be supported before execution.
+- Managed runtime admission must match the authoritative identity, session,
+  generation and offered grants. Major equality alone is not admission.
 
 ### Static managed metadata and settings
 
@@ -327,9 +236,8 @@ Managed packages use a separate static `among-plugin.json`, schema version 1.
 The [complete vocabulary example](../examples/managed-manifest.json) is parsed
 by the production parser in tests. It is data, not a ready-built plugin package.
 Static metadata and local settings can be inspected without executing code.
-API 1.2 adds the distinct managed profile below; legacy executables still use
-`hello` and the existing major-1 messages. Managed packages never fall back to
-legacy execution. Notification production, notification UI and delivery features
+API 1.2 is the supported managed profile below. There is no manifestless/legacy
+execution path. Notification production, notification UI and delivery features
 remain unsupported and are not advertised.
 
 Manifest `id` is lowercase ASCII letters/digits/hyphens, at most 64 bytes.
@@ -377,7 +285,7 @@ managed preference edit retries pending identity-scoped settings/switch/review
 changes together, merging current unknown data rather than erasing it. Restarting
 the application before successful persistence can lose session-only changes.
 
-Managed installation selection is separate from legacy executables. The
+Managed installation selection is authoritative. The
 application reads only its committed `among/managed/installed.json` record in
 the XDG data directory, not arbitrary discovered manifests or staging files.
 It retains invalid/missing selected packages as unavailable entries. A receipt
@@ -398,8 +306,8 @@ upgrading their unconfirmed publisher boundary requires renewed review.
 Local state lives separately in `managed-plugins.json` in the XDG config directory.
 Retained preferences alone are not evidence of installation. Repository browsing,
 download, update and uninstall are separate installer operations, not implemented
-by static inspection. Existing manifestless discovery/configuration and all three
-bundled examples keep their legacy identities and enablement.
+by static inspection. Historical filenames/settings do not supply execution
+identity, enablement or inherited access.
 
 ### Managed admission, context and settings (API 1.2)
 
@@ -447,7 +355,7 @@ session ID. Old replies cannot establish admission or acknowledge new settings.
 
 | Feature | Actual host-mediated exposure |
 | --- | --- |
-| `status` | Answer status requests with validated legacy fragment data |
+| `status` | Answer managed status requests with validated text/meter fragments |
 | `settings` | Receive declared, validated configuration snapshots |
 | `context.terminals` | Scoped terminal/workspace references and enumeration |
 | `context.cwd` | Known working directory, or null |
@@ -504,8 +412,9 @@ Rejected and Restart required. A configuration unanswered for five seconds is
 reported unavailable, not applied; its eventual late reply cannot change that
 state. A manifest's `apply: restart` saves without sending live changes, and the
 next process receives them. Superseded revisions and stopped generations cannot
-mark a newer revision applied. Managed `notify` remains a generic, payload-omitted
-diagnostic; it never triggers notification routing or external delivery.
+mark a newer revision applied. Unsupported `notify` is refused with a bounded,
+value-free unknown-type diagnostic. It creates no fabricated event, attention,
+notification UI or delivery job.
 
 When a running plugin needs restart, its form offers **Restart plugin…** with
 explicit confirmation. Cancel keeps the current process and accepted settings.
@@ -551,9 +460,8 @@ are stopping, the replacement window opens immediately but its plugins show
 Waiting until all retiring hosts finish reaping. This preserves the same
 application-wide process budget across window replacement.
 
-Starting is separate from Running: a compatible handshake is required within
-five seconds. Legacy plugins allow at most 16 outstanding statuses, one per scope.
-Managed statuses and configuration revisions share 15 reply credits, including
+Starting is separate from Running: managed admission is required within
+five seconds. Statuses and configuration revisions share 15 reply credits, including
 superseded/expired revisions and revoked targets whose replies have not arrived;
 one output slot is reserved for the single enumeration request. Reply consumption
 or generation shutdown releases credit. A full input
@@ -590,120 +498,32 @@ They can use any language; the host launches the file directly, so scripts need
 a shebang, executable permissions and an installed interpreter. Only protocol
 JSON lines belong on stdout, and every reply must be flushed.
 
-Create an independent Cargo package with a JSON dependency:
+Supply a schema-1 manifest and implement the managed API 1.2 exchange above.
+Keep the host-issued identity/session/generation bindings on every reply; return
+only declared and granted features. An application-only status provider needs no
+terminal-context grant. Package the manifest, contained executable and licensing
+material, then publish separate compatible ready-built artifacts in a public
+GitHub Release with schema-1 catalogue metadata. See the independent
+[official plugin repository](https://github.com/Among-Terminal/among-plugins) for
+managed implementations and shared protocol support.
 
-```sh
-cargo new --bin my-status
-cd my-status
-cargo add serde_json@1
-```
+The pre-0.2 filename installer and legacy protocol tutorial are withdrawn. Their
+historical source is not an alternative installation/admission path. Developer
+builds may still test old transport fixtures, but that is not supported legacy
+execution or an old-reader compatibility gate.
 
-Replace `src/main.rs` with:
+### Retired compatibility tests
 
-```rust
-use std::io::{self, BufRead, Write};
-use serde_json::{json, Value};
-
-fn main() -> io::Result<()> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { continue };
-        let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
-        let kind = message["type"].as_str().unwrap_or_default();
-        let reply = match kind {
-            // The host is going away; stop rather than block on stdin.
-            "shutdown" => break,
-            "hello" => json!({"type": "hello", "major": 1, "minor": 1}),
-            "status" => {
-                // Only the app header carries fragments; every other scope
-                // gets an empty list, which the host renders as nothing.
-                let fragments = if message["scope"] == "app_header" {
-                    json!([{"text": "Hello", "priority": 10}])
-                } else {
-                    json!([])
-                };
-                json!({
-                    "type": "status",
-                    "request_id": message["request_id"].as_i64().unwrap_or_default(),
-                    "refresh_ms": 2000,
-                    "fragments": fragments,
-                })
-            }
-            _ => continue,
-        };
-        // Every reply must be flushed: the host reads line by line and a
-        // buffered reply is indistinguishable from a hung plugin.
-        writeln!(stdout, "{reply}")?;
-        stdout.flush()?;
-    }
-    Ok(())
-}
-```
-
-Build it and install it under the same name you will register:
-
-```sh
-plugin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/among/plugins"
-mkdir -p "$plugin_dir"
-cargo build --release --locked
-install -m 755 target/release/my-status "$plugin_dir/my-status"
-```
-
-To retain an explicit choice, add `{"name": "my-status", "enabled": false}` to the `plugins` array in
-`${XDG_CONFIG_HOME:-$HOME/.config}/among/plugins.json`, preserving other entries
-and fields. If the file does not exist, create it with:
-
-```json
-{"plugins": [{"name": "my-status", "enabled": false}]}
-```
-
-The configuration name is the installed filename, not a path or display title.
-At startup the host retains configured names even when their files are missing,
-and discovers unconfigured executable files in the legacy plugin directory as
-disabled entries. Copying a new file does not trigger live legacy discovery.
-Restart Among Terminal when it is safe to close its terminal sessions, then open
-Settings → Plugins and enable `my-status`; `Hello` will
-appear in the application header. A protocol or launch failure is shown as
-Faulted rather than Running. For an already registered plugin update, disable
-it, replace its file, then re-enable it; no host restart is needed.
-
-For compiled Rust plugins, start with the independent package below; for other
-languages, use the same JSON-lines protocol documented above. There is no GTK
-dependency or application SDK requirement.
-
-The independent [example package](../examples/plugins/Cargo.toml) contains
-standalone binaries and [shared stdio plumbing](../examples/plugins/src/protocol.rs).
-It does not depend on or link the host. Within that package, a binary can use:
-
-```rust
-use among_example_plugins::protocol::{run, Status};
-use serde_json::json;
-
-fn main() -> std::process::ExitCode {
-    run(|scope, _context| Status {
-        refresh_ms: Some(2000),
-        fragments: if scope == "app_header" {
-            vec![json!({"text": "Hello", "priority": 10})]
-        } else {
-            Vec::new()
-        },
-    })
-}
-```
-
-The loop handles the version 1.0 handshake, request IDs, malformed JSON, events,
-flushing, EOF and shutdown. For a third-party package, implement that same wire
-contract or reuse the independent example code; no application library is needed.
-
-`pane-pwd` reports each pane's last known directory, including its actual initial
-shell directory. Later changes require OSC 7; an unknown directory emits no content.
-
-Test the binaries and their real stdio replies with:
-
-```sh
-cargo test --locked --manifest-path examples/plugins/Cargo.toml
-```
+The seven filename-configuration parser tests and five legacy-notification/
+major-only compatibility tests were withdrawn with that profile, not reported as
+passing replacements. Relevant safety/behavior assertions now use managed package
+fixtures: startup does not discover/execute manifestless files, changed manifests
+refuse start, legacy hello cannot unlock context, and unsupported notify cannot
+route attention. Shared fragment bounds and low-level hostile pipe/supervision
+tests remain; raw low-level transport fixtures do not imply managed admission.
+Native Preferences persistence uses clearly synthetic managed receipts and real
+published executable bytes. Its ten phases are distinct from the public Release
+installation/review/enable/output/disable/uninstall acceptance test.
 
 ## Repository package metadata — implementation in progress
 
