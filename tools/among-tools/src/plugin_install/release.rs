@@ -83,14 +83,32 @@ fn fetch(root: &Path, url: &str, name: &str, limit: u64, redirects: bool) -> Res
     Ok(destination)
 }
 
-pub fn checked_bytes(path: &Path, size: u64, digest: &str) -> Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_file() || metadata.len() != size || size > 32 * 1024 * 1024 {
-        return Err("release input has the wrong file type or exact size".into());
+fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+    // Inspect the descriptor we read, not a pathname that can change after stat.
+    // NONBLOCK also keeps a substituted FIFO from trapping a check before fstat.
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > maximum {
+        return Err("release input is non-regular or exceeds its byte limit".into());
     }
-    let bytes = fs::read(path)?;
-    if storage::sha256(bytes.as_slice())? != digest {
-        return Err("release input SHA256 differs from its pinned declaration".into());
+    let mut bytes = Vec::new();
+    (&mut file).take(maximum + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > maximum {
+        return Err("release input grew beyond its byte limit while being read".into());
+    }
+    Ok(bytes)
+}
+
+pub fn checked_bytes(path: &Path, size: u64, digest: &str) -> Result<Vec<u8>> {
+    if size > 32 * 1024 * 1024 {
+        return Err("release input exceeds the exact-byte check limit".into());
+    }
+    let bytes = regular_bytes(path, size)?;
+    if bytes.len() as u64 != size || storage::sha256(bytes.as_slice())? != digest {
+        return Err("release input size/SHA256 differs from its pinned declaration".into());
     }
     Ok(bytes)
 }
@@ -198,7 +216,7 @@ pub fn verify(root: &Path) -> Result<Value> {
         634525,
         CATALOGUE_SHA256,
     )?)?;
-    let inputs = storage::parse_json(&fs::read(root.join("inputs.json"))?)?;
+    let inputs = storage::parse_json(&regular_bytes(&root.join("inputs.json"), 256 * 1024)?)?;
     let architecture = match std::env::consts::ARCH {
         "x86_64" => "amd64",
         "aarch64" => "arm64",
