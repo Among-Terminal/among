@@ -614,15 +614,12 @@ impl PluginHost {
                 }
                 self.enumerate_if_due(index);
             }
-            managed::Response::Notify {} => {
-                if io.handshake_done && self.notices.len() < MAX_POLL_FRAMES {
-                    self.notices.push((
-                        self.plugins[index].spec.name.clone(),
-                        "Managed plugin diagnostic (payload omitted)".into(),
-                        None,
-                    ));
-                }
-            }
+            // even an admitted process cannot turn an unsupported legacy notify
+            // into attention, a placeholder event, UI content or delivery work.
+            managed::Response::Notify {} => self.last_rejections.push((
+                self.plugins[index].spec.name.clone(),
+                Rejection::UnknownType,
+            )),
             managed::Response::Error {} => self
                 .last_rejections
                 .push((self.plugins[index].spec.name.clone(), Rejection::Malformed)),
@@ -837,19 +834,13 @@ mod tests {
         let mut fixture = fixture("managed-on-event-held", &[], Some(&["status", "settings"]));
         fixture.wait(|host| host.configuration(KEY) == Configuration::Applied);
         fixture.host.drain_invalidated_sources();
-        fixture
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .unwrap();
+        fixture.host.request_status(KEY, "app_header").unwrap();
         fixture.wait(|host| !host.results.is_empty());
         let initial = fixture.host.drain_results();
         assert_eq!(initial.len(), 1);
         assert_eq!(initial[0].refresh, Refresh::OnEvent);
         assert_eq!(initial[0].fragments[0].text.as_deref(), Some("default"));
-        let old = fixture
-            .host
-            .request_status(KEY, "app_footer", &Context::default())
-            .unwrap();
+        let old = fixture.host.request_status(KEY, "app_footer").unwrap();
         let package = fixture.package.clone();
         fixture.wait(|_| package.join("old-status-held").exists());
         fixture.host.stored_settings_changed(
@@ -873,10 +864,7 @@ mod tests {
             "old content authority is revoked"
         );
         assert!(fixture.host.drain_results().is_empty());
-        let current = fixture
-            .host
-            .request_status(KEY, "app_footer", &Context::default())
-            .unwrap();
+        let current = fixture.host.request_status(KEY, "app_footer").unwrap();
         assert_ne!(current, old);
         assert_eq!(fixture.host.plugins[0].inflight.len(), 2);
         std::fs::write(package.join("release-old-status"), b"yes").unwrap();
@@ -890,6 +878,94 @@ mod tests {
             Some("new configured label")
         );
         assert_eq!(results[0].refresh, Refresh::OnEvent);
+    }
+
+    #[test]
+    fn a_legacy_hello_never_admits_or_receives_context_even_with_matching_major() {
+        let grants = [
+            "status",
+            "settings",
+            "context.terminals",
+            "context.cwd",
+            "events.terminal",
+        ];
+        let mut fixture = fixture(
+            "managed-legacy-hello",
+            &["context.terminals", "context.cwd", "events.terminal"],
+            Some(&grants),
+        );
+        let package = fixture.package.clone();
+        fixture.wait(|host| {
+            package.join("unsupported-hello-sent").exists() && !host.rejections().is_empty()
+        });
+        assert!(fixture.host.healthy().is_empty());
+        assert!(fixture.host.running_generation(KEY).is_none());
+        assert!(fixture.host.request_status(KEY, "app_header").is_none());
+        fixture.host.broadcast_event(
+            EventKind::WorkingDirectoryChanged,
+            1,
+            Some("/private-cwd".into()),
+        );
+        assert!(fixture.host.drain_results().is_empty());
+        assert!(fixture.host.drain_notices().is_empty());
+        let frames = fixture.frames();
+        assert_eq!(
+            frames.len(),
+            1,
+            "an unsupported hello must not unlock configuration, context, events or status"
+        );
+        assert_eq!(frames[0]["type"], "managed_hello");
+    }
+
+    #[test]
+    fn unsupported_notify_is_a_value_free_refusal_not_a_fabricated_event() {
+        let mut fixture = fixture("managed-echo", &[], Some(&["status", "settings"]));
+        fixture.wait(|host| host.configuration(KEY) == Configuration::Applied);
+        fixture.host.handle_line(
+            0,
+            r#"{"type":"notify","message":"settings-value-must-not-escape","style":"error"}"#,
+        );
+        assert_eq!(
+            fixture.host.rejections(),
+            &[(KEY.into(), Rejection::UnknownType)]
+        );
+        assert!(fixture.host.drain_notices().is_empty());
+        assert!(fixture.host.drain_results().is_empty());
+        assert!(fixture.host.plugins[0].state.is_healthy());
+        assert!(
+            !format!("{:?}", fixture.host.rejections()).contains("settings-value-must-not-escape")
+        );
+        assert!(fixture.host.request_status(KEY, "app_header").is_some());
+        fixture.wait(|host| !host.results.is_empty());
+    }
+
+    #[test]
+    fn missing_or_changed_manifests_never_fall_back_to_starting_the_entrypoint() {
+        for replacement in [None, Some(b"invalid manifest".as_slice())] {
+            let mut fixture = fixture("managed-echo", &[], None);
+            let manifest = fixture.package.join("among-plugin.json");
+            let unrelated = fixture.root.join("unrelated-user-settings");
+            std::fs::write(&unrelated, b"preserve unrelated data").unwrap();
+            match replacement {
+                None => std::fs::remove_file(&manifest).unwrap(),
+                Some(bytes) => std::fs::write(&manifest, bytes).unwrap(),
+            }
+            fixture.host.review_access(KEY, json!({"owner":"example","repository":"sample","features":["status","settings"]})).unwrap();
+            fixture.host.enable(KEY);
+            assert!(matches!(
+                fixture.host.listing()[0].1,
+                PluginState::Unavailable { .. }
+            ));
+            assert_eq!(fixture.host.supervised_count(), 0);
+            assert!(!fixture.package.join("executed").exists());
+            assert_eq!(
+                std::fs::read(&unrelated).unwrap(),
+                b"preserve unrelated data"
+            );
+            assert_eq!(std::fs::read(&manifest).ok().as_deref(), replacement);
+            assert!(fixture.host.drain_results().is_empty());
+            assert!(fixture.host.drain_notices().is_empty());
+        }
     }
 
     #[test]
@@ -907,10 +983,7 @@ mod tests {
         );
         assert_eq!(fixture.host.configuration(KEY), Configuration::Pending);
         fixture.wait(|host| host.configuration(KEY) == Configuration::Applied);
-        assert!(fixture
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .is_some());
+        assert!(fixture.host.request_status(KEY, "app_header").is_some());
         fixture.wait(|host| !host.results.is_empty());
         let results = fixture.host.drain_results();
         assert_eq!(results[0].fragments[0].text.as_deref(), Some("changed"));
@@ -921,10 +994,7 @@ mod tests {
             .unwrap();
         assert_eq!(configured["values"], json!({"label":"changed"}));
         assert!(
-            fixture
-                .host
-                .request_status(KEY, "pane_header:1", &Context::default())
-                .is_none(),
+            fixture.host.request_status(KEY, "pane_header:1").is_none(),
             "status alone must not enumerate terminal identities through requested scopes"
         );
     }
@@ -978,10 +1048,7 @@ mod tests {
         let io = fixture.host.plugins[0].io.as_ref().unwrap();
         let generation = io.generation.clone();
         let session = fixture.host.world.session.clone();
-        let request = fixture
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .unwrap();
+        let request = fixture.host.request_status(KEY, "app_header").unwrap();
         fixture.host.handle_managed_line(0,&json!({"type":"status","session":session,"generation":"old-generation","request_id":request,"fragments":[{"text":"stale"}]}).to_string());
         assert!(fixture.host.results.is_empty());
         assert!(fixture.host.plugins[0].inflight.contains_key(&request));
@@ -1017,10 +1084,7 @@ mod tests {
             Some(&grants),
         );
         fixture.wait(|host| host.configuration(KEY) == Configuration::Applied);
-        fixture
-            .host
-            .request_status(KEY, "pane_header:1", &Context::default())
-            .unwrap();
+        fixture.host.request_status(KEY, "pane_header:1").unwrap();
         fixture.wait(|host| !host.results.is_empty());
         fixture.host.drain_results();
         let status = fixture
@@ -1056,7 +1120,7 @@ mod tests {
         let target = fixture.host.world.scope("workspace_summary:1").unwrap();
         let id = fixture
             .host
-            .request_status(KEY, "workspace_summary:1", &Context::default())
+            .request_status(KEY, "workspace_summary:1")
             .unwrap();
         let mut context = fixture.host.world.legacy.clone();
         context
@@ -1131,10 +1195,7 @@ mod tests {
             .unwrap()
             .grants
             .contains("context.title"));
-        let id = fixture
-            .host
-            .request_status(KEY, "pane_header:1", &Context::default())
-            .unwrap();
+        let id = fixture.host.request_status(KEY, "pane_header:1").unwrap();
         let mut context = fixture.host.world.legacy.clone();
         context.terminals.retain(|terminal| terminal.pane != 1);
         fixture.host.update_context(vec![10, 20], context);
@@ -1200,10 +1261,7 @@ mod tests {
                 .collect(),
         };
         fixture.host.update_context(vec![10], context);
-        fixture
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .unwrap();
+        fixture.host.request_status(KEY, "app_header").unwrap();
         let deadline = Instant::now() + Duration::from_secs(4);
         while !fixture.package.join("enumeration-complete").exists() {
             fixture.host.poll();
@@ -1275,12 +1333,7 @@ mod tests {
                 answered.insert(result.scope);
             }
             for scope in &scopes {
-                if !sent.contains(scope)
-                    && fixture
-                        .host
-                        .request_status(KEY, scope, &Context::default())
-                        .is_some()
-                {
+                if !sent.contains(scope) && fixture.host.request_status(KEY, scope).is_some() {
                     sent.insert(scope.clone());
                 }
             }
@@ -1410,7 +1463,7 @@ mod tests {
         assert!(configuration.host.plugins[0].state.is_healthy());
         assert!(configuration
             .host
-            .request_status(KEY, "app_header", &Context::default())
+            .request_status(KEY, "app_header")
             .is_some());
         configuration.wait(|host| !host.results.is_empty());
         assert_ne!(
@@ -1443,10 +1496,7 @@ mod tests {
             declared.host.configuration(KEY),
             Configuration::RestartRequired
         );
-        declared
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .unwrap();
+        declared.host.request_status(KEY, "app_header").unwrap();
         declared.wait(|host| !host.results.is_empty());
         assert_eq!(
             declared.host.drain_results()[0].fragments[0]
@@ -1471,10 +1521,7 @@ mod tests {
             declared.host.plugins[0].io.as_ref().unwrap().generation,
             generation
         );
-        declared
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .unwrap();
+        declared.host.request_status(KEY, "app_header").unwrap();
         declared.wait(|host| !host.results.is_empty());
         assert_eq!(
             declared.host.drain_results()[0].fragments[0]
@@ -1521,10 +1568,7 @@ mod tests {
         fixture
             .host
             .broadcast_event(EventKind::ProcessExited { status: 7 }, 1, None);
-        fixture
-            .host
-            .request_status(KEY, "pane_header:1", &Context::default())
-            .unwrap();
+        fixture.host.request_status(KEY, "pane_header:1").unwrap();
         fixture.wait(|host| !host.results.is_empty());
         let frames = fixture.frames();
         let status = frames
@@ -1568,24 +1612,18 @@ mod tests {
         for pane in 1..=15 {
             assert!(fixture
                 .host
-                .request_status(KEY, &format!("pane_header:{pane}"), &Context::default())
+                .request_status(KEY, &format!("pane_header:{pane}"))
                 .is_some());
         }
         fixture.host.update_context(vec![20], context(16));
         assert!(
-            fixture
-                .host
-                .request_status(KEY, "pane_header:16", &Context::default())
-                .is_none(),
+            fixture.host.request_status(KEY, "pane_header:16").is_none(),
             "revoking target authority must not release credit for a reply still in flight"
         );
         std::fs::write(fixture.package.join("allow-status"), b"yes").unwrap();
         fixture.wait(|host| host.plugins[0].inflight.is_empty());
         assert!(fixture.host.drain_results().is_empty());
-        fixture
-            .host
-            .request_status(KEY, "pane_header:16", &Context::default())
-            .unwrap();
+        fixture.host.request_status(KEY, "pane_header:16").unwrap();
         fixture.wait(|host| !host.results.is_empty());
         assert_eq!(fixture.host.drain_results()[0].scope, "pane_header:16");
         assert_eq!(fixture.host.plugins[0].restart_attempts, 0);
@@ -1618,10 +1656,7 @@ mod tests {
                 }
             )
         });
-        assert!(fixture
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .is_none());
+        assert!(fixture.host.request_status(KEY, "app_header").is_none());
         std::fs::write(fixture.package.join("allow-configuration"), b"yes").unwrap();
         fixture.wait(|host| {
             host.plugins[0]
@@ -1639,10 +1674,7 @@ mod tests {
             .host
             .stored_settings_changed(KEY, json!({"version":1,"values":{"label":"current"}}));
         fixture.wait(|host| host.configuration(KEY) == Configuration::Applied);
-        fixture
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .unwrap();
+        fixture.host.request_status(KEY, "app_header").unwrap();
         fixture.wait(|host| !host.results.is_empty());
         assert_eq!(
             fixture.host.drain_results()[0].fragments[0].text.as_deref(),
@@ -1713,10 +1745,7 @@ mod tests {
             fixture.host.plugins[0].io.as_ref().unwrap().generation,
             generation
         );
-        fixture
-            .host
-            .request_status(KEY, "app_header", &Context::default())
-            .unwrap();
+        fixture.host.request_status(KEY, "app_header").unwrap();
         fixture.wait(|host| !host.results.is_empty());
         assert_eq!(
             fixture.host.drain_results()[0].fragments[0].text.as_deref(),

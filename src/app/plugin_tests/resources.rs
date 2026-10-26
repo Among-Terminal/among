@@ -9,7 +9,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const KEY: &str = "github:1431055733/system-status";
-const CLIENT: &str = "306839e144d7a4c98432c6c68dad016c412dd656";
+const CLIENT: &str = "aa1ec272d4ed6326338f3de0e5fbf30bbe181e39";
 const PHASE: &str = "AMONG_RESOURCE_GUI_PHASE";
 const LEGACY: &[u8] = b"{\"plugins\":[],\"future\":\"retain these legacy bytes\"}\n";
 

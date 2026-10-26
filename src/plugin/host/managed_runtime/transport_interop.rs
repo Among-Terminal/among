@@ -12,7 +12,7 @@ mod pwd;
 mod resources;
 
 const KEY: &str = "github:1431055733/protocol-fixture";
-const CLIENT_REVISION: &str = "306839e144d7a4c98432c6c68dad016c412dd656";
+const CLIENT_REVISION: &str = "aa1ec272d4ed6326338f3de0e5fbf30bbe181e39";
 
 struct Fixture {
     host: PluginHost,
@@ -167,7 +167,7 @@ impl Fixture {
         assert!(self.host.results.is_empty());
         let id = self
             .host
-            .request_status(&self.key, scope, &Context::default())
+            .request_status(&self.key, scope)
             .expect("live status request");
         let io = self.host.plugins[0].io.as_ref().unwrap();
         // do not poll: the worker delivers authentic stdout to this channel;
@@ -266,14 +266,8 @@ fn real_companion_admits_only_after_review_and_publishes_correlated_status() {
         fixture.host.plugins[0].runtime.as_ref().unwrap().grants,
         BTreeSet::from(["status".to_string()])
     );
-    assert!(fixture
-        .host
-        .request_status(KEY, "pane_footer:1", &Context::default())
-        .is_none());
-    fixture
-        .host
-        .request_status(KEY, "app_footer", &Context::default())
-        .unwrap();
+    assert!(fixture.host.request_status(KEY, "pane_footer:1").is_none());
+    fixture.host.request_status(KEY, "app_footer").unwrap();
     fixture.wait(|host| !host.results.is_empty());
     let results = fixture.host.drain_results();
     assert_eq!(results.len(), 1);

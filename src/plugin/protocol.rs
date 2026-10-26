@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Protocol version spoken by this host.
 ///
-/// The major component must match exactly for a plugin to be loaded; the minor
-/// component may be lower, allowing the host to evolve additively.
+/// Managed admission checks the declared minimum and negotiated feature set.
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const PROTOCOL_MINOR: u32 = 2;
 
@@ -24,9 +23,6 @@ pub const MAX_TEXT_CHARS: usize = 512;
 /// Upper bound on fragments in one response.
 pub const MAX_FRAGMENTS: usize = 64;
 
-/// Upper bound on the text of a notification.
-pub const MAX_NOTICE_CHARS: usize = 240;
-
 /// Upper bound on sources contributing to a single slot.
 pub const MAX_SOURCES_PER_SLOT: usize = 32;
 
@@ -38,21 +34,13 @@ pub const MAX_PRIORITY: i32 = 1_000;
 /// tight polling loop by declaring zero.
 pub const MAX_REFRESH_INTERVAL_MS: u64 = 3_600_000;
 
-/// A message from the host to a plugin.
+/// Internal terminal events and the shared transport shutdown frame. Events are
+/// converted to granted managed frames before they cross the process boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    /// Sent once on start; the plugin may answer with [`Response::Hello`].
+    #[cfg(test)]
     Hello { major: u32, minor: u32 },
-    /// Collect data now and answer with fragments.
-    Status {
-        request_id: u64,
-        /// One of `app_header`, `app_footer`, `workspace_header`,
-        /// `pane_header:<id>`, `pane_footer:<id>`, `workspace_summary:<index>`.
-        scope: String,
-        /// Compact description of what exists right now.
-        context: Context,
-    },
     /// A terminal was created or its process ended.
     Event {
         event: EventKind,
@@ -74,7 +62,7 @@ pub enum EventKind {
     WorkspaceActivated,
 }
 
-/// A description of one terminal, handed to plugins.
+/// Internal terminal snapshot; managed serialization filters fields by grants.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TerminalInfo {
     pub pane: u64,
@@ -91,7 +79,7 @@ pub struct TerminalInfo {
     pub running: bool,
 }
 
-/// Everything a plugin is told exists when asked for status.
+/// Internal application context, never serialized directly to a managed child.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Context {
     pub active_workspace: usize,
@@ -102,12 +90,10 @@ pub struct Context {
     pub focused_pane: Option<u64>,
 }
 
-/// A message from a plugin to the host.
+/// Status payload validation shared by managed status and rendering tests.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
-    /// The plugin's protocol version, sent in reply to [`Request::Hello`].
-    Hello { major: u32, minor: u32 },
     /// The plugin's answer to a `Status` request.
     Status {
         request_id: u64,
@@ -115,24 +101,12 @@ pub enum Response {
         refresh_ms: Option<u64>,
         fragments: Vec<IncomingFragment>,
     },
-    /// Something went wrong inside the plugin.
-    Error { message: String },
-    /// Ask the user to notice something.
-    ///
-    /// Deliberately separate from `Error`: an error is a diagnostic about the
-    /// plugin, whereas a notification is information for the user, which may be
-    /// raised at any time and by a plugin that is working perfectly well.
-    Notify {
-        message: String,
-        #[serde(default)]
-        style: Option<String>,
-    },
 }
 
 /// One content item as it arrives from a plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IncomingFragment {
-    /// Optional graphical fraction; text remains the fallback for older hosts.
+    /// Optional graphical fraction; text-only managed fragments remain valid.
     #[serde(default)]
     pub meter: Option<f64>,
     #[serde(default)]
@@ -176,8 +150,6 @@ pub enum Rejection {
     TooMany(&'static str),
     /// A fragment carried neither text nor an icon.
     Empty,
-    /// The plugin's protocol major version differs from the host's.
-    IncompatibleVersion { plugin_major: u32, host_major: u32 },
 }
 
 impl std::fmt::Display for Rejection {
@@ -188,44 +160,11 @@ impl std::fmt::Display for Rejection {
             Rejection::OutOfRange(field) => write!(f, "field `{field}` was out of range"),
             Rejection::TooMany(field) => write!(f, "too many {field} in one message"),
             Rejection::Empty => write!(f, "fragment carried no text and no icon"),
-            Rejection::IncompatibleVersion {
-                plugin_major,
-                host_major,
-            } => write!(
-                f,
-                "plugin speaks protocol major {plugin_major}, host speaks {host_major}"
-            ),
         }
     }
 }
 
 impl std::error::Error for Rejection {}
-
-/// A validated notification.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ValidNotice {
-    pub message: String,
-    pub style: Option<String>,
-}
-
-/// validate a notification before it crosses into host diagnostics.
-///
-/// A notification is user-facing text, so an oversized one is rejected rather
-/// than shown: the point is to inform, not to blank the screen.
-pub fn validate_notice(
-    notice: crate::plugin::protocol::Response,
-) -> Result<ValidNotice, Rejection> {
-    let crate::plugin::protocol::Response::Notify { message, style } = notice else {
-        return Err(Rejection::UnknownType);
-    };
-    if message.trim().is_empty() {
-        return Err(Rejection::Empty);
-    }
-    if message.chars().count() > MAX_NOTICE_CHARS {
-        return Err(Rejection::OutOfRange("message"));
-    }
-    Ok(ValidNotice { message, style })
-}
 
 /// A validated status response.
 #[derive(Debug, Clone, PartialEq)]
@@ -240,7 +179,8 @@ pub struct ValidStatus {
 /// Returns `Err` for anything the host must not act on. Validation is separate
 /// from parsing so a malformed line and an out-of-range value report different
 /// causes.
-pub fn parse_response(line: &str) -> Result<Response, Rejection> {
+#[cfg(test)]
+fn parse_response(line: &str) -> Result<Response, Rejection> {
     if line.len() >= super::transport::MAX_FRAME_BYTES {
         return Err(Rejection::OutOfRange("frame_bytes"));
     }
@@ -260,10 +200,7 @@ pub fn validate_status(response: Response) -> Result<ValidStatus, Rejection> {
         request_id,
         refresh_ms,
         fragments,
-    } = response
-    else {
-        return Err(Rejection::UnknownType);
-    };
+    } = response;
 
     if let Some(interval) = refresh_ms {
         if interval > MAX_REFRESH_INTERVAL_MS {
@@ -304,11 +241,6 @@ pub fn validate_status(response: Response) -> Result<ValidStatus, Rejection> {
     })
 }
 
-/// Whether a plugin's protocol version can be spoken by this host.
-pub fn version_is_compatible(plugin_major: u32, _plugin_minor: u32) -> bool {
-    plugin_major == PROTOCOL_MAJOR
-}
-
 /// Build the `scope` string for a slot request.
 pub fn scope_name(scope: &crate::slots::Scope) -> String {
     use crate::slots::Scope::*;
@@ -337,7 +269,7 @@ mod tests {
             Err(Rejection::OutOfRange("frame_bytes"))
         );
         let deep = format!(
-            "{{\"type\":\"error\",\"message\":\"x\",\"extra\":{}0{}}}",
+            "{{\"type\":\"status\",\"request_id\":1,\"fragments\":[],\"extra\":{}0{}}}",
             "[".repeat(crate::plugin::transport::MAX_JSON_DEPTH),
             "]".repeat(crate::plugin::transport::MAX_JSON_DEPTH),
         );
@@ -345,15 +277,15 @@ mod tests {
             parse_response(&deep),
             Err(Rejection::OutOfRange("json_depth"))
         );
-        let quoted = serde_json::json!({"type":"error","message":"[".repeat(256)}).to_string();
+        let quoted = serde_json::json!({"type":"status","request_id":1,"fragments":[{"text":"[".repeat(256)}]}).to_string();
         assert!(matches!(
             parse_response(&quoted),
-            Ok(Response::Error { .. })
+            Ok(Response::Status { .. })
         ));
     }
 
     #[test]
-    fn meter_bounds_are_validated_and_legacy_fragments_remain_valid() {
+    fn meter_bounds_are_validated_and_text_payloads_remain_valid() {
         for value in [0.0, 0.5, 1.0] {
             let response = super::parse_response(&serde_json::json!({"type":"status","request_id":1,"fragments":[{"text":"CPU","meter":value}]}).to_string());
             assert!(response.is_ok());
@@ -403,12 +335,8 @@ mod tests {
         let line = r#"{"type":"definitely_not_a_thing","request_id":1}"#;
         assert_eq!(parse_response(line).unwrap_err(), Rejection::Malformed);
 
-        // A well-formed message that is not a status response.
         let line = r#"{"type":"hello","major":1,"minor":0}"#;
-        assert_eq!(
-            validate_status(parse_response(line).unwrap()).unwrap_err(),
-            Rejection::UnknownType
-        );
+        assert_eq!(parse_response(line).unwrap_err(), Rejection::Malformed);
     }
 
     #[test]
@@ -507,64 +435,10 @@ mod tests {
     }
 
     #[test]
-    fn a_well_formed_notification_validates() {
-        let line = r#"{"type":"notify","message":"deploy finished","style":"success"}"#;
-        let valid = validate_notice(parse_response(line).unwrap()).unwrap();
-        assert_eq!(valid.message, "deploy finished");
-        assert_eq!(valid.style.as_deref(), Some("success"));
-    }
-
-    #[test]
-    fn an_empty_or_absurd_notification_is_rejected() {
-        assert_eq!(
-            validate_notice(parse_response(r#"{"type":"notify","message":"  "}"#).unwrap())
-                .unwrap_err(),
-            Rejection::Empty
-        );
-        let long = "x".repeat(MAX_NOTICE_CHARS + 1);
-        let line = format!(r#"{{"type":"notify","message":"{long}"}}"#);
-        assert_eq!(
-            validate_notice(parse_response(&line).unwrap()).unwrap_err(),
-            Rejection::OutOfRange("message")
-        );
-    }
-
-    #[test]
-    fn a_status_response_is_not_a_notification() {
-        let line = r#"{"type":"status","request_id":1,"fragments":[]}"#;
-        assert_eq!(
-            validate_notice(parse_response(line).unwrap()).unwrap_err(),
-            Rejection::UnknownType
-        );
-    }
-
-    #[test]
     fn an_empty_fragment_list_is_valid() {
         let line = r#"{"type":"status","request_id":1,"fragments":[]}"#;
         let valid = validate_status(parse_response(line).unwrap()).unwrap();
         assert!(valid.fragments.is_empty());
-    }
-
-    #[test]
-    fn version_compatibility_is_exact_on_the_major_component() {
-        assert!(version_is_compatible(PROTOCOL_MAJOR, 0));
-        assert!(version_is_compatible(PROTOCOL_MAJOR, 99));
-        assert!(!version_is_compatible(PROTOCOL_MAJOR + 1, 0));
-        assert!(!version_is_compatible(0, 0));
-    }
-
-    #[test]
-    fn a_hello_from_an_incompatible_plugin_is_refused() {
-        let line = format!(
-            r#"{{"type":"hello","major":{},"minor":0}}"#,
-            PROTOCOL_MAJOR + 1
-        );
-        match parse_response(&line).unwrap() {
-            Response::Hello { major, minor } => {
-                assert!(!version_is_compatible(major, minor));
-            }
-            other => panic!("expected hello, got {other:?}"),
-        }
     }
 
     #[test]
@@ -584,21 +458,10 @@ mod tests {
 
     #[test]
     fn requests_round_trip_through_json() {
-        let request = Request::Status {
-            request_id: 3,
-            scope: "pane_header:1".into(),
-            context: Context {
-                active_workspace: 0,
-                workspace_count: 1,
-                terminals: vec![TerminalInfo {
-                    pane: 1,
-                    workspace: 0,
-                    cwd: Some("/tmp".into()),
-                    title: None,
-                    running: true,
-                }],
-                focused_pane: Some(1),
-            },
+        let request = Request::Event {
+            event: EventKind::WorkingDirectoryChanged,
+            pane: 1,
+            detail: Some("/fixture".into()),
         };
         let encoded = serde_json::to_string(&request).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), request);
