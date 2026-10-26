@@ -41,6 +41,19 @@ jobs:
           # failure-evidence upload below take the root from here.
           echo "AMONG_CHECK_ROOT=$RUNNER_TEMP/among-checks" >> "$GITHUB_ENV"
           mkdir -m 700 "$RUNNER_TEMP/among-checks"
+      - name: Capture native plugin profile before destructive Snap build changes the checkout
+        run: |
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+          CARGO_BUILD_JOBS=1 cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
+          source_sha="$(git -c "safe.directory=$(pwd -P)" rev-parse HEAD)"
+          case "$source_sha" in ''|*[!0-9a-f]*) echo 'invalid host source SHA' >&2; exit 1 ;; esac
+          test "${#source_sha}" -eq 40
+          AMONG_CHECK_SOURCE_SHA="$source_sha" CARGO_BUILD_JOBS=1 cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
+          tool=tools/among-tools/target/release/among-tools
+          "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" package-plugin-profile
+          "$tool" check-package-plugin-profile package-plugin-profile "$GITHUB_SHA"
       - name: Build actual native core24 recipe
         id: build
         env:
@@ -70,13 +83,6 @@ jobs:
           rustup override set 1.98.1
           cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
           CARGO_BUILD_JOBS=1 cargo build --locked --release --example check-clipboard
-          source_sha="$(git -c "safe.directory=$(pwd -P)" rev-parse HEAD)"
-          case "$source_sha" in ''|*[!0-9a-f]*) echo 'invalid host source SHA' >&2; exit 1 ;; esac
-          test "${#source_sha}" -eq 40
-          AMONG_CHECK_SOURCE_SHA="$source_sha" CARGO_BUILD_JOBS=1 cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
-          tool=tools/among-tools/target/release/among-tools
-          "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" package-plugin-profile
-          "$tool" check-package-plugin-profile package-plugin-profile "$GITHUB_SHA"
       - name: Installed host workflow and terminal controls
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-snap-runtime --github-hosted

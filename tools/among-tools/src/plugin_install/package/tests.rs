@@ -96,7 +96,10 @@ fn transfer_refuses_modified_missing_duplicate_unrecorded_and_link_inputs() -> R
             "missing" => fs::remove_file(&settings)?,
             "duplicate" => {
                 let duplicate = record["files"][0].clone();
-                record["files"].as_array_mut().unwrap().push(duplicate);
+                record["files"]
+                    .as_array_mut()
+                    .ok_or("fixture transfer files absent")?
+                    .push(duplicate);
                 fixture.save(&record)?;
             }
             "unrecorded" => fs::write(fixture.0.join("unexpected-input"), b"extra")?,
