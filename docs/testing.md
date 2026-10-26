@@ -73,6 +73,32 @@ application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
 
+## Published-plugin native checks
+
+`managed-transport.yml` runs on native amd64 and arm64 runners. Production clock,
+system-status and pane-pwd executables come from the public plugin prerelease
+`v0.1.0-rc.1`, Release `424255611`; they are not compiled by the host check. The
+catalogue snapshot `86f784e6a0eb794cf070edb676207b7964b8317c` is deliberately distinct
+from binary/source revision `aa1ec272d4ed6326338f3de0e5fbf30bbe181e39`.
+
+`among-tools prepare-official-plugin-inputs <new-directory>` validates the numeric
+repository/publisher, signed annotated tag, release membership, pinned catalogue,
+native package/archive-member digests and ELF architecture. It retains downloads
+and emits `inputs.json`; these are check inputs, not installed receipts or grants.
+Only the protocol fixtures are built from the exact companion source. The
+supervised admission, stale-reply, paging, timezone, resource and keyboard controls
+remain mandatory. Transport fixture receipts remain synthetic and do not prove
+repository installation.
+
+`among-tools check-plugin-install <among-test-executable> <input-directory>` requires
+an owned X11 display and an isolated check root. It runs the exact ignored host test
+`app::plugin_tests::installation::real_published_official_packages_install_review_enable_disable_uninstall`.
+An absent test, failed download, changed source/asset, ignored/zero-test result or
+missing lifecycle assertion is a failure, never a fallback to the old standalone
+plugin installer. Native UI, explicit access/enablement and terminal continuity
+must be demonstrated by that host test before this check can pass. Preparing the
+inputs alone establishes none of those behaviours or application-RC readiness.
+
 ## Cross-repository managed transport
 
 The `managed-transport-interop` Cargo feature only compiles additional internal

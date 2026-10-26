@@ -21,7 +21,8 @@ Usage:
   among-tools check-preferences-from-cargo <cargo-test-executables.jsonl> <prebuilt-plugins-directory>
   among-tools install-prebuilt <source-root> <among-binary> <native-uninstaller>
   among-tools install <source-root> [--binary PATH | --install-deps | --uninstall]
-  among-tools check-plugin-install <source-root> <among-binary> <prebuilt-plugins> <prebuilt-plugin-installer>
+  among-tools prepare-official-plugin-inputs <new-output-directory>
+  among-tools check-plugin-install <among-test-executable> <official-plugin-inputs>
   among-tools check-sessions <among-binary>
   among-tools check-split-directory <among-binary>
   among-tools check-scroll-calibration <among-binary>
@@ -719,12 +720,13 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         [command, binary] if command == "check-sessions" => {
             among_tools::sessions::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
-        [command, root, app, built, installer] if command == "check-plugin-install" => {
+        [command, destination] if command == "prepare-official-plugin-inputs" => {
+            among_tools::plugin_install::release::prepare(Path::new(destination))?;
+        }
+        [command, executable, inputs] if command == "check-plugin-install" => {
             among_tools::plugin_install::run(
-                Path::new(root),
-                Path::new(app),
-                Path::new(built),
-                Path::new(installer),
+                Path::new(executable),
+                Path::new(inputs),
                 &among_tools::scratch::root()?,
             )?;
         }
