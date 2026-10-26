@@ -56,8 +56,8 @@ executed checks. The record explicitly says `release_acceptance: false`: this
 initial subset is not the full acceptance gate. The live-status regression now
 copies the installed example executables into a synthetic external-plugin
 directory and explicitly enables them. The session regression uses the installed
-binary to exercise consent, restored directories and divider ratios, pane moves
-and background activity, without Cargo; it does not resize panes. Private hosted execution passed these scoped
+binary to exercise consent, restored directories and divider ratios, a divider
+drag, pane moves and background activity, without Cargo. Private hosted execution passed these scoped
 GUI/focus/status/Sessions checks on all four native targets. Full package and
 release acceptance remains incomplete.
 
