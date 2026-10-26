@@ -5224,7 +5224,7 @@ mod tests {
         let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
         pump();
         let window = ctx.window.clone();
-        window.activate_action("win.preferences", None).unwrap();
+        gtk::prelude::WidgetExt::activate_action(&window, "win.preferences", None).unwrap();
         pump();
         let prefs = gtk::Window::list_toplevels()
             .into_iter()
@@ -5521,7 +5521,7 @@ mod tests {
                 pump();
                 prefs.destroy();
                 pump();
-                window.activate_action("win.preferences", None).unwrap();
+                gtk::prelude::WidgetExt::activate_action(&window, "win.preferences", None).unwrap();
                 pump();
                 let reopened = gtk::Window::list_toplevels()
                     .into_iter()

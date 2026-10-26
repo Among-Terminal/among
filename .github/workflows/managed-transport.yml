@@ -332,5 +332,6 @@ jobs:
             ${{ runner.temp }}/managed-transport-interop/release-install/**/*.txt
             ${{ runner.temp }}/managed-transport-interop/release-install/**/*.json
             ${{ runner.temp }}/managed-transport-interop/release-install/**/*.png
+            !${{ runner.temp }}/managed-transport-interop/release-install/**/.runtime-published-live-profile/**
           if-no-files-found: error
           retention-days: 5

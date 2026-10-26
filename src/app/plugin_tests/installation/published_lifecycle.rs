@@ -59,6 +59,81 @@ fn read_regular(path: &Path, maximum: u64) -> Vec<u8> {
     std::fs::read(path).unwrap()
 }
 
+fn capture_live_profile(
+    root: &Path,
+    config: &Path,
+    inputs: &Path,
+    receipts: &[crate::plugin::inventory::Receipt],
+) {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let profile = crate::test_isolation::check_root().join(".runtime-published-live-profile");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&profile)
+        .unwrap();
+    let managed = profile.join("managed");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&managed)
+        .unwrap();
+    let mut remaining = 8 * 1024 * 1024u64;
+    let mut copy = |source: &Path, target: &Path, executable: bool| {
+        let bytes = read_regular(source, remaining);
+        remaining = remaining.checked_sub(bytes.len() as u64).unwrap();
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(target.parent().unwrap())
+            .unwrap();
+        std::fs::write(target, bytes).unwrap();
+        std::fs::set_permissions(
+            target,
+            std::fs::Permissions::from_mode(if executable { 0o700 } else { 0o600 }),
+        )
+        .unwrap();
+    };
+    copy(
+        &root.join("installed.json"),
+        &managed.join("installed.json"),
+        false,
+    );
+    copy(config, &profile.join("managed-plugins.json"), false);
+    copy(
+        &inputs.join("among-plugins.json"),
+        &profile.join("among-plugins.json"),
+        false,
+    );
+    for receipt in receipts {
+        let source = receipt.package_path(root);
+        let target = receipt.package_path(&managed);
+        let manifest = crate::plugin::manifest::Manifest::parse(&read_regular(
+            &source.join("among-plugin.json"),
+            256 * 1024,
+        ))
+        .unwrap();
+        // Replay needs the executable, inspected metadata and lease/seal only,
+        // not a recursive archive/source/licence tree in screenshot artifacts.
+        for path in [
+            "among-plugin.json",
+            ".among-receipt.json",
+            ".among-lease",
+            manifest.entrypoint.as_str(),
+        ] {
+            copy(
+                &source.join(path),
+                &target.join(path),
+                path == manifest.entrypoint,
+            );
+        }
+        if let Some(crate::plugin::manifest::Icon::File(path)) = &manifest.icon {
+            copy(&source.join(path), &target.join(path), false);
+        }
+    }
+    let installed = read_regular(&managed.join("installed.json"), 256 * 1024);
+    let settings = read_regular(&profile.join("managed-plugins.json"), 256 * 1024);
+    std::fs::write(profile.join("profile.json"), serde_json::to_vec_pretty(&json!({"kind":"observed_published_installation_profile","catalogue_revision":CATALOGUE_REVISION,"source_revision":SOURCE,"architecture":match Platform::current().unwrap().architecture {Architecture::Amd64=>"amd64",Architecture::Arm64=>"arm64"},"installed_size":installed.len(),"installed_sha256":crate::plugin::inventory::checksum(&installed).unwrap(),"settings_size":settings.len(),"settings_sha256":crate::plugin::inventory::checksum(&settings).unwrap()})).unwrap()).unwrap();
+}
+
 fn inspect(preferences: &adw::PreferencesWindow) -> adw::PreferencesWindow {
     focus(preferences);
     press(&button(preferences, "Inspect repository…"));
@@ -395,6 +470,7 @@ pub(super) fn run() {
     }
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 3);
     screenshot(&ctx.window, "published-all-three-running");
+    capture_live_profile(&root, &config, &inputs_root, &receipts);
     for plugin in &catalogue.plugins {
         let version = &plugin.versions[0];
         let key = format!("github:1431055733/{}", plugin.id);

@@ -100,6 +100,17 @@ pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> 
         || output.contains("CRITICAL") || output.contains("panicked")
     { return Err(format!("published-package native installation not accepted; evidence: {}", base.display()).into()); }
     release::verify(&inputs)?;
+    let profile = base.join(".runtime-published-live-profile");
+    let metadata = storage::parse_json(&fs::read(profile.join("profile.json"))?)?;
+    if metadata["kind"] != "observed_published_installation_profile"
+        || metadata["source_revision"] != release::SOURCE
+        || metadata["catalogue_revision"] != release::CATALOGUE
+    {
+        return Err(
+            "native test did not export its observed published installation profile".into(),
+        );
+    }
+    println!("Published profile: {}", profile.display());
     println!(
         "PASS actual published-package native installation; evidence: {}",
         base.display()
