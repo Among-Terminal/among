@@ -4,7 +4,6 @@ use super::process::{Failure, Process, SendError};
 use super::transport::{MAX_POLL_FRAMES, MAX_QUEUE_FRAMES};
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
-use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -12,7 +11,6 @@ use super::inventory;
 use super::managed;
 use super::protocol::{
     self, Context, EventKind, IncomingFragment, IncomingSummary, Rejection, Request, Response,
-    PROTOCOL_MAJOR, PROTOCOL_MINOR,
 };
 use crate::slots::{Contribution, Fragment, Refresh, SlotStore, Style, Summary};
 
@@ -21,6 +19,8 @@ mod managed_runtime;
 pub use managed_runtime::Configuration;
 mod overview;
 pub use overview::Overview;
+#[cfg(test)]
+mod fixtures;
 
 /// How long a plugin has to answer before it is treated as faulted.
 ///
@@ -33,7 +33,8 @@ const MAX_RESTARTS: u32 = 3;
 // if the plugin answers every request before GTK next gets a chance to poll.
 const MAX_INFLIGHT: usize = MAX_QUEUE_FRAMES;
 
-/// A plugin's description as read from configuration.
+/// Input for explicitly constructed managed test packages, never discovery.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginSpec {
     pub name: String,
@@ -41,6 +42,11 @@ pub struct PluginSpec {
     pub command: Vec<String>,
     /// Whether the plugin starts with the application.
     pub enabled: bool,
+}
+
+struct Registration {
+    name: String,
+    enabled: bool,
 }
 
 /// Where a plugin currently stands.
@@ -62,11 +68,6 @@ pub enum PluginState {
     /// The program could not be started.
     Missing {
         reason: String,
-    },
-    /// The program started but speaks an incompatible protocol.
-    Incompatible {
-        plugin_major: u32,
-        host_major: u32,
     },
     /// The plugin stopped, hung, or was restarted after a fault.
     Faulted {
@@ -93,7 +94,7 @@ struct PluginIo {
 
 /// One plugin under management.
 struct PluginEntry {
-    spec: PluginSpec,
+    spec: Registration,
     state: PluginState,
     io: Option<PluginIo>,
     /// Requests sent and not yet answered, for timeout accounting.
@@ -202,40 +203,6 @@ impl PluginHost {
         std::mem::take(&mut self.results)
     }
 
-    /// Register plugins from configuration.
-    ///
-    /// A plugin whose file is missing is recorded as `Missing` rather than
-    /// aborting: one broken entry must not stop the application from starting.
-    pub fn register_all(&mut self, specs: Vec<PluginSpec>) {
-        for spec in specs {
-            self.register(spec);
-        }
-    }
-
-    /// Register a single plugin and start it if enabled.
-    pub fn register(&mut self, spec: PluginSpec) {
-        let name = spec.name.clone();
-        self.plugins.push(PluginEntry {
-            spec,
-            state: PluginState::Disabled,
-            io: None,
-            inflight: HashMap::new(),
-            scopes: HashMap::new(),
-            next_request_id: 1,
-            refresh: Refresh::IntervalMs(2000),
-            restart_at: None,
-            restart_attempts: 0,
-            after_stop: None,
-            managed: None,
-            settings: None,
-            runtime: None,
-            observed: None,
-            removing: false,
-            removed: false,
-        });
-        self.start_by_name(name);
-    }
-
     pub fn register_managed(&mut self, entry: inventory::Entry, local: Option<&serde_json::Value>) {
         let name = entry.key();
         if self.find(&name).is_some() {
@@ -257,23 +224,30 @@ impl PluginHost {
                         .and_then(serde_json::Value::as_str)
                         == Some(installation.as_str())
                 });
-        // never pass a managed receipt through legacy registration: its static
-        // compatibility must be checked before any executable can start.
-        self.register(PluginSpec {
-            name: name.clone(),
-            command: Vec::new(),
-            enabled: false,
-        });
-        if let Some(index) = self.find(&name) {
-            self.plugins[index].removing = removing;
-            self.plugins[index].managed = Some(entry);
-            self.plugins[index].settings = local.and_then(|local| local.get("settings")).cloned();
-            self.plugins[index].runtime = Some(managed_runtime::Runtime::new(
+        self.plugins.push(PluginEntry {
+            spec: Registration {
+                name: name.clone(),
+                enabled: desired,
+            },
+            state: PluginState::Disabled,
+            io: None,
+            inflight: HashMap::new(),
+            scopes: HashMap::new(),
+            next_request_id: 1,
+            refresh: Refresh::IntervalMs(2000),
+            restart_at: None,
+            restart_attempts: 0,
+            after_stop: None,
+            managed: Some(entry),
+            settings: local.and_then(|local| local.get("settings")).cloned(),
+            runtime: Some(managed_runtime::Runtime::new(
                 local.and_then(|local| local.get("review")).cloned(),
-            ));
-            self.plugins[index].spec.enabled = desired;
-            self.start_by_name(name);
-        }
+            )),
+            observed: None,
+            removing,
+            removed: false,
+        });
+        self.start_by_name(name);
     }
 
     pub fn reconcile_managed(
@@ -529,7 +503,17 @@ impl PluginHost {
         {
             return;
         }
-        if self.plugins[index].managed.is_some() {
+        // no raw command or filename can substitute for an inspected receipt.
+        // keep unavailable managed selections visible, but never launch a
+        // manifestless process to discover whether it might speak our protocol.
+        if self.plugins[index].managed.is_none() {
+            self.plugins[index].state = PluginState::Unavailable {
+                reason: "a validated managed installation is required before execution".into(),
+            };
+            self.plugins[index].restart_at = None;
+            return;
+        }
+        {
             if self.plugins[index]
                 .managed
                 .as_ref()
@@ -570,19 +554,6 @@ impl PluginHost {
 
         self.plugins[index].restart_at = None;
 
-        let command = self.plugins[index]
-            .managed
-            .as_ref()
-            .and_then(|entry| entry.inspected.as_ref().ok())
-            .map(|inspected| vec![inspected.executable.to_string_lossy().into_owned()])
-            .unwrap_or_else(|| self.plugins[index].spec.command.clone());
-        if command.is_empty() {
-            self.plugins[index].state = PluginState::Missing {
-                reason: "no command configured".into(),
-            };
-            return;
-        }
-
         let mut program = if let Some(entry) = &self.plugins[index].managed {
             match entry.executable_files() {
                 Ok((directory, executable)) => {
@@ -596,17 +567,13 @@ impl PluginHost {
                 }
             }
         } else {
-            let mut program = Command::new(&command[0]);
-            program.args(&command[1..]);
-            program
+            return;
         };
-        if self.plugins[index].managed.is_some() {
-            if let Err(reason) = environment::configure(&mut program) {
-                self.plugins[index].state = PluginState::Unavailable {
-                    reason: reason.into(),
-                };
-                return;
-            }
+        if let Err(reason) = environment::configure(&mut program) {
+            self.plugins[index].state = PluginState::Unavailable {
+                reason: reason.into(),
+            };
+            return;
         }
         let spawned = Process::start(program);
 
@@ -628,16 +595,7 @@ impl PluginHost {
                 self.plugins[index].state = PluginState::Starting;
                 self.plugins[index].refresh = Refresh::IntervalMs(2000);
 
-                if self.plugins[index].managed.is_some() {
-                    self.send_managed_hello(index);
-                    return;
-                }
-
-                let hello = Request::Hello {
-                    major: PROTOCOL_MAJOR,
-                    minor: PROTOCOL_MINOR,
-                };
-                self.send_to(index, &hello);
+                self.send_managed_hello(index);
             }
             Err(err) => {
                 self.plugins[index].io = None;
@@ -647,23 +605,6 @@ impl PluginHost {
                     self.plugins[index].spec.name
                 );
                 self.plugins[index].state = PluginState::Missing { reason };
-            }
-        }
-    }
-
-    fn send_to(&mut self, index: usize, request: &Request) -> bool {
-        let Some(io) = self.plugins[index].io.as_ref() else {
-            return false;
-        };
-        match io.process.send(request) {
-            Ok(()) => true,
-            Err(error) => {
-                let reason = match error {
-                    SendError::Full => "plugin stdin queue exceeds 16 frames",
-                    SendError::Fault(reason) => reason,
-                };
-                self.fault(index, reason);
-                false
             }
         }
     }
@@ -702,53 +643,12 @@ impl PluginHost {
     }
 
     /// Ask a plugin for a scope's content.
-    pub fn request_status(&mut self, name: &str, scope: &str, context: &Context) -> Option<u64> {
+    pub fn request_status(&mut self, name: &str, scope: &str) -> Option<u64> {
         let index = self.find(name)?;
         if !self.plugins[index].state.is_healthy() {
             return None;
         }
-        if self.plugins[index].managed.is_some() {
-            return self.request_managed_status(index, scope);
-        }
-        if self.plugins[index].inflight.len() >= MAX_INFLIGHT
-            || self.plugins[index]
-                .scopes
-                .values()
-                .any(|pending| pending == scope)
-        {
-            return None;
-        }
-        let io = self.plugins[index].io.as_ref()?;
-        // backpressure is not a plugin fault. check before cloning a possibly
-        // large context, and acquire request authority only after queue acceptance.
-        if !io.process.has_capacity() {
-            return None;
-        }
-        let request_id = self.plugins[index].next_request_id;
-        let next_id = request_id.checked_add(1)?;
-
-        let request = Request::Status {
-            request_id,
-            scope: scope.to_string(),
-            context: context.clone(),
-        };
-        match io.process.send(&request) {
-            Ok(()) => {
-                self.plugins[index].next_request_id = next_id;
-                self.plugins[index]
-                    .inflight
-                    .insert(request_id, Instant::now());
-                self.plugins[index]
-                    .scopes
-                    .insert(request_id, scope.to_string());
-                Some(request_id)
-            }
-            Err(SendError::Full) => None,
-            Err(SendError::Fault(reason)) => {
-                self.fault(index, reason);
-                None
-            }
-        }
+        self.request_managed_status(index, scope)
     }
 
     /// Tell every healthy plugin about a terminal event.
@@ -760,11 +660,7 @@ impl PluginHost {
         };
         for index in 0..self.plugins.len() {
             if self.plugins[index].state.is_healthy() {
-                if self.plugins[index].managed.is_some() {
-                    self.send_managed_event(index, &request);
-                    continue;
-                }
-                self.send_to(index, &request);
+                self.send_managed_event(index, &request);
             }
         }
     }
@@ -910,99 +806,7 @@ impl PluginHost {
     }
 
     fn handle_line(&mut self, index: usize, line: &str) {
-        if self.plugins[index].managed.is_some() {
-            self.handle_managed_line(index, line);
-            return;
-        }
-        let name = self.plugins[index].spec.name.clone();
-        match protocol::parse_response(line) {
-            Err(rejection) => {
-                // Malformed output is discarded; the plugin keeps running so a
-                // single bad line does not cost the user their status.
-                self.last_rejections.push((name, rejection));
-            }
-            Ok(Response::Hello { major, minor }) => {
-                self.plugins[index].observed = Some(super::manifest::Api { major, minor });
-                if protocol::version_is_compatible(major, minor) {
-                    if let Some(io) = self.plugins[index]
-                        .io
-                        .as_mut()
-                        .filter(|io| io.process.started())
-                    {
-                        io.handshake_done = true;
-                        self.plugins[index].state = PluginState::Running;
-                    }
-                } else {
-                    self.stop_as(
-                        index,
-                        PluginState::Incompatible {
-                            plugin_major: major,
-                            host_major: PROTOCOL_MAJOR,
-                        },
-                        "incompatible plugin; waiting for process exit",
-                    );
-                    let rejection = Rejection::IncompatibleVersion {
-                        plugin_major: major,
-                        host_major: PROTOCOL_MAJOR,
-                    };
-                    // Reported once, at handshake: the per-poll rejection list
-                    // is cleared on every tick, so a message kept only there
-                    // would scroll past before anyone saw it.
-                    eprintln!("among: plugin `{name}` was skipped: {rejection}");
-                    self.last_rejections.push((name, rejection));
-                }
-            }
-            Ok(response @ Response::Notify { .. }) => match protocol::validate_notice(response) {
-                Ok(notice) if self.notices.len() < MAX_POLL_FRAMES => {
-                    self.notices.push((name, notice.message, notice.style))
-                }
-                Ok(_) => self.fault(index, "plugin notification backlog exceeded"),
-                Err(rejection) => self.last_rejections.push((name, rejection)),
-            },
-            Ok(Response::Error { message }) => {
-                self.last_rejections.push((name, Rejection::Malformed));
-                let _ = message;
-            }
-            Ok(response @ Response::Status { .. }) => match protocol::validate_status(response) {
-                Ok(valid) => {
-                    if self.plugins[index]
-                        .inflight
-                        .get(&valid.request_id)
-                        .is_some_and(|sent| sent.elapsed() >= REQUEST_TIMEOUT)
-                    {
-                        self.fault(index, "plugin answered after the request deadline");
-                        return;
-                    }
-                    if !self.plugins[index].state.is_healthy()
-                        || self.plugins[index]
-                            .inflight
-                            .remove(&valid.request_id)
-                            .is_none()
-                    {
-                        return;
-                    }
-                    let Some(scope) = self.plugins[index].scopes.remove(&valid.request_id) else {
-                        return;
-                    };
-                    if self.results.len() >= MAX_POLL_FRAMES {
-                        self.fault(index, "plugin result backlog exceeded");
-                        return;
-                    }
-                    if let Some(interval) = valid.refresh_ms {
-                        self.plugins[index].refresh = Refresh::IntervalMs(interval);
-                    } else {
-                        self.plugins[index].refresh = Refresh::OnEvent;
-                    }
-                    self.results.push(PluginResult {
-                        plugin: name,
-                        scope,
-                        fragments: valid.fragments,
-                        refresh: self.plugins[index].refresh,
-                    });
-                }
-                Err(rejection) => self.last_rejections.push((name, rejection)),
-            },
-        }
+        self.handle_managed_line(index, line);
     }
 
     /// Names of plugins currently in a faulted or incompatible state.
@@ -1109,6 +913,7 @@ pub fn parse_style(name: Option<&str>) -> Style {
 mod tests {
     use super::*;
     use crate::slots::Scope;
+    const KEY: &str = "github:12/probe";
 
     /// Command line of the `fake-plugin` example in the given behaviour.
     ///
@@ -1159,7 +964,7 @@ mod tests {
 
     fn spec(command: Vec<String>) -> PluginSpec {
         PluginSpec {
-            name: "probe".into(),
+            name: KEY.into(),
             command,
             enabled: true,
         }
@@ -1168,18 +973,18 @@ mod tests {
     #[test]
     fn a_missing_program_is_reported_without_aborting() {
         let mut host = PluginHost::new();
-        host.register(PluginSpec {
-            name: "ghost".into(),
+        host.register_fixture(PluginSpec {
+            name: "github:12/ghost".into(),
             command: vec!["/nonexistent/binary".into()],
             enabled: true,
         });
         assert!(wait_for(&mut host, |host| matches!(
             host.listing()[0].1,
-            PluginState::Missing { .. }
+            PluginState::Unavailable { .. }
         )));
         let (_, state) = host.listing().remove(0);
         assert!(
-            matches!(state, PluginState::Missing { .. }),
+            matches!(state, PluginState::Unavailable { .. }),
             "got {state:?}"
         );
         assert!(!state.is_healthy());
@@ -1188,8 +993,8 @@ mod tests {
     #[test]
     fn a_disabled_plugin_is_not_started() {
         let mut host = PluginHost::new();
-        host.register(PluginSpec {
-            name: "off".into(),
+        host.register_fixture(PluginSpec {
+            name: "github:12/off".into(),
             command: echo_plugin(),
             enabled: false,
         });
@@ -1197,31 +1002,28 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_command_is_reported_as_missing() {
+    fn a_managed_receipt_with_no_entrypoint_is_unavailable_without_execution() {
         let mut host = PluginHost::new();
-        host.register(PluginSpec {
-            name: "empty".into(),
+        host.register_fixture(PluginSpec {
+            name: "github:12/empty".into(),
             command: Vec::new(),
             enabled: true,
         });
-        assert!(matches!(host.listing()[0].1, PluginState::Missing { .. }));
+        assert!(matches!(
+            host.listing()[0].1,
+            PluginState::Unavailable { .. }
+        ));
+        assert_eq!(host.supervised_count(), 0);
     }
 
     #[test]
     fn a_well_behaved_plugin_answers_a_status_request() {
         let mut host = PluginHost::new();
-        host.register(spec(echo_plugin()));
+        host.register_fixture(spec(echo_plugin()));
         let healthy = wait_for(&mut host, |h| h.listing()[0].1.is_healthy());
         assert!(healthy, "plugin never became healthy");
 
-        let context = Context {
-            active_workspace: 0,
-            workspace_count: 1,
-            ..Default::default()
-        };
-        assert!(host
-            .request_status("probe", "app_header", &context)
-            .is_some());
+        assert!(host.request_status(KEY, "app_header").is_some());
 
         assert!(wait_for(&mut host, |host| !host.results.is_empty()));
         let result = host.drain_results();
@@ -1237,22 +1039,21 @@ mod tests {
     #[test]
     fn a_crash_is_contained_and_recorded_as_a_fault() {
         let mut host = PluginHost::new();
-        host.register(spec(crashing_plugin()));
+        host.register_fixture(spec(crashing_plugin()));
         let faulted = wait_for(&mut host, |h| {
             matches!(h.listing()[0].1, PluginState::Faulted { .. })
         });
         assert!(faulted, "a crashing plugin was still reported healthy");
-        assert!(host.faulted_sources().contains(&"probe".to_string()));
+        assert!(host.faulted_sources().contains(&KEY.to_string()));
     }
 
     #[test]
     fn a_hanging_plugin_is_faulted_rather_than_blocking() {
         let mut host = PluginHost::new();
-        host.register(spec(hanging_plugin()));
+        host.register_fixture(spec(hanging_plugin()));
         assert!(wait_for(&mut host, |h| h.listing()[0].1.is_healthy()));
 
-        let context = Context::default();
-        host.request_status("probe", "app_header", &context);
+        host.request_status(KEY, "app_header");
 
         // poll() must return promptly rather than waiting out the full timeout
         // inline, otherwise the interface would freeze.
@@ -1268,7 +1069,7 @@ mod tests {
     #[test]
     fn oversized_unterminated_stdout_is_contained_before_parsing() {
         let mut host = PluginHost::new();
-        host.register(spec(fake_plugin("unterminated")));
+        host.register_fixture(spec(fake_plugin("unterminated")));
         assert!(wait_for(&mut host, |host| matches!(
             &host.listing()[0].1,
             PluginState::Faulted { reason } if reason.contains("64 KiB")
@@ -1279,9 +1080,9 @@ mod tests {
     #[test]
     fn a_stdout_flood_does_not_starve_a_second_plugin() {
         let mut host = PluginHost::new();
-        host.register(spec(fake_plugin("flood")));
-        host.register(PluginSpec {
-            name: "healthy".into(),
+        host.register_fixture(spec(fake_plugin("flood")));
+        host.register_fixture(PluginSpec {
+            name: "github:12/healthy".into(),
             command: echo_plugin(),
             enabled: true,
         });
@@ -1290,34 +1091,34 @@ mod tests {
             PluginState::Faulted { reason } if reason.contains("queue")
         )));
         assert!(host
-            .request_status("healthy", "app_header", &Context::default())
+            .request_status("github:12/healthy", "app_header")
             .is_some());
         assert!(wait_for(&mut host, |host| host
             .results
             .iter()
-            .any(|result| result.plugin == "healthy")));
+            .any(|result| result.plugin == "github:12/healthy")));
         assert!(host.drain_notices().len() <= MAX_QUEUE_FRAMES);
     }
 
     #[test]
     fn disabling_stops_the_process_and_withdraws_it() {
         let mut host = PluginHost::new();
-        host.register(spec(echo_plugin()));
+        host.register_fixture(spec(echo_plugin()));
         wait_for(&mut host, |h| h.listing()[0].1.is_healthy());
-        host.disable("probe");
+        host.disable(KEY);
         assert!(matches!(host.listing()[0].1, PluginState::Stopping { .. }));
         assert!(wait_for(&mut host, |host| host.listing()[0].1
             == PluginState::Disabled));
         assert_eq!(host.listing()[0].1, PluginState::Disabled);
-        assert!(host.faulted_sources().contains(&"probe".to_string()));
+        assert!(host.faulted_sources().contains(&KEY.to_string()));
     }
 
     #[test]
     fn enabling_a_stopped_plugin_starts_it_again() {
         let mut host = PluginHost::new();
-        host.register(spec(echo_plugin()));
-        host.disable("probe");
-        host.enable("probe");
+        host.register_fixture(spec(echo_plugin()));
+        host.disable(KEY);
+        host.enable(KEY);
         let healthy = wait_for(&mut host, |h| h.listing()[0].1.is_healthy());
         assert!(healthy);
     }
@@ -1325,13 +1126,13 @@ mod tests {
     #[test]
     fn rapid_toggles_wait_for_the_previous_generation_to_be_reaped() {
         let mut host = PluginHost::new();
-        host.register(spec(fake_plugin("stubborn")));
+        host.register_fixture(spec(fake_plugin("stubborn")));
         assert!(wait_for(&mut host, |host| host.listing()[0].1.is_healthy()));
         let old_pid = host.plugins[0].io.as_ref().unwrap().process.pid();
         let started = Instant::now();
         for _ in 0..100 {
-            host.disable("probe");
-            host.enable("probe");
+            host.disable(KEY);
+            host.enable(KEY);
             assert_eq!(host.plugins[0].io.as_ref().unwrap().process.pid(), old_pid);
         }
         assert!(started.elapsed() < Duration::from_millis(500));
@@ -1344,7 +1145,7 @@ mod tests {
     #[test]
     fn automatic_restarts_are_finite_and_an_explicit_off_on_resets_them() {
         let mut host = PluginHost::new();
-        host.register(spec(crashing_plugin()));
+        host.register_fixture(spec(crashing_plugin()));
         for attempt in 0..=MAX_RESTARTS {
             assert!(wait_for(&mut host, |host| host.plugins[0].io.is_none()));
             assert_eq!(host.plugins[0].restart_attempts, attempt);
@@ -1362,8 +1163,8 @@ mod tests {
             host.poll();
         }
         assert!(host.plugins[0].io.is_none());
-        host.disable("probe");
-        host.enable("probe");
+        host.disable(KEY);
+        host.enable(KEY);
         assert_eq!(host.plugins[0].restart_attempts, 0);
         assert!(host.plugins[0].io.is_some());
         host.shutdown();
@@ -1372,31 +1173,26 @@ mod tests {
     #[test]
     fn outstanding_requests_are_bounded_and_same_scope_is_coalesced() {
         let mut host = PluginHost::new();
-        host.register(spec(hanging_plugin()));
+        host.register_fixture(spec(hanging_plugin()));
         assert!(wait_for(&mut host, |host| host.listing()[0].1.is_healthy()));
-        for index in 0..MAX_INFLIGHT {
+        // managed transport reserves one frame for its enumeration exchange.
+        for index in 1..MAX_INFLIGHT {
             let scope = format!("pane_header:{index}");
-            assert!(host
-                .request_status("probe", &scope, &Context::default())
-                .is_some());
+            assert!(host.request_status(KEY, &scope).is_some());
             for _ in 0..100 {
-                assert!(host
-                    .request_status("probe", &scope, &Context::default())
-                    .is_none());
+                assert!(host.request_status(KEY, &scope).is_none());
             }
         }
-        assert!(host
-            .request_status("probe", "app_header", &Context::default())
-            .is_none());
-        assert_eq!(host.plugins[0].inflight.len(), MAX_INFLIGHT);
-        assert_eq!(host.plugins[0].scopes.len(), MAX_INFLIGHT);
+        assert!(host.request_status(KEY, "app_header").is_none());
+        assert_eq!(host.plugins[0].inflight.len(), MAX_INFLIGHT - 1);
+        assert_eq!(host.plugins[0].scopes.len(), MAX_INFLIGHT - 1);
         host.shutdown();
     }
 
     #[test]
     fn ordinary_eight_pane_collection_bursts_defer_without_faulting() {
         let mut host = PluginHost::new();
-        host.register(spec(fake_plugin("delayed")));
+        host.register_fixture(spec(fake_plugin("delayed")));
         assert!(wait_for(&mut host, |host| host.plugins[0]
             .state
             .is_healthy()));
@@ -1420,11 +1216,7 @@ mod tests {
             }
             // no sleeps or polling between requests in this real GUI-sized burst.
             for scope in &scopes {
-                if !requested.contains(scope)
-                    && host
-                        .request_status("probe", scope, &Context::default())
-                        .is_some()
-                {
+                if !requested.contains(scope) && host.request_status(KEY, scope).is_some() {
                     requested.insert(scope.clone());
                 }
             }
@@ -1448,7 +1240,7 @@ mod tests {
     #[test]
     fn a_full_input_queue_creates_no_status_request_authority_or_fault() {
         let mut host = PluginHost::new();
-        host.register(spec(fake_plugin("never-read")));
+        host.register_fixture(spec(fake_plugin("never-read")));
         assert!(wait_for(&mut host, |host| host.plugins[0]
             .state
             .is_healthy()));
@@ -1470,9 +1262,7 @@ mod tests {
         }
         assert!(full);
         let next_id = host.plugins[0].next_request_id;
-        assert!(host
-            .request_status("probe", "app_header", &Context::default())
-            .is_none());
+        assert!(host.request_status(KEY, "app_header").is_none());
         assert_eq!(host.plugins[0].next_request_id, next_id);
         assert!(host.plugins[0].inflight.is_empty());
         assert!(host.plugins[0].scopes.is_empty());
@@ -1485,7 +1275,7 @@ mod tests {
     fn a_closed_application_gate_preserves_desired_state_until_starts_are_safe() {
         let gate = Rc::new(Cell::new(false));
         let mut host = PluginHost::with_start_gate(gate.clone());
-        host.register(spec(echo_plugin()));
+        host.register_fixture(spec(echo_plugin()));
         for _ in 0..20 {
             host.poll();
         }
@@ -1505,8 +1295,8 @@ mod tests {
     fn process_capacity_includes_generations_still_stopping() {
         let mut host = PluginHost::new();
         for index in 0..MAX_PROCESSES {
-            host.register(PluginSpec {
-                name: format!("p{index}"),
+            host.register_fixture(PluginSpec {
+                name: format!("github:12/p{index}"),
                 command: hanging_plugin(),
                 enabled: true,
             });
@@ -1515,9 +1305,9 @@ mod tests {
             .plugins
             .iter()
             .all(|plugin| plugin.state.is_healthy())));
-        host.disable("p0");
-        host.register(PluginSpec {
-            name: "excess".into(),
+        host.disable("github:12/p0");
+        host.register_fixture(PluginSpec {
+            name: "github:12/excess".into(),
             command: echo_plugin(),
             enabled: true,
         });
@@ -1543,11 +1333,11 @@ mod tests {
     #[test]
     fn request_expiry_clears_authority_before_late_output() {
         let mut host = PluginHost::new();
-        host.register(spec(hanging_plugin()));
+        host.register_fixture(spec(hanging_plugin()));
         assert!(wait_for(&mut host, |host| host.listing()[0].1.is_healthy()));
-        let request_id = host
-            .request_status("probe", "app_header", &Context::default())
-            .unwrap();
+        let request_id = host.request_status(KEY, "app_header").unwrap();
+        let reply = serde_json::json!({"type":"status","session":host.world.session,"generation":host.plugins[0].io.as_ref().unwrap().generation,"request_id":request_id,"fragments":[{"text":"late"}]}).to_string();
+        assert!(managed::parse_response(&reply).is_ok());
         host.plugins[0].inflight.insert(
             request_id,
             Instant::now() - REQUEST_TIMEOUT - Duration::from_millis(1),
@@ -1555,12 +1345,7 @@ mod tests {
         host.poll();
         assert!(host.plugins[0].inflight.is_empty());
         assert!(host.plugins[0].scopes.is_empty());
-        host.handle_line(
-            0,
-            &format!(
-                r#"{{"type":"status","request_id":{request_id},"fragments":[{{"text":"late"}}]}}"#
-            ),
-        );
+        host.handle_line(0, &reply);
         assert!(host.results.is_empty());
         host.shutdown();
     }
@@ -1568,11 +1353,9 @@ mod tests {
     #[test]
     fn an_already_queued_answer_cannot_bypass_the_request_deadline() {
         let mut host = PluginHost::new();
-        host.register(spec(echo_plugin()));
+        host.register_fixture(spec(echo_plugin()));
         assert!(wait_for(&mut host, |host| host.listing()[0].1.is_healthy()));
-        let id = host
-            .request_status("probe", "app_header", &Context::default())
-            .unwrap();
+        let id = host.request_status(KEY, "app_header").unwrap();
         let io = host.plugins[0].io.as_ref().unwrap();
         let reply = io
             .process
@@ -1592,15 +1375,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_commands_never_enter_the_automatic_restart_loop() {
+    fn unavailable_managed_entrypoints_never_enter_the_automatic_restart_loop() {
         let mut host = PluginHost::new();
-        host.register(spec(Vec::new()));
-        host.disable("probe");
-        host.enable("probe");
+        host.register_fixture(spec(Vec::new()));
+        host.disable(KEY);
+        host.enable(KEY);
         for _ in 0..100 {
             host.poll();
         }
-        assert!(matches!(host.plugins[0].state, PluginState::Missing { .. }));
+        assert!(matches!(
+            host.plugins[0].state,
+            PluginState::Unavailable { .. }
+        ));
         assert_eq!(host.plugins[0].restart_attempts, 0);
         assert!(host.plugins[0].restart_at.is_none());
     }
@@ -1608,35 +1394,38 @@ mod tests {
     #[test]
     fn unsolicited_duplicate_and_previous_generation_replies_do_not_render() {
         let mut host = PluginHost::new();
-        host.register(spec(fake_plugin("unmatched")));
+        host.register_fixture(spec(fake_plugin("unmatched")));
         assert!(wait_for(&mut host, |host| host.listing()[0].1.is_healthy()));
         for _ in 0..5 {
             host.poll();
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(host.drain_results().is_empty());
-        let old_id = host
-            .request_status("probe", "app_header", &Context::default())
-            .unwrap();
+        let old_id = host.request_status(KEY, "app_header").unwrap();
+        let old_reply = serde_json::json!({"type":"status","session":host.world.session,"generation":host.plugins[0].io.as_ref().unwrap().generation,"request_id":old_id,"fragments":[{"text":"stale"}]}).to_string();
+        assert!(managed::parse_response(&old_reply).is_ok());
         assert!(wait_for(&mut host, |host| !host.results.is_empty()));
-        host.disable("probe");
+        host.disable(KEY);
         assert!(
             host.drain_results().is_empty(),
             "disabled generation retained a result"
         );
-        host.plugins[0].spec.command = fake_plugin("duplicate");
-        host.enable("probe");
-        assert!(wait_for(&mut host, |host| host.listing()[0].1.is_healthy()));
-        let new_id = host
-            .request_status("probe", "app_header", &Context::default())
+        let package = host.plugins[0]
+            .managed
+            .as_ref()
+            .unwrap()
+            .inspected
+            .as_ref()
+            .unwrap()
+            .executable
+            .parent()
             .unwrap();
+        std::fs::write(package.join("among-fake-mode"), "transport-duplicate").unwrap();
+        host.enable(KEY);
+        assert!(wait_for(&mut host, |host| host.listing()[0].1.is_healthy()));
+        let new_id = host.request_status(KEY, "app_header").unwrap();
         assert!(new_id > old_id);
-        host.handle_line(
-            0,
-            &format!(
-                r#"{{"type":"status","request_id":{old_id},"fragments":[{{"text":"stale"}}]}}"#
-            ),
-        );
+        host.handle_line(0, &old_reply);
         assert!(wait_for(&mut host, |host| !host.results.is_empty()));
         for _ in 0..5 {
             host.poll();
@@ -1653,7 +1442,7 @@ mod tests {
     fn malformed_output_is_rejected_without_killing_the_plugin() {
         let mut host = PluginHost::new();
         // The plugin stays alive after the bad line, so it is the only fault.
-        host.register(spec(fake_plugin("malformed")));
+        host.register_fixture(spec(fake_plugin("malformed")));
         // a preliminary health poll can consume the bad line; the next poll
         // clears that batch's rejections, so observe them in this loop only.
         for _ in 0..40 {
@@ -1665,23 +1454,21 @@ mod tests {
         }
         assert_eq!(
             host.rejections(),
-            &[("probe".into(), Rejection::Malformed)],
+            &[(KEY.into(), Rejection::Malformed)],
             "malformed line was not rejected"
         );
         // The plugin survives its own bad output.
         assert!(host.listing()[0].1.is_healthy());
 
         // a running state alone cannot prove that the child still responds.
-        assert!(host
-            .request_status("probe", "app_header", &Context::default())
-            .is_some());
+        assert!(host.request_status(KEY, "app_header").is_some());
         assert!(
             wait_for(&mut host, |h| !h.results.is_empty()),
             "plugin did not answer after its malformed output"
         );
         let results = host.drain_results();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].plugin, "probe");
+        assert_eq!(results[0].plugin, KEY);
         assert_eq!(results[0].scope, "app_header");
         assert_eq!(results[0].fragments.len(), 1);
         assert_eq!(results[0].fragments[0].text.as_deref(), Some("ok"));

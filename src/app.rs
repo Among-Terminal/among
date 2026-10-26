@@ -14,7 +14,9 @@ use adw::prelude::*;
 use vte::prelude::*;
 
 use crate::pane::{Pane, PaneSignals};
-use crate::plugin::host::{PluginHost, PluginSpec};
+use crate::plugin::host::PluginHost;
+#[cfg(test)]
+use crate::plugin::host::PluginSpec;
 use crate::plugin::{Context, EventKind, TerminalInfo};
 use crate::prefs;
 use crate::shortcuts::{self, Action, Bindings, Cycle, Direction, RESIZE_STEP};
@@ -205,107 +207,9 @@ fn slot_area(class: &str) -> gtk::Box {
     box_
 }
 
-/// Discover configured plugins. Any failure yields no plugins, never a crash.
-fn load_plugin_specs() -> Vec<PluginSpec> {
-    let mut specs = plugin_config_path()
-        .map(|path| read_plugin_config(&path))
-        .unwrap_or_default();
-    for name in installed_plugins() {
-        if legacy_plugin_name(&name) && !specs.iter().any(|spec| spec.name == name) {
-            if let Some(directory) = plugin_dir() {
-                specs.push(PluginSpec {
-                    command: vec![directory.join(&name).display().to_string()],
-                    name,
-                    enabled: false,
-                });
-            }
-        }
-    }
-    specs
-}
-
-fn legacy_plugin_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 255
-        && name != "."
-        && name != ".."
-        && !name.contains('/')
-        && !name.chars().any(char::is_control)
-}
-
+#[cfg(test)]
 fn plugin_config_path() -> Option<std::path::PathBuf> {
     crate::settings::directory().map(|directory| directory.join("plugins.json"))
-}
-
-fn plugin_dir() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))
-        })?;
-    Some(base.join("among").join("plugins"))
-}
-
-/// Parse the plugin configuration file.
-///
-/// Each failure path returns an empty list or skips one entry, because a single
-/// bad plugin must never stop the application from starting.
-pub fn read_plugin_config(path: &std::path::Path) -> Vec<PluginSpec> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Vec::new();
-    };
-    let Some(entries) = value.get("plugins").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-
-    let mut seen = std::collections::BTreeSet::new();
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let name = entry.get("name")?.as_str()?.to_string();
-            // missing files remain inventory entries; a filename still cannot
-            // escape the legacy directory or impersonate a managed identity.
-            if !legacy_plugin_name(&name) || !seen.insert(name.clone()) {
-                return None;
-            }
-            let enabled = entry
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let command = plugin_dir()
-                .map(|directory| vec![directory.join(&name).display().to_string()])
-                .unwrap_or_default();
-            Some(PluginSpec {
-                name,
-                command,
-                enabled,
-            })
-        })
-        .collect()
-}
-
-/// Names of executables present in the user's plugin directory.
-fn installed_plugins() -> Vec<String> {
-    let Some(dir) = plugin_dir() else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            if !path.is_file() {
-                return None;
-            }
-            path.file_name()?.to_str().map(str::to_string)
-        })
-        .collect();
-    names.sort();
-    names
 }
 
 /// The terminal list handed to plugins on every request.
@@ -525,7 +429,6 @@ fn build_with_writer(
     admission.current.replace(Rc::downgrade(&state));
     {
         let mut state = state.borrow_mut();
-        state.settings.load(crate::settings::Document::Plugins);
         state.sidebar_width = state
             .settings
             .load(crate::settings::Document::Window)
@@ -575,8 +478,9 @@ fn build_with_writer(
     }
     apply_env_rebindings(&mut state.borrow_mut().bindings);
 
-    let specs = load_plugin_specs();
-    state.borrow_mut().plugins.register_all(specs);
+    // only validated managed receipts supply plugin identities. historical
+    // filename-based configuration and executables are unrelated user data:
+    // neither inspect them as executable inventory nor rewrite/remove them.
     if let Some(root) = crate::plugin::inventory::root() {
         match crate::plugin::inventory::read(&root) {
             Ok(entries) => {
@@ -4439,7 +4343,6 @@ fn request_plugin_status(ctx: &Window) {
     let now = slots::now_ms();
     let mut state = ctx.state.borrow_mut();
     update_plugin_context(&mut state);
-    let context = plugin_context(&state);
     let healthy = state.plugins.healthy();
 
     let mut scopes = vec![
@@ -4468,10 +4371,7 @@ fn request_plugin_status(ctx: &Window) {
                 let scope_name = crate::plugin::protocol::scope_name(&scope);
                 for name in &healthy {
                     if state.store.needs_collection(scope, name, now)
-                        && state
-                            .plugins
-                            .request_status(name, &scope_name, &context)
-                            .is_some()
+                        && state.plugins.request_status(name, &scope_name).is_some()
                     {
                         state.store.mark_collected(scope, name, now);
                     }
@@ -4486,12 +4386,7 @@ fn request_plugin_status(ctx: &Window) {
                         .borrow()
                         .get(&key)
                         .is_none_or(|last| now.saturating_sub(*last) >= SUMMARY_REFRESH_MS);
-                    if due
-                        && state
-                            .plugins
-                            .request_status(name, &scope_name, &context)
-                            .is_some()
-                    {
+                    if due && state.plugins.request_status(name, &scope_name).is_some() {
                         ctx.summary_requested.borrow_mut().insert(key, now);
                     }
                 }
@@ -5913,74 +5808,6 @@ mod tests {
         window.destroy();
         app.quit();
     }
-    use std::io::Write;
-
-    fn write_config(body: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join("opencode")
-            .join(format!("among-test-config-{}", glib::uuid_string_random()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("plugins.json");
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.write_all(body.as_bytes()).unwrap();
-        path
-    }
-
-    #[test]
-    fn a_missing_config_yields_no_plugins() {
-        let path = std::env::temp_dir().join("among-does-not-exist/plugins.json");
-        assert!(read_plugin_config(&path).is_empty());
-    }
-
-    #[test]
-    fn unparsable_config_still_yields_no_plugins() {
-        let path = write_config("{ this is not json");
-        assert!(read_plugin_config(&path).is_empty());
-    }
-
-    #[test]
-    fn config_without_a_plugins_key_is_ignored() {
-        let path = write_config(r#"{"other": true}"#);
-        assert!(read_plugin_config(&path).is_empty());
-    }
-
-    #[test]
-    fn a_plugin_that_is_not_installed_retains_its_configured_identity_and_choice() {
-        let path =
-            write_config(r#"{"plugins":[{"name":"definitely-not-installed","enabled":true}]}"#);
-        let before = std::fs::read(&path).unwrap();
-        let specs = read_plugin_config(&path);
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "definitely-not-installed");
-        assert!(specs[0].enabled);
-        assert_eq!(before, std::fs::read(&path).unwrap());
-    }
-
-    #[test]
-    fn entries_without_a_name_are_skipped() {
-        let path = write_config(r#"{"plugins":[{"enabled":true},{"name":42}]}"#);
-        assert!(read_plugin_config(&path).is_empty());
-    }
-
-    #[test]
-    fn a_disabled_entry_is_still_registered_but_off() {
-        let path = write_config(r#"{"plugins":[{"name":"x","enabled":false}]}"#);
-        let specs = read_plugin_config(&path);
-        assert_eq!(specs.len(), 1);
-        assert!(!specs[0].enabled);
-    }
-
-    #[test]
-    fn retained_legacy_names_cannot_escape_or_impersonate_managed_installations() {
-        let path = write_config(
-            r#"{"plugins":[{"name":"../other"},{"name":"/bin/sh"},{"name":"github:12/sample"},{"name":"."},{"name":".."},{"name":"valid_name","enabled":false},{"name":"valid_name","enabled":true}]}"#,
-        );
-        let specs = read_plugin_config(&path);
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "valid_name");
-        assert!(!specs[0].enabled);
-    }
-
     #[test]
     fn a_pane_is_found_in_the_tree_by_path() {
         let tree = Node::single_pane(PaneId(1))

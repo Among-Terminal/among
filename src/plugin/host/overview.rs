@@ -80,17 +80,13 @@ impl PluginHost {
                 let mut overview = Overview {
                     key: plugin.spec.name.clone(),
                     name: plugin.spec.name.clone(),
-                    description: "No static description (legacy executable)".into(),
-                    origin: "Local executable · legacy".into(),
+                    description: "Managed installation unavailable".into(),
+                    origin: "Managed installation".into(),
                     version: None,
                     declared: "Declared API unknown".into(),
                     observed: plugin.observed.clone(),
                     enabled: self.desired_enabled(&plugin.spec.name),
-                    available: plugin
-                        .spec
-                        .command
-                        .first()
-                        .is_some_and(|command| std::path::Path::new(command).is_file()),
+                    available: false,
                     state: plugin.state.clone(),
                     generation: None,
                     running_version: plugin.io.as_ref().and_then(|io| io.package_version.clone()),
@@ -151,8 +147,8 @@ mod tests {
             .join("opencode")
             .join(format!("among-overview-{}", glib::uuid_string_random()));
         let mut host = PluginHost::new();
-        host.register(PluginSpec {
-            name: "sample".into(),
+        host.register_fixture(PluginSpec {
+            name: "github:12/missing".into(),
             command: vec![root.join("absent").display().to_string()],
             enabled: false,
         });
@@ -190,9 +186,9 @@ mod tests {
             .iter()
             .all(|entry| entry.observed.is_none() && !entry.enabled));
         assert_eq!(host.supervised_count(), 0);
-        assert!(overview.iter().any(|entry| entry.key == "sample"
-            && !entry.available
-            && entry.declared == "Declared API unknown"));
+        assert!(overview
+            .iter()
+            .any(|entry| entry.key == "github:12/missing" && !entry.available));
         assert!(overview.iter().any(|entry| entry.key == "github:12/sample"
             && entry.name == "Sample"
             && entry.available));
@@ -229,8 +225,8 @@ mod tests {
             .unwrap()
             .join("examples/fake-plugin");
         let mut host = PluginHost::new();
-        host.register(PluginSpec {
-            name: "legacy".into(),
+        host.register_fixture(PluginSpec {
+            name: "github:12/observed".into(),
             command: vec![binary.display().to_string(), "echo".into()],
             enabled: true,
         });
@@ -244,12 +240,12 @@ mod tests {
         let observed = host.overview()[0].observed.clone();
         assert_eq!(
             observed,
-            Some(super::super::super::manifest::Api { major: 1, minor: 0 })
+            Some(super::super::super::manifest::Api { major: 1, minor: 2 })
         );
         host.fault(0, "controlled test fault");
         assert!(host.overview()[0].enabled);
         assert_eq!(host.overview()[0].observed, observed);
-        host.disable("legacy");
+        host.disable("github:12/observed");
         while !host.is_stopped() {
             host.poll();
             assert!(Instant::now() < deadline);

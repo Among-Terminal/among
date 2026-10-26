@@ -164,9 +164,7 @@ fn missed_absence_case(
             observer.poll();
             observer.running_generation(KEY).is_some()
         });
-        observer
-            .request_status(KEY, "app_header", &crate::plugin::Context::default())
-            .unwrap();
+        observer.request_status(KEY, "app_header").unwrap();
     } else {
         assert_eq!(observer.supervised_count(), 0);
     }
@@ -362,9 +360,7 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
     let old_generation = observer.running_generation(KEY).unwrap();
     let old_pid = observer.supervised_pids()[0];
     observer.drain_invalidated_sources();
-    observer
-        .request_status(KEY, "app_header", &crate::plugin::Context::default())
-        .unwrap();
+    observer.request_status(KEY, "app_header").unwrap();
     let fresh = reinstall(&root.0, &old, "2.0", true);
     assert_eq!(
         unsafe { libc::kill(old_pid as i32, 0) },
@@ -384,9 +380,7 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
         .drain_invalidated_sources()
         .iter()
         .any(|key| key == KEY));
-    assert!(observer
-        .request_status(KEY, "app_header", &crate::plugin::Context::default())
-        .is_none());
+    assert!(observer.request_status(KEY, "app_header").is_none());
     assert_eq!(observer.configuration(KEY), Configuration::NotApplied);
     wait(|| {
         observer.poll();
@@ -417,9 +411,7 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
     });
     assert_ne!(observer.running_generation(KEY).unwrap(), old_generation);
     assert!(fresh.package_path(&root.0).join("executed").exists());
-    observer
-        .request_status(KEY, "app_header", &crate::plugin::Context::default())
-        .unwrap();
+    observer.request_status(KEY, "app_header").unwrap();
     wait(|| {
         observer.poll();
         fresh

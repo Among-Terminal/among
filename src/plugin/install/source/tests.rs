@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 mod installation_authority;
 mod release_binding;
+mod selection_description;
 
 pub(crate) static JOB_TESTS: Mutex<()> = Mutex::new(());
 

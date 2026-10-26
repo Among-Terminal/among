@@ -3,6 +3,15 @@ use crate::plugin::install::source::tests::{normal, Reply, Server};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
+mod published_lifecycle;
+mod published_selection;
+
+#[test]
+#[ignore = "requires prepared public Release inputs and the dedicated native check-plugin-install runner"]
+fn real_published_official_packages_install_review_enable_disable_uninstall() {
+    published_lifecycle::run();
+}
+
 #[test]
 #[ignore = "requires an isolated native display, real keyboard input and Rust HTTPS package pipeline"]
 fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
@@ -401,7 +410,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
             std::thread::sleep(Duration::from_millis(2));
         }
         let receipt = host.managed_details(KEY).unwrap().0.receipt;
-        host.request_status(KEY, "app_header", &Context::default());
+        host.request_status(KEY, "app_header");
         while !receipt
             .package_path(&root)
             .join("resource-observed")
@@ -465,8 +474,8 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .clone();
     let pty = terminal.pty().unwrap().fd().as_raw_fd();
     let first_pid = std::fs::read_to_string(first.package_path(&root).join("executed")).unwrap();
-    ctx.state.borrow_mut().plugins.register(PluginSpec {
-        name: "sibling".into(),
+    ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+        name: "github:12/sibling".into(),
         command: fixture("echo"),
         enabled: true,
     });
@@ -477,7 +486,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
                 .plugins
                 .listing()
                 .iter()
-                .any(|(key, state)| key == "sibling" && state == &PluginState::Running)
+                .any(|(key, state)| key == "github:12/sibling" && state == &PluginState::Running)
         },
         Duration::from_secs(5),
     );

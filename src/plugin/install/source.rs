@@ -277,10 +277,17 @@ impl Selection {
         format!("{}\nSelected version {} · catalogue-declared version commit {}\n{}\nRequired access: {}\nOptional access: {}\nThe exact release tag must resolve to this commit and remain consistent through the pre-commit recheck. This is content consistency, not build reproducibility or independent publisher authentication. Only this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "))
     }
     pub fn description(&self) -> String {
+        let architecture = match self.artifact.architecture {
+            super::metadata::Architecture::Amd64 => "amd64",
+            super::metadata::Architecture::Arm64 => "arm64",
+        };
         format!(
-            "github:{}/{} · asset {} · {} bytes",
+            "github:{}/{} · version {} · {}/{} · asset {} · {} bytes",
             self.repository_id,
             self.version.manifest.id,
+            self.version.manifest.version,
+            self.artifact.os,
+            architecture,
             self.artifact.asset_id,
             self.artifact.size
         )
