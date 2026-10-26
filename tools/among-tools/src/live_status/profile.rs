@@ -201,12 +201,12 @@ pub fn replay(profile: &Path, destination: &Path) -> Result<()> {
         )?;
         storage::atomic_write(&managed, &path, &bytes, mode)?;
     }
-    storage::atomic_write(
-        &destination.join("config/among"),
-        Path::new("managed-plugins.json"),
-        &settings,
-        0o600,
-    )?;
+    let config = destination.join("config/among");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&config)?;
+    storage::atomic_write(&config, Path::new("managed-plugins.json"), &settings, 0o600)?;
     storage::atomic_write(&managed, Path::new("installed.json"), &installed, 0o600)?;
     println!("PASS renderer replay consumed native {architecture} public catalogue, exact installed/settings SHA, numeric assets/tag binding and observed explicit grants; selection bytes unchanged");
     Ok(())

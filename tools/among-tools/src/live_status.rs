@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod fault;
 pub mod profile;
 
 fn require(value: bool, message: &str) -> Result<()> {
@@ -136,6 +137,7 @@ pub fn run(root: &Path, binary: &Path, profile: &Path, scratch: &Path) -> Result
     h.env
         .insert("AMONG_SCRIPT".into(), h.base.join("steps").into_os_string());
     let pid = h.start("app")?;
+    let host = fault::Host::observe(pid)?;
     wait(&mut h, 0, 15, |text| {
         text.contains("sidebar_states=[0:0:false:3 1:1:false:1]")
             && text.contains("rendered_footers=[\"")
@@ -284,19 +286,7 @@ pub fn run(root: &Path, binary: &Path, profile: &Path, scratch: &Path) -> Result
         "long footer is unbounded",
     )?;
     h.screenshot("narrow.png")?;
-    let resource = h.probe(
-        "/usr/bin/pgrep",
-        &["-P", &pid.to_string(), "-x", "system-status"],
-    )?;
-    let resource = resource
-        .split_whitespace()
-        .next()
-        .ok_or("resource process missing")?
-        .parse::<i32>()?;
-    nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(resource),
-        nix::sys::signal::Signal::SIGKILL,
-    )?;
+    fault::inject(&host, profile, &h.base)?;
     let offset = h.text()?.len();
     wait(&mut h, offset, 15, |text| {
         text.contains("system-status=Faulted")

@@ -114,7 +114,12 @@ pub fn capture(root: &Path, records: &Path, output: &Path, scratch: &Path) -> Re
     }
     // verify saved selection/grants before transfer; this is not installation
     // on the future compiler-free package host.
-    profile::replay(&profile, &observed.join(".runtime-transfer-validation"))?;
+    profile::replay(&profile, &observed.join(".runtime-transfer-validation")).map_err(|error| {
+        format!(
+            "observed package profile failed renderer replay preflight: {error}; evidence: {}",
+            observed.display()
+        )
+    })?;
     let files = inventory(&profile)?;
     let hashes = files
         .iter()

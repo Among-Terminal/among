@@ -54,9 +54,43 @@ fn toggle(preferences: &adw::PreferencesWindow, row: &adw::ActionRow) {
 }
 
 fn read_regular(path: &Path, maximum: u64) -> Vec<u8> {
-    let metadata = std::fs::symlink_metadata(path).unwrap();
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+        .unwrap();
+    let metadata = file.metadata().unwrap();
     assert!(metadata.is_file() && metadata.len() <= maximum);
-    std::fs::read(path).unwrap()
+    let mut bytes = Vec::new();
+    file.take(maximum + 1).read_to_end(&mut bytes).unwrap();
+    assert!(bytes.len() as u64 <= maximum);
+    assert_eq!(
+        bytes.len() as u64,
+        metadata.len(),
+        "profile input changed while reading"
+    );
+    bytes
+}
+
+#[test]
+fn profile_reader_refuses_oversize_symlink_and_fifo_inputs_without_blocking() {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    let root = crate::plugin::install::package::tests::OwnedRoot::new();
+    let regular = root.0.join("regular");
+    std::fs::write(&regular, b"exact bytes").unwrap();
+    assert_eq!(read_regular(&regular, 16), b"exact bytes");
+    assert!(std::panic::catch_unwind(|| read_regular(&regular, 4)).is_err());
+    let link = root.0.join("link");
+    symlink(&regular, &link).unwrap();
+    assert!(std::panic::catch_unwind(|| read_regular(&link, 16)).is_err());
+    let fifo = root.0.join("fifo");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let started = std::time::Instant::now();
+    assert!(std::panic::catch_unwind(|| read_regular(&fifo, 16)).is_err());
+    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 fn capture_live_profile(
