@@ -74,7 +74,7 @@ fn actual_host_probe_records_real_cwd_maps_environment_and_refuses_foreign_or_ex
     Ok(())
 }
 #[test]
-fn actual_external_plugin_observes_hello_scope_request_ids_and_shutdown_and_refuses_malformed_messages(
+fn actual_external_plugin_observes_managed_binding_scope_request_ids_and_shutdown_and_refuses_malformed_messages(
 ) -> Result<()> {
     let f = fixture()?;
     let env: BTreeMap<OsString, OsString> = BTreeMap::new();
@@ -88,9 +88,9 @@ fn actual_external_plugin_observes_hello_scope_request_ids_and_shutdown_and_refu
     )?;
     let mut input = process.take_stdin()?;
     for message in [
-        json!({"type":"hello"}),
-        json!({"type":"status","request_id":13,"scope":"app_header"}),
-        json!({"type":"status","request_id":17,"scope":"pane_footer"}),
+        json!({"type":"managed_hello","major":1,"minor":2,"identity":"github:12/vm-external","session":"s","generation":"g","features":["status"]}),
+        json!({"type":"status","session":"s","generation":"g","request_id":13,"scope":{"slot":"app_header","target":{"kind":"application"}}}),
+        json!({"type":"status","session":"s","generation":"g","request_id":17,"scope":{"slot":"pane_footer","target":{"kind":"pane","reference":"1"}}}),
         json!({"type":"shutdown"}),
     ] {
         serde_json::to_writer(&mut input, &message)?;
@@ -105,7 +105,12 @@ fn actual_external_plugin_observes_hello_scope_request_ids_and_shutdown_and_refu
         .map(|line| storage::parse_json(line.as_bytes()))
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(messages.len(), 3);
-    assert_eq!(messages[0], json!({"type":"hello","major":1,"minor":0}));
+    assert_eq!(
+        messages[0],
+        json!({"type":"managed_hello","major":1,"minor":2,"identity":"github:12/vm-external","session":"s","generation":"g","features":["status"]})
+    );
+    assert_eq!(messages[1]["session"], "s");
+    assert_eq!(messages[1]["generation"], "g");
     assert_eq!(messages[1]["request_id"], 13);
     assert_eq!(messages[1]["fragments"][0]["text"], "VM-EXTERNAL");
     assert_eq!(messages[2]["request_id"], 17);
@@ -114,6 +119,7 @@ fn actual_external_plugin_observes_hello_scope_request_ids_and_shutdown_and_refu
         b"not JSON\n".as_slice(),
         b"{\"type\":\"hello\"}".as_slice(),
         b"{\"type\":\"status\",\"scope\":\"app_header\"}\n".as_slice(),
+        b"{\"type\":\"managed_hello\",\"major\":1,\"minor\":1}\n".as_slice(),
     ] {
         let mut process = OwnedProcess::spawn_interactive(
             Path::new(env!("CARGO_BIN_EXE_among-tools")),

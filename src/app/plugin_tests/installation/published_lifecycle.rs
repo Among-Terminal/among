@@ -131,7 +131,7 @@ fn capture_live_profile(
     }
     let installed = read_regular(&managed.join("installed.json"), 256 * 1024);
     let settings = read_regular(&profile.join("managed-plugins.json"), 256 * 1024);
-    std::fs::write(profile.join("profile.json"), serde_json::to_vec_pretty(&json!({"kind":"observed_published_installation_profile","catalogue_revision":CATALOGUE_REVISION,"source_revision":SOURCE,"architecture":match Platform::current().unwrap().architecture {Architecture::Amd64=>"amd64",Architecture::Arm64=>"arm64"},"installed_size":installed.len(),"installed_sha256":crate::plugin::inventory::checksum(&installed).unwrap(),"settings_size":settings.len(),"settings_sha256":crate::plugin::inventory::checksum(&settings).unwrap()})).unwrap()).unwrap();
+    std::fs::write(profile.join("profile.json"), serde_json::to_vec_pretty(&json!({"kind":"observed_published_installation_profile","host_source_sha":option_env!("AMONG_CHECK_SOURCE_SHA"),"catalogue_revision":CATALOGUE_REVISION,"source_revision":SOURCE,"architecture":match Platform::current().unwrap().architecture {Architecture::Amd64=>"amd64",Architecture::Arm64=>"arm64"},"installed_size":installed.len(),"installed_sha256":crate::plugin::inventory::checksum(&installed).unwrap(),"settings_size":settings.len(),"settings_sha256":crate::plugin::inventory::checksum(&settings).unwrap()})).unwrap()).unwrap();
 }
 
 fn inspect(preferences: &adw::PreferencesWindow) -> adw::PreferencesWindow {
@@ -221,36 +221,95 @@ fn assert_output(ctx: &Window, id: &str, key: &str) {
         },
         Duration::from_secs(8),
     );
-    let state = ctx.state.borrow();
-    for fragment in state
-        .store
-        .fragments(scope)
-        .into_iter()
-        .filter(|fragment| fragment.source == key)
-    {
-        let text = fragment.text.as_deref().unwrap();
-        assert!(widgets(ctx.window.upcast_ref())
-            .iter()
-            .filter_map(|widget| widget.downcast_ref::<gtk::Label>())
-            .any(|label| label.text() == text && label.is_mapped() && label.width() > 0));
-    }
-    if id == "system-status" {
-        let bars = widgets(ctx.app_header.upcast_ref())
-            .into_iter()
-            .filter_map(|widget| widget.downcast::<gtk::ProgressBar>().ok())
-            .collect::<Vec<_>>();
-        assert_eq!(bars.len(), 3);
-        for (bar, fragment) in bars.iter().zip(
-            state
+    let container: gtk::Widget = match scope {
+        Scope::AppHeader => ctx.app_header.clone().upcast(),
+        Scope::AppFooter => ctx.app_footer.clone().upcast(),
+        Scope::PaneFooter(pane) => ctx
+            .state
+            .borrow()
+            .pane(pane)
+            .unwrap()
+            .widget()
+            .unwrap()
+            .upcast(),
+        _ => unreachable!(),
+    };
+    // store publication precedes frame-clock allocation. Re-read both on each
+    // turn: a timer can replace the widgets or update a meter while we wait.
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    wait_for(
+        || {
+            let state = ctx.state.borrow();
+            let fragments = state
                 .store
                 .fragments(scope)
                 .into_iter()
-                .filter(|fragment| fragment.source == key),
-        ) {
-            assert!(bar.is_mapped() && bar.width() > 0 && bar.height() > 0);
-            assert_eq!(bar.fraction(), fragment.meter.unwrap());
-        }
-    }
+                .filter(|fragment| fragment.source == key)
+                .collect::<Vec<_>>();
+            let tree = widgets(&container);
+            let labels = tree
+                .iter()
+                .filter_map(|widget| widget.downcast_ref::<gtk::Label>())
+                .collect::<Vec<_>>();
+            let bars = tree
+                .iter()
+                .filter_map(|widget| widget.downcast_ref::<gtk::ProgressBar>())
+                .collect::<Vec<_>>();
+            let rendered = !fragments.is_empty()
+                && fragments.iter().all(|fragment| {
+                    labels.iter().any(|label| {
+                        Some(label.text().as_str()) == fragment.text.as_deref()
+                            && label.is_mapped()
+                            && label.width() > 0
+                    })
+                })
+                && (id != "system-status"
+                    || (bars.len() == 3
+                        && bars.iter().zip(&fragments).all(|(bar, fragment)| {
+                            bar.is_mapped()
+                                && bar.width() > 0
+                                && bar.height() > 0
+                                && Some(bar.fraction()) == fragment.meter
+                        })));
+            if !rendered && std::time::Instant::now() >= deadline {
+                eprintln!(
+                    "published_output_timeout plugin={id} scope={scope:?} expected={fragments:?}"
+                );
+                for label in labels {
+                    eprintln!(
+                        "observed_label text={:?} mapped={} visible={} width={} height={}",
+                        label.text(),
+                        label.is_mapped(),
+                        label.is_visible(),
+                        label.width(),
+                        label.height()
+                    );
+                }
+                for bar in bars {
+                    eprintln!(
+                        "observed_meter fraction={} mapped={} width={} height={}",
+                        bar.fraction(),
+                        bar.is_mapped(),
+                        bar.width(),
+                        bar.height()
+                    );
+                }
+                let path = crate::test_isolation::check_root()
+                    .join(format!("published-{id}-render-timeout.png"));
+                eprintln!(
+                    "published_output_failure_screenshot={} result={:?}",
+                    path.display(),
+                    std::process::Command::new("import")
+                        .args(["-window", "root"])
+                        .arg(&path)
+                        .status()
+                );
+                panic!("published {id} full-text mapped/allocated output did not render");
+            }
+            rendered
+        },
+        Duration::from_secs(9),
+    );
     println!("published_release_output={id} actual_mapped_widgets=true");
 }
 

@@ -76,7 +76,7 @@ fn only_the_exact_published_install_case_uses_its_dedicated_runner() -> among_to
     let prefix = format!("other::{name}");
     assert_eq!(
         ignored_tests::names(&format!("{name}: test\n{suffix}: test\n{prefix}: test"))?,
-        [prefix, suffix]
+        [suffix, prefix]
     );
     Ok(())
 }

@@ -96,15 +96,19 @@ packages are independent: the application and its example plugins never depend
 on the tooling package, and tooling tests do not link GTK or need a display.
 
 On X11 with Openbox, private D-Bus, xdotool, xprop and ImageMagick installed,
-build the application and plugin examples first and then drive real windows
+build the application, tools and the host test executable, then drive real windows
 through the Rust tooling:
 
 ```sh
 cargo build --release --locked
-cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
+cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --bin among-tools
 tool=tools/among-tools/target/release/among-tools
+export AMONG_CHECK_ROOT="$HOME/.cache/among/checks"
+mkdir -p -m 700 "$AMONG_CHECK_ROOT"
+AMONG_CHECK_SOURCE_SHA="$(git rev-parse HEAD)" cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
+$tool ci-x11 $tool capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" package-plugin-profile
 $tool ci-x11 $tool check-live-focus target/release/among
-$tool ci-x11 $tool check-live-status . target/release/among examples/plugins/target/release
+$tool ci-x11 $tool check-live-status . target/release/among "$PWD/package-plugin-profile"
 $tool ci-x11 $tool check-sessions target/release/among
 $tool ci-x11 $tool check-split-directory target/release/among
 $tool ci-x11 $tool check-scroll-calibration target/release/among
@@ -114,6 +118,10 @@ $tool ci-x11 $tool check-desktop . target/release/among
 ```
 
 These use private test data and only stop test-owned processes. Their
+profile capture requires a clean source checkout, uses the actual public native
+Release through the host UI, and refuses missing or mismatched test/source input.
+The captured profile is internal renderer-check input, not packaged installation
+acceptance or a release asset. Their
 evidence stays in your cache directory (`~/.cache/among/checks` by default,
 `AMONG_CHECK_ROOT` overrides it); see [where checks keep their evidence](docs/testing.md#where-checks-keep-their-evidence).
 Do not run raw

@@ -22,6 +22,8 @@ Usage:
   among-tools install-prebuilt <source-root> <among-binary> <native-uninstaller>
   among-tools install <source-root> [--binary PATH | --install-deps | --uninstall]
   among-tools prepare-official-plugin-inputs <new-output-directory>
+  among-tools capture-package-plugin-profile <source-root> <cargo-host-test-records> <new-directory>
+  among-tools check-package-plugin-profile <profile-directory> <host-source-sha>
   among-tools check-plugin-install <among-test-executable> <official-plugin-inputs>
   among-tools check-sessions <among-binary>
   among-tools check-split-directory <among-binary>
@@ -684,11 +686,11 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 &among_tools::scratch::root()?,
             )?;
         }
-        [command, root, binary, plugins] if command == "check-live-status" => {
+        [command, root, binary, profile] if command == "check-live-status" => {
             among_tools::live_status::run(
                 Path::new(root),
                 Path::new(binary),
-                Path::new(plugins),
+                Path::new(profile),
                 &among_tools::scratch::root()?,
             )?;
         }
@@ -722,6 +724,17 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, destination] if command == "prepare-official-plugin-inputs" => {
             among_tools::plugin_install::release::prepare(Path::new(destination))?;
+        }
+        [command, root, records, output] if command == "capture-package-plugin-profile" => {
+            among_tools::plugin_install::package::capture(
+                Path::new(root),
+                Path::new(records),
+                Path::new(output),
+                &among_tools::scratch::root()?,
+            )?;
+        }
+        [command, profile, source] if command == "check-package-plugin-profile" => {
+            among_tools::plugin_install::package::validate(Path::new(profile), source)?;
         }
         [command, executable, inputs] if command == "check-plugin-install" => {
             among_tools::plugin_install::run(

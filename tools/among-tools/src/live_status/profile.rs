@@ -8,7 +8,7 @@ use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-fn bounded(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+pub(crate) fn bounded(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)

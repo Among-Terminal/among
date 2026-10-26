@@ -3,8 +3,21 @@ use crate::plugin::install::source::tests::{normal, Reply, Server};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
+mod pane_render;
 mod published_lifecycle;
 mod published_selection;
+
+fn registered_source_row(view: &adw::PreferencesWindow, repository: u64) -> adw::ActionRow {
+    widgets(view.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| {
+            row.subtitle().is_some_and(|subtitle| {
+                subtitle.contains(&format!(" · repository {repository} · publisher "))
+            })
+        })
+        .expect("actual registered source row")
+}
 
 #[test]
 #[ignore = "requires prepared public Release inputs and the dedicated native check-plugin-install runner"]
@@ -1092,6 +1105,27 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     present();
     let view = inspector();
     focus(&view);
+    wait_for(
+        || has_label(view.upcast_ref(), "Source registrations loaded"),
+        Duration::from_secs(5),
+    );
+    let official = registered_source_row(&view, 1431055733);
+    assert_eq!(official.title(), "Official plugins for Among Terminal");
+    let subtitle = official.subtitle().unwrap();
+    assert!(subtitle
+        .contains("Among-Terminal/among-plugins · repository 1431055733 · publisher 339567100"));
+    assert!(subtitle.contains("cannot be removed"));
+    assert!(!widgets(official.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .any(|button| button.label().as_deref() == Some("Remove source")));
+    assert!(!button(&official, "Cached").is_sensitive());
+    assert!(button(&official, "Refresh").is_sensitive());
+    assert!(server.requests().is_empty());
+    assert!(
+        !source_root.exists(),
+        "the permanent official row is inert until explicit refresh"
+    );
     let entry = widgets(view.upcast_ref())
         .into_iter()
         .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
@@ -1137,7 +1171,14 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         || has_label(view.upcast_ref(), "Cached source registrations loaded"),
         Duration::from_secs(5),
     );
-    press(&button(&view, "Cached"));
+    let official = registered_source_row(&view, 1431055733);
+    assert_eq!(official.title(), "Official plugins for Among Terminal");
+    assert!(official.subtitle().unwrap().contains("publisher 339567100"));
+    assert!(!widgets(official.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .any(|button| button.label().as_deref() == Some("Remove source")));
+    press(&button(&registered_source_row(&view, 12), "Cached"));
     wait_for(
         || has_label(view.upcast_ref(), "Cached metadata; not an online check"),
         Duration::from_secs(5),
@@ -1159,7 +1200,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         || has_label(view.upcast_ref(), "Cached source registrations loaded"),
         Duration::from_secs(5),
     );
-    press(&button(&view, "Cached"));
+    press(&button(&registered_source_row(&view, 12), "Cached"));
     wait_for(
         || {
             has_label(
@@ -1176,7 +1217,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     screenshot(&view, "source-stale-offline");
     mode.store(1, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&button(&registered_source_row(&view, 12), "Refresh"));
     wait_for(
         || {
             source()["registrations"][0]["origin"]["repository"] == "renamed"
@@ -1198,7 +1239,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     let renamed = std::fs::read(source_root.join("sources.json")).unwrap();
     mode.store(2, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&button(&registered_source_row(&view, 12), "Refresh"));
     wait_for(
         || has_label(view.upcast_ref(), "Source approval was not changed"),
         Duration::from_secs(5),
@@ -1224,7 +1265,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     let transferred = std::fs::read(source_root.join("sources.json")).unwrap();
     mode.store(3, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&button(&registered_source_row(&view, 12), "Refresh"));
     wait_for(
         || {
             has_label(
@@ -1238,18 +1279,18 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         std::fs::read(source_root.join("sources.json")).unwrap(),
         transferred
     );
-    press(&button(&view, "Cached"));
+    press(&button(&registered_source_row(&view, 12), "Cached"));
     wait_for(
         || has_label(view.upcast_ref(), "Cached metadata; not an online check"),
         Duration::from_secs(5),
     );
     mode.store(4, Ordering::Release);
     let before = server.requests().len();
-    press(&button(&view, "Refresh"));
+    press(&button(&registered_source_row(&view, 12), "Refresh"));
     wait_for(|| server.requests().len() > before, Duration::from_secs(5));
-    assert!(!button(&view, "Cached").is_sensitive());
-    assert!(!button(&view, "Refresh").is_sensitive());
-    assert!(!button(&view, "Remove source").is_sensitive());
+    assert!(!button(&registered_source_row(&view, 12), "Cached").is_sensitive());
+    assert!(!button(&registered_source_row(&view, 12), "Refresh").is_sensitive());
+    assert!(!button(&registered_source_row(&view, 12), "Remove source").is_sensitive());
     screenshot(&view, "source-refresh-cancellable");
     press(&button(&view, "Cancel source request"));
     wait_for(
@@ -1265,7 +1306,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         std::fs::read(source_root.join("sources.json")).unwrap(),
         transferred
     );
-    press(&button(&view, "Remove source"));
+    press(&button(&registered_source_row(&view, 12), "Remove source"));
     wait_for(
         || {
             source()["registrations"].as_array().unwrap().is_empty()
@@ -1274,6 +1315,10 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         Duration::from_secs(5),
     );
     assert!(source()["registrations"].as_array().unwrap().is_empty());
+    assert_eq!(
+        registered_source_row(&view, 1431055733).title(),
+        "Official plugins for Among Terminal"
+    );
     assert_eq!(
         std::fs::read(installed.join("installed.json")).unwrap(),
         selected
@@ -1286,6 +1331,80 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     assert!(!installed.join("executed").exists());
     screenshot(&view, "source-removed-installed-preserved");
+    view.destroy();
+    let retained = std::fs::read(source_root.join("sources.json")).unwrap();
+    let unavailable=serde_json::to_vec(&json!({"version":1,"registrations":[{
+        "origin":{"repository_id":1431055733u64,"publisher_id":999,"owner":"changed-publisher","repository":"renamed"},
+        "token":"a".repeat(64),"revision":"b".repeat(64),"snapshots":[]
+    }]})).unwrap();
+    std::fs::write(source_root.join("official.json"), &unavailable).unwrap();
+    std::fs::set_permissions(
+        source_root.join("official.json"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let requests = server.requests().len();
+    present();
+    let view = inspector();
+    focus(&view);
+    wait_for(
+        || has_label(view.upcast_ref(), "Source registrations loaded"),
+        Duration::from_secs(5),
+    );
+    let official = registered_source_row(&view, 1431055733);
+    assert_eq!(official.title(), "Official plugins for Among Terminal");
+    assert!(official
+        .subtitle()
+        .unwrap()
+        .contains("Among-Terminal/among-plugins · repository 1431055733 · publisher 339567100"));
+    assert!(official.subtitle().unwrap().contains("Unavailable:"));
+    assert!(!button(&official, "Cached").is_sensitive());
+    assert!(!widgets(official.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .any(|button| button.label().as_deref() == Some("Remove source")));
+    screenshot(&view, "official-unavailable-pinned-not-removable");
+    view.destroy();
+    std::fs::write(
+        source_root.join("official.json"),
+        b"corrupt official discovery cache",
+    )
+    .unwrap();
+    present();
+    let view = inspector();
+    focus(&view);
+    wait_for(
+        || {
+            has_label(
+                view.upcast_ref(),
+                "Official metadata is unavailable; custom sources remain available",
+            )
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        registered_source_row(&view, 1431055733).title(),
+        "Official plugins for Among Terminal"
+    );
+    assert_eq!(
+        server.requests().len(),
+        requests,
+        "unavailable/corrupt official rows remain offline until explicit refresh"
+    );
+    assert_eq!(
+        std::fs::read(source_root.join("sources.json")).unwrap(),
+        retained
+    );
+    assert_eq!(
+        std::fs::read(installed.join("installed.json")).unwrap(),
+        selected
+    );
+    assert_eq!(
+        ["managed-plugins.json", "plugins.json", "shortcuts.json"]
+            .map(|name| std::fs::read(directory.join(name)).ok()),
+        preferences_before
+    );
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     view.destroy();
     ctx.window.destroy();
     println!("PASS actual source Add, fresh-view offline cache, numeric Refresh/rename, explicit transferred publisher approval, actual rate-limit/cancellation and Remove without changing selected installation, enablement or settings. Native window hierarchy retained; simultaneous terminal input is exercised separately.");

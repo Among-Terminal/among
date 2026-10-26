@@ -4,6 +4,16 @@ use crate::plugin::{data::Problem, origin::Origin};
 
 pub(super) const REPOSITORY_ID: u64 = 1_431_055_733;
 pub(super) const PUBLISHER_ID: u64 = 339_567_100;
+pub(super) const TITLE: &str = "Official plugins for Among Terminal";
+
+pub(super) fn origin() -> Origin {
+    Origin {
+        repository_id: REPOSITORY_ID,
+        publisher_id: PUBLISHER_ID,
+        owner: "Among-Terminal".into(),
+        repository: "among-plugins".into(),
+    }
+}
 
 pub(super) fn validate(origin: &Origin) -> Result<(), Problem> {
     origin.validate()?;

@@ -23,6 +23,7 @@ pub mod installer_enospc;
 pub mod live_focus;
 pub mod live_resize;
 pub mod live_status;
+mod managed_fixture;
 pub mod menu_check;
 pub mod menu_geometry;
 pub mod menu_launch;

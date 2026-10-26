@@ -99,6 +99,24 @@ plugin installer. Native UI, explicit access/enablement and terminal continuity
 must be demonstrated by that host test before this check can pass. Preparing the
 inputs alone establishes none of those behaviours or application-RC readiness.
 
+Package workflows compile exactly the `among` binary test target with
+`AMONG_CHECK_SOURCE_SHA` set to the checkout's full HEAD. The compile-time value is
+exported only with the observed runtime profile. `capture-package-plugin-profile`
+requires a clean checkout before and after the actual UI lifecycle, one Cargo test
+artifact whose manifest and `src/main.rs` belong to that checkout, an unchanged
+test-executable digest, and a matching compiled-in source SHA. Its bounded internal
+transfer includes exact file hashes and the completed lifecycle observation.
+`check-package-plugin-profile` checks the expected host source, native architecture,
+all declared bytes and missing/duplicate/unrecorded/link inputs before a package
+renderer consumes it. The complete transfer remains within 8 MiB/64 entries.
+
+This deliberate internal input may contain receipt/lease files; only its dedicated
+package-checker artifact includes them. Hidden runtime capture directories remain
+excluded from screenshot/failure uploads. No profile is a public application asset.
+On compiler-free hosts the selected AppImage/Snap/DEB/RPM/archive executable renders
+that observed profile. This is packaged **renderer replay**, not observation of
+installation or access review through that packaged executable.
+
 ## Cross-repository managed transport
 
 The `managed-transport-interop` Cargo feature only compiles additional internal

@@ -119,13 +119,25 @@ pub fn external_plugin() -> Result<()> {
         let message = storage::parse_json(&bytes)?;
         let response = match message["type"].as_str() {
             Some("shutdown") => return Ok(()),
-            Some("hello") => json!({"type":"hello","major":1,"minor":0}),
+            Some("managed_hello") => {
+                require(
+                    message["major"] == 1
+                        && message["minor"] == 2
+                        && message["identity"].is_string()
+                        && message["session"].is_string()
+                        && message["generation"].is_string()
+                        && message["features"] == json!(["status"]),
+                    "synthetic Snap fixture needs exact declared managed 1.2 status admission",
+                )?;
+                message.clone()
+            }
             Some("status") => {
                 require(
-                    message["request_id"].as_u64().is_some() && message["scope"].as_str().is_some(),
-                    "external plugin status requires a numeric request ID and scope",
+                    message["request_id"].as_u64().is_some() && message["scope"].is_object()
+                        && message["session"].is_string() && message["generation"].is_string(),
+                    "managed external fixture status requires request ID, scope, session and generation",
                 )?;
-                json!({"type":"status","request_id":message["request_id"],"refresh_ms":1000,"fragments":if message["scope"]=="app_header" {vec![json!({"text":"VM-EXTERNAL"})]} else {vec![]}})
+                json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":message["request_id"],"refresh_ms":1000,"fragments":if message["scope"]["slot"]=="app_header" {vec![json!({"text":"VM-EXTERNAL"})]} else {vec![]}})
             }
             _ => continue,
         };
@@ -162,8 +174,6 @@ pub fn run(github_hosted: bool, scratch: &Path) -> Result<PathBuf> {
     let tool = std::env::current_exe()?;
     let tools = h.base.join("tools");
     fs::create_dir(&tools)?;
-    let plugin_dir = h.base.join("data/among/plugins");
-    fs::create_dir(&plugin_dir)?;
     for name in ["project", "host-schemas", "host-data"] {
         fs::create_dir(h.base.join(name))?;
     }
@@ -185,19 +195,13 @@ pub fn run(github_hosted: bool, scratch: &Path) -> Result<PathBuf> {
         .as_bytes(),
         0o755,
     )?;
-    storage::atomic_write(
-        &plugin_dir,
-        Path::new("vm-external"),
-        format!(
-            "#!/bin/sh\nexec {} snap-external-plugin\n",
-            quote(tool.to_str().ok_or("tool path not UTF-8")?)
-        )
-        .as_bytes(),
-        0o755,
-    )?;
-    let original = serde_json::to_vec(&json!({"plugins":[{"name":"vm-external","enabled":true}]}))?;
-    let config = h.base.join("config/among/plugins.json");
-    fs::write(&config, &original)?;
+    let program = format!(
+        "#!/bin/sh\nexec {} snap-external-plugin\n",
+        quote(tool.to_str().ok_or("tool path not UTF-8")?)
+    );
+    let config =
+        crate::managed_fixture::install(&h.base, "vm-external", program.as_bytes(), &["status"])?;
+    let original = fs::read(&config)?;
     let baseline_ld = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
     h.env
         .insert("LD_LIBRARY_PATH".into(), baseline_ld.clone().into());
@@ -233,7 +237,7 @@ pub fn run(github_hosted: bool, scratch: &Path) -> Result<PathBuf> {
             let text = this.text()?;
             Ok(text.contains("session_ready=true")
                 && text.contains("has_focus=true")
-                && text.contains("vm-external=Running")
+                && text.contains("github:12/vm-external=Running")
                 && text.contains("VM-EXTERNAL"))
         })?;
         let proc = PathBuf::from(format!("/proc/{pid}"));

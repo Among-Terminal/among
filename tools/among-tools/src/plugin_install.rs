@@ -10,6 +10,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod package;
 pub mod release;
 
 pub const NATIVE_TEST: &str = "app::plugin_tests::installation::real_published_official_packages_install_review_enable_disable_uninstall";

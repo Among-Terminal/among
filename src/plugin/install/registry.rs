@@ -2,6 +2,7 @@
 //! code, rewrites local preferences or grants runtime access.
 
 use super::{
+    official,
     source::{Inspection, Permit},
     store,
 };
@@ -24,10 +25,47 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub const MAX_REPOSITORIES: usize = 32;
 pub const MAX_SNAPSHOTS: usize = 4;
 pub const MAX_CACHE_BYTES: usize = 16 * 1024 * 1024;
-// reserve the other half for the flushed atomic replacement. a refresh must not
-// double a full cache beyond its total on-disk metadata budget.
+// each retained document is bounded separately; publication also charges both
+// retained files and the proposed atomic replacement against the shared budget.
 const MAX_DOCUMENT_BYTES: usize = MAX_CACHE_BYTES / 2;
 const STALE_SECONDS: u64 = 24 * 60 * 60;
+pub const OFFICIAL_STORAGE_PROBLEM: Problem = Problem("official source metadata is unsafe, corrupt or unavailable; retained custom registrations are unchanged");
+
+mod official_storage;
+pub(super) use official_storage::run;
+
+#[derive(Clone, Copy)]
+enum Storage {
+    User,
+    Official,
+}
+
+impl Storage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::User => "sources.json",
+            Self::Official => "official.json",
+        }
+    }
+    fn c_name(self) -> &'static std::ffi::CStr {
+        match self {
+            Self::User => c"sources.json",
+            Self::Official => c"official.json",
+        }
+    }
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::User => "sources-",
+            Self::Official => "official-",
+        }
+    }
+    fn other(self) -> Self {
+        match self {
+            Self::User => Self::Official,
+            Self::Official => Self::User,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -67,6 +105,26 @@ pub struct Registration {
 }
 
 impl Registration {
+    pub fn is_official(&self) -> bool {
+        self.origin.repository_id == official::REPOSITORY_ID
+    }
+    pub fn display_origin(&self) -> Origin {
+        if self.is_official() {
+            official::origin()
+        } else {
+            self.origin.clone()
+        }
+    }
+    pub fn display_title(&self) -> String {
+        if self.is_official() {
+            official::TITLE.into()
+        } else {
+            format!("{}/{}", self.origin.owner, self.origin.repository)
+        }
+    }
+    pub fn available(&self) -> Result<(), Problem> {
+        official::validate(&self.origin)
+    }
     pub fn snapshot_count(&self) -> usize {
         self.snapshots.len()
     }
@@ -81,6 +139,26 @@ impl Registration {
     }
 }
 
+pub fn official_source() -> Registration {
+    Registration {
+        origin: official::origin(),
+        token: "0".repeat(64),
+        revision: "0".repeat(64),
+        snapshots: Vec::new(),
+    }
+}
+
+pub fn effective_sources(mut registrations: Vec<Registration>) -> Vec<Registration> {
+    let official = registrations
+        .iter()
+        .position(Registration::is_official)
+        .map(|index| registrations.remove(index))
+        .unwrap_or_else(official_source);
+    registrations.retain(|source| !source.is_official());
+    registrations.insert(0, official);
+    registrations
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
@@ -90,6 +168,7 @@ struct Document {
 
 pub enum Request {
     List,
+    EffectiveList,
     Add(Box<Inspection>),
     Refresh {
         expected: Registration,
@@ -105,9 +184,14 @@ pub enum Request {
 
 pub enum Outcome {
     List(Vec<Registration>),
+    EffectiveList {
+        registrations: Vec<Registration>,
+        problem: Option<Problem>,
+    },
     Changed {
         registrations: Vec<Registration>,
         durability: Durability,
+        problem: Option<Problem>,
     },
     Cached {
         inspection: Inspection,
@@ -212,6 +296,10 @@ fn token(value: &str) -> bool {
 }
 
 fn read_bytes(root: &Path) -> Result<Option<Vec<u8>>, Problem> {
+    read_storage_bytes(root, Storage::User)
+}
+
+fn read_storage_bytes(root: &Path, storage: Storage) -> Result<Option<Vec<u8>>, Problem> {
     if matches!(std::fs::symlink_metadata(root), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
     {
         return Ok(None);
@@ -219,7 +307,7 @@ fn read_bytes(root: &Path) -> Result<Option<Vec<u8>>, Problem> {
     let directory = data::owned_directory(root)?;
     // absence is distinguished from every other open error: malformed/unsafe
     // documents are never repaired as an empty registry by a later edit.
-    let name = c"sources.json";
+    let name = storage.c_name();
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     if unsafe {
         libc::fstatat(
@@ -237,7 +325,7 @@ fn read_bytes(root: &Path) -> Result<Option<Vec<u8>>, Problem> {
         };
     }
     data::read_bounded(
-        &data::contained_file(&directory, "sources.json")?,
+        &data::contained_file(&directory, storage.name())?,
         MAX_DOCUMENT_BYTES,
     )
     .map(Some)
@@ -247,7 +335,15 @@ fn read(
     root: &Path,
     check: &impl Fn() -> Result<(), Problem>,
 ) -> Result<(Document, Option<Vec<u8>>), Problem> {
-    let bytes = read_bytes(root)?;
+    read_storage(root, Storage::User, check)
+}
+
+fn read_storage(
+    root: &Path,
+    storage: Storage,
+    check: &impl Fn() -> Result<(), Problem>,
+) -> Result<(Document, Option<Vec<u8>>), Problem> {
+    let bytes = read_storage_bytes(root, storage)?;
     let document: Document = match &bytes {
         Some(bytes) => serde_json::from_value(data::parse_unique(bytes, MAX_DOCUMENT_BYTES)?)
             .map_err(|_| Problem("invalid source registry document"))?,
@@ -256,7 +352,27 @@ fn read(
             registrations: Vec::new(),
         },
     };
-    if document.version != 1 || document.registrations.len() > MAX_REPOSITORIES {
+    let valid_count = match storage {
+        Storage::User => {
+            document
+                .registrations
+                .iter()
+                .filter(|source| !source.is_official())
+                .count()
+                <= MAX_REPOSITORIES
+                && document
+                    .registrations
+                    .iter()
+                    .filter(|source| source.is_official())
+                    .count()
+                    <= 1
+        }
+        Storage::Official => {
+            document.registrations.len() <= 1
+                && document.registrations.iter().all(Registration::is_official)
+        }
+    };
+    if document.version != 1 || !valid_count {
         return Err(Problem(
             "unsupported source registry version or repository count",
         ));
@@ -315,12 +431,104 @@ fn save_with_confirmation(
     begin_commit: impl FnOnce() -> Result<(), Problem>,
     confirm: impl FnOnce(&File) -> std::io::Result<()>,
 ) -> Result<Durability, Problem> {
-    if bytes.len() > MAX_DOCUMENT_BYTES {
+    save_storage_with_confirmation(
+        root,
+        directory,
+        (Storage::User, previous),
+        bytes,
+        check,
+        begin_commit,
+        confirm,
+    )
+}
+
+#[derive(PartialEq, Eq)]
+struct BudgetEntry {
+    device: u64,
+    inode: u64,
+    size: i64,
+    mode: u32,
+    owner: u32,
+    group: u32,
+    links: libc::nlink_t,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+fn budget_entry(directory: &File, storage: Storage) -> Result<Option<BudgetEntry>, Problem> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            storage.c_name().as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+            Ok(None)
+        } else {
+            Err(Problem("cannot measure retained source metadata"))
+        };
+    }
+    let metadata = unsafe { metadata.assume_init() };
+    if metadata.st_size < 0 || metadata.st_size as u64 > MAX_DOCUMENT_BYTES as u64 {
+        return Err(Problem("retained source metadata exceeds its byte budget"));
+    }
+    Ok(Some(BudgetEntry {
+        device: metadata.st_dev,
+        inode: metadata.st_ino,
+        size: metadata.st_size,
+        mode: metadata.st_mode,
+        owner: metadata.st_uid,
+        group: metadata.st_gid,
+        links: metadata.st_nlink,
+        modified: (metadata.st_mtime, metadata.st_mtime_nsec),
+        changed: (metadata.st_ctime, metadata.st_ctime_nsec),
+    }))
+}
+
+fn replacement_limit(previous: usize, other: &Option<BudgetEntry>) -> Result<usize, Problem> {
+    let retained = previous
+        .checked_add(other.as_ref().map_or(0, |entry| entry.size as usize))
+        .ok_or(Problem("source metadata size overflow"))?;
+    MAX_CACHE_BYTES
+        .checked_sub(retained)
+        .map(|remaining| remaining.min(MAX_DOCUMENT_BYTES))
+        .ok_or(Problem(
+            "retained source metadata exceeds its total byte budget",
+        ))
+}
+
+fn write_limit(
+    directory: &File,
+    storage: Storage,
+    previous: Option<&[u8]>,
+) -> Result<usize, Problem> {
+    replacement_limit(
+        previous.map_or(0, <[u8]>::len),
+        &budget_entry(directory, storage.other())?,
+    )
+}
+
+fn save_storage_with_confirmation(
+    root: &Path,
+    directory: &File,
+    state: (Storage, Option<Vec<u8>>),
+    bytes: &[u8],
+    check: &impl Fn() -> Result<(), Problem>,
+    begin_commit: impl FnOnce() -> Result<(), Problem>,
+    confirm: impl FnOnce(&File) -> std::io::Result<()>,
+) -> Result<Durability, Problem> {
+    let (storage, previous) = state;
+    let other = budget_entry(directory, storage.other())?;
+    if bytes.len() > replacement_limit(previous.as_ref().map_or(0, Vec::len), &other)? {
         return Err(Problem(
             "source document exceeds its atomic replacement budget",
         ));
     }
-    let temporary = format!("sources-{}", store::token());
+    let temporary = format!("{}{}", storage.prefix(), store::token());
     let mut file = store::file(directory, &temporary, true)?;
     let outcome = (|| {
         file.write_all(bytes)
@@ -340,9 +548,14 @@ fn save_with_confirmation(
                 "source directory changed externally; refusing hidden or retargeted publication",
             ));
         }
-        if read_bytes(root)? != previous {
+        if read_storage_bytes(root, storage)? != previous {
             return Err(Problem(
                 "source registry changed externally; refusing replacement",
+            ));
+        }
+        if budget_entry(directory, storage.other())? != other {
+            return Err(Problem(
+                "other source metadata changed externally; refusing stale publication budget",
             ));
         }
         let from = std::ffi::CString::new(temporary.as_str())
@@ -352,7 +565,7 @@ fn save_with_confirmation(
                 directory.as_raw_fd(),
                 from.as_ptr(),
                 directory.as_raw_fd(),
-                c"sources.json".as_ptr(),
+                storage.c_name().as_ptr(),
             )
         } != 0
         {
@@ -386,10 +599,11 @@ fn clean_temporaries(
         }
         let entry = entry.map_err(|_| Problem("cannot inspect source storage namespace"))?;
         let name = entry.file_name();
-        let Some(text) = name
-            .to_str()
-            .filter(|name| name.strip_prefix("sources-").is_some_and(token))
-        else {
+        let Some(text) = name.to_str().filter(|name| {
+            name.strip_prefix("sources-")
+                .or_else(|| name.strip_prefix("official-"))
+                .is_some_and(token)
+        }) else {
             continue;
         };
         let file = data::contained_file(directory, text)?;
@@ -442,13 +656,14 @@ fn lock_registry(lock: &File, check: &impl Fn() -> Result<(), Problem>) -> Resul
 
 fn trim(
     document: &mut Document,
-    protected: (u64, &str, u64),
+    protected: Option<(u64, &str, u64)>,
+    limit: usize,
     check: &impl Fn() -> Result<(), Problem>,
 ) -> Result<Vec<u8>, Problem> {
     let bytes =
         serde_json::to_vec(document).map_err(|_| Problem("cannot encode source registry"))?;
     let mut estimate = bytes.len();
-    while estimate > MAX_DOCUMENT_BYTES {
+    while estimate > limit {
         check()?;
         let candidate = document
             .registrations
@@ -464,12 +679,12 @@ fn trim(
                     })
             })
             .filter(|(_, _, repository, value)| {
-                (*repository, value.sha256.as_str(), value.retrieved_at) != protected
+                Some((*repository, value.sha256.as_str(), value.retrieved_at)) != protected
             })
             .min_by_key(|(_, index, _, value)| (value.retrieved_at, std::cmp::Reverse(*index)))
             .map(|(source, snapshot, _, _)| (source, snapshot))
             .ok_or(Problem(
-                "source metadata cache cannot fit within its byte budget",
+                "source cache has insufficient atomic replacement headroom; no registration/cache change was committed",
             ))?;
         let removed = document.registrations[candidate.0]
             .snapshots
@@ -482,13 +697,13 @@ fn trim(
     }
     let bytes =
         serde_json::to_vec(document).map_err(|_| Problem("cannot encode source registry"))?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
+    if bytes.len() > limit {
         return Err(Problem("source metadata cache exceeds its byte budget"));
     }
     Ok(bytes)
 }
 
-pub(super) fn run(
+fn run_user(
     root: &Path,
     request: Request,
     check: impl Fn() -> Result<(), Problem>,
@@ -508,6 +723,7 @@ pub(super) fn run(
                     .ok_or(Problem(
                         "source was removed or changed; reopen its current registration",
                     ))?;
+                current.available()?;
                 let snapshot = current.snapshots.first().ok_or(Problem(
                     "no retained metadata snapshot; refresh this source when online",
                 ))?;
@@ -525,6 +741,7 @@ pub(super) fn run(
     lock_registry(&lock, &check)?;
     clean_temporaries(&directory, &check)?;
     let (mut document, previous) = read(root, &check)?;
+    let official = official_storage::cached(root, &check);
     let (inspection, expected, approve) = match request {
         Request::Add(inspection) => (Some(inspection), None, false),
         Request::Refresh {
@@ -566,6 +783,15 @@ pub(super) fn run(
             return Err(Problem("invalid metadata retrieval time"));
         }
         let origin = inspection.origin();
+        official::validate(&origin)?;
+        if expected
+            .as_ref()
+            .is_some_and(|expected| expected.origin.repository_id != origin.repository_id)
+        {
+            return Err(Problem(
+                "numeric source identity changed; add it as a separate source explicitly",
+            ));
+        }
         let snapshot = Snapshot {
             origin: origin.clone(),
             revision: inspection.catalogue_revision.clone(),
@@ -591,7 +817,13 @@ pub(super) fn run(
                         "repository is already registered; use its Refresh action",
                     ));
                 }
-                if document.registrations.len() >= MAX_REPOSITORIES {
+                if document
+                    .registrations
+                    .iter()
+                    .filter(|source| !source.is_official())
+                    .count()
+                    >= MAX_REPOSITORIES
+                {
                     return Err(Problem(
                         "source repository limit is 32; remove an unused registration first",
                     ));
@@ -626,18 +858,22 @@ pub(super) fn run(
     } else if let Some(index) = index {
         document.registrations.remove(index);
     }
-    let bytes = match protected.as_ref() {
-        Some((repository, digest, retrieved)) => {
-            trim(&mut document, (*repository, digest, *retrieved), &check)?
-        }
-        None => {
-            serde_json::to_vec(&document).map_err(|_| Problem("cannot encode source registry"))?
-        }
-    };
+    // Removal can also need room for an atomic replacement. Evict cache bytes
+    // from the proposed document, never an unrelated registration or setting.
+    let bytes = trim(
+        &mut document,
+        protected
+            .as_ref()
+            .map(|(repository, digest, retrieved)| (*repository, digest.as_str(), *retrieved)),
+        write_limit(&directory, Storage::User, previous.as_deref())?,
+        &check,
+    )?;
+    let (registrations, problem) = official_storage::overlay(document.registrations, official);
     let durability = save(root, &directory, previous, &bytes, &check, begin_commit)?;
     Ok(Outcome::Changed {
-        registrations: document.registrations,
+        registrations,
         durability,
+        problem,
     })
 }
 
