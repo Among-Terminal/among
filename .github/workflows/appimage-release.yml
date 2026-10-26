@@ -238,6 +238,10 @@ jobs:
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example audio-drain-control
           tools/among-tools/target/release/examples/audio-drain-control fixtures "$PWD/audio-drain-fixtures"
           sha256sum audio-drain-fixtures/*.wav target/release/among target/release/examples/audio-shipped-control target/release/examples/audio-effect-capture target/release/examples/audio-drain-capture > audio-drain-evidence/actual-rust-inputs.sha256
+      - name: Preflight real native payload paths before matched native rebuilds
+        run: |
+          tools/among-tools/target/release/examples/audio-drain-control preflight "$PWD" "$PWD/audio-drain-inputs/native-preflight"
+          cp audio-drain-inputs/native-preflight/preflight-receipt.json audio-drain-evidence/native-payload-preflight.json
       - name: Build the same distribution source baseline and one-patch candidate
         run: |
           set -euo pipefail

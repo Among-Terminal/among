@@ -13,14 +13,24 @@ const FIXTURE: &str = "64bada62d3a4e674af1d4af818c9517ab51cfff7927422cff3ea6b0de
 const MODULE: &str = "usr/lib/gstreamer-1.0/libgstpulseaudio.so";
 
 fn digest(path: &Path) -> Result<String> {
-    Ok(storage::sha256(File::open(path)?)?)
+    let file =
+        File::open(path).map_err(|error| format!("open hash input {}: {error}", path.display()))?;
+    Ok(storage::sha256(file)?)
 }
 fn copy(source: &Path, destination: &Path) -> Result<()> {
     if destination.exists() {
         return Err(format!("refusing existing output {}", destination.display()).into());
     }
-    fs::create_dir_all(destination.parent().ok_or("destination parent absent")?)?;
-    fs::copy(source, destination)?;
+    let parent = destination.parent().ok_or("destination parent absent")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("create copy parent {}: {error}", parent.display()))?;
+    fs::copy(source, destination).map_err(|error| {
+        format!(
+            "copy {} -> {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })?;
     Ok(())
 }
 fn fixtures(root: &Path) -> Result<()> {
@@ -34,33 +44,107 @@ fn fixtures(root: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn stage(root: &Path, repository: &Path, baseline: &Path, candidate: &Path) -> Result<()> {
-    fs::create_dir(root)?;
+fn prepare_payload(payload: &Path, repository: &Path) -> Result<Value> {
     let triplet = match std::env::consts::ARCH {
         "x86_64" => "x86_64-linux-gnu",
         "aarch64" => "aarch64-linux-gnu",
         _ => return Err("native architecture unsupported".into()),
     };
     let native = PathBuf::from(format!("/usr/lib/{triplet}"));
+    audio_payload::require(&native)
+        .map_err(|error| format!("required native audio inputs {}: {error}", native.display()))?;
+    fs::create_dir(payload)
+        .map_err(|error| format!("create new payload {}: {error}", payload.display()))?;
+    let destination_lib = payload.join("usr/lib");
+    // safe_path intentionally requires an existing real root; the caller must
+    // establish it before the shared payload copier validates descendants.
+    fs::create_dir_all(&destination_lib).map_err(|error| {
+        format!(
+            "create payload library root {}: {error}",
+            destination_lib.display()
+        )
+    })?;
+    copy(
+        &repository.join("target/release/among"),
+        &payload.join("usr/bin/among"),
+    )?;
+    audio_payload::stage(&native, &destination_lib).map_err(|error| {
+        format!(
+            "stage native audio {} -> {}: {error}",
+            native.display(),
+            destination_lib.display()
+        )
+    })?;
+    copy(
+        &native.join("libgstreamer-1.0.so.0"),
+        &destination_lib.join("libgstreamer-1.0.so.0"),
+    )?;
+    let mut files = BTreeMap::new();
+    files.insert(
+        "usr/bin/among".to_string(),
+        digest(&payload.join("usr/bin/among"))?,
+    );
+    files.insert(
+        "usr/lib/libgstreamer-1.0.so.0".to_string(),
+        digest(&destination_lib.join("libgstreamer-1.0.so.0"))?,
+    );
+    for relative in audio_payload::MEMBERS {
+        let relative = format!("usr/lib/{relative}");
+        files.insert(relative.clone(), digest(&payload.join(relative))?);
+    }
+    Ok(json!({"native_library_directory":native,"files":files}))
+}
+fn preflight(repository: &Path, payload: &Path) -> Result<()> {
+    let receipt = prepare_payload(payload, repository)?;
+    fs::write(
+        payload.join("preflight-receipt.json"),
+        serde_json::to_vec_pretty(
+            &json!({"scope":"NATIVE_PAYLOAD_IO_PREFLIGHT_ONLY","actual_copied_inputs":receipt,"producer_executed":false,"matched_C_builds_executed":false}),
+        )?,
+    )?;
+    Ok(())
+}
+fn stage(root: &Path, repository: &Path, baseline: &Path, candidate: &Path) -> Result<()> {
+    fs::create_dir(root)
+        .map_err(|error| format!("create matched payload root {}: {error}", root.display()))?;
+    let mut receipts = BTreeMap::new();
     for (name, module) in [("baseline", baseline), ("candidate", candidate)] {
         let payload = root.join(name);
-        copy(
-            &repository.join("target/release/among"),
-            &payload.join("usr/bin/among"),
-        )?;
-        audio_payload::stage(&native, &payload.join("usr/lib"))?;
-        copy(
-            &native.join("libgstreamer-1.0.so.0"),
-            &payload.join("usr/lib/libgstreamer-1.0.so.0"),
-        )?;
-        fs::copy(module, payload.join(MODULE))?;
+        let mut receipt = prepare_payload(&payload, repository)?;
+        let destination = payload.join(MODULE);
+        fs::copy(module, &destination).map_err(|error| {
+            format!(
+                "replace selected producer module {} -> {}: {error}",
+                module.display(),
+                destination.display()
+            )
+        })?;
+        let actual = digest(&destination)?;
+        if actual != digest(module)? {
+            return Err("selected module copy hash differs".into());
+        }
+        receipt["files"][MODULE] = json!(actual);
+        receipts.insert(name, receipt);
+    }
+    let mut unchanged = receipts["baseline"]["files"]
+        .as_object()
+        .ok_or("baseline files absent")?
+        .clone();
+    unchanged.remove(MODULE);
+    let mut comparison = receipts["candidate"]["files"]
+        .as_object()
+        .ok_or("candidate files absent")?
+        .clone();
+    comparison.remove(MODULE);
+    if unchanged != comparison {
+        return Err("unexpected non-module payload difference".into());
     }
     // These are experimental source-bound payloads. Unlike full package gates,
     // this experiment does not claim that all native dependencies are bundled.
     fs::write(
         root.join("control-scope.json"),
         serde_json::to_vec_pretty(
-            &json!({"scope":"MATCHED_PRODUCER_COMMAND_BOUNDARY_ONLY", "baseline_module":digest(baseline)?, "candidate_module":digest(candidate)?, "shipped_among":digest(&repository.join("target/release/among"))?, "package_acceptance":false}),
+            &json!({"scope":"MATCHED_PRODUCER_COMMAND_BOUNDARY_ONLY", "baseline_module":digest(baseline)?, "candidate_module":digest(candidate)?, "shipped_among":digest(&repository.join("target/release/among"))?, "actual_payloads":receipts, "package_acceptance":false}),
         )?,
     )?;
     Ok(())
@@ -274,8 +358,9 @@ fn main() -> Result<()> {
     let arguments: Vec<_> = std::env::args_os().collect();
     match arguments.get(1).and_then(|value|value.to_str()) {
         Some("fixtures") if arguments.len() == 3 => fixtures(Path::new(&arguments[2])),
+        Some("preflight") if arguments.len() == 4 => preflight(Path::new(&arguments[2]), Path::new(&arguments[3])),
         Some("stage") if arguments.len() == 6 => stage(Path::new(&arguments[2]), Path::new(&arguments[3]), Path::new(&arguments[4]), Path::new(&arguments[5])),
         Some("run") if arguments.len() == 6 => run(Path::new(&arguments[2]), Path::new(&arguments[3]), Path::new(&arguments[4]), Path::new(&arguments[5])),
-        _ => Err("fixtures DIR | stage OUT REPOSITORY BASELINE_SO CANDIDATE_SO | run REPOSITORY PAYLOADS FIXTURES EVIDENCE".into()),
+        _ => Err("fixtures DIR | preflight REPOSITORY OUT | stage OUT REPOSITORY BASELINE_SO CANDIDATE_SO | run REPOSITORY PAYLOADS FIXTURES EVIDENCE".into()),
     }
 }
