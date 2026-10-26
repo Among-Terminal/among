@@ -1514,25 +1514,15 @@ fn eight_pane_collection_is_fair_to_fast_slow_and_interval_zero_sources() {
 #[ignore = "requires an isolated graphical session and built fake-plugin"]
 fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
     let app = application("com.github.among-terminal.plugin-reactivation-test");
-    let config =
-        std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap()).join("among");
-    let installed =
-        std::path::PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap()).join("among/plugins");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::create_dir_all(&installed).unwrap();
-    let executable = fixture("stubborn").remove(0);
-    let mut plugins = Vec::new();
-    for index in 0..32 {
-        let name = format!("retire-{index}");
-        std::os::unix::fs::symlink(&executable, installed.join(&name)).unwrap();
-        plugins.push(serde_json::json!({"name":name,"enabled":true}));
-    }
-    std::fs::write(
-        config.join("plugins.json"),
-        serde_json::json!({"plugins":plugins}).to_string(),
-    )
-    .unwrap();
-    std::env::set_var("AMONG_FAKE_PLUGIN_MODE", "stubborn");
+    PluginHost::install_fixture_inventory(
+        &(0..32)
+            .map(|index| PluginSpec {
+                name: format!("github:12/retire-{index}"),
+                command: fixture("stubborn"),
+                enabled: true,
+            })
+            .collect::<Vec<_>>(),
+    );
     let latest = Rc::new(RefCell::new(None));
     app.connect_activate({
         let latest = latest.clone();
@@ -1550,6 +1540,16 @@ fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
     );
     let previous_pids = current.state.borrow().plugins.supervised_pids();
     assert_eq!(previous_pids.len(), 32);
+    let proof_holds: Vec<_> = (0..32)
+        .map(|index| {
+            current
+                .state
+                .borrow()
+                .plugins
+                .hold_retirement(&format!("github:12/retire-{index}"), None)
+                .unwrap()
+        })
+        .collect();
     let mut retired = Vec::new();
     for _ in 0..3 {
         current.window.destroy();
@@ -1564,7 +1564,7 @@ fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
             .plugins
             .listing()
             .iter()
-            .all(|(_, state)| *state == PluginState::Waiting));
+            .all(|(_, state)| matches!(state, PluginState::Stopping { .. })));
         retired.push(current);
         assert!(
             retired
@@ -1575,6 +1575,7 @@ fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
         );
         current = replacement;
     }
+    drop(proof_holds);
     if !current.state.borrow().session_ready {
         let dialog = current
             .window
@@ -1599,12 +1600,15 @@ fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
                 old_count + new_count <= 32,
                 "application supervision budget was exceeded"
             );
-            if new_count > 0 {
-                assert_eq!(
-                    old_count, 0,
-                    "replacement overlapped an unreaped predecessor"
-                );
-            }
+            let old_identities: std::collections::BTreeSet<_> = retired
+                .iter()
+                .flat_map(|old| old.state.borrow().plugins.supervised_identities())
+                .collect();
+            let new_identities = current.state.borrow().plugins.supervised_identities();
+            assert!(
+                old_identities.is_disjoint(&new_identities),
+                "replacement overlapped an unreaped predecessor identity"
+            );
             old_count == 0 && current.state.borrow().plugins.healthy().len() == 32
         },
         Duration::from_secs(5),
@@ -1615,11 +1619,107 @@ fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
             "old process {pid} was not reaped"
         );
     }
-    println!("PASS three real reactivations with 32 TERM-ignoring plugins: visible replacement windows wait without overlapping generations; old children are reaped before new startup");
+    println!("PASS three real reactivations with 32 TERM-ignoring plugins: one shared budget, no overlapping identity generations, and old children reaped before their replacements start");
     current.window.destroy();
     wait_for(
         || current.state.borrow().plugins.is_stopped(),
         Duration::from_secs(2),
     );
-    std::env::remove_var("AMONG_FAKE_PLUGIN_MODE");
+}
+
+#[test]
+#[ignore = "requires an isolated graphical session and built fake-plugin"]
+fn one_unproven_retirement_keeps_replacement_window_terminals_and_other_plugins_usable() {
+    let app = application("com.github.among-terminal.isolated-retirement-test");
+    PluginHost::install_fixture_inventory(&["blocked", "unrelated"].map(|name| PluginSpec {
+        name: format!("github:12/{name}"),
+        command: fixture("stubborn"),
+        enabled: true,
+    }));
+    let latest = Rc::new(RefCell::new(None));
+    app.connect_activate({
+        let latest = latest.clone();
+        move |app| {
+            if let Some(ctx) = build_with_writer(app, None, crate::session::Writer::new) {
+                *latest.borrow_mut() = Some(ctx);
+            }
+        }
+    });
+    app.activate();
+    let old = latest.borrow().as_ref().unwrap().handle();
+    wait_for(
+        || old.state.borrow().plugins.healthy().len() == 2,
+        Duration::from_secs(5),
+    );
+    let hold = old
+        .state
+        .borrow()
+        .plugins
+        .hold_retirement("github:12/blocked", Some(libc::EACCES))
+        .unwrap();
+    old.window.destroy();
+    app.activate();
+    let current = latest.borrow().as_ref().unwrap().handle();
+    assert_ne!(old.window, current.window);
+    assert!(current.window.is_visible());
+    if !current.state.borrow().session_ready {
+        let dialog = current
+            .window
+            .visible_dialog()
+            .unwrap()
+            .downcast::<adw::AlertDialog>()
+            .unwrap();
+        dialog.set_close_response("new");
+        dialog.force_close();
+    }
+    wait_for(
+        || {
+            let listing = current.state.borrow().plugins.listing();
+            hold.observations() >= 2
+                && listing
+                    .iter()
+                    .any(|(name, state)| name == "github:12/unrelated" && state.is_healthy())
+        },
+        Duration::from_secs(5),
+    );
+    assert!(!old.state.borrow().plugins.is_stopped());
+    assert!(!current
+        .state
+        .borrow()
+        .plugins
+        .supervised_stopped("github:12/blocked"));
+    assert!(current.state.borrow().plugins.listing().iter().any(|(name, state)| name == "github:12/blocked" && matches!(state, PluginState::Stopping { reason, .. } if reason.contains("permission denied"))));
+    assert_eq!(
+        old.state.borrow().plugins.supervised_count()
+            + current.state.borrow().plugins.supervised_count(),
+        2
+    );
+    current.window.present();
+    xdo(&[
+        "type",
+        "--clearmodifiers",
+        "--delay",
+        "0",
+        "printf usable > \"$HOME/isolated-retirement-input\"",
+    ]);
+    xdo(&["key", "--clearmodifiers", "Return"]);
+    let proof = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+        .join("isolated-retirement-input");
+    wait_for(|| proof.exists(), Duration::from_secs(1));
+    assert_eq!(std::fs::read_to_string(proof).unwrap(), "usable");
+    assert!(!old.state.borrow().plugins.is_stopped());
+    drop(hold);
+    wait_for(
+        || {
+            old.state.borrow().plugins.is_stopped()
+                && current.state.borrow().plugins.healthy().len() == 2
+        },
+        Duration::from_secs(5),
+    );
+    println!("PASS unresolved retirement blocks only its identity: replacement window, real terminal input and unrelated plugin remain usable; no premature stop acknowledgement");
+    current.window.destroy();
+    wait_for(
+        || current.state.borrow().plugins.is_stopped(),
+        Duration::from_secs(2),
+    );
 }
