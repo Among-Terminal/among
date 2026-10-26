@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 fn bounded(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
         .open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > maximum {

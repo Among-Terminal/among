@@ -83,7 +83,7 @@ fn renderer_replay_refuses_a_fifo_without_blocking_or_creating_selection() -> Re
             .as_os_str()
             .as_bytes(),
     )?;
-    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    assert_eq!(unsafe { nix::libc::mkfifo(path.as_ptr(), 0o600) }, 0);
     let destination = fixture.0.join("destination");
     let start = std::time::Instant::now();
     assert!(profile::replay(&fixture.0, &destination).is_err());

@@ -11,7 +11,7 @@ use reqwest::{Client, Url};
 use serde_json::Value;
 
 use super::metadata::{Catalogue, Platform};
-use super::{package, store};
+use super::{official, package, store};
 use crate::plugin::data::{self, Problem};
 use crate::plugin::inventory::{Receipt, SourceReceipt};
 use crate::plugin::origin::Origin;
@@ -78,6 +78,10 @@ pub struct Inspection {
 }
 
 impl Inspection {
+    pub fn validate_source(&self) -> Result<(), Problem> {
+        official::validate(&self.origin())
+    }
+
     pub fn origin(&self) -> Origin {
         Origin {
             repository_id: self.repository_id,
@@ -92,7 +96,7 @@ impl Inspection {
         revision: String,
         bytes: Vec<u8>,
     ) -> Result<Self, Problem> {
-        origin.validate()?;
+        official::validate(&origin)?;
         if revision.len() != 40
             || !revision
                 .bytes()
@@ -182,6 +186,7 @@ impl Inspection {
     }
 
     pub fn select(&self, plugin: &str, version: &str) -> Result<Selection, Problem> {
+        self.validate_source()?;
         let artifact_index = self.artifact(plugin, version)?;
         let version = self
             .catalogue
@@ -235,6 +240,15 @@ pub struct Selection {
 }
 
 impl Selection {
+    fn origin(&self) -> Origin {
+        Origin {
+            repository_id: self.repository_id,
+            publisher_id: self.source.publisher_id,
+            owner: self.repository.owner.clone(),
+            repository: self.repository.name.clone(),
+        }
+    }
+
     pub fn for_update(
         mut self,
         entry: &crate::plugin::inventory::Entry,
@@ -420,6 +434,7 @@ impl InstallJob {
         root: PathBuf,
         client: Option<Client>,
     ) -> Result<Self, Problem> {
+        official::validate(&selection.origin())?;
         let permit = Permit::acquire()?;
         let ticket = super::operations::Ticket::acquire(
             &root,
@@ -566,12 +581,36 @@ impl Operation {
         Ok(())
     }
 
+    async fn check_official_selection(&self, selected: &Selection) -> Result<(), Problem> {
+        official::validate(&selected.origin())?;
+        if selected.repository_id != official::REPOSITORY_ID {
+            return Ok(());
+        }
+        let url = github_url(
+            "api.github.com",
+            &["repositories", &official::REPOSITORY_ID.to_string()],
+        )?;
+        let requested = url.clone();
+        let (bytes, _) = self
+            .get(url, |next| next == &requested, data::MAX_STATIC_BYTES)
+            .await?;
+        let document = data::parse_unique(&bytes, data::MAX_STATIC_BYTES)?;
+        if document["id"].as_u64() != Some(official::REPOSITORY_ID)
+            || document["owner"]["id"].as_u64() != Some(official::PUBLISHER_ID)
+            || document["private"].as_bool() != Some(false)
+        {
+            return Err(Problem("official repository or publisher no longer matches this application build; installation refused"));
+        }
+        Ok(())
+    }
+
     async fn install(
         &self,
         selected: Selection,
         root: &std::path::Path,
         state: &AtomicU8,
     ) -> Result<store::Commit, Problem> {
+        self.check_official_selection(&selected).await?;
         let version = &selected.version;
         let artifact = &selected.artifact;
         artifact.compatibility(&Platform::current()?)?;
@@ -631,6 +670,7 @@ impl Operation {
         if self.resolve_release(&selected).await? != release {
             return Err(Problem("release tag or immutable peel chain changed during installation; selection was not committed"));
         }
+        self.check_official_selection(&selected).await?;
         match &selected.previous {
             Some(previous) => transaction.commit_update(
                 receipt,
