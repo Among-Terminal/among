@@ -1,10 +1,10 @@
 # Debian packaging development
 
-The [RC2 preview release](https://github.com/Among-Terminal/among/releases/tag/v0.1.0-rc.2)
-provides downloadable DEBs for Debian 13 and Ubuntu 24.04 on amd64 and arm64.
-[All four native builds and installed checks passed](https://github.com/Among-Terminal/among/actions/runs/38156985889).
-This is scoped preview evidence, not full stable acceptance. Normal user
-installation is documented on the [installation page](https://among-terminal.github.io/install/).
+Every release tag builds DEBs for Debian 13 and Ubuntu 24.04 on amd64 and
+arm64, and the [latest release](https://github.com/Among-Terminal/among/releases/latest)
+carries them. The installed checks described below are a scoped subset, not
+full release acceptance. Normal user installation is documented on the
+[installation page](https://among-terminal.github.io/install/).
 
 ## GitHub release builds only
 
@@ -23,15 +23,12 @@ version, architecture and SHA-256 are recorded with each Actions artifact.
 The builder refuses ordinary local execution. Local work uses the fixture tests
 below; do not register host QEMU/binfmt or build release packages locally.
 Actions artifacts remain internal candidates, not public download attachments.
-RC2 was manually staged as a draft prerelease, checked against its exact native
-build/runtime receipts and source archive, then published as a preview with an
-allowlist of four DEBs, source materials and checksums. Anonymous downloads were
-checked against the retained package digests. GitHub normalizes `~` in asset
-filenames to `.`; the version inside each DEB retains the Debian `~rc.N` ordering.
-The protected automated stable publisher remains outstanding; this build workflow
-has no publication permission and does not itself publish. `release-draft.yml`
-attaches the checked DEBs and binary archives to an unpublished release draft
-([releasing guide, section 5](releasing.md#5-release-drafts-from-a-tag)).
+This build workflow has no publication permission and does not itself publish.
+`release-draft.yml` attaches the checked DEBs and binary archives, under
+version-free names, to an unpublished release draft
+([releasing guide, section 5](releasing.md#5-release-drafts-from-a-tag)); the
+owner publishes the draft. The version inside each DEB keeps the Debian
+`~rc.N` ordering.
 
 ## Installed checks in release CI
 
@@ -59,8 +56,8 @@ executed checks. The record explicitly says `release_acceptance: false`: this
 initial subset is not the full acceptance gate. The live-status regression now
 copies the installed example executables into a synthetic external-plugin
 directory and explicitly enables them. The session regression uses the installed
-binary to exercise consent, restored directories, pane moves/resizing and
-background activity, without Cargo. Private hosted execution passed these scoped
+binary to exercise consent, restored directories and divider ratios, pane moves
+and background activity, without Cargo; it does not resize panes. Private hosted execution passed these scoped
 GUI/focus/status/Sessions checks on all four native targets. Full package and
 release acceptance remains incomplete.
 
