@@ -108,11 +108,12 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`306839e144d7a4c98432c6c68dad016c412dd656` (tree
-`e9d7a98a8162a3b58154b4a9122c70cddaa1db16`), verifies its public repository identity,
-and independently builds its `managed-status` **protocol fixture**, production
-`clock-managed`, legacy `clock` reference, production `system-status-managed`,
-production `pane-pwd-managed` and the labelled `managed-pages` SDK reducer fixture.
+`aa1ec272d4ed6326338f3de0e5fbf30bbe181e39` (tree
+`514714d5a8aa2ac7e71051e0fb84de464aaffb13`), verifies its public repository identity,
+and builds only its `managed-status` **protocol fixture** and labelled
+`managed-pages` SDK reducer fixture. Production `clock-managed`,
+`system-status-managed` and `pane-pwd-managed` instead come from the separately
+verified public Release packages described above; no legacy clock is required.
 It records both sources, native
 compiler hosts and all executable hashes. The original five fixture cases still
 test real `PluginHost`, inventory inspection, pinned-descriptor spawn, access
@@ -128,17 +129,17 @@ as the workflow does, without changing process-global environment inside tests.
 The copied fixture and its synthetic receipt/manifest stay below the check root.
 Those receipts are local protocol setup, not authenticated Release installation.
 
-The separately labelled clock cases also require absolute regular executable
-paths `AMONG_MANAGED_CLOCK_BINARY`, `AMONG_LEGACY_CLOCK_BINARY` and their compiled
-digests `AMONG_MANAGED_CLOCK_SHA256`, `AMONG_LEGACY_CLOCK_SHA256`. Missing/wrong
-setup fails. The managed binary is copied and inspected under synthetic clock
-identity metadata before the real host reviews access and spawns it; the legacy
-binary is only the unchanged renderer reference, not a managed fallback.
+The separately labelled clock cases also require an absolute regular executable
+path `AMONG_MANAGED_CLOCK_BINARY` and its verified package-member digest in
+`AMONG_MANAGED_CLOCK_SHA256`. Missing/wrong setup fails. The published managed
+binary is copied and inspected under explicitly synthetic clock identity metadata
+before the real host reviews access and spawns it. That fixture setup is not an
+installed Release receipt.
 
 The workflow launches each exact clock case in its own test process with
 `AMONG_CLOCK_CASE` and child-only `TZ` setup. UTC/Tokyo output is checked against
-actual request-time UTC fences; unset/empty behavior is checked against the real
-legacy renderer under the same environment. Both real host footer observations
+actual request-time UTC fences; unset/empty behavior is checked against an
+independent system `localtime_r` oracle under the same environment. Both host footer observations
 must advance, carry the 1000-ms refresh and leave the application header empty;
 valid pane/workspace targets remain unavailable without their grants. Over-budget
 and control-byte cases must refuse before any supervisor is created. No Rust test
@@ -208,12 +209,13 @@ child exit code; direct SDK exit-status observations are a separate boundary.
 Setup requires `AMONG_MANAGED_PWD_BINARY`/`AMONG_MANAGED_PWD_SHA256` and
 `AMONG_MANAGED_PAGES_FIXTURE`/`AMONG_MANAGED_PAGES_SHA256`. Missing, linked,
 non-executable or digest-mismatched setup fails, never falls back to another binary.
-CI also checks the exact source tree and native ELF machine. Source-built binaries
-and synthetic receipts do not establish authenticated official packages,
-installation, package upgrades/rollback or whole tasks2.1/2.4 acceptance.
+CI also checks the exact source tree and native ELF machine. Source-built protocol
+fixtures and synthetic receipts do not establish repository installation, current
+managed updates/recovery or whole tasks2.1/2.4 acceptance. Published package-byte
+verification is a separate boundary from installation and runtime consent.
 
-The separately selected ignored resource-widget case uses the same exact real
-binary with explicitly synthetic local metadata, never an authenticated Release.
+The separately selected ignored resource-widget case uses the same published
+binary with explicitly synthetic local metadata, not an installed Release receipt.
 It drives Cancel/Escape, Accept and enable, then disable through native keyboard
 controls; actual terminal input must still reach the same PTY before review,
 while running and after disable. Three mapped, allocated GTK ProgressBars must

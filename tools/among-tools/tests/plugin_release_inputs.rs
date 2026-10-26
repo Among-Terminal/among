@@ -91,6 +91,9 @@ fn exact_byte_checks_reject_changed_size_hash_links_and_non_regular_inputs() -> 
     symlink(&path, root.join("link"))?;
     assert!(release::checked_bytes(&root.join("link"), 19, &digest).is_err());
     assert!(release::checked_bytes(&root, 19, &digest).is_err());
+    let fifo = root.join("fifo");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRUSR)?;
+    assert!(release::checked_bytes(&fifo, 19, &digest).is_err());
     fs::write(&path, b"other package bytes")?;
     assert!(release::checked_bytes(&path, 19, &digest).is_err());
     Ok(())
