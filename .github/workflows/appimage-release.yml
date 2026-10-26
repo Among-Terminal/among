@@ -192,11 +192,11 @@ jobs:
           set -euo pipefail
           mkdir audio-drain-inputs audio-drain-build audio-drain-evidence
           mkdir audio-drain-build/baseline audio-drain-build/candidate
-          git rev-parse HEAD > audio-drain-evidence/source-sha
+          git -c safe.directory="$(pwd -P)" rev-parse HEAD > audio-drain-evidence/source-sha
           test "$(cat audio-drain-evidence/source-sha)" = "$GITHUB_SHA"
           cargo fmt --check
           cargo fmt --check --manifest-path tools/among-tools/Cargo.toml
-          git ls-files -z examples/audio-shipped-control.rs examples/audio-control-fixtures.rs examples/audio-drain-capture.rs examples/audio-effect-capture.rs tests/audio-context-drain tools/among-tools/examples/audio-drain-control.rs | xargs -0 sha256sum > audio-drain-evidence/control-sources.sha256
+          git -c safe.directory="$(pwd -P)" ls-files -z examples/audio-shipped-control.rs examples/audio-control-fixtures.rs examples/audio-drain-capture.rs examples/audio-effect-capture.rs tests/audio-context-drain tools/among-tools/examples/audio-drain-control.rs | xargs -0 sha256sum > audio-drain-evidence/control-sources.sha256
           rustc --edition=2024 -D warnings examples/audio-control-fixtures.rs -o audio-drain-inputs/audio-control-fixtures
           audio-drain-inputs/audio-control-fixtures "$PWD/audio-drain-fixtures"
           for name in tone-eight.wav tone-recovery.wav; do
