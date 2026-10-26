@@ -2,11 +2,12 @@ use crate::{
     sessions::{fresh, pair, pane_rectangles, rectangles, Harness},
     storage, Result,
 };
-use serde_json::json;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+pub mod profile;
 
 fn require(value: bool, message: &str) -> Result<()> {
     if value {
@@ -120,25 +121,10 @@ fn footer_widths(text: &str) -> Vec<u64> {
         .collect()
 }
 
-pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result<PathBuf> {
+pub fn run(root: &Path, binary: &Path, profile: &Path, scratch: &Path) -> Result<PathBuf> {
     let mut h = fresh(binary, scratch, "live-status")?;
     let names = ["clock", "system-status", "pane-pwd"];
-    let plugin_dir = h.base.join("data/among/plugins");
-    fs::create_dir(&plugin_dir)?;
-    for name in names {
-        let bytes = fs::read(storage::safe_path(plugins, Path::new(name))?)?;
-        require(
-            bytes.starts_with(b"\x7fELF"),
-            "status plugin is not native ELF",
-        )?;
-        storage::atomic_write(&plugin_dir, Path::new(name), &bytes, 0o755)?;
-    }
-    fs::write(
-        h.base.join("config/among/plugins.json"),
-        serde_json::to_vec(
-            &json!({"plugins":names.map(|name|json!({"name":name,"enabled":true}))}),
-        )?,
-    )?;
+    profile::replay(profile, &h.base)?;
     let docs = fs::read_to_string(root.join("docs/plugins.md"))?;
     let hook = docs
         .split_once("among_osc7() {")

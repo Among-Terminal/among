@@ -30,7 +30,7 @@ Usage:
   among-tools check-window-controls <among-binary> <prebuilt-notice-plugin>
   among-tools check-live-focus <among-binary>
   among-tools check-live-resize <among-binary>
-  among-tools check-live-status <source-root> <among-binary> <prebuilt-plugins>
+  among-tools check-live-status <source-root> <among-binary> <observed-installed-profile>
   among-tools check-desktop <source-root> <among-binary>
   among-tools check-appimage-gnome <appimage> <new-evidence-directory> [--native-present]
   among-tools check-context-menu-launch <among-binary>

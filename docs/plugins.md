@@ -540,6 +540,12 @@ tests remain; raw low-level transport fixtures do not imply managed admission.
 Native Preferences persistence uses clearly synthetic managed receipts and real
 published executable bytes. Its ten phases are distinct from the public Release
 installation/review/enable/output/disable/uninstall acceptance test.
+The live-status renderer runner accepts only a bounded runtime profile captured
+after that native test's actual installation and explicit review. It rechecks the
+native architecture, pinned catalogue, receipt/tag/asset bindings, saved grants,
+installed/settings SHA-256 and executable/resource digests before replay. This
+ephemeral executable/manifest/lease snapshot is excluded from uploaded artifacts;
+it is not a second installer or a new package/source archive.
 
 ## Repository package metadata — implementation in progress
 
