@@ -3,6 +3,7 @@
 mod entrypoint;
 pub mod metadata;
 pub mod mutation;
+mod official;
 mod operations;
 mod package;
 pub mod registry;
