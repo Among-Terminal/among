@@ -4,3 +4,8 @@
 *.pyc
 __pycache__/
 target/
+/audio-drain-inputs/
+/audio-drain-build/
+/audio-drain-evidence/
+/audio-drain-payloads/
+/audio-drain-fixtures/

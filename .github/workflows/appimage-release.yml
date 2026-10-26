@@ -7,6 +7,11 @@ name: AppImage candidates
 #   appimage-sources-<amd64|arm64>  Debian source packages of every bundled library
 on:
   workflow_dispatch:
+    inputs:
+      audio_context_drain_control:
+        description: Run only the matched producer command-boundary experiment (not package acceptance)
+        type: boolean
+        default: false
   workflow_call:
   pull_request:
 
@@ -15,6 +20,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ inputs.audio_context_drain_control != true }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -146,6 +152,126 @@ jobs:
           path: appimage-checker/
           if-no-files-found: error
           retention-days: 5
+
+  audio-context-drain-control:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.audio_context_drain_control == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CARGO_HOME: /opt/among-cargo
+      RUSTUP_HOME: /opt/among-rustup
+      CARGO_BUILD_JOBS: '1'
+      DEB_BUILD_OPTIONS: parallel=1
+    steps:
+      - name: Install container-only input verification tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates curl dpkg-dev patch build-essential pkg-config
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Install the pinned native Rust toolchain before fixture preflight
+        run: |
+          base=https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu
+          curl --fail --silent --show-error --location "$base/rustup-init" -o /tmp/rustup-init
+          curl --fail --silent --show-error --location "$base/rustup-init.sha256" -o /tmp/rustup-init.sha256
+          (cd /tmp && sha256sum --check rustup-init.sha256)
+          chmod 755 /tmp/rustup-init
+          /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.1
+          /opt/among-cargo/bin/rustup component add rustfmt --toolchain 1.98.1
+          echo '/opt/among-cargo/bin' >> "$GITHUB_PATH"
+      - name: Verify accessible source, exact fixture and native inputs before full builds
+        run: |
+          set -euo pipefail
+          mkdir audio-drain-inputs audio-drain-build audio-drain-evidence
+          mkdir audio-drain-build/baseline audio-drain-build/candidate
+          git rev-parse HEAD > audio-drain-evidence/source-sha
+          test "$(cat audio-drain-evidence/source-sha)" = "$GITHUB_SHA"
+          cargo fmt --check
+          cargo fmt --check --manifest-path tools/among-tools/Cargo.toml
+          git ls-files -z examples/audio-shipped-control.rs examples/audio-control-fixtures.rs examples/audio-drain-capture.rs examples/audio-effect-capture.rs tests/audio-context-drain tools/among-tools/examples/audio-drain-control.rs | xargs -0 sha256sum > audio-drain-evidence/control-sources.sha256
+          rustc --edition=2024 -D warnings examples/audio-control-fixtures.rs -o audio-drain-inputs/audio-control-fixtures
+          audio-drain-inputs/audio-control-fixtures "$PWD/audio-drain-fixtures"
+          for name in tone-eight.wav tone-recovery.wav; do
+            printf '%s  %s\n' 64bada62d3a4e674af1d4af818c9517ab51cfff7927422cff3ea6b0de82a9874 "audio-drain-fixtures/$name" | sha256sum --check
+            test "$(stat -c %s "audio-drain-fixtures/$name")" -eq 768044
+          done
+          sha256sum audio-drain-fixtures/*.wav > audio-drain-evidence/verified-fixtures.sha256
+          while read -r hash filename; do
+            curl --fail --silent --show-error --location "https://archive.ubuntu.com/ubuntu/pool/main/g/gst-plugins-good1.0/$filename" -o "audio-drain-inputs/$filename"
+            printf '%s  %s\n' "$hash" "audio-drain-inputs/$filename" | sha256sum --check
+          done < tests/audio-context-drain/source-inputs.sha256
+          apt-get install -y --no-install-recommends pulseaudio=1:16.1+dfsg1-2ubuntu10.1 pulseaudio-utils=1:16.1+dfsg1-2ubuntu10.1 libpulse0=1:16.1+dfsg1-2ubuntu10.1 libpulse-dev=1:16.1+dfsg1-2ubuntu10.1
+          printf '%s\n' '4d77c5d7d37a389a0a309101c73b79e596ecbfe3f42bb0e14ede71be1a96d48d  /usr/bin/pulseaudio' '00ab68a64ecbb5d6e0d4b5b35707a83a9040cdb373008e487176e49d184cf22f  /usr/lib/x86_64-linux-gnu/pulseaudio/libpulsecommon-16.1.so' | sha256sum --check > audio-drain-evidence/native-inputs-check.txt
+          apt-mark hold pulseaudio pulseaudio-utils libpulse0 libpulse-dev
+          dpkg-source -x audio-drain-inputs/gst-plugins-good1.0_1.24.2-1ubuntu1.8.dsc audio-drain-build/baseline/source
+          dpkg-source -x audio-drain-inputs/gst-plugins-good1.0_1.24.2-1ubuntu1.8.dsc audio-drain-build/candidate/source
+          patch --fuzz=0 --directory=audio-drain-build/candidate/source --strip=1 < tests/audio-context-drain/pulsesink-context-drain-candidate.patch
+          set +e
+          diff -ru audio-drain-build/baseline/source audio-drain-build/candidate/source > audio-drain-evidence/sole-third-party-change.diff
+          difference=$?
+          set -e
+          test "$difference" -eq 1
+      - name: Resolve matched native build dependencies in this CI container
+        run: |
+          apt-get build-dep -y ./audio-drain-build/baseline/source
+          apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtk-4-media-gstreamer=4.14.5+ds-0ubuntu0.10 gstreamer1.0-plugins-base gstreamer1.0-plugins-good xvfb xauth
+          dpkg-query -W > audio-drain-evidence/native-installed-packages.txt
+          cc --version > audio-drain-evidence/native-compiler.txt
+          sha256sum "$(readlink -f "$(command -v cc)")" > audio-drain-evidence/native-compiler.sha256
+          dpkg-buildflags > audio-drain-evidence/native-build-flags.txt
+          pkg-config --modversion gstreamer-1.0 gstreamer-base-1.0 gstreamer-audio-1.0 gstreamer-pbutils-1.0 libpulse > audio-drain-evidence/native-dependency-versions.txt
+          printf '%s\n' '4d77c5d7d37a389a0a309101c73b79e596ecbfe3f42bb0e14ede71be1a96d48d  /usr/bin/pulseaudio' '00ab68a64ecbb5d6e0d4b5b35707a83a9040cdb373008e487176e49d184cf22f  /usr/lib/x86_64-linux-gnu/pulseaudio/libpulsecommon-16.1.so' | sha256sum --check > audio-drain-evidence/native-inputs-after-dependencies.txt
+      - name: Build the current source-bound producer and Rust controls
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo build --release --locked --bin among --example audio-shipped-control --example audio-control-fixtures --example audio-effect-capture --example audio-drain-capture
+          cargo fmt --check --manifest-path tools/among-tools/Cargo.toml
+          cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example audio-drain-control
+          tools/among-tools/target/release/examples/audio-drain-control fixtures "$PWD/audio-drain-fixtures"
+          sha256sum audio-drain-fixtures/*.wav target/release/among target/release/examples/audio-shipped-control target/release/examples/audio-effect-capture target/release/examples/audio-drain-capture > audio-drain-evidence/actual-rust-inputs.sha256
+      - name: Build the same distribution source baseline and one-patch candidate
+        run: |
+          set -euo pipefail
+          for build in baseline candidate; do
+            (cd "audio-drain-build/$build/source" && dpkg-buildpackage -b -uc -us -j1) > "audio-drain-evidence/$build-build.log" 2>&1
+            find "audio-drain-build/$build/source/debian" -type f -path '*/gstreamer-1.0/libgstpulseaudio.so' > "audio-drain-evidence/$build-modules.txt"
+            test -s "audio-drain-evidence/$build-modules.txt"
+          done
+      - name: Stage explicitly new matched experimental payloads
+        run: |
+          set -euo pipefail
+          for build in baseline candidate; do
+            module="$(find "audio-drain-build/$build/source/debian" -type f -path '*/gstreamer-1.0/libgstpulseaudio.so' ! -path '*/debian/tmp/*' -print)"
+            test -n "$module"
+            test "$(printf '%s\n' "$module" | wc -l)" -eq 1
+            printf '%s\n' "$module" > "audio-drain-evidence/$build-selected-module.txt"
+            sha256sum "$module" > "audio-drain-evidence/$build-module.sha256"
+            readelf -n "$module" > "audio-drain-evidence/$build-module-build-id.txt"
+          done
+          tools/among-tools/target/release/examples/audio-drain-control stage "$PWD/audio-drain-payloads" "$PWD" "$(cat audio-drain-evidence/baseline-selected-module.txt)" "$(cat audio-drain-evidence/candidate-selected-module.txt)"
+          cp audio-drain-payloads/control-scope.json audio-drain-evidence/payload-scope.json
+          useradd --create-home --shell /bin/bash among-audio
+          chown among-audio:among-audio audio-drain-evidence
+      - name: Execute each matched diagnostic and uninstrumented cell once
+        run: |
+          runuser -u among-audio -- tools/among-tools/target/release/examples/audio-drain-control run "$PWD" "$PWD/audio-drain-payloads" "$PWD/audio-drain-fixtures" "$PWD/audio-drain-evidence/captures"
+      - name: Retain exact controls and all raw failures without acceptance claims
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: audio-context-drain-control-amd64
+          path: audio-drain-evidence/
+          if-no-files-found: error
+          retention-days: 14
 
   checksums:
     needs: build
