@@ -96,7 +96,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn new(starts_allowed: Rc<Cell<bool>>) -> Self {
+    fn new(admission: crate::plugin::host::Admission) -> Self {
         // The first pane's id comes from the same allocator as every later one,
         // so a split can never mint an id that is already in use.
         let allocator = PaneAllocator::after(PaneId(1));
@@ -116,7 +116,7 @@ impl AppState {
             shortcuts_installed: 0,
             last_notice: None,
             store: SlotStore::new(),
-            plugins: PluginHost::with_start_gate(starts_allowed),
+            plugins: PluginHost::with_admission(admission),
             bindings: Bindings::defaults(),
             settings: crate::settings::PreferencesStorage::new(crate::settings::directory()),
             settings_status: gtk::StringList::new(&[""]),
@@ -336,8 +336,7 @@ pub fn build(app: &adw::Application, requested: Option<Action>) {
 
 struct ApplicationPlugins {
     app: glib::WeakRef<adw::Application>,
-    starts_allowed: Rc<Cell<bool>>,
-    retiring: Cell<usize>,
+    admission: crate::plugin::host::Admission,
     current: RefCell<std::rc::Weak<RefCell<AppState>>>,
     recovery_started: Cell<bool>,
 }
@@ -358,31 +357,13 @@ fn application_plugins(app: &adw::Application) -> Rc<ApplicationPlugins> {
         }
         let entry = Rc::new(ApplicationPlugins {
             app: app.downgrade(),
-            starts_allowed: Rc::new(Cell::new(true)),
-            retiring: Cell::new(0),
+            admission: Default::default(),
             current: RefCell::new(std::rc::Weak::new()),
             recovery_started: Cell::new(false),
         });
         entries.push(entry.clone());
         entry
     })
-}
-
-struct RetiringPlugins(Rc<ApplicationPlugins>);
-
-impl ApplicationPlugins {
-    fn retire(self: &Rc<Self>) -> RetiringPlugins {
-        self.retiring.set(self.retiring.get().saturating_add(1));
-        self.starts_allowed.set(false);
-        RetiringPlugins(self.clone())
-    }
-}
-
-impl Drop for RetiringPlugins {
-    fn drop(&mut self) {
-        self.0.retiring.set(self.0.retiring.get().saturating_sub(1));
-        self.0.starts_allowed.set(self.0.retiring.get() == 0);
-    }
 }
 
 fn build_with_writer(
@@ -418,9 +399,7 @@ fn build_with_writer(
     crate::packaged::apply_window_identity(&window);
 
     let admission = application_plugins(app);
-    let state = Rc::new(RefCell::new(AppState::new(
-        admission.starts_allowed.clone(),
-    )));
+    let state = Rc::new(RefCell::new(AppState::new(admission.admission.clone())));
     admission.current.replace(Rc::downgrade(&state));
     {
         let mut state = state.borrow_mut();
@@ -624,9 +603,9 @@ fn build_with_writer(
             if let Some(handler) = removal_handler.borrow_mut().take() {
                 app.disconnect(handler);
             }
-            // share admission across replacement windows, not just one host.
-            // terminals may reopen immediately; plugins wait for all old reapers.
-            let retiring = admission.retire();
+            // Per-identity reservations span windows. A replacement cannot
+            // overlap its predecessor, but unrelated identities may use free
+            // slots even if one old group cannot yet be proven retired.
             state.borrow_mut().exiting = true;
             state.borrow_mut().plugins.shutdown();
             // destroying the last window would otherwise end the process before
@@ -635,7 +614,6 @@ fn build_with_writer(
             let state = state.clone();
             glib::timeout_add_local(Duration::from_millis(20), move || {
                 let _keep_application_alive = &hold;
-                let _keep_plugin_starts_closed = &retiring;
                 let mut state = state.borrow_mut();
                 state.plugins.poll();
                 if state.plugins.is_stopped() {

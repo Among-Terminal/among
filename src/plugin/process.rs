@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use super::admission::Lease;
 use super::protocol::Request;
 use super::transport::{FrameDecoder, MAX_FRAME_BYTES, MAX_QUEUE_FRAMES};
 
@@ -72,10 +73,18 @@ pub struct Process {
     cancel: Arc<AtomicBool>,
     pid: Arc<AtomicU32>,
     worker: JoinHandle<()>,
+    admission: Arc<Lease>,
+    #[cfg(test)]
+    proof_control: Arc<ProofControl>,
 }
 
 impl Process {
-    pub fn start(mut command: Command) -> io::Result<Self> {
+    #[cfg(test)]
+    pub fn start(command: Command) -> io::Result<Self> {
+        Self::start_admitted(command, Arc::new(Lease::new()))
+    }
+
+    pub(super) fn start_admitted(mut command: Command, admission: Arc<Lease>) -> io::Result<Self> {
         command
             .process_group(0)
             .stdin(Stdio::piped())
@@ -90,11 +99,17 @@ impl Process {
         let worker_cancel = cancel.clone();
         let worker_outstanding = outstanding.clone();
         let worker_pid = pid.clone();
+        let worker_admission = admission.clone();
+        #[cfg(test)]
+        let proof_control = Arc::new(ProofControl::default());
+        #[cfg(test)]
+        let worker_proof_control = proof_control.clone();
         // spawn the worker before the child, so a thread-creation failure cannot
         // strand a child or force a GUI-thread wait in the error path.
         let worker = std::thread::Builder::new()
             .name("among-plugin-supervisor".into())
             .spawn(move || {
+                let _held_admission = &worker_admission;
                 if worker_cancel.load(Ordering::Acquire) {
                     return;
                 }
@@ -116,7 +131,12 @@ impl Process {
                 ) {
                     let _ = failure_sender.try_send(Failure::Fault(reason));
                 }
-                terminate_and_reap(&mut child);
+                terminate_and_reap(
+                    &mut child,
+                    &worker_admission,
+                    #[cfg(test)]
+                    &worker_proof_control,
+                );
             })?;
         Ok(Self {
             frames,
@@ -126,6 +146,9 @@ impl Process {
             cancel,
             pid,
             worker,
+            admission,
+            #[cfg(test)]
+            proof_control,
         })
     }
 
@@ -140,6 +163,19 @@ impl Process {
 
     pub fn finished(&self) -> bool {
         self.worker.is_finished()
+    }
+
+    pub fn retirement_reason(&self) -> Option<&'static str> {
+        self.admission.reason()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_group_proof(&self, errno: Option<i32>) -> ProofHold {
+        self.proof_control.observations.store(0, Ordering::Release);
+        self.proof_control
+            .mode
+            .store(errno.unwrap_or(-1), Ordering::Release);
+        ProofHold(self.proof_control.clone())
     }
 
     pub fn failure(&self) -> Option<Failure> {
@@ -355,10 +391,15 @@ fn child_exited(pid: u32) -> io::Result<bool> {
     Ok(unsafe { info.si_pid() } != 0)
 }
 
-fn terminate_and_reap(child: &mut Child) {
+fn terminate_and_reap(
+    child: &mut Child,
+    admission: &Lease,
+    #[cfg(test)] proof_control: &ProofControl,
+) {
     // process_group(0) makes this owned child's PID its group ID. do not claim
     // control of a descendant that deliberately escapes the supervised group.
-    if let Ok(pid) = i32::try_from(child.id()) {
+    let pgid = i32::try_from(child.id()).ok().filter(|pid| *pid > 1);
+    if let Some(pid) = pgid {
         unsafe {
             libc::kill(-pid, libc::SIGTERM);
         }
@@ -371,8 +412,90 @@ fn terminate_and_reap(child: &mut Child) {
     }
     // an uninterruptible child holds this worker/generation, not the GUI. the
     // caller must not replace it until this function really observes reaping.
+    admission.reaping();
     while child.wait().is_err() {
         std::thread::sleep(Duration::from_millis(100));
+    }
+    // Never deliver another signal after reap: the numeric group ID could now
+    // be recycled. Signal zero is a read-only existence/permission query. Only
+    // ESRCH proves absence; success and every other error retain this generation.
+    // Unlike a procfs scan this cannot omit hidden group members. Zombies may
+    // delay absence, but only this identity and one shared budget slot are held.
+    loop {
+        let result = match pgid {
+            Some(pgid) => group_absent(pgid),
+            None => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+        };
+        #[cfg(test)]
+        let result = proof_control.observe(result);
+        if matches!(result, Ok(true)) {
+            break;
+        }
+        admission.pending(&result);
+        std::thread::sleep(Duration::from_millis(IO_INTERVAL_MS as u64));
+    }
+}
+
+fn group_absent(pgid: i32) -> io::Result<bool> {
+    if pgid <= 1 {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let result = unsafe { libc::kill(-pgid, 0) };
+    let error = (result < 0).then(io::Error::last_os_error);
+    group_absent_result(result, error)
+}
+
+fn group_absent_result(result: i32, error: Option<io::Error>) -> io::Result<bool> {
+    if result == 0 {
+        return Ok(false);
+    }
+    let error = error.unwrap_or_else(|| io::Error::other("invalid process-group query result"));
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(true)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct ProofControl {
+    mode: std::sync::atomic::AtomicI32,
+    observations: AtomicUsize,
+}
+
+#[cfg(test)]
+impl ProofControl {
+    fn observe(&self, real: io::Result<bool>) -> io::Result<bool> {
+        let mode = self.mode.load(Ordering::Acquire);
+        if mode == 0 {
+            return real;
+        }
+        self.observations.fetch_add(1, Ordering::AcqRel);
+        if mode < 0 {
+            Ok(false)
+        } else {
+            Err(io::Error::from_raw_os_error(mode))
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct ProofHold(Arc<ProofControl>);
+
+#[cfg(test)]
+impl ProofHold {
+    pub(crate) fn observations(&self) -> usize {
+        self.0.observations.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ProofHold {
+    fn drop(&mut self) {
+        // Releasing the control restores real inspection; it never manufactures
+        // absence, including when another assertion unwinds the test.
+        self.0.mode.store(0, Ordering::Release);
     }
 }
 
@@ -463,6 +586,131 @@ mod tests {
     #[should_panic(expected = "cannot inspect owned fixture")]
     fn unrelated_proc_stat_errors_still_fail_the_observer() {
         live_from_stat(0, Err(io::Error::from_raw_os_error(libc::EACCES)));
+    }
+
+    #[test]
+    fn group_absence_requires_kernel_esrch_not_success_or_an_inspection_error() {
+        assert!(!group_absent_result(0, None).unwrap());
+        assert!(group_absent_result(-1, Some(io::Error::from_raw_os_error(libc::ESRCH))).unwrap());
+        for errno in [
+            libc::EPERM,
+            libc::EACCES,
+            libc::EINTR,
+            libc::EIO,
+            libc::EINVAL,
+        ] {
+            assert_eq!(
+                group_absent_result(-1, Some(io::Error::from_raw_os_error(errno)))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(errno)
+            );
+        }
+        for pgid in [-1, 0, 1] {
+            assert_eq!(
+                group_absent(pgid).unwrap_err().raw_os_error(),
+                Some(libc::EINVAL)
+            );
+        }
+    }
+
+    #[test]
+    fn proof_pending_or_denied_after_real_leader_reap_is_not_finished() {
+        for errno in [None, Some(libc::EPERM), Some(libc::EACCES), Some(libc::EIO)] {
+            let process = fixture("stubborn");
+            until(|| process.started());
+            let pending = process.hold_group_proof(errno);
+            process.stop();
+            // These are repeated nonblocking Pending results, not a barrier
+            // that hides a worker which ignores an inspection result.
+            until(|| pending.observations() >= 2);
+            assert!(
+                !live(process.pid()),
+                "real leader was not reaped before the proof probes"
+            );
+            assert!(
+                !process.finished(),
+                "pending/error was treated as retirement proof"
+            );
+            assert!(process.retirement_reason().is_some());
+            drop(pending);
+            until(|| process.finished());
+            assert!(!live(process.pid()));
+        }
+    }
+
+    #[test]
+    fn a_non_live_unreaped_zombie_group_is_conservatively_present() {
+        let executable = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("examples/fake-plugin");
+        let mut child = Command::new(executable)
+            .arg("crashing")
+            .process_group(0)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        until(|| child_exited(pid).unwrap());
+        let non_live = !live(pid);
+        let before_reap = group_absent(i32::try_from(pid).unwrap());
+        // Reap before assertions, even if a platform observation is surprising.
+        child.wait().unwrap();
+        assert!(non_live);
+        assert!(
+            !before_reap.unwrap(),
+            "a zombie is not an empty kernel group"
+        );
+        assert!(group_absent(i32::try_from(pid).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn proof_pending_worker_retains_the_actual_package_lease_after_process_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "among-retirement-lease-{}",
+            glib::uuid_string_random()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("plugin");
+        std::fs::write(&script, b"#!/bin/sh\nread keep\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let lease_path = root.join("lease");
+        let lease = Arc::new(std::fs::File::create(&lease_path).unwrap());
+        assert_eq!(
+            unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+            0
+        );
+        let contender = std::fs::File::open(&lease_path).unwrap();
+        let command = pinned_program(
+            std::fs::File::open(&root).unwrap(),
+            std::fs::File::open(&script).unwrap(),
+            Some(lease.clone()),
+        );
+        drop(lease);
+        let process = Process::start(command).unwrap();
+        let hold = process.hold_group_proof(None);
+        until(|| process.started());
+        process.stop();
+        until(|| hold.observations() >= 2);
+        assert!(!process.finished());
+        assert_ne!(
+            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        drop(process);
+        assert_ne!(
+            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0,
+            "detached worker lost its real package lease"
+        );
+        drop(hold);
+        until(|| unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
