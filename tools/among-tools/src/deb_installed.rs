@@ -85,6 +85,11 @@ pub fn run(
     let candidate = candidate.canonicalize()?;
     let (package, record) =
         deb::validate_candidate(root, &candidate, &tag, &source, target, architecture)?;
+    let profile = candidate.join("observed-profile");
+    crate::plugin_install::package::validate(&profile, &source)?;
+    let profile = profile
+        .to_str()
+        .ok_or("observed package profile path is not UTF-8")?;
     crate::binary_archive::validate(&record, &candidate, &tag, target, architecture)?;
     let checker = native_checker::validate(
         &candidate.join("native-checker"),
@@ -262,7 +267,7 @@ pub fn run(
                     "check-live-status",
                     root.to_str().ok_or("root path is not UTF-8")?,
                     "/usr/bin/among",
-                    "/usr/share/among/plugins",
+                    profile,
                 ],
                 240,
             ),
@@ -366,7 +371,7 @@ pub fn run(
                     "check-live-status",
                     root.to_str().ok_or("root path is not UTF-8")?,
                     archive_binary,
-                    "/home/among-archive-check/bundle/plugins",
+                    profile,
                 ],
                 240,
             ),

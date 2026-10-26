@@ -34,6 +34,7 @@ jobs:
       CARGO_HOME: /opt/among-cargo
       RUSTUP_HOME: /opt/among-rustup
       CARGO_BUILD_JOBS: '2'
+      AMONG_CHECK_ROOT: /var/lib/among-checks
       RUST_HOST: ${{ matrix.rust_host }}
       BUILD_ARCH: ${{ matrix.architecture }}
       REF_TYPE: ${{ github.ref_type }}
@@ -44,7 +45,8 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates curl file build-essential \
             pkg-config libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev desktop-file-utils \
-            libglib2.0-bin librsvg2-common adwaita-icon-theme gsettings-desktop-schemas shared-mime-info
+            libglib2.0-bin librsvg2-common adwaita-icon-theme gsettings-desktop-schemas shared-mime-info \
+            xvfb xauth openbox dbus-x11 xdotool x11-utils imagemagick
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
@@ -63,6 +65,16 @@ jobs:
           cargo build --release --locked
           cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
+      - name: Capture actual source-bound installed plugin profile for packaged rendering
+        run: |
+          set -eu
+          mkdir -p "$AMONG_CHECK_ROOT" appimage-checker
+          source_sha="$(git -c "safe.directory=$(pwd -P)" rev-parse HEAD)"
+          case "$source_sha" in ''|*[!0-9a-f]*) echo 'invalid host source SHA' >&2; exit 1 ;; esac
+          test "${#source_sha}" -eq 40
+          AMONG_CHECK_SOURCE_SHA="$source_sha" cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
+          tools=tools/among-tools/target/release/among-tools
+          "$tools" ci-x11 "$tools" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" appimage-checker/observed-profile
       - name: Name the candidate after the tag or the package version
         run: |
           version="$(tools/among-tools/target/release/among-tools appimage-version . "$REF_TYPE" "$REF_NAME")"
@@ -103,10 +115,9 @@ jobs:
             "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.audit.json" appimage-sources
       - name: Bind the checker for the clean hosts
         run: |
-          mkdir appimage-checker
           cp tools/among-tools/target/release/among-tools appimage-checker/among-tools
           cd appimage-checker
-          sha256sum among-tools > SHA256SUMS
+          sha256sum among-tools observed-profile/transfer.json > SHA256SUMS
       - name: Retain build logs after a failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -132,6 +143,9 @@ jobs:
         with:
           name: appimage-checker-${{ matrix.architecture }}
           path: appimage-checker/
+          # Deliberate bounded internal transfer; never part of the AppImage or
+          # a screenshot artifact. Exact seals/leases belong to this input.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 5
 

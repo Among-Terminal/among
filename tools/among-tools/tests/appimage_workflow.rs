@@ -115,3 +115,49 @@ fn appimage_workflow_is_callable_read_only_and_keeps_the_artifact_contract() -> 
     );
     Ok(())
 }
+
+#[test]
+fn package_profile_producers_stamp_one_exact_bin_test_from_a_valid_repo_local_sha() -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (file, job) in [
+        ("appimage-release.yml", "build"),
+        ("snap-build.yml", "snap"),
+        ("deb-release.yml", "build"),
+        ("rpm-release.yml", "build"),
+    ] {
+        let workflow: Value =
+            serde_yaml_ng::from_slice(&fs::read(root.join(".github/workflows").join(file))?)?;
+        let scripts = workflow["jobs"][job]["steps"]
+            .as_array()
+            .ok_or("package steps absent")?
+            .iter()
+            .filter_map(|step| step["run"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            scripts.matches("capture-package-plugin-profile").count(),
+            1,
+            "{file}"
+        );
+        assert!(
+            scripts.contains("cargo test --bin among --locked --no-run --message-format=json"),
+            "{file}"
+        );
+        let source = scripts
+            .find("source_sha=\"$(git -c \"safe.directory=$(pwd -P)\" rev-parse HEAD)\"")
+            .ok_or("repository-local source stamp absent")?;
+        let length = scripts
+            .find("test \"${#source_sha}\" -eq 40")
+            .ok_or("source SHA length check absent")?;
+        let compile = scripts
+            .find("AMONG_CHECK_SOURCE_SHA=\"$source_sha\"")
+            .ok_or("compiled-in source stamp absent")?;
+        assert!(scripts.contains("''|*[!0-9a-f]*)"), "{file}");
+        assert!(
+            source < length && length < compile,
+            "source must be checked before compilation: {file}"
+        );
+        assert!(!scripts.contains("safe.directory=*"), "{file}");
+    }
+    Ok(())
+}

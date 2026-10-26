@@ -206,13 +206,16 @@ After building the app, tools and three example plugins, run each command throug
 
 ```sh
 among-tools ci-x11 among-tools check-live-focus /absolute/path/to/among
-among-tools ci-x11 among-tools check-live-status /absolute/source /absolute/path/to/among /absolute/plugin/binaries
+among-tools ci-x11 among-tools check-live-status /absolute/source /absolute/path/to/among /absolute/observed-installed-profile
 among-tools ci-x11 among-tools check-desktop /absolute/source /absolute/path/to/among
 ```
 
 Focus and status use exactly the selected executable; they do not substitute a
 checkout build when an installed executable was selected. Status uses the actual
-documented OSC7 shell hook and only three isolated plugin payloads. Desktop checks
+documented OSC7 shell hook and a profile captured after actual native public
+installation, review, mapped output, disable and uninstall (see `docs/testing.md`).
+It validates native architecture, receipts, grants and exact executable bytes before
+replay; a directory of loose example binaries is not a profile. Desktop checks
 validate metadata, invoke the documented installer with the selected binary,
 launch its generated entry via GIO on a private bus and check title, WM class,
 GTK icon lookup path, then remove the fixture through its native uninstaller.

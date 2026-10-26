@@ -45,8 +45,9 @@ Failed sources show N/A independently. These describe the process's proc/mount
 namespace; sandbox figures need not describe the whole host.
 
 `pane-pwd` polls each pane's last terminal-reported directory every second,
-including unfocused panes. The full path is in the tooltip; long labels are
-truncated. Labels contain only the path, without a `PWD:` prefix. Unknown
+including unfocused panes. The full path is in the tooltip; the plugin bounds
+label text to 480 characters and GTK visually ellipsizes it to fit the pane.
+Labels contain only the path, without a `PWD:` prefix. Unknown
 directories produce no content; the plugin never substitutes
 the host or focused pane's directory. A known initial shell directory is available
 at launch; subsequent directory changes require the shell to opt in to OSC 7.
@@ -579,19 +580,29 @@ Failed/rate-limited/cancelled refresh keeps the committed cache and installed
 selection/switch/settings unchanged. **Remove source** removes discovery and its
 cache only; it neither disables nor uninstalls a selected package.
 
-Registrations and exact raw catalogue bytes live in the owned data directory
-`among/plugin-sources/sources.json`, separate from managed selections and config.
-The total metadata storage budget is 16 MiB: the committed document is capped at
-8 MiB, reserving the other half for its flushed atomic replacement. There are at
-most 32 repositories and four snapshots per repository. Old snapshots can be evicted for cache quota without deleting
-registrations, settings or installed generations. A refreshed duplicate revision/
+The application-owned **Official plugins for Among Terminal** row is always present,
+in addition to at most 32 custom sources. Its numeric repository `1431055733` and
+publisher `339567100` are pinned; equal owner/name labels confer no official status.
+It cannot be removed or reassigned to a different publisher. A publisher mismatch
+is unavailable, not an approval prompt. Displaying this row neither fetches metadata
+nor installs, enables or grants access to a plugin.
+
+Custom registrations and exact raw catalogue bytes live in the owned data directory
+`among/plugin-sources/sources.json`; the official cache uses `official.json` beside it.
+Neither is managed selection or configuration storage. Each retained document is
+bounded to 8 MiB. Both retained documents plus any flushed atomic replacement must
+fit the shared 16-MiB budget, including removal while offline. The proposed document
+can evict old snapshots to make room without deleting unrelated registrations,
+settings or installed generations. If even that cannot fit, the operation refuses
+without committing a registration/cache change. There are at most four snapshots
+per source. A refreshed duplicate revision/
 digest replaces its retrieval observation rather than consuming another slot.
 Publisher reapproval drops the previous publisher's cached snapshots.
 
 Source edits use no-follow owned storage, a bounded worker/shared two-credit
 budget, advisory serialization, flushed atomic replacement and an exact previous
 document/root-inode check. Written-but-unconfirmed durability is reported separately.
-Only safe files in the reserved `sources-<64-hex>` temporary namespace are recovered;
+Only safe files in the reserved `sources-<64-hex>` and `official-<64-hex>` temporary namespaces are recovered;
 links/unsafe entries refuse cleanup, unrelated files remain untouched. Directory
 enumeration is capped at 256 entries; one active atomic temporary is bounded by
 the same 8-MiB document cap. Each registration has a fresh token and edit revision;

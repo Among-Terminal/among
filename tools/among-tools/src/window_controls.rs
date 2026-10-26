@@ -82,21 +82,23 @@ fn saved(h: &Harness) -> Result<Value> {
 
 pub fn run(binary: &Path, notifier: &Path, scratch: &Path) -> Result<PathBuf> {
     let mut h = fresh(binary, scratch, "among-window-controls")?;
-    let plugins = h.base.join("data/among/plugins");
-    fs::create_dir_all(&plugins)?;
-    fs::copy(notifier, plugins.join("notifier"))?;
-    fs::write(
-        h.base.join("config/among/plugins.json"),
-        serde_json::to_vec(&json!({
-            "plugins":[{"name":"notifier","enabled":true}]
-        }))?,
+    let program = crate::live_status::profile::bounded(notifier, 8 * 1024 * 1024)?;
+    crate::managed_fixture::install(
+        &h.base,
+        "notifier",
+        &program,
+        &["status", "context.terminals", "events.terminal"],
     )?;
     h.start("drag")?;
     h.ready()?;
     h.wait(15, |this| {
-        Ok(this.text()?.contains("notifier: notification-check")
+        Ok(this
+            .text()?
+            .contains("github:12/notifier:message type is not recognised")
             && this.text()?.contains("app_footer=[\"fixture-status\"]")
-            && field(this, "toast_widgets")? == "0")
+            && field(this, "toast_widgets")? == "0"
+            && field(this, "notices_recorded")? == "0"
+            && !this.text()?.contains("notification-check-must-not-escape"))
     })?;
     require(
         !configuration(&h).exists(),
@@ -110,12 +112,14 @@ pub fn run(binary: &Path, notifier: &Path, scratch: &Path) -> Result<PathBuf> {
         field(&h, "sidebar_resize_cursor")? == "col-resize",
         "resize cursor missing",
     )?;
-    println!("PASS plugin notice is logged, explicit footer is visible and no toast widget exists");
+    println!("PASS synthetic managed fixture: unsupported notify is a value-free refusal, explicit footer is visible, no notice or toast is fabricated");
 
     h.key("ctrl+shift+n")?;
     h.wait(15, |this| {
         Ok(this.geometry()?.contains("panes=2")
-            && this.text()?.contains("notifier: pane-opened-check"))
+            && this.text()?.contains("fixture-status-pane-opened")
+            && field(this, "notices_recorded")? == "0"
+            && field(this, "toast_widgets")? == "0")
     })?;
     h.command("printf '%s' \"$$\" > before-resize.pid")?;
     h.wait(10, |this| Ok(this.base.join("before-resize.pid").exists()))?;

@@ -1,6 +1,8 @@
 use super::super::package::tests::OwnedRoot;
 use super::*;
 
+mod official_source;
+
 fn inspection(id: u64, publisher: u64, name: &str, revision: char) -> Inspection {
     Inspection::from_bytes(
         Origin {
