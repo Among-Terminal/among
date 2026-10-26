@@ -708,11 +708,9 @@ mod tests {
             last_progress: start,
             worst_stall: Duration::ZERO,
         };
-        assert!(
-            progress
-                .sample(&path, start + Duration::from_millis(301))
-                .is_err()
-        );
+        assert!(progress
+            .sample(&path, start + Duration::from_millis(301))
+            .is_err());
         assert_eq!(progress.previous, 0);
         assert_eq!(
             progress.sample(&path, start + Duration::from_millis(300))?,
