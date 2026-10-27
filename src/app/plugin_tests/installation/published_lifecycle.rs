@@ -77,7 +77,7 @@ fn read_regular(path: &Path, maximum: u64) -> Vec<u8> {
 #[test]
 fn profile_reader_refuses_oversize_symlink_and_fifo_inputs_without_blocking() {
     use std::os::unix::{ffi::OsStrExt, fs::symlink};
-    let root = crate::plugin::install::package::tests::OwnedRoot::new();
+    let root = crate::plugin::install::TestOwnedRoot::new();
     let regular = root.0.join("regular");
     std::fs::write(&regular, b"exact bytes").unwrap();
     assert_eq!(read_regular(&regular, 16), b"exact bytes");
