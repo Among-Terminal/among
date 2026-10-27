@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::os::unix::fs::PermissionsExt;
 
 fn effective(root: &Path) -> (Vec<Registration>, Option<Problem>) {
     match run(root, Request::EffectiveList, || Ok(()), || Ok(())).unwrap() {
@@ -93,6 +94,13 @@ fn built_in_source_is_inert_permanent_numeric_and_additional_to_32_custom_origin
     )
     .is_err());
     std::fs::write(sources.join("official.json"), b"damaged official cache").unwrap();
+    // A private mode makes the damaged content, not an inherited
+    // group-writable mode, the reason the cache is refused.
+    std::fs::set_permissions(
+        sources.join("official.json"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
     let (unavailable, problem) = effective(&sources);
     assert_eq!(problem, Some(OFFICIAL_STORAGE_PROBLEM));
     assert_eq!(unavailable.len(), 33);
@@ -112,6 +120,13 @@ fn existing_official_duplicate_does_not_consume_a_custom_slot_or_gain_removal_au
     })
     .unwrap();
     std::fs::write(root.0.join("sources.json"), bytes).unwrap();
+    // The store refuses a group- or world-writable registry, so the mode is
+    // set rather than inherited from the umask.
+    std::fs::set_permissions(
+        root.0.join("sources.json"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
     for id in 100..132 {
         run(
             &root.0,

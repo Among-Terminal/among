@@ -1445,8 +1445,14 @@ mod tests {
         let temp = Temp::new();
         let dir = temp.0.join("config");
         std::fs::create_dir(&dir).unwrap();
+        // Storage refuses a group- or world-writable directory or file, so
+        // the fixture's modes are set rather than inherited from the umask;
+        // otherwise the broken document below would fail on permissions
+        // instead of on parsing.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.join("managed-plugins.json");
         std::fs::write(&path, "broken").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let mut store = PreferencesStorage::new(Some(dir.clone()));
         assert!(store.plugin_changed("github:12/clock", true).is_err());
         assert!(store.status().contains("session-only"));
@@ -1461,6 +1467,7 @@ mod tests {
         );
         let shortcut = dir.join("shortcuts.json");
         std::fs::write(&shortcut, r#"{"version":2,"overrides":{}}"#).unwrap();
+        std::fs::set_permissions(&shortcut, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(store
             .shortcuts_changed(std::collections::BTreeMap::from([(
                 "split-pane".into(),
