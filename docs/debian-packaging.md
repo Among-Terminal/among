@@ -80,9 +80,23 @@ bytes and that no file owned only by the published package remains, then purges.
 Synthetic preferences, sessions, external
 plugin, shell startup files and per-user Cargo/source launcher fixtures must keep
 their hashes throughout. A separate user process must survive; this does not yet
-prove survival of a running GUI terminal through package operations. Actual Snap
-coexistence, replay of channel-specific user instructions and installed preference
-editing remain outstanding. Private hosted acceptance passed the independent
+prove survival of a running GUI terminal through package operations.
+
+Finally the runner replays the user commands of "Installing a built package"
+below word for word, without `sudo` because it already runs as root: install
+the published package, upgrade to the candidate, roll back with
+`--allow-downgrades`, upgrade again, remove and purge, each from a directory
+holding this target's package under its release name, with the installed
+version checked after every step. apt's confirmation prompt is answered through
+`APT_CONFIG`, as a user answers it, so the documented words stay unchanged. The
+commands are read from this file; an unknown or changed command stops the run
+before anything is installed.
+
+The installed binary also runs the keyboard divider regression
+(`check-live-resize`, `Ctrl+Shift`+arrows). Actual Snap coexistence and
+installed preference editing remain outstanding: the existing Preferences
+check drives a Cargo test executable, not `/usr/bin/among`, and the
+Preferences window is being reworked for 0.2.0. Private hosted acceptance passed the independent
 upgrade/remove/reinstall/purge sequence on all four targets, with user-state hashes
 and the synthetic survivor asserted after each operation. Receipts retain partial
 runtime/lifecycle scope, not full release acceptance. X11/Openbox evidence does not

@@ -26,16 +26,37 @@ impl Runner {
         args: &[&str],
         timeout: u64,
     ) -> Result<(bool, String)> {
+        let base = self.base.clone();
+        self.execute_in(&base, program, args, timeout)
+    }
+    /// Runs in `directory`, for commands that name files relative to where a
+    /// user would stand; the log still lands in the evidence directory.
+    pub(crate) fn execute_in(
+        &mut self,
+        directory: &Path,
+        program: &str,
+        args: &[&str],
+        timeout: u64,
+    ) -> Result<(bool, String)> {
         self.counter += 1;
         let path = self.base.join(format!("command-{}.log", self.counter));
         let file = File::create(&path)?;
-        let mut child =
-            OwnedProcess::spawn(Path::new(program), args, &self.env, &self.base, &file)?;
+        let mut child = OwnedProcess::spawn(Path::new(program), args, &self.env, directory, &file)?;
         let success = child.wait(Duration::from_secs(timeout))?.success();
         Ok((success, fs::read_to_string(path)?))
     }
     pub(crate) fn command(&mut self, program: &str, args: &[&str], timeout: u64) -> Result<String> {
-        let (success, text) = self.execute(program, args, timeout)?;
+        let base = self.base.clone();
+        self.command_in(&base, program, args, timeout)
+    }
+    pub(crate) fn command_in(
+        &mut self,
+        directory: &Path,
+        program: &str,
+        args: &[&str],
+        timeout: u64,
+    ) -> Result<String> {
+        let (success, text) = self.execute_in(directory, program, args, timeout)?;
         if !success {
             eprintln!("{text}");
             return Err(format!(
@@ -87,6 +108,9 @@ pub fn run(
         deb::validate_candidate(root, &candidate, &tag, &source, target, architecture)?;
     crate::binary_archive::validate(&record, &candidate, &tag, target, architecture)?;
     let previous = crate::deb_previous::read(root, target, architecture)?;
+    let documented = crate::deb_lifecycle::documented_commands(&fs::read_to_string(
+        storage::safe_path(root, Path::new("docs/debian-packaging.md"))?,
+    )?)?;
     let checker = native_checker::validate(
         &candidate.join("native-checker"),
         &source,
@@ -281,6 +305,11 @@ pub fn run(
                 vec!["check-sessions", "/usr/bin/among"],
                 420,
             ),
+            (
+                "installed-keyboard-divider-movement",
+                vec!["check-live-resize", "/usr/bin/among"],
+                180,
+            ),
         ] {
             let mut argv = vec![
                 "-u",
@@ -326,7 +355,15 @@ pub fn run(
             &archive_home.join("bundle"),
         )?;
         add_check(&mut evidence, "archive-extracted-exact-package-payload")?;
-        for check in crate::deb_lifecycle::run(&mut runner, &package, &record, home, &published)? {
+        for check in crate::deb_lifecycle::run(
+            &mut runner,
+            &package,
+            &record,
+            home,
+            &published,
+            &previous.version,
+            &documented,
+        )? {
             add_check(&mut evidence, &check)?;
         }
         if Path::new("/usr/bin/among").symlink_metadata().is_ok()
