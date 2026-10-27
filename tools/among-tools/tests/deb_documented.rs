@@ -27,7 +27,6 @@ fn committed_guide_yields_the_four_replayed_commands() -> Result<()> {
     );
     assert_eq!(commands.remove, words("apt remove among-terminal"));
     assert_eq!(commands.purge, words("apt purge among-terminal"));
-
     Ok(())
 }
 
@@ -97,6 +96,12 @@ fn guide_edits_that_break_the_replay_are_refused() -> Result<()> {
             "fence with a title",
             guide.replacen("```sh\nsudo apt purge", "```sh title\nsudo apt purge", 1),
             "unsupported code fence",
+        ),
+        (
+            "unclosed last block",
+            "\n## Installing a built package\n```sh\nsudo apt install ./among-terminal-debian13-amd64.deb\n\n### Coexisting with other copies\n"
+                .to_owned(),
+            "unclosed code fence",
         ),
         (
             "renamed section",
