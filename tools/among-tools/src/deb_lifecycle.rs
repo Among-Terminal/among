@@ -1,4 +1,4 @@
-use crate::{deb, deb_installed::Runner, process::OwnedProcess, storage, Result};
+use crate::{deb, deb_installed::Runner, deb_previous, process::OwnedProcess, storage, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -28,6 +28,9 @@ pub(crate) fn run(
     package: &Path,
     record: &Value,
     home: &Path,
+    published: &Path,
+    published_version: &str,
+    documented: &DocumentedCommands,
 ) -> Result<Vec<String>> {
     if home != Path::new("/home/among-check") || !nix::unistd::getuid().is_root() {
         return Err("lifecycle requires disposable root CI container and synthetic home".into());
@@ -147,25 +150,13 @@ pub(crate) fn run(
         ],
         30,
     )?;
-    let mut operations = Vec::new();
-    let mut operation = |runner: &mut Runner, label: &str, args: &[&str]| -> Result<()> {
-        runner.command("/usr/bin/apt-get", args, 180)?;
-        deb::require_unchanged(&paths, &original)?;
-        if !survivor.is_running()? {
-            return Err(format!("synthetic user shell killed during {label}").into());
-        }
-        operations.push(label.to_string());
-        storage::atomic_write(
-            &runner.base,
-            Path::new("lifecycle-progress.json"),
-            &serde_json::to_vec_pretty(
-                &serde_json::json!({"schema":1,"operations":operations,"scope":"completed package operations with user-state and survivor assertions only","release_acceptance":false}),
-            )?,
-            0o644,
-        )?;
-        Ok(())
+    let mut life = Lifecycle {
+        paths: &paths,
+        original: &original,
+        survivor: &mut survivor,
+        operations: Vec::new(),
     };
-    operation(
+    life.apt_get(
         runner,
         "older-fixture-installed",
         &[
@@ -178,7 +169,7 @@ pub(crate) fn run(
     if !Path::new("/").join(marker).is_file() {
         return Err("older-only payload not installed".into());
     }
-    operation(runner, "candidate-upgrade", &["install", "-y", package])?;
+    life.apt_get(runner, "candidate-upgrade", &["install", "-y", package])?;
     if Path::new("/").join(marker).exists() {
         return Err("upgrade retained older-only package file".into());
     }
@@ -201,14 +192,14 @@ pub(crate) fn run(
         .map(PathBuf::from)
         .filter(|path| path.is_file() || path.is_symlink())
         .collect::<Vec<_>>();
-    operation(runner, "remove", &["remove", "-y", "among-terminal"])?;
+    life.apt_get(runner, "remove", &["remove", "-y", "among-terminal"])?;
     if owned.iter().any(|path| path.exists() || path.is_symlink()) {
         return Err("remove left package-owned files".into());
     }
     // No conffiles are shipped: after remove, apt may forget this local-only
     // package entirely. Purging that absent name tests lookup, not removal.
     // Reinstall exact candidate bytes to test a real purge independently.
-    operation(runner, "reinstall-for-purge", &["install", "-y", package])?;
+    life.apt_get(runner, "reinstall-for-purge", &["install", "-y", package])?;
     if runner.command(
         "/usr/bin/dpkg-query",
         &["-W", "-f=${Status}\t${Version}", "among-terminal"],
@@ -222,9 +213,418 @@ pub(crate) fn run(
             return Err("purge fixture payload differs from checked candidate".into());
         }
     }
-    operation(runner, "purge", &["purge", "-y", "among-terminal"])?;
+    life.apt_get(runner, "purge", &["purge", "-y", "among-terminal"])?;
     if owned.iter().any(|path| path.exists() || path.is_symlink()) {
         return Err("purge left package-owned files".into());
     }
-    Ok(operations)
+    // The upgrade users actually perform: the published release, installed
+    // on a system without Among, replaced by the candidate.
+    let published = published
+        .to_str()
+        .ok_or("published package path is not UTF-8")?;
+    life.apt_get(
+        runner,
+        "published-release-installed",
+        &["install", "-y", published],
+    )?;
+    let published_owned = owned_files(runner)?;
+    life.apt_get(
+        runner,
+        "published-release-upgrade",
+        &["install", "-y", package],
+    )?;
+    if runner.command(
+        "/usr/bin/dpkg-query",
+        &["-W", "-f=${Status}\t${Version}", "among-terminal"],
+        30,
+    )? != format!("install ok installed\t{current}")
+    {
+        return Err("upgrade from the published release did not configure the candidate".into());
+    }
+    for (name, digest) in &candidate {
+        if storage::sha256(File::open(Path::new("/").join(name))?)? != *digest {
+            return Err("payload after the published upgrade differs from candidate bytes".into());
+        }
+    }
+    let kept = Path::new("/");
+    if let Some(stale) = published_owned.iter().find(|path| {
+        path.strip_prefix(kept)
+            .map_or(true, |relative| !candidate.contains_key(relative))
+            && (path.exists() || path.is_symlink())
+    }) {
+        return Err(format!(
+            "upgrade kept {} that only the published release owned",
+            stale.display()
+        )
+        .into());
+    }
+    let upgraded = owned_files(runner)?;
+    life.apt_get(
+        runner,
+        "purge-after-published-upgrade",
+        &["purge", "-y", "among-terminal"],
+    )?;
+    if upgraded
+        .iter()
+        .any(|path| path.exists() || path.is_symlink())
+    {
+        return Err("purge after the published upgrade left package-owned files".into());
+    }
+    life.replay_documented(
+        runner,
+        documented,
+        published,
+        package,
+        current,
+        published_version,
+    )?;
+    Ok(life.operations)
+}
+
+/// Package operations that keep user state and a user's running process
+/// intact; every step re-checks both and records its progress.
+struct Lifecycle<'a> {
+    paths: &'a [PathBuf],
+    original: &'a BTreeMap<PathBuf, String>,
+    survivor: &'a mut OwnedProcess,
+    operations: Vec<String>,
+}
+
+impl Lifecycle<'_> {
+    fn apt_get(&mut self, runner: &mut Runner, label: &str, args: &[&str]) -> Result<()> {
+        let base = runner.base.clone();
+        self.step(runner, &base, "/usr/bin/apt-get", label, args)
+    }
+
+    fn step(
+        &mut self,
+        runner: &mut Runner,
+        directory: &Path,
+        program: &str,
+        label: &str,
+        args: &[&str],
+    ) -> Result<()> {
+        runner.command_in(directory, program, args, 180)?;
+        deb::require_unchanged(self.paths, self.original)?;
+        if !self.survivor.is_running()? {
+            return Err(format!("synthetic user shell killed during {label}").into());
+        }
+        self.operations.push(label.to_string());
+        storage::atomic_write(
+            &runner.base,
+            Path::new("lifecycle-progress.json"),
+            &serde_json::to_vec_pretty(
+                &serde_json::json!({"schema":1,"operations":self.operations,"scope":"completed package operations with user-state and survivor assertions only","release_acceptance":false}),
+            )?,
+            0o644,
+        )?;
+        Ok(())
+    }
+
+    /// Runs the user commands of the Debian guide word for word, in the order
+    /// a user meets them: install a release, upgrade to a newer one, roll back
+    /// with the documented downgrade and upgrade again. The guide offers remove
+    /// and purge as alternatives, so each runs from an installed package: after
+    /// remove, APT may no longer know the package, and a purge would only test
+    /// a lookup failure. Each command runs in a directory that holds this
+    /// target's package under its release name, as a user who downloaded it
+    /// has it.
+    fn replay_documented(
+        &mut self,
+        runner: &mut Runner,
+        documented: &DocumentedCommands,
+        published: &str,
+        candidate: &str,
+        candidate_version: &str,
+        published_version: &str,
+    ) -> Result<()> {
+        // The guide's example names one target; a user on this target has
+        // this target's file, so the replay uses that name.
+        let name = Path::new(published)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("published package has no release name")?;
+        let local = format!("./{name}");
+        let mut directories = BTreeMap::new();
+        for (role, source) in [("published", published), ("candidate", candidate)] {
+            let directory = runner.base.join("documented").join(role);
+            fs::create_dir_all(&directory)?;
+            fs::copy(source, directory.join(name))?;
+            directories.insert(role, directory);
+        }
+        let with_file = |words: &[String]| {
+            words
+                .iter()
+                .map(|word| {
+                    if word.starts_with("./") {
+                        local.clone()
+                    } else {
+                        word.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let steps = [
+            (
+                "documented-install",
+                "published",
+                with_file(&documented.install),
+                Some(published_version),
+            ),
+            (
+                "documented-upgrade",
+                "candidate",
+                with_file(&documented.install),
+                Some(candidate_version),
+            ),
+            (
+                "documented-rollback",
+                "published",
+                with_file(&documented.downgrade),
+                Some(published_version),
+            ),
+            (
+                "documented-upgrade-again",
+                "candidate",
+                with_file(&documented.install),
+                Some(candidate_version),
+            ),
+            (
+                "documented-remove",
+                "candidate",
+                documented.remove.clone(),
+                None,
+            ),
+            (
+                "documented-reinstall-before-purge",
+                "candidate",
+                with_file(&documented.install),
+                Some(candidate_version),
+            ),
+            (
+                "documented-purge",
+                "candidate",
+                documented.purge.clone(),
+                None,
+            ),
+        ];
+        // apt asks for confirmation, and nobody types into the replay. The
+        // configuration answers yes, as the user does at the prompt, without
+        // changing the documented words.
+        let answer = runner.base.join("documented").join("assume-yes.conf");
+        fs::write(&answer, "APT::Get::Assume-Yes \"true\";\n")?;
+        let key = std::ffi::OsString::from("APT_CONFIG");
+        runner.env.insert(key.clone(), answer.into_os_string());
+        let result = (|| -> Result<()> {
+            for (label, role, words, version) in steps {
+                self.documented_step(runner, &directories[role], label, &words, version)?;
+            }
+            Ok(())
+        })();
+        runner.env.remove(&key);
+        result
+    }
+
+    fn documented_step(
+        &mut self,
+        runner: &mut Runner,
+        directory: &Path,
+        label: &str,
+        words: &[String],
+        version: Option<&str>,
+    ) -> Result<()> {
+        let (program, args) = words.split_first().ok_or("documented command is empty")?;
+        if program != "apt" {
+            return Err("documented command is not apt".into());
+        }
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        self.step(runner, directory, "/usr/bin/apt", label, &args)?;
+        let (installed, status) = runner.execute(
+            "/usr/bin/dpkg-query",
+            &["-W", "-f=${Status}\t${Version}", "among-terminal"],
+            30,
+        )?;
+        match version {
+            Some(version) if !installed || status != format!("install ok installed\t{version}") => {
+                return Err(format!("{label} did not leave version {version} installed").into());
+            }
+            None if Path::new("/usr/bin/among").symlink_metadata().is_ok() => {
+                return Err(format!("{label} left /usr/bin/among installed").into());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// The user commands of the "Installing a built package" section of
+/// `docs/debian-packaging.md`, before "Coexisting with other copies", as
+/// argument vectors without `sudo`. Installed acceptance runs exactly these, so
+/// the documented instructions cannot drift from what was tested. Any command
+/// other than the four known forms, any code fence other than a plain `sh`
+/// block, and any package file that is not a release file name is refused
+/// here, before the release run installs anything.
+pub fn documented_commands(guide: &str) -> Result<DocumentedCommands> {
+    let section = guide
+        .split_once("\n## Installing a built package\n")
+        .and_then(|(_, rest)| rest.split_once("\n### Coexisting with other copies\n"))
+        .map(|(section, _)| section)
+        .ok_or("Debian guide lacks its installation section")?;
+    let (mut install, mut downgrade, mut remove, mut purge) = (None, None, None, None);
+    let mut block = false;
+    for line in section.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            block = match (block, trimmed) {
+                (false, "```sh") => true,
+                (true, "```") => false,
+                _ => return Err(format!("unsupported code fence: {line}").into()),
+            };
+            continue;
+        }
+        if !block {
+            continue;
+        }
+        // A comment starts at a `#` after whitespace, as in the shell; a `#`
+        // inside a word would be part of an argument.
+        let command = line
+            .find(" #")
+            .map_or(line, |comment| &line[..comment])
+            .trim();
+        if command.is_empty() {
+            continue;
+        }
+        let words = command
+            .strip_prefix("sudo ")
+            .ok_or(format!(
+                "documented command is not run with sudo: {command}"
+            ))?
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let slot = match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            ["apt", "install", file] if release_file(file) => &mut install,
+            ["apt", "install", "--allow-downgrades", file] if release_file(file) => &mut downgrade,
+            ["apt", "remove", "among-terminal"] => &mut remove,
+            ["apt", "purge", "among-terminal"] => &mut purge,
+            _ => return Err(format!("unknown documented command: {command}").into()),
+        };
+        if slot.as_ref().is_some_and(|known| known != &words) {
+            return Err(format!("documented command varies: {command}").into());
+        }
+        *slot = Some(words);
+    }
+    if block {
+        return Err("unclosed code fence in the Debian guide".into());
+    }
+    let missing = |name: &str| format!("Debian guide lacks the {name} command");
+    let commands = DocumentedCommands {
+        install: install.ok_or_else(|| missing("install"))?,
+        downgrade: downgrade.ok_or_else(|| missing("rollback"))?,
+        remove: remove.ok_or_else(|| missing("remove"))?,
+        purge: purge.ok_or_else(|| missing("purge"))?,
+    };
+    if commands.install.last() != commands.downgrade.last() {
+        return Err("documented install and rollback name different files".into());
+    }
+    Ok(commands)
+}
+
+/// `./<name>` where `<name>` is the release file of some Debian slot.
+fn release_file(word: &str) -> bool {
+    word.strip_prefix("./").is_some_and(|name| {
+        crate::release_assets::DEB_TARGETS.iter().any(|target| {
+            crate::release_assets::ARCHITECTURES
+                .iter()
+                .any(|architecture| {
+                    crate::release_assets::package_asset(target, architecture, "deb") == name
+                })
+        })
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DocumentedCommands {
+    pub install: Vec<String>,
+    pub downgrade: Vec<String>,
+    pub remove: Vec<String>,
+    pub purge: Vec<String>,
+}
+
+fn owned_files(runner: &mut Runner) -> Result<Vec<PathBuf>> {
+    Ok(runner
+        .command("/usr/bin/dpkg-query", &["-L", "among-terminal"], 30)?
+        .lines()
+        .map(PathBuf::from)
+        .filter(|path| path.is_file() || path.is_symlink())
+        .collect())
+}
+
+/// Downloads the pinned published package and refuses it unless its bytes,
+/// name, version and architecture are exactly the pinned ones and it sorts
+/// before the candidate, so the later install really is an upgrade.
+pub(crate) fn fetch_published(
+    runner: &mut Runner,
+    previous: &deb_previous::Package,
+    architecture: &str,
+    candidate_version: &str,
+) -> Result<PathBuf> {
+    let directory = runner.base.join("published-release");
+    fs::create_dir(&directory)?;
+    let path = directory.join(&previous.asset);
+    let target = path.to_str().ok_or("published package path is not UTF-8")?;
+    runner.command(
+        "/usr/bin/curl",
+        &[
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--max-filesize",
+            "268435456",
+            "--output",
+            target,
+            &previous.url(),
+        ],
+        300,
+    )?;
+    if storage::sha256(File::open(&path)?)? != previous.sha256 {
+        return Err(format!("{} differs from the pinned published bytes", previous.asset).into());
+    }
+    for (field, expected) in [
+        ("Package", "among-terminal"),
+        ("Version", previous.version.as_str()),
+        ("Architecture", architecture),
+    ] {
+        if runner
+            .command("/usr/bin/dpkg-deb", &["-f", target, field], 30)?
+            .trim()
+            != expected
+        {
+            return Err(format!("published package {field} differs from the pin").into());
+        }
+    }
+    // Exit status 1 means "not lower" and 2 a malformed version; both refuse.
+    let (lower, _) = runner.execute(
+        "/usr/bin/dpkg",
+        &[
+            "--compare-versions",
+            &previous.version,
+            "lt",
+            candidate_version,
+        ],
+        30,
+    )?;
+    if !lower {
+        return Err(format!(
+            "published version {} does not sort before candidate {candidate_version}",
+            previous.version
+        )
+        .into());
+    }
+    Ok(path)
 }

@@ -69,16 +69,47 @@ file, then runs remove and purge. Because the local-only package has no conffile
 remove can erase its APT identity completely. The runner reinstalls the same checked
 candidate, verifies its exact version and payload again, then purges the installed
 package independently; it does not treat an absent-package no-op as purge evidence.
+
+It then checks the upgrade users actually perform (added, not yet run in a
+release tag run). Before any installation, the
+runner downloads the published package of the same target from the release pinned
+in `packaging/ci/deb-upgrade/previous-release.json` and refuses it unless its
+SHA-256, package name, version and architecture equal the pin and its version sorts
+before the candidate. After the purge above it installs that published package on
+the clean system, upgrades it to the candidate, verifies the candidate version and
+bytes and that no file owned only by the published package remains, then purges.
 Synthetic preferences, sessions, external
 plugin, shell startup files and per-user Cargo/source launcher fixtures must keep
 their hashes throughout. A separate user process must survive; this does not yet
-prove survival of a running GUI terminal through package operations. Actual Snap
-coexistence, replay of channel-specific user instructions and installed preference
-editing remain outstanding. Private hosted acceptance passed the independent
-upgrade/remove/reinstall/purge sequence on all four targets, with user-state hashes
-and the synthetic survivor asserted after each operation. Receipts retain partial
-runtime/lifecycle scope, not full release acceptance. X11/Openbox evidence does not
-certify GNOME or Wayland.
+prove survival of a running GUI terminal through package operations.
+
+Private hosted acceptance passed the repacked-candidate upgrade, remove,
+reinstall and purge sequence above on all four targets, with user-state hashes
+and the synthetic survivor asserted after each operation. Receipts retain
+partial runtime/lifecycle scope, not full release acceptance. X11/Openbox
+evidence does not certify GNOME or Wayland.
+
+The following checks are also added but have not yet run in a release tag run.
+
+Besides the upgrade from the published package described above, the runner
+replays the user commands of "Installing a built package"
+below word for word, without `sudo` because it already runs as root: install
+the published package, upgrade to the candidate, roll back with
+`--allow-downgrades` and upgrade again. The guide offers `remove` and `purge`
+as alternatives, so the runner removes the installed package, installs the
+candidate again and purges it. Each command runs from a directory holding this
+target's package under its release name, with the installed version checked
+after every step. apt's confirmation prompt is answered through `APT_CONFIG`,
+as a user answers it, so the documented words stay unchanged. The commands are
+read from this file before anything is installed; an unknown or changed
+command, an unsupported code fence or a file that is not a release file name
+stops the run there.
+
+The installed binary also runs the keyboard divider regression
+(`check-live-resize`, `Ctrl+Shift`+arrows). Actual Snap coexistence and
+installed preference editing remain outstanding: the existing Preferences
+check drives a Cargo test executable, not `/usr/bin/among`, and the
+Preferences window is being reworked for 0.2.0.
 
 The supported native runner labels were checked against GitHub's
 [hosted-runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
@@ -165,10 +196,23 @@ the newer local package.
 
 ### Upgrade, remove, purge and rollback
 
+Upgrade by installing a newer release's file:
+
 ```sh
-sudo apt install ./among-terminal-debian13-amd64.deb   # upgrade with a newer release's file
-sudo apt remove among-terminal                         # remove
-sudo apt purge among-terminal                          # purge
+sudo apt install ./among-terminal-debian13-amd64.deb
+```
+
+Remove the package with either command, not one after the other. The package
+ships no configuration files, so both delete everything it installed; after
+`remove`, APT may no longer know the package at all, and a following `purge`
+fails with `Unable to locate package among-terminal`.
+
+```sh
+sudo apt remove among-terminal
+```
+
+```sh
+sudo apt purge among-terminal
 ```
 
 Rollback is installing an older release's package over a newer one. `apt`
