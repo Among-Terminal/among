@@ -51,7 +51,7 @@ fn committed_pin_covers_every_debian_slot_of_a_stable_release() -> Result<()> {
 #[test]
 fn pins_that_do_not_describe_the_published_release_are_refused() -> Result<()> {
     type Damage = fn(&mut Value);
-    let cases: [(&str, Damage, &str); 9] = [
+    let cases: [(&str, Damage, &str); 11] = [
         (
             "release candidate tag",
             |pin| pin["tag"] = "v0.1.1-rc.1".into(),
@@ -88,6 +88,16 @@ fn pins_that_do_not_describe_the_published_release_are_refused() -> Result<()> {
             "version of another release",
             |pin| pin["packages"]["ubuntu24.04-amd64"]["version"] = "0.1.0-1~ubuntu24.04".into(),
             "does not follow from v0.1.1",
+        ),
+        (
+            "short digest",
+            |pin| pin["packages"]["debian13-amd64"]["sha256"] = "a".repeat(63).into(),
+            "sha256 is not 64 lowercase hex digits",
+        ),
+        (
+            "long digest",
+            |pin| pin["packages"]["debian13-amd64"]["sha256"] = "a".repeat(65).into(),
+            "sha256 is not 64 lowercase hex digits",
         ),
         (
             "uppercase digest",

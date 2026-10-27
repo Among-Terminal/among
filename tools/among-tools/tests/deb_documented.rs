@@ -27,7 +27,7 @@ fn committed_guide_yields_the_four_replayed_commands() -> Result<()> {
     );
     assert_eq!(commands.remove, words("apt remove among-terminal"));
     assert_eq!(commands.purge, words("apt purge among-terminal"));
-    assert_eq!(commands.file()?, "among-terminal-debian13-amd64.deb");
+
     Ok(())
 }
 
@@ -37,22 +37,22 @@ fn committed_guide_yields_the_four_replayed_commands() -> Result<()> {
 #[test]
 fn guide_edits_that_break_the_replay_are_refused() -> Result<()> {
     let guide = guide()?;
-    let install = "sudo apt purge among-terminal                          # purge";
-    assert!(guide.contains(install), "guide purge line changed");
+    let purge = "sudo apt purge among-terminal";
+    assert!(guide.contains(purge), "guide purge line changed");
     let cases = [
         (
             "unknown command",
-            guide.replace(install, "sudo apt autoremove --purge among-terminal"),
+            guide.replace(purge, "sudo apt autoremove --purge among-terminal"),
             "unknown documented command",
         ),
         (
             "command without sudo",
-            guide.replace(install, "apt purge among-terminal"),
+            guide.replace(purge, "apt purge among-terminal"),
             "not run with sudo",
         ),
         (
             "missing purge",
-            guide.replace(install, ""),
+            guide.replace(purge, ""),
             "lacks the purge command",
         ),
         (
@@ -63,6 +63,40 @@ fn guide_edits_that_break_the_replay_are_refused() -> Result<()> {
                 1,
             ),
             "documented command varies",
+        ),
+        (
+            "rollback names another file",
+            guide.replace(
+                "sudo apt install --allow-downgrades ./among-terminal-debian13-amd64.deb",
+                "sudo apt install --allow-downgrades ./among-terminal-ubuntu24.04-arm64.deb",
+            ),
+            "install and rollback name different files",
+        ),
+        (
+            "file that is not a release file name",
+            guide.replace(
+                "./among-terminal-debian13-amd64.deb",
+                "./among-terminal_0.1.1-1~debian13_amd64.deb",
+            ),
+            "unknown documented command",
+        ),
+        (
+            "hash inside the file argument",
+            guide.replace(
+                "sudo apt install ./among-terminal-debian13-amd64.deb\n",
+                "sudo apt install ./among-terminal-debian13-amd64.deb#x\n",
+            ),
+            "unknown documented command",
+        ),
+        (
+            "bash fence",
+            guide.replacen("```sh\nsudo apt purge", "```bash\nsudo apt purge", 1),
+            "unsupported code fence",
+        ),
+        (
+            "fence with a title",
+            guide.replacen("```sh\nsudo apt purge", "```sh title\nsudo apt purge", 1),
+            "unsupported code fence",
         ),
         (
             "renamed section",

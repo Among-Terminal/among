@@ -323,9 +323,12 @@ impl Lifecycle<'_> {
 
     /// Runs the user commands of the Debian guide word for word, in the order
     /// a user meets them: install a release, upgrade to a newer one, roll back
-    /// with the documented downgrade, upgrade again, remove and purge. Each
-    /// command runs in a directory that holds this target's package under its
-    /// release name, as a user who downloaded it has it.
+    /// with the documented downgrade and upgrade again. The guide offers remove
+    /// and purge as alternatives, so each runs from an installed package: after
+    /// remove, APT may no longer know the package, and a purge would only test
+    /// a lookup failure. Each command runs in a directory that holds this
+    /// target's package under its release name, as a user who downloaded it
+    /// has it.
     fn replay_documented(
         &mut self,
         runner: &mut Runner,
@@ -335,20 +338,6 @@ impl Lifecycle<'_> {
         candidate_version: &str,
         published_version: &str,
     ) -> Result<()> {
-        let documented_file = documented.file()?;
-        let release_names = crate::release_assets::DEB_TARGETS
-            .iter()
-            .flat_map(|target| {
-                crate::release_assets::ARCHITECTURES
-                    .iter()
-                    .map(move |architecture| {
-                        crate::release_assets::package_asset(target, architecture, "deb")
-                    })
-            })
-            .collect::<Vec<_>>();
-        if !release_names.iter().any(|name| name == documented_file) {
-            return Err("documented package file is not a release file name".into());
-        }
         // The guide's example names one target; a user on this target has
         // this target's file, so the replay uses that name.
         let name = Path::new(published)
@@ -405,6 +394,12 @@ impl Lifecycle<'_> {
                 "candidate",
                 documented.remove.clone(),
                 None,
+            ),
+            (
+                "documented-reinstall-before-purge",
+                "candidate",
+                with_file(&documented.install),
+                Some(candidate_version),
             ),
             (
                 "documented-purge",
@@ -466,7 +461,9 @@ impl Lifecycle<'_> {
 /// `docs/debian-packaging.md`, before "Coexisting with other copies", as
 /// argument vectors without `sudo`. Installed acceptance runs exactly these, so
 /// the documented instructions cannot drift from what was tested. Any command
-/// other than the four known forms is refused rather than executed.
+/// other than the four known forms, any code fence other than a plain `sh`
+/// block, and any package file that is not a release file name is refused
+/// here, before the release run installs anything.
 pub fn documented_commands(guide: &str) -> Result<DocumentedCommands> {
     let section = guide
         .split_once("\n## Installing a built package\n")
@@ -476,45 +473,73 @@ pub fn documented_commands(guide: &str) -> Result<DocumentedCommands> {
     let (mut install, mut downgrade, mut remove, mut purge) = (None, None, None, None);
     let mut block = false;
     for line in section.lines() {
-        match line.trim_end() {
-            "```sh" if !block => block = true,
-            "```" if block => block = false,
-            command if block => {
-                let command = command.split('#').next().unwrap_or("").trim();
-                if command.is_empty() {
-                    continue;
-                }
-                let words = command
-                    .strip_prefix("sudo ")
-                    .ok_or(format!(
-                        "documented command is not run with sudo: {command}"
-                    ))?
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>();
-                let slot = match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-                    ["apt", "install", file] if file.starts_with("./") => &mut install,
-                    ["apt", "install", "--allow-downgrades", file] if file.starts_with("./") => {
-                        &mut downgrade
-                    }
-                    ["apt", "remove", "among-terminal"] => &mut remove,
-                    ["apt", "purge", "among-terminal"] => &mut purge,
-                    _ => return Err(format!("unknown documented command: {command}").into()),
-                };
-                if slot.as_ref().is_some_and(|known| known != &words) {
-                    return Err(format!("documented command varies: {command}").into());
-                }
-                *slot = Some(words);
-            }
-            _ => {}
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            block = match (block, trimmed) {
+                (false, "```sh") => true,
+                (true, "```") => false,
+                _ => return Err(format!("unsupported code fence: {line}").into()),
+            };
+            continue;
         }
+        if !block {
+            continue;
+        }
+        // A comment starts at a `#` after whitespace, as in the shell; a `#`
+        // inside a word would be part of an argument.
+        let command = line
+            .find(" #")
+            .map_or(line, |comment| &line[..comment])
+            .trim();
+        if command.is_empty() {
+            continue;
+        }
+        let words = command
+            .strip_prefix("sudo ")
+            .ok_or(format!(
+                "documented command is not run with sudo: {command}"
+            ))?
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let slot = match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            ["apt", "install", file] if release_file(file) => &mut install,
+            ["apt", "install", "--allow-downgrades", file] if release_file(file) => &mut downgrade,
+            ["apt", "remove", "among-terminal"] => &mut remove,
+            ["apt", "purge", "among-terminal"] => &mut purge,
+            _ => return Err(format!("unknown documented command: {command}").into()),
+        };
+        if slot.as_ref().is_some_and(|known| known != &words) {
+            return Err(format!("documented command varies: {command}").into());
+        }
+        *slot = Some(words);
+    }
+    if block {
+        return Err("unclosed code fence in the Debian guide".into());
     }
     let missing = |name: &str| format!("Debian guide lacks the {name} command");
-    Ok(DocumentedCommands {
+    let commands = DocumentedCommands {
         install: install.ok_or_else(|| missing("install"))?,
         downgrade: downgrade.ok_or_else(|| missing("rollback"))?,
         remove: remove.ok_or_else(|| missing("remove"))?,
         purge: purge.ok_or_else(|| missing("purge"))?,
+    };
+    if commands.install.last() != commands.downgrade.last() {
+        return Err("documented install and rollback name different files".into());
+    }
+    Ok(commands)
+}
+
+/// `./<name>` where `<name>` is the release file of some Debian slot.
+fn release_file(word: &str) -> bool {
+    word.strip_prefix("./").is_some_and(|name| {
+        crate::release_assets::DEB_TARGETS.iter().any(|target| {
+            crate::release_assets::ARCHITECTURES
+                .iter()
+                .any(|architecture| {
+                    crate::release_assets::package_asset(target, architecture, "deb") == name
+                })
+        })
     })
 }
 
@@ -524,19 +549,6 @@ pub struct DocumentedCommands {
     pub downgrade: Vec<String>,
     pub remove: Vec<String>,
     pub purge: Vec<String>,
-}
-
-impl DocumentedCommands {
-    /// The file the documented install commands name, which the replay
-    /// provides under that exact name in each package's directory.
-    pub fn file(&self) -> Result<&str> {
-        let file = self.install.last().ok_or("install command is empty")?;
-        if self.downgrade.last() != Some(file) {
-            return Err("documented install and rollback name different files".into());
-        }
-        file.strip_prefix("./")
-            .ok_or_else(|| "documented package is not a relative file".into())
-    }
 }
 
 fn owned_files(runner: &mut Runner) -> Result<Vec<PathBuf>> {
@@ -596,7 +608,8 @@ pub(crate) fn fetch_published(
             return Err(format!("published package {field} differs from the pin").into());
         }
     }
-    runner.command(
+    // Exit status 1 means "not lower" and 2 a malformed version; both refuse.
+    let (lower, _) = runner.execute(
         "/usr/bin/dpkg",
         &[
             "--compare-versions",
@@ -606,5 +619,12 @@ pub(crate) fn fetch_published(
         ],
         30,
     )?;
+    if !lower {
+        return Err(format!(
+            "published version {} does not sort before candidate {candidate_version}",
+            previous.version
+        )
+        .into());
+    }
     Ok(path)
 }
