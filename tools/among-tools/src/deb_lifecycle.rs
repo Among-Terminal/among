@@ -1,4 +1,4 @@
-use crate::{deb, deb_installed::Runner, process::OwnedProcess, storage, Result};
+use crate::{deb, deb_installed::Runner, deb_previous, process::OwnedProcess, storage, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -28,6 +28,7 @@ pub(crate) fn run(
     package: &Path,
     record: &Value,
     home: &Path,
+    published: &Path,
 ) -> Result<Vec<String>> {
     if home != Path::new("/home/among-check") || !nix::unistd::getuid().is_root() {
         return Err("lifecycle requires disposable root CI container and synthetic home".into());
@@ -226,5 +227,128 @@ pub(crate) fn run(
     if owned.iter().any(|path| path.exists() || path.is_symlink()) {
         return Err("purge left package-owned files".into());
     }
+    // The upgrade users actually perform: the published release, installed
+    // on a system without Among, replaced by the candidate.
+    let published = published
+        .to_str()
+        .ok_or("published package path is not UTF-8")?;
+    operation(
+        runner,
+        "published-release-installed",
+        &["install", "-y", published],
+    )?;
+    let published_owned = owned_files(runner)?;
+    operation(
+        runner,
+        "published-release-upgrade",
+        &["install", "-y", package],
+    )?;
+    if runner.command(
+        "/usr/bin/dpkg-query",
+        &["-W", "-f=${Status}\t${Version}", "among-terminal"],
+        30,
+    )? != format!("install ok installed\t{current}")
+    {
+        return Err("upgrade from the published release did not configure the candidate".into());
+    }
+    for (name, digest) in &candidate {
+        if storage::sha256(File::open(Path::new("/").join(name))?)? != *digest {
+            return Err("payload after the published upgrade differs from candidate bytes".into());
+        }
+    }
+    let kept = Path::new("/");
+    if let Some(stale) = published_owned.iter().find(|path| {
+        path.strip_prefix(kept)
+            .map_or(true, |relative| !candidate.contains_key(relative))
+            && (path.exists() || path.is_symlink())
+    }) {
+        return Err(format!(
+            "upgrade kept {} that only the published release owned",
+            stale.display()
+        )
+        .into());
+    }
+    let upgraded = owned_files(runner)?;
+    operation(
+        runner,
+        "purge-after-published-upgrade",
+        &["purge", "-y", "among-terminal"],
+    )?;
+    if upgraded
+        .iter()
+        .any(|path| path.exists() || path.is_symlink())
+    {
+        return Err("purge after the published upgrade left package-owned files".into());
+    }
     Ok(operations)
+}
+
+fn owned_files(runner: &mut Runner) -> Result<Vec<PathBuf>> {
+    Ok(runner
+        .command("/usr/bin/dpkg-query", &["-L", "among-terminal"], 30)?
+        .lines()
+        .map(PathBuf::from)
+        .filter(|path| path.is_file() || path.is_symlink())
+        .collect())
+}
+
+/// Downloads the pinned published package and refuses it unless its bytes,
+/// name, version and architecture are exactly the pinned ones and it sorts
+/// before the candidate, so the later install really is an upgrade.
+pub(crate) fn fetch_published(
+    runner: &mut Runner,
+    previous: &deb_previous::Package,
+    architecture: &str,
+    candidate_version: &str,
+) -> Result<PathBuf> {
+    let directory = runner.base.join("published-release");
+    fs::create_dir(&directory)?;
+    let path = directory.join(&previous.asset);
+    let target = path.to_str().ok_or("published package path is not UTF-8")?;
+    runner.command(
+        "/usr/bin/curl",
+        &[
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--max-filesize",
+            "268435456",
+            "--output",
+            target,
+            &previous.url(),
+        ],
+        300,
+    )?;
+    if storage::sha256(File::open(&path)?)? != previous.sha256 {
+        return Err(format!("{} differs from the pinned published bytes", previous.asset).into());
+    }
+    for (field, expected) in [
+        ("Package", "among-terminal"),
+        ("Version", previous.version.as_str()),
+        ("Architecture", architecture),
+    ] {
+        if runner
+            .command("/usr/bin/dpkg-deb", &["-f", target, field], 30)?
+            .trim()
+            != expected
+        {
+            return Err(format!("published package {field} differs from the pin").into());
+        }
+    }
+    runner.command(
+        "/usr/bin/dpkg",
+        &[
+            "--compare-versions",
+            &previous.version,
+            "lt",
+            candidate_version,
+        ],
+        30,
+    )?;
+    Ok(path)
 }

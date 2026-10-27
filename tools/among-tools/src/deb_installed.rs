@@ -86,6 +86,7 @@ pub fn run(
     let (package, record) =
         deb::validate_candidate(root, &candidate, &tag, &source, target, architecture)?;
     crate::binary_archive::validate(&record, &candidate, &tag, target, architecture)?;
+    let previous = crate::deb_previous::read(root, target, architecture)?;
     let checker = native_checker::validate(
         &candidate.join("native-checker"),
         &source,
@@ -175,6 +176,15 @@ pub fn run(
     let checks_text = checks.to_str().ok_or("check root is not UTF-8")?;
     let check_root = format!("{}={checks_text}", crate::scratch::VARIABLE);
     let result = (|| -> Result<()> {
+        let published = crate::deb_lifecycle::fetch_published(
+            &mut runner,
+            &previous,
+            architecture,
+            record["package_version"]
+                .as_str()
+                .ok_or("candidate version absent")?,
+        )?;
+        add_check(&mut evidence, "published-release-fetched-and-pinned")?;
         missing_dependency(&mut runner)?;
         add_check(&mut evidence, "unavailable-dependency-rejected")?;
         // Slim base images exclude most /usr/share/doc files. Acceptance must
@@ -316,7 +326,7 @@ pub fn run(
             &archive_home.join("bundle"),
         )?;
         add_check(&mut evidence, "archive-extracted-exact-package-payload")?;
-        for check in crate::deb_lifecycle::run(&mut runner, &package, &record, home)? {
+        for check in crate::deb_lifecycle::run(&mut runner, &package, &record, home, &published)? {
             add_check(&mut evidence, &check)?;
         }
         if Path::new("/usr/bin/among").symlink_metadata().is_ok()

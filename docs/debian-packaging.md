@@ -69,6 +69,14 @@ file, then runs remove and purge. Because the local-only package has no conffile
 remove can erase its APT identity completely. The runner reinstalls the same checked
 candidate, verifies its exact version and payload again, then purges the installed
 package independently; it does not treat an absent-package no-op as purge evidence.
+
+It then checks the upgrade users actually perform. Before any installation, the
+runner downloads the published package of the same target from the release pinned
+in `packaging/ci/deb-upgrade/previous-release.json` and refuses it unless its
+SHA-256, package name, version and architecture equal the pin and its version sorts
+before the candidate. After the purge above it installs that published package on
+the clean system, upgrades it to the candidate, verifies the candidate version and
+bytes and that no file owned only by the published package remains, then purges.
 Synthetic preferences, sessions, external
 plugin, shell startup files and per-user Cargo/source launcher fixtures must keep
 their hashes throughout. A separate user process must survive; this does not yet
