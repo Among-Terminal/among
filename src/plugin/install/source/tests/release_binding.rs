@@ -18,7 +18,7 @@ fn actual_https_release_binding_peels_lightweight_annotated_nested_and_bounded_d
         metadata["revision"] = json!("d".repeat(40));
         let server = Server::new(move |request| {
             let path = request.split_whitespace().nth(1).unwrap();
-            if path == "/repositories/12/releases/7" {
+            if path == "/repositories/12/releases/latest" {
                 let mut reply = package_route(metadata.clone(), archive.clone(), request);
                 let mut release: Value = serde_json::from_slice(&reply.body).unwrap();
                 release["tag_name"] = json!(tag);
@@ -47,7 +47,7 @@ fn actual_https_release_binding_peels_lightweight_annotated_nested_and_bounded_d
             package_route(metadata.clone(), archive.clone(), request)
         });
         let inspection = server.inspect(true).unwrap();
-        assert_eq!(inspection.catalogue_revision, "a".repeat(40));
+        assert_eq!(inspection.catalogue_revision, "d".repeat(40));
         let committed = install_at(
             &server,
             inspection.select("sample", "1.0").unwrap(),
@@ -55,7 +55,7 @@ fn actual_https_release_binding_peels_lightweight_annotated_nested_and_bounded_d
         )
         .unwrap();
         let source = committed.receipt.source.as_ref().unwrap();
-        assert_eq!(source.catalogue_revision, "a".repeat(40));
+        assert_eq!(source.catalogue_revision, "d".repeat(40));
         assert_eq!(committed.receipt.revision, "d".repeat(40));
         let binding = source.release_binding.as_ref().unwrap();
         assert_eq!(binding.tag, tag);
@@ -68,14 +68,14 @@ fn actual_https_release_binding_peels_lightweight_annotated_nested_and_bounded_d
                 format!("{:040x}", 1)
             }
         );
-        assert_eq!(server.requests().len(), 11 + 2 * depth as usize);
+        assert_eq!(server.requests().len(), 15 + 3 * depth as usize);
         assert_eq!(
             server
                 .requests()
                 .iter()
                 .filter(|request| request.contains("/git/ref/tags/"))
                 .count(),
-            2
+            3
         );
         assert!(server
             .requests()
@@ -93,7 +93,7 @@ fn actual_https_release_binding_peels_lightweight_annotated_nested_and_bounded_d
             .package_path(&root.0)
             .join("executed")
             .exists());
-        println!("PASS actual HTTPS {label}: catalogue-declared version commit equals peeled release tag; source-snapshot commit remains distinct; persisted/offline entry stays disabled");
+        println!("PASS actual HTTPS {label}: release-asset catalogue revision equals peeled release tag; persisted/offline entry stays disabled");
     }
 }
 
@@ -135,15 +135,7 @@ fn actual_https_unrelated_release_update_preserves_previous_bytes_token_settings
             package_route(metadata.clone(), archive.clone(), request)
         }
     });
-    let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
-    let selected = update
-        .inspect(true)
-        .unwrap()
-        .select("sample", "1.0")
-        .unwrap()
-        .for_update(&entry, None)
-        .unwrap();
-    let problem = install_at(&update, selected, &root.0).unwrap_err();
+    let problem = update.inspect(true).unwrap_err();
     assert!(problem.0.contains("disagrees"));
     assert_eq!(
         std::fs::read(root.0.join("installed.json")).unwrap(),
@@ -164,7 +156,7 @@ fn actual_https_unrelated_release_update_preserves_previous_bytes_token_settings
     assert!(!update
         .requests()
         .iter()
-        .any(|request| request.contains("/releases/assets/")));
+        .any(|request| request.contains("/releases/assets/11 ")));
     println!("PASS actual HTTPS unrelated release update fails before transfer; previous selection, executable bytes, token, binding and unrelated settings remain exact");
 }
 
@@ -173,6 +165,7 @@ fn actual_install_worker_cancellation_during_tag_peeling_prevents_asset_download
     let _serial = JOB_TESTS.lock().unwrap();
     let root = super::super::super::package::tests::OwnedRoot::new();
     let (metadata, archive) = super::super::super::package::tests::fixture();
+    let selection = selected(&metadata);
     let server = Server::new(move |request| {
         if request.starts_with("GET /repositories/12/git/ref/tags/v1.0 ") {
             reference("v1.0", "tag", &"b".repeat(40))
@@ -182,16 +175,7 @@ fn actual_install_worker_cancellation_during_tag_peeling_prevents_asset_download
             package_route(metadata.clone(), archive.clone(), request)
         }
     });
-    let job = server
-        .install(
-            server
-                .inspect(true)
-                .unwrap()
-                .select("sample", "1.0")
-                .unwrap(),
-            root.0.clone(),
-        )
-        .unwrap();
+    let job = server.install(selection, root.0.clone()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !server
         .requests()
@@ -259,10 +243,10 @@ fn actual_https_release_binding_refuses_unrelated_unavailable_ambiguous_and_movi
         let release_reads = AtomicUsize::new(0);
         let server = Server::new(move |request| {
             let path = request.split_whitespace().nth(1).unwrap();
-            if path == "/repositories/12/releases/7" {
+            if path == "/repositories/12/releases/latest" {
                 let mut reply = package_route(metadata.clone(), archive.clone(), request);
                 let mut value: Value = serde_json::from_slice(&reply.body).unwrap();
-                let later = release_reads.fetch_add(1, Ordering::AcqRel) > 0;
+                let later = release_reads.fetch_add(1, Ordering::AcqRel) > 1;
                 if case == "missing release tag" {
                     value.as_object_mut().unwrap().remove("tag_name");
                 }
@@ -286,7 +270,7 @@ fn actual_https_release_binding_refuses_unrelated_unavailable_ambiguous_and_movi
                 return reply;
             }
             if let Some(tag) = path.strip_prefix("/repositories/12/git/ref/tags/") {
-                let later = ref_reads.fetch_add(1, Ordering::AcqRel) > 0;
+                let later = ref_reads.fetch_add(1, Ordering::AcqRel) > 1;
                 let good = "a".repeat(40);
                 let other = "b".repeat(40);
                 return match case {
@@ -315,7 +299,7 @@ fn actual_https_release_binding_refuses_unrelated_unavailable_ambiguous_and_movi
                         ..Reply::json(Value::Null)
                     };
                 }
-                let later = ref_reads.load(Ordering::Acquire) > 1;
+                let later = ref_reads.load(Ordering::Acquire) > 2;
                 let (kind, target) = match case {
                     "unrelated annotated target" => ("commit", "c".repeat(40)),
                     "tag cycle" => ("tag", sha.into()),
@@ -349,12 +333,10 @@ fn actual_https_release_binding_refuses_unrelated_unavailable_ambiguous_and_movi
             }
             package_route(metadata.clone(), archive.clone(), request)
         });
-        let selected = server
+        let outcome = server
             .inspect(true)
-            .unwrap()
-            .select("sample", "1.0")
-            .unwrap();
-        let outcome = install_at(&server, selected, &root.0);
+            .and_then(|inspection| inspection.select("sample", "1.0"))
+            .and_then(|selection| install_at(&server, selection, &root.0));
         println!(
             "actual HTTPS strict release boundary {case}: {}",
             if outcome.is_err() {

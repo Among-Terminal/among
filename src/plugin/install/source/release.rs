@@ -7,16 +7,53 @@ use crate::plugin::{
     data::{self, Problem},
     inventory::ReleaseBinding,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const MAX_TAG_OBJECTS: usize = 8;
 const MAX_GIT_BYTES: usize = 64 * 1024;
 
-#[derive(PartialEq, Eq)]
-pub(super) struct ResolvedRelease {
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::plugin::install) struct ResolvedRelease {
     pub binding: ReleaseBinding,
-    snapshot: ReleaseSnapshot,
+    pub snapshot: ReleaseSnapshot,
     chain: Vec<(String, String)>,
+}
+
+impl ResolvedRelease {
+    #[cfg(test)]
+    pub(super) fn fixture(snapshot: ReleaseSnapshot, commit: String) -> Self {
+        Self {
+            binding: ReleaseBinding {
+                tag: snapshot.tag.clone(),
+                object: commit.clone(),
+                commit: commit.clone(),
+            },
+            snapshot,
+            chain: vec![("commit".into(), commit)],
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), Problem> {
+        self.snapshot.validate()?;
+        if self.binding.tag != self.snapshot.tag
+            || self.chain.is_empty()
+            || self.chain.len() > MAX_TAG_OBJECTS + 1
+            || self.chain.first().map(|(_, sha)| sha) != Some(&self.binding.object)
+            || self.chain.last() != Some(&("commit".into(), self.binding.commit.clone()))
+        {
+            return Err(Problem("cached release tag binding is inconsistent"));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (index, (kind, sha)) in self.chain.iter().enumerate() {
+            object(&serde_json::json!({"type":kind,"sha":sha}))?;
+            if !seen.insert(sha) || (index + 1 < self.chain.len() && kind != "tag") {
+                return Err(Problem("cached release tag chain is inconsistent"));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn object(value: &Value) -> Result<(String, String), Problem> {
@@ -60,37 +97,43 @@ impl Operation {
         data::parse_unique(&bytes, limit)
     }
 
+    pub(super) async fn latest_release(&self, repository: u64) -> Result<ReleaseSnapshot, Problem> {
+        let release = self
+            .release_json(
+                repository,
+                &["releases", "latest"],
+                data::MAX_STATIC_BYTES,
+            )
+            .await.map_err(|problem| if problem.0 == "selected release tag or immutable Git object is unavailable; installation refused" {
+                Problem("no installable latest release is available; refresh and review when one is published")
+            } else { problem })?;
+        ReleaseSnapshot::from_value(&release)
+    }
+
     pub(super) async fn resolve_release(
         &self,
         selected: &Selection,
     ) -> Result<ResolvedRelease, Problem> {
-        let release = self
-            .release_json(
-                selected.repository_id,
-                &["releases", &selected.version.release_id.to_string()],
-                data::MAX_STATIC_BYTES,
-            )
-            .await?;
-        let snapshot = ReleaseSnapshot::from_value(&release)?;
-        if snapshot.id != selected.version.release_id {
+        let snapshot = self.latest_release(selected.repository_id).await?;
+        let release = self.resolve_tag(selected.repository_id, snapshot).await?;
+        if release.snapshot != selected.release.snapshot {
             return Err(Problem(
-                "selected public release identity disagrees with the catalogue",
+                "latest release snapshot changed; refresh and review again",
             ));
         }
-        let asset = snapshot.asset_by_id(selected.artifact.asset_id)?;
-        if asset.size != selected.artifact.size {
-            return Err(Problem("selected release asset identity or size changed"));
-        }
-        if asset.sha256 != selected.artifact.sha256 {
-            return Err(Problem(
-                "release asset digest disagrees with selected metadata",
-            ));
-        }
+        Ok(release)
+    }
+
+    pub(super) async fn resolve_tag(
+        &self,
+        repository: u64,
+        snapshot: ReleaseSnapshot,
+    ) -> Result<ResolvedRelease, Problem> {
         let tag = snapshot.tag.as_str();
         let mut suffix = vec!["git", "ref", "tags"];
         suffix.extend(tag.split('/'));
         let reference = self
-            .release_json(selected.repository_id, &suffix, MAX_GIT_BYTES)
+            .release_json(repository, &suffix, MAX_GIT_BYTES)
             .await?;
         if reference["ref"].as_str() != Some(format!("refs/tags/{tag}").as_str())
             || !reference.is_object()
@@ -110,20 +153,11 @@ impl Operation {
             chain.push(current.clone());
             if current.0 == "commit" {
                 let commit = self
-                    .release_json(
-                        selected.repository_id,
-                        &["git", "commits", &current.1],
-                        MAX_GIT_BYTES,
-                    )
+                    .release_json(repository, &["git", "commits", &current.1], MAX_GIT_BYTES)
                     .await?;
                 if commit["sha"].as_str() != Some(current.1.as_str()) {
                     return Err(Problem(
                         "resolved Git commit identity disagrees with the exact tag target",
-                    ));
-                }
-                if current.1 != selected.version.revision {
-                    return Err(Problem(
-                        "catalogue version revision disagrees with the resolved release-tag commit",
                     ));
                 }
                 return Ok(ResolvedRelease {
@@ -142,11 +176,7 @@ impl Operation {
                 ));
             }
             let annotation = self
-                .release_json(
-                    selected.repository_id,
-                    &["git", "tags", &current.1],
-                    MAX_GIT_BYTES,
-                )
+                .release_json(repository, &["git", "tags", &current.1], MAX_GIT_BYTES)
                 .await?;
             if annotation["sha"].as_str() != Some(current.1.as_str()) {
                 return Err(Problem(

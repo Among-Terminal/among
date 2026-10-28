@@ -565,7 +565,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .any(|label| label.text().contains("Only this plugin may restart")));
     press(&button(&dialog, "Cancel"));
     wait_for(|| view.visible_dialog().is_none(), Duration::from_secs(2));
-    assert_eq!(server.requests().len(), 3);
+    assert_eq!(server.requests().len(), 5);
     assert_eq!(
         crate::plugin::inventory::read(&root).unwrap()[0].receipt,
         first
@@ -574,7 +574,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     screenshot_dialog(&view.visible_dialog().unwrap(), "update-consent");
     press(&button(&view.visible_dialog().unwrap(), "Apply update"));
-    wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
+    wait_for(|| server.requests().len() == 11, Duration::from_secs(5));
     let old_path = first.package_path(&root);
     std::fs::remove_file(old_path.join("resource-observed")).unwrap();
     wait_for(
@@ -647,7 +647,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .for_update(&entry, stored.as_ref())
         .unwrap();
     let job = server.install(selected, root.clone()).unwrap();
-    wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
+    wait_for(|| server.requests().len() == 11, Duration::from_secs(5));
     ctx.state.borrow_mut().plugins.disable(KEY);
     ctx.state
         .borrow_mut()
@@ -841,7 +841,10 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
             root.clone(),
         )
         .unwrap();
-    wait_for(|| late_server.requests().len() == 8, Duration::from_secs(5));
+    wait_for(
+        || late_server.requests().len() == 11,
+        Duration::from_secs(5),
+    );
     let details = open_details();
     press(&button(&details, "Uninstall…"));
     wait_for(
@@ -1070,12 +1073,9 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
                 Reply::json(
                     json!({"id":12,"owner":{"login":if mode==2 {"new-publisher"}else{"example"},"id":if mode==2 {99}else{34}},"name":if mode==0 {"sample"}else{"renamed"},"private":false,"default_branch":"main"}),
                 )
-            } else if path == "/repositories/12/commits/main" {
-                Reply::json(json!({"sha":"a".repeat(40)}))
-            } else if path.ends_with("/among-plugins.json") {
-                Reply::json(crate::plugin::install::test_package("sample").0)
             } else {
-                panic!("unexpected source fixture path: {path}");
+                let (metadata, archive) = crate::plugin::install::test_package("sample");
+                crate::plugin::install::source::tests::package_route(metadata, archive, request)
             }
         }
     }));
@@ -1146,7 +1146,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         || has_label(view.upcast_ref(), "Source change saved"),
         Duration::from_secs(5),
     );
-    assert_eq!(server.requests().len(), 3);
+    assert_eq!(server.requests().len(), 5);
     let source = || {
         serde_json::from_slice::<serde_json::Value>(
             &std::fs::read(source_root.join("sources.json")).unwrap(),
@@ -1185,7 +1185,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     assert_eq!(
         server.requests().len(),
-        3,
+        5,
         "cache reopen must make no network request"
     );
     let mut stale = source();
@@ -1212,7 +1212,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     assert_eq!(
         server.requests().len(),
-        3,
+        5,
         "stale cached inspection is still offline and does not imply a successful refresh"
     );
     screenshot(&view, "source-stale-offline");
@@ -1234,7 +1234,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         initial["registrations"][0]["token"]
     );
     assert!(
-        server.requests()[3].starts_with("GET /repositories/12 "),
+        server.requests()[5].starts_with("GET /repositories/12 "),
         "refresh must target the registered numeric ID, not a reused repository name"
     );
     let renamed = std::fs::read(source_root.join("sources.json")).unwrap();
@@ -1458,8 +1458,8 @@ fn native_install(close_after_commit: bool) {
     let (mut second, _) = fixture_for("second");
     first.as_object_mut().unwrap().remove("schema_version");
     second.as_object_mut().unwrap().remove("schema_version");
-    second["artifacts"][0]["asset_id"] = json!(22);
-    let catalogue = json!({"schema_version":1,"plugins":[{"id":"sample","versions":[first.clone()]},{"id":"second","versions":[second]}]});
+    second["artifacts"][0]["asset"] = json!("second.tar.gz");
+    let catalogue = json!({"schema_version":2,"plugins":[{"id":"sample","versions":[first.clone()]},{"id":"second","versions":[second]}]});
     let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!close_after_commit));
     let worker_release = release.clone();
     let server = Rc::new(Server::new(move |request| {
@@ -1470,16 +1470,16 @@ fn native_install(close_after_commit: bool) {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
-        if request
-            .split_whitespace()
-            .nth(1)
-            .unwrap()
-            .ends_with("/among-plugins.json")
-        {
-            // the catalogue is retrieved by the actual revision-pinned client.
+        let path = request.split_whitespace().nth(1).unwrap();
+        if path.ends_with("/releases/assets/12") {
+            // The catalogue is retrieved through its observed release asset ID.
             let mut reply = package_route(first.clone(), archive.clone(), request);
             reply.set_json(catalogue.clone());
             reply
+        } else if path.ends_with("/releases/latest") {
+            Reply::json(crate::plugin::install::source::tests::release_document(
+                &catalogue,
+            ))
         } else {
             package_route(first.clone(), archive.clone(), request)
         }
@@ -1536,10 +1536,10 @@ fn native_install(close_after_commit: bool) {
         "multi-plugin catalogue must expose independent actions"
     );
     assert!(!root.join("installed.json").exists());
-    assert_eq!(server.requests().len(), 3);
+    assert_eq!(server.requests().len(), 5);
     press(&installs[0]);
     if close_after_commit {
-        wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
+        wait_for(|| server.requests().len() == 11, Duration::from_secs(5));
         release.store(true, std::sync::atomic::Ordering::Release);
         // hold the GUI loop while the worker commits, then destroy the view
         // before its polling callback has any chance to consume the outcome.
@@ -1587,11 +1587,11 @@ fn native_install(close_after_commit: bool) {
         retained
     );
     assert_eq!(crate::plugin::inventory::read(&root).unwrap().len(), 1);
-    assert_eq!(server.requests().len(), 11);
+    assert_eq!(server.requests().len(), 15);
     assert!(!server
         .requests()
         .iter()
-        .any(|request| request.contains("/assets/22")));
+        .any(|request| request.contains("/assets/14")));
     if !close_after_commit {
         screenshot(&view, "installed-disabled");
         view.destroy();
@@ -1974,7 +1974,7 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         )
         .contains("example/sample (repository 12, publisher 34)"));
     assert_eq!(requests.get(), 2);
-    assert_eq!(ready.requests().len(), 3);
+    assert_eq!(ready.requests().len(), 5);
     screenshot(&view, "repository-result");
     let id = focus(&view);
     xdo(&["windowsize", "--sync", &id, "480", "620"]);
@@ -2167,11 +2167,8 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
     );
     assert!(text().contains("example/sample (repository 12, publisher 34)"));
     assert!(text().contains("inspection does not install or enable plugins"));
-    assert_eq!(ready.requests().len(), 3);
-    assert!(ready.requests()[2].starts_with(&format!(
-        "GET /example/sample/{}/among-plugins.json ",
-        "a".repeat(40)
-    )));
+    assert_eq!(ready.requests().len(), 5);
+    assert!(ready.requests()[2].starts_with("GET /repositories/12/releases/assets/12 "));
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     assert_eq!(
         ctx.state.borrow().pane(PaneId(1)).unwrap().terminal(),

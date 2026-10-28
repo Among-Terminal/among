@@ -2,12 +2,14 @@
 //! inventory participates in the pre-commit comparison, not just one package.
 
 use crate::plugin::{data::Problem, inventory::ReleaseBinding};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
 pub(super) const MAX_RELEASE_ASSETS: usize = 64;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ReleaseAsset {
     pub id: u64,
     pub name: String,
@@ -15,7 +17,8 @@ pub(super) struct ReleaseAsset {
     pub sha256: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ReleaseSnapshot {
     pub id: u64,
     pub tag: String,
@@ -106,17 +109,43 @@ impl ReleaseSnapshot {
         })
     }
 
-    pub fn asset_by_id(&self, id: u64) -> Result<&ReleaseAsset, Problem> {
+    // Persist only the bounded canonical observation, not irrelevant API fields.
+    // Re-admit it through the same validation before offline use.
+    pub fn validate(&self) -> Result<(), Problem> {
+        if self.assets.is_empty() || self.assets.len() > MAX_RELEASE_ASSETS {
+            return Err(Problem("cached release inventory exceeds its bounds"));
+        }
+        let assets = self
+            .assets
+            .iter()
+            .map(|asset| {
+                serde_json::json!({
+                    "id":asset.id,"name":asset.name,"size":asset.size,"state":"uploaded",
+                    "digest":format!("sha256:{}",asset.sha256)
+                })
+            })
+            .collect::<Vec<_>>();
+        let canonical = Self::from_value(&serde_json::json!({
+            "id":self.id,"tag_name":self.tag,"draft":false,"prerelease":false,
+            "immutable":true,"assets":assets
+        }))?;
+        if &canonical != self {
+            return Err(Problem("cached release inventory is not canonical"));
+        }
+        Ok(())
+    }
+
+    pub fn asset(&self, name: &str) -> Result<&ReleaseAsset, Problem> {
         self.assets
             .iter()
-            .find(|asset| asset.id == id)
+            .find(|asset| asset.name == name)
             .ok_or(Problem(
-                "selected asset does not belong to the selected release",
+                "exact asset name does not belong to the selected release",
             ))
     }
 }
 
-fn asset_name(value: &str) -> bool {
+pub(super) fn asset_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 255
         && !matches!(value, "." | "..")

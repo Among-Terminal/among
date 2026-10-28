@@ -75,6 +75,7 @@ struct Snapshot {
     retrieved_at: u64,
     sha256: String,
     catalogue: String,
+    release: super::source::release::ResolvedRelease,
 }
 
 impl Snapshot {
@@ -85,11 +86,16 @@ impl Snapshot {
         {
             return Err(Problem("cached metadata timestamp or digest is invalid"));
         }
-        let mut inspection = Inspection::from_bytes(
+        let mut inspection = Inspection::from_release(
             self.origin.clone(),
-            self.revision.clone(),
+            self.release.clone(),
             self.catalogue.as_bytes().to_vec(),
         )?;
+        if inspection.catalogue_revision != self.revision {
+            return Err(Problem(
+                "cached catalogue revision disagrees with its release",
+            ));
+        }
         inspection.retrieved_at = self.retrieved_at;
         Ok(inspection)
     }
@@ -771,12 +777,14 @@ fn run_user(
     let mut protected = None;
     if let Some(inspection) = inspection {
         // reparse exact cached bytes before they gain persistence authority.
-        let validated = Inspection::from_bytes(
+        let validated = Inspection::from_release(
             inspection.origin(),
-            inspection.catalogue_revision.clone(),
+            inspection.release.clone(),
             inspection.catalogue_bytes.clone(),
         )?;
-        if validated.catalogue != inspection.catalogue {
+        if validated.catalogue != inspection.catalogue
+            || validated.catalogue_revision != inspection.catalogue_revision
+        {
             return Err(Problem("inspection and raw metadata disagree"));
         }
         if inspection.retrieved_at == 0 || inspection.retrieved_at > i64::MAX as u64 {
@@ -793,6 +801,7 @@ fn run_user(
             ));
         }
         let snapshot = Snapshot {
+            release: inspection.release.clone(),
             origin: origin.clone(),
             revision: inspection.catalogue_revision.clone(),
             retrieved_at: inspection.retrieved_at,
@@ -852,6 +861,7 @@ fn run_user(
             old.revision != snapshot.revision
                 || old.sha256 != snapshot.sha256
                 || old.origin != snapshot.origin
+                || old.release != snapshot.release
         });
         registration.snapshots.insert(0, snapshot);
         registration.snapshots.truncate(MAX_SNAPSHOTS);

@@ -425,7 +425,8 @@ pub(super) fn run() {
             .iter()
             .find(|input| input["id"] == plugin.id)
             .unwrap();
-        assert_eq!(expected_input["asset_id"], artifact.asset_id);
+        assert_eq!(expected_input["asset"], artifact.asset);
+        let observed_asset_id = expected_input["asset_id"].as_u64().unwrap();
         assert_eq!(expected_input["version"], version.manifest.version);
         assert_eq!(expected_input["revision"], SOURCE);
         assert_eq!(expected_input["architecture"], architecture);
@@ -436,7 +437,7 @@ pub(super) fn run() {
         );
         let expected = format!(
             "github:1431055733/{} · version {} · linux/{architecture} · asset {} · {} bytes",
-            plugin.id, version.manifest.version, artifact.asset_id, artifact.size
+            plugin.id, version.manifest.version, artifact.asset, artifact.size
         );
         let row = widgets(view.upcast_ref())
             .into_iter()
@@ -458,7 +459,7 @@ pub(super) fn run() {
         let receipt = &entry.receipt;
         assert_eq!(receipt.repository_id, 1431055733);
         assert_eq!(receipt.release_id, 424255611);
-        assert_eq!(receipt.asset_id, artifact.asset_id);
+        assert_eq!(receipt.asset_id, observed_asset_id);
         assert_eq!(receipt.revision, SOURCE);
         assert_eq!(receipt.manifest_sha256, version.manifest_sha256);
         assert_eq!(receipt.package_sha256, artifact.sha256);

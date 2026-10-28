@@ -18,6 +18,7 @@ fn official_inspection(revision: &str, quotes: usize) -> Inspection {
 
 fn large(origin: Origin, revision: &str, quotes: usize) -> Inspection {
     let mut value = crate::plugin::install::metadata::tests::single();
+    value["revision"] = json!(revision);
     if quotes > 0 {
         for index in 0..1900 {
             value["artifacts"][0]["members"].as_array_mut().unwrap().push(json!({"path":format!("data/{index}-{}","\"".repeat(quotes)),"size":1,"sha256":"c".repeat(64),"executable":false}));

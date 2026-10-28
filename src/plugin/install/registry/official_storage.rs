@@ -130,12 +130,14 @@ fn write(
             ))
         }
     };
-    let validated = Inspection::from_bytes(
+    let validated = Inspection::from_release(
         inspection.origin(),
-        inspection.catalogue_revision.clone(),
+        inspection.release.clone(),
         inspection.catalogue_bytes.clone(),
     )?;
-    if validated.catalogue != inspection.catalogue {
+    if validated.catalogue != inspection.catalogue
+        || validated.catalogue_revision != inspection.catalogue_revision
+    {
         return Err(Problem("inspection and raw metadata disagree"));
     }
     let origin = inspection.origin();
@@ -177,6 +179,7 @@ fn write(
         registration.snapshots.clear();
     }
     let snapshot = Snapshot {
+        release: inspection.release.clone(),
         origin: origin.clone(),
         revision: inspection.catalogue_revision.clone(),
         retrieved_at: inspection.retrieved_at,
@@ -190,6 +193,7 @@ fn write(
         old.revision != snapshot.revision
             || old.sha256 != snapshot.sha256
             || old.origin != snapshot.origin
+            || old.release != snapshot.release
     });
     let protected = (
         registration.origin.repository_id,

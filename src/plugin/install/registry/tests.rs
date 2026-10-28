@@ -4,6 +4,8 @@ use super::*;
 mod official_source;
 
 fn inspection(id: u64, publisher: u64, name: &str, revision: char) -> Inspection {
+    let mut metadata = super::super::metadata::tests::single();
+    metadata["revision"] = serde_json::json!(revision.to_string().repeat(40));
     Inspection::from_bytes(
         Origin {
             repository_id: id,
@@ -12,9 +14,7 @@ fn inspection(id: u64, publisher: u64, name: &str, revision: char) -> Inspection
             repository: name.into(),
         },
         revision.to_string().repeat(40),
-        super::super::metadata::tests::single()
-            .to_string()
-            .into_bytes(),
+        metadata.to_string().into_bytes(),
     )
     .unwrap()
 }
@@ -300,13 +300,24 @@ fn thirty_two_sources_and_total_cache_byte_budget_are_enforced_on_real_files() {
     for entry in document.registrations.iter_mut().take(9) {
         entry.snapshots[0].catalogue = catalogue.clone();
         entry.snapshots[0].sha256 = inventory::checksum(catalogue.as_bytes()).unwrap();
+        entry.snapshots[0].release = Inspection::from_bytes(
+            entry.origin.clone(),
+            "a".repeat(40),
+            catalogue.as_bytes().to_vec(),
+        )
+        .unwrap()
+        .release;
     }
     let bytes = serde_json::to_vec(&document).unwrap();
     assert!(bytes.len() < MAX_DOCUMENT_BYTES);
     std::fs::write(root.0.join("sources.json"), bytes).unwrap();
     let expected = list(&root.0).pop().unwrap();
-    let mut value = inspection(32, 34, "sample", 'b');
-    value.catalogue_bytes = catalogue.into_bytes();
+    let value = Inspection::from_bytes(
+        inspection(32, 34, "sample", 'a').origin(),
+        "a".repeat(40),
+        catalogue.into_bytes(),
+    )
+    .unwrap();
     run(
         &root.0,
         Request::Refresh {
@@ -363,6 +374,29 @@ fn cached_bytes_are_revalidated_not_treated_as_installed_or_trusted() {
             "{field}"
         );
     }
+    for (pointer, value) in [
+        ("/release/snapshot/id", serde_json::json!(0)),
+        (
+            "/release/snapshot/assets/0/sha256",
+            serde_json::json!("A".repeat(64)),
+        ),
+        (
+            "/release/snapshot/assets/1/name",
+            serde_json::json!("no-catalogue"),
+        ),
+        ("/release/binding/commit", serde_json::json!("b".repeat(40))),
+        ("/release/chain/0/1", serde_json::json!("not-an-object-id")),
+    ] {
+        let mut changed = original.clone();
+        *changed["registrations"][0]["snapshots"][0]
+            .pointer_mut(pointer)
+            .unwrap() = value;
+        std::fs::write(&path, changed.to_string()).unwrap();
+        assert!(
+            run(&root.0, Request::List, || Ok(()), || Ok(())).is_err(),
+            "{pointer}"
+        );
+    }
     std::fs::write(&path, original.to_string()).unwrap();
     let expected = list(&root.0).remove(0);
     let mut fake = inspection(12, 34, "sample", 'b');
@@ -387,13 +421,18 @@ fn cached_bytes_are_revalidated_not_treated_as_installed_or_trusted() {
 fn actual_source_worker_cancellation_before_commit_and_too_late_after_commit_are_distinct() {
     let _serial = super::super::source::tests::JOB_TESTS.lock().unwrap();
     let root = OwnedRoot::new();
-    let mut value = inspection(12, 34, "sample", 'a');
-    value.catalogue_bytes = format!(
+    let bytes = format!(
         "{}{}",
         " ".repeat(900_000),
         super::super::metadata::tests::single()
     )
     .into_bytes();
+    let value = Inspection::from_bytes(
+        inspection(12, 34, "sample", 'a').origin(),
+        "a".repeat(40),
+        bytes,
+    )
+    .unwrap();
     let job = Job::start(root.0.clone(), Request::Add(Box::new(value))).unwrap();
     assert!(job.cancel());
     let deadline = Instant::now() + Duration::from_secs(5);

@@ -2,19 +2,19 @@ use super::*;
 use serde_json::json;
 
 fn version(id: &str) -> Value {
-    json!({"revision":"a".repeat(40),"manifest_sha256":"b".repeat(64),"release_id":7,
+    json!({"revision":"a".repeat(40),"manifest_sha256":"b".repeat(64),
         "manifest":{"schema_version":1,"id":id,"version":"1.0","name":"Equal display name",
             "description":"Ready-built fixture","entrypoint":"bin/plugin","api":{"major":1,"minor":2},
             "settings":{"version":1,"apply":"live","fields":[{"key":"label","label":"Label","kind":"string","default":id}]}},
         "artifacts":[{"os":"linux","architecture":"amd64","runtime":{"kind":"native","libc":"glibc","minimum":"2.35"},
-            "dependencies":[],"format":"tar.gz","asset_id":11,"size":123,"sha256":"c".repeat(64),
+            "dependencies":[],"format":"tar.gz","asset":"sample-amd64.tar.gz","size":123,"sha256":"c".repeat(64),
             "members":[{"path":"among-plugin.json","size":1024,"sha256":"b".repeat(64),"executable":false},
                 {"path":"bin/plugin","size":256,"sha256":"d".repeat(64),"executable":true}]}]})
 }
 
 pub(crate) fn single() -> Value {
     let mut value = version("sample");
-    value["schema_version"] = json!(1);
+    value["schema_version"] = json!(2);
     value
 }
 
@@ -45,7 +45,7 @@ fn single_root_normalizes_and_shared_settings_remain_independent_in_a_catalogue(
     assert_eq!(single.plugins.len(), 1);
     assert_eq!(single.plugins[0].id, "sample");
     assert_eq!(single.plugins[0].versions.len(), 1);
-    let document = json!({"schema_version":1,"plugins":[
+    let document = json!({"schema_version":2,"plugins":[
         {"id":"first","versions":[version("first")]},{"id":"second","versions":[version("second")]}]});
     let multiple = parse(&document).unwrap();
     assert_eq!(multiple.plugins.len(), 2);
@@ -62,18 +62,18 @@ fn single_root_normalizes_and_shared_settings_remain_independent_in_a_catalogue(
         assert_eq!(settings["label"], id);
         assert_eq!(selected.revision, "a".repeat(40));
         assert_eq!(selected.manifest_sha256, "b".repeat(64));
-        assert_eq!(selected.release_id, 7);
+        assert_eq!(selected.artifacts[0].asset, "sample-amd64.tar.gz");
         assert_eq!(selected.artifacts[0].architecture, Architecture::Amd64);
     }
 }
 
 #[test]
 fn duplicate_keys_ids_versions_and_unknown_required_behaviour_are_refused() {
-    assert!(Catalogue::parse(br#"{"schema_version":1,"schema_version":1,"plugins":[]}"#).is_err());
-    let duplicate = json!({"schema_version":1,"plugins":[
+    assert!(Catalogue::parse(br#"{"schema_version":2,"schema_version":2,"plugins":[]}"#).is_err());
+    let duplicate = json!({"schema_version":2,"plugins":[
         {"id":"sample","versions":[version("sample")]},{"id":"sample","versions":[version("sample")]}]});
     assert!(parse(&duplicate).is_err());
-    assert!(parse(&json!({"schema_version":1,"plugins":[{"id":"sample","versions":[version("sample"),version("sample")]}]})).is_err());
+    assert!(parse(&json!({"schema_version":2,"plugins":[{"id":"sample","versions":[version("sample"),version("sample")]}]})).is_err());
     for field in [
         "post_install",
         "required_features",
@@ -85,7 +85,7 @@ fn duplicate_keys_ids_versions_and_unknown_required_behaviour_are_refused() {
         assert!(parse(&value).is_err(), "{field}");
     }
     let mut value = single();
-    value["schema_version"] = json!(2);
+    value["schema_version"] = json!(1);
     assert!(parse(&value).is_err());
     let mut value = single();
     value["manifest"]["schema_version"] = json!(2);
@@ -95,7 +95,7 @@ fn duplicate_keys_ids_versions_and_unknown_required_behaviour_are_refused() {
         json!("https://invalid.example/never");
     assert!(parse(&value).is_err());
     let mismatch =
-        json!({"schema_version":1,"plugins":[{"id":"other","versions":[version("sample")]}]});
+        json!({"schema_version":2,"plugins":[{"id":"other","versions":[version("sample")]}]});
     assert!(parse(&mismatch).is_err());
 }
 
@@ -125,7 +125,7 @@ fn exact_revisions_assets_sizes_formats_and_member_paths_are_required() {
     for (key, bad) in [
         ("os", json!("other")),
         ("format", json!("deb")),
-        ("asset_id", json!(0)),
+        ("asset", json!("../package.tar.gz")),
         ("size", json!(MAX_PACKAGE_BYTES + 1)),
         ("sha256", json!("wrong")),
         ("architecture", json!("amd64-or-arm64")),
@@ -160,6 +160,65 @@ fn exact_revisions_assets_sizes_formats_and_member_paths_are_required() {
 }
 
 #[test]
+fn schema_two_refuses_schema_one_and_embedded_api_authority_in_both_envelopes() {
+    for schema in [0, 1, 3] {
+        let mut value = single();
+        value["schema_version"] = json!(schema);
+        assert!(parse(&value).is_err());
+        assert!(parse(&json!({"schema_version":schema,"plugins":[{"id":"sample","versions":[version("sample")]}]})).is_err());
+    }
+    for key in ["release_id", "asset_id", "download_url"] {
+        let mut value = single();
+        value[key] = json!(7);
+        assert!(parse(&value).is_err(), "root {key}");
+        let mut entry = version("sample");
+        entry[key] = json!(7);
+        assert!(
+            parse(&json!({"schema_version":2,"plugins":[{"id":"sample","versions":[entry]}]}))
+                .is_err(),
+            "version {key}"
+        );
+        let mut value = single();
+        value["artifacts"][0][key] = json!(11);
+        assert!(parse(&value).is_err(), "artifact {key}");
+    }
+    for versions in [
+        vec![],
+        vec![version("sample"), {
+            let mut different = version("sample");
+            different["manifest"]["version"] = json!("2.0");
+            different
+        }],
+    ] {
+        assert!(parse(
+            &json!({"schema_version":2,"plugins":[{"id":"sample","versions":versions}]})
+        )
+        .is_err());
+    }
+    for name in [
+        "",
+        ".",
+        "..",
+        "dir/package",
+        "dir\\package",
+        "a\nb",
+        "among-plugins.json",
+    ] {
+        let mut value = single();
+        value["artifacts"][0]["asset"] = json!(name);
+        assert!(parse(&value).is_err(), "{name:?}");
+    }
+    let mut value = single();
+    value["artifacts"][0]["asset"] = json!("x".repeat(256));
+    assert!(parse(&value).is_err());
+    value["artifacts"][0]["asset"] = json!("sample amd64+λ.tar.gz");
+    assert_eq!(
+        parse(&value).unwrap().plugins[0].versions[0].artifacts[0].asset,
+        "sample amd64+λ.tar.gz"
+    );
+}
+
+#[test]
 fn catalogue_and_nested_object_counts_are_bounded_before_acceptance() {
     let mut value = single();
     value["padding"] = json!("x".repeat(MAX_CATALOGUE_BYTES));
@@ -170,8 +229,8 @@ fn catalogue_and_nested_object_counts_are_bounded_before_acceptance() {
             json!({"id":id,"versions":[version(&id)]})
         })
         .collect::<Vec<_>>();
-    assert!(parse(&json!({"schema_version":1,"plugins":plugins})).is_err());
-    let versions = (0..=MAX_VERSIONS)
+    assert!(parse(&json!({"schema_version":2,"plugins":plugins})).is_err());
+    let versions = (0..2)
         .map(|index| {
             let mut version = version("sample");
             version["manifest"]["version"] = json!(index.to_string());
@@ -179,7 +238,7 @@ fn catalogue_and_nested_object_counts_are_bounded_before_acceptance() {
         })
         .collect::<Vec<_>>();
     assert!(
-        parse(&json!({"schema_version":1,"plugins":[{"id":"sample","versions":versions}]}))
+        parse(&json!({"schema_version":2,"plugins":[{"id":"sample","versions":versions}]}))
             .is_err()
     );
     let mut value = single();
@@ -188,7 +247,7 @@ fn catalogue_and_nested_object_counts_are_bounded_before_acceptance() {
         (0..=MAX_ARTIFACTS)
             .map(|index| {
                 let mut artifact = template.clone();
-                artifact["asset_id"] = json!(index + 1);
+                artifact["asset"] = json!(format!("package-{index}.tar.gz"));
                 artifact
             })
             .collect(),
@@ -239,7 +298,7 @@ fn platform_selection_uses_declarations_without_architecture_or_abi_fallback() {
     let mut value = single();
     let mut arm = value["artifacts"][0].clone();
     arm["architecture"] = json!("arm64");
-    arm["asset_id"] = json!(22);
+    arm["asset"] = json!("sample-arm64.tar.gz");
     value["artifacts"].as_array_mut().unwrap().push(arm);
     let catalogue = parse(&value).unwrap();
     let version = &catalogue.plugins[0].versions[0];
@@ -247,10 +306,10 @@ fn platform_selection_uses_declarations_without_architecture_or_abi_fallback() {
         architecture: Architecture::Arm64,
         libc: Some((Libc::Glibc, "2.39".into())),
     };
-    assert_eq!(version.select(&host).unwrap().asset_id, 22);
+    assert_eq!(version.select(&host).unwrap().asset, "sample-arm64.tar.gz");
     let mut amd64 = host.clone();
     amd64.architecture = Architecture::Amd64;
-    assert_eq!(version.select(&amd64).unwrap().asset_id, 11);
+    assert_eq!(version.select(&amd64).unwrap().asset, "sample-amd64.tar.gz");
     let mut old = host.clone();
     old.libc = Some((Libc::Glibc, "2.34".into()));
     assert!(version.select(&old).is_err());
@@ -262,12 +321,15 @@ fn platform_selection_uses_declarations_without_architecture_or_abi_fallback() {
     assert!(version.select(&musl).is_err());
     let mut newer_numeric = host.clone();
     newer_numeric.libc = Some((Libc::Glibc, "2.100".into()));
-    assert_eq!(version.select(&newer_numeric).unwrap().asset_id, 22);
+    assert_eq!(
+        version.select(&newer_numeric).unwrap().asset,
+        "sample-arm64.tar.gz"
+    );
     let mut same = host.clone();
     same.libc = Some((Libc::Glibc, "2.35.0".into()));
-    assert_eq!(version.select(&same).unwrap().asset_id, 22);
+    assert_eq!(version.select(&same).unwrap().asset, "sample-arm64.tar.gz");
     let mut duplicate = value["artifacts"][1].clone();
-    duplicate["asset_id"] = json!(33);
+    duplicate["asset"] = json!("sample-arm64-alternative.tar.gz");
     value["artifacts"].as_array_mut().unwrap().push(duplicate);
     let catalogue = parse(&value).unwrap();
     assert!(catalogue.plugins[0].versions[0].select(&host).is_err());
@@ -287,8 +349,8 @@ fn script_runtimes_and_dependencies_need_installed_executables_not_guessed_versi
         catalogue.plugins[0].versions[0]
             .select(&host)
             .unwrap()
-            .asset_id,
-        11
+            .asset,
+        "sample-amd64.tar.gz"
     );
     value["artifacts"][0]["runtime"]["minimum"] = json!("1.0");
     let catalogue = parse(&value).unwrap();
