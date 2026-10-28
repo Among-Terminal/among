@@ -75,11 +75,29 @@ jobs:
               "$app_test" "$name" --exact --ignored --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
             grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
           done
+      - name: Prepare complete locked notice graphs
+        # host builds do not acquire every target-specific source in the notice inventory.
+        run: |
+          cargo fetch --locked --manifest-path Cargo.toml
+          cargo fetch --locked --manifest-path examples/plugins/Cargo.toml
+          cargo fetch --locked --manifest-path tools/among-tools/Cargo.toml
+      - name: Verify locked offline Cargo notices
+        id: notices
+        env:
+          AMONG_CHECK_ROOT: ${{ runner.temp }}/among-checks/notices
+        run: tools/among-tools/target/release/among-tools third-party-notices . THIRD_PARTY check
+      - name: Retain sanitized notice failure diagnostics
+        if: ${{ failure() && steps.notices.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: notice-diagnostics-${{ matrix.runner }}
+          path: ${{ runner.temp }}/among-checks/notices/among-notices-*/metadata-failure.json
+          if-no-files-found: error
+          retention-days: 5
       - name: Native metadata and offline release policy
         run: |
           desktop-file-validate data/com.github.among-terminal.desktop
           appstreamcli validate --no-net --strict data/com.github.among-terminal.metainfo.xml
-          tools/among-tools/target/release/among-tools third-party-notices . THIRD_PARTY check
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test release_policy --test stable_build --test release_metadata --test promotion
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test stable_source
           cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test menu_geometry --test platform --test launch_identity --test snap_runtime --test snap_workflow
@@ -155,6 +173,23 @@ jobs:
             tools/among-tools/target/release/among-tools check-desktop . target/release/among
       - name: Independent Linux measurements
         run: tools/among-tools/target/release/among-tools check-resource-measurements examples/plugins/target/release/system-status
+      - name: Original installer ENOSPC assertions on a dedicated bounded tmpfs
+        run: |
+          docker build --file tools/among-tools/containers/Dockerfile.display --tag among-installer-enospc:ci tools/among-tools/containers
+          root="$AMONG_CHECK_ROOT/installer-enospc"
+          mkdir -m 700 "$root" "$root/tmp" "$root/run" "$root/shm"
+          cargo test --locked --no-run --message-format=json > "$root/cargo-tests.jsonl"
+          docker run --rm --init --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" \
+            --tmpfs /owned-full:rw,nosuid,nodev,noexec,mode=1777,size=128m \
+            --mount "type=bind,source=$PWD,target=$PWD,readonly" \
+            --mount "type=bind,source=$root,target=$root" \
+            --mount "type=bind,source=$root/tmp,target=/tmp" \
+            --mount "type=bind,source=$root/run,target=/run" \
+            --mount "type=bind,source=$root/shm,target=/dev/shm" \
+            --env "AMONG_CHECK_ROOT=$root" --env TMPDIR=/tmp --workdir "$PWD" \
+            among-installer-enospc:ci \
+            "$PWD/tools/among-tools/target/release/among-tools" check-installer-enospc-from-cargo "$root/cargo-tests.jsonl"
       - name: Ignored Rust graphical tests on individual owned displays
         run: |
           cargo test --locked --no-run --manifest-path tools/among-tools/Cargo.toml --message-format=json > "$RUNNER_TEMP/tool-tests.jsonl"

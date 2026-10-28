@@ -418,8 +418,21 @@ The host rechecks the selected manifest digest and contained executable and pins
 open package/executable descriptors through spawn. It clears the child environment,
 sets `PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C.UTF-8`, and copies only `HOME` and
 `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` when present.
-Tokens, display/session-bus variables and other parent environment values are not
-implicitly inherited. This is not protection against the plugin independently
+It also snapshots `TZ` once per managed-child construction. An absent value stays
+absent; an empty value stays explicitly empty. Accepted bytes are copied unchanged,
+without UTF-8 replacement, trimming, path lookup or timezone parsing. The raw value
+may contain at most 1024 bytes and no NUL or ASCII control byte (`0x01`–`0x1f`,
+`0x7f`); other bytes, including non-UTF-8 bytes, are preserved. An invalid envelope
+makes that plugin Unavailable before spawn, rather than silently substituting a
+timezone or failing terminal startup. This ordinary managed-child rule is not an
+official-plugin privilege or an additional context grant.
+
+`TZDIR`, tokens, loader variables, display/session-bus values and other environment
+entries are not implicitly inherited. Passing `TZ` does not promise identical
+interpretation by every plugin runtime, or bound the size/read latency of a
+timezone file a plugin may choose to open. In particular, clock uses its existing
+`chrono::Local` renderer rather than a host timezone parser.
+This is not protection against the plugin independently
 reading files or contacting services as the same user.
 
 The host starts with:
@@ -534,12 +547,16 @@ Stdin uses a separate bounded 16-frame/1-MiB budget, including a partially writt
 frame, with a two-second enqueue-to-write deadline. Serialization stops at the
 64-KiB frame limit too. Spawn, pipe reads/writes, termination and reaping run in
 one cancellable worker per supervised process, not on the GUI thread. The host
-supervises at most 32 processes, including generations still stopping. A stopped
-generation cannot be replaced until its worker has actually reaped it.
-If the last window closes and the application is reactivated while old plugins
-are stopping, the replacement window opens immediately but its plugins show
-Waiting until all retiring hosts finish reaping. This preserves the same
-application-wide process budget across window replacement.
+admits at most 32 plugin generations across live and retiring windows, including
+generations still stopping. A generation keeps its identity reservation and budget
+slot until both its process object and its actual supervisor have retired. A
+replacement of that identity cannot overlap it, including across windows or after
+a host handle is dropped. Unrelated identities may use other free slots; one
+unresolved retirement does not close an application-wide startup gate.
+When all 32 slots are occupied, other enabled identities wait and are retried as
+capacity becomes free, including after a replacement window loads a different
+plugin set. Capacity contention is not a crash and consumes no crash-restart
+allowance. Disabling a waiting plugin cancels its pending startup.
 
 Starting is separate from Running: a compatible handshake is required within
 five seconds. Legacy plugins allow at most 16 outstanding statuses, one per scope.
@@ -556,8 +573,20 @@ withdraw the last contribution even when there are no new results.
 
 A plugin that crashes, exits, or does not answer within the timeout loses its
 content immediately. Stopping sends TERM to its supervised process group,
-escalates to KILL after 500 ms and reaps off-loop. It remains Stopping until exit
-is observed. At most three automatic restarts follow a fault, after 2, 4 and 8
+escalates to KILL after 500 ms and reaps off-loop. Completion additionally requires
+the kernel to report that the original process group is absent. A successful
+signal, leader reap or pipe EOF alone is not that proof. After leader reap the
+supervisor sends no further signals: its signal-zero queries deliver no signal,
+so a recycled numeric group cannot be killed accidentally. Only ESRCH establishes
+absence; an existing group, permission denial or other inspection error keeps
+that identity Stopping with a visible reason, its budget slot and package lease
+held. Unreaped zombies or reuse of the numeric group ID can conservatively delay
+this proof even after the owned tasks are dead. No readable descendant procfs,
+pidfd, new kernel feature, helper process or global reaper is required. Other
+identities and the replacement window's terminals stay usable within the shared
+budget. Uninstall retains its existing five-second partial-failure deadline; no
+uncertain stop is acknowledged or converted to successful cleanup.
+At most three automatic restarts follow a fault, after 2, 4 and 8
 seconds; an explicit off/on cycle resets that allowance. Incompatible or missing
 executables are not automatically retried. The application and every terminal
 stay usable throughout. This is supervision, not an OS sandbox: descendants that

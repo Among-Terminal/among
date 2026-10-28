@@ -1,0 +1,299 @@
+name: Managed transport interoperability
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-interop:
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            kernel: x86_64
+            rust_host: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            kernel: aarch64
+            rust_host: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CLIENT_REVISION: 306839e144d7a4c98432c6c68dad016c412dd656
+      EXPECTED_KERNEL: ${{ matrix.kernel }}
+      EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          test "$(uname -m)" = "$EXPECTED_KERNEL"
+      - name: Pinned native Rust
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+          rustc +1.98.1 --version --verbose
+          test "$(rustc +1.98.1 --version --verbose | sed -n 's/^host: //p')" = "$EXPECTED_RUST_HOST"
+      - name: Build the exact companion fixture and production status entrypoints
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/managed-transport-interop"
+          mkdir -m 700 "$root"
+          echo "INTEROP_ROOT=$root" >> "$GITHUB_ENV"
+          curl --fail --silent --show-error --connect-timeout 15 --max-time 60 \
+            https://api.github.com/repos/Among-Terminal/among-plugins > "$root/client-repository.json"
+          jq -e '.id == 1431055733 and .owner.id == 339567100 and .private == false' "$root/client-repository.json"
+          client="$root/client"
+          git init "$client"
+          git -C "$client" fetch --no-tags --depth=1 https://github.com/Among-Terminal/among-plugins.git "$CLIENT_REVISION"
+          git -C "$client" switch --detach FETCH_HEAD
+          test "$(git -C "$client" rev-parse HEAD)" = "$CLIENT_REVISION"
+          test "$(git -C "$client" rev-parse 'HEAD^{tree}')" = e9d7a98a8162a3b58154b4a9122c70cddaa1db16
+          test -z "$(git -C "$client" status --porcelain=v1)"
+          grep -Fx "const CLIENT: &str = \"$CLIENT_REVISION\";" src/app/plugin_tests/resources.rs
+          git rev-parse HEAD > "$root/host-source.txt"
+          git -C "$client" rev-parse HEAD > "$root/client-source.txt"
+          cargo +1.98.1 build --locked --manifest-path "$client/Cargo.toml" \
+            --example managed-status --example managed-pages --bin clock-managed --bin clock --bin system-status-managed --bin pane-pwd-managed
+          fixture="$client/target/debug/examples/managed-status"
+          test -f "$fixture" && test -x "$fixture" && test ! -L "$fixture"
+          sha256sum "$fixture" | tee "$root/client-sha256.txt"
+          echo "AMONG_MANAGED_TRANSPORT_FIXTURE=$fixture" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256=$(cut -d ' ' -f 1 "$root/client-sha256.txt")" >> "$GITHUB_ENV"
+          for entrypoint in clock-managed clock system-status-managed pane-pwd-managed examples/managed-pages; do
+            binary="$client/target/debug/$entrypoint"
+            test -f "$binary" && test -x "$binary" && test ! -L "$binary"
+            sha256sum "$binary" | tee "$root/$(basename "$entrypoint")-sha256.txt"
+          done
+          echo "AMONG_MANAGED_CLOCK_BINARY=$client/target/debug/clock-managed" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_CLOCK_SHA256=$(cut -d ' ' -f 1 "$root/clock-managed-sha256.txt")" >> "$GITHUB_ENV"
+          echo "AMONG_LEGACY_CLOCK_BINARY=$client/target/debug/clock" >> "$GITHUB_ENV"
+          echo "AMONG_LEGACY_CLOCK_SHA256=$(cut -d ' ' -f 1 "$root/clock-sha256.txt")" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_SYSTEM_BINARY=$client/target/debug/system-status-managed" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_SYSTEM_SHA256=$(cut -d ' ' -f 1 "$root/system-status-managed-sha256.txt")" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_PWD_BINARY=$client/target/debug/pane-pwd-managed" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_PWD_SHA256=$(cut -d ' ' -f 1 "$root/pane-pwd-managed-sha256.txt")" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_PAGES_FIXTURE=$client/target/debug/examples/managed-pages" >> "$GITHUB_ENV"
+          echo "AMONG_MANAGED_PAGES_SHA256=$(cut -d ' ' -f 1 "$root/managed-pages-sha256.txt")" >> "$GITHUB_ENV"
+      - name: Check the opt-in host test code
+        run: |
+          cargo +1.98.1 fmt --all --check
+          cargo +1.98.1 clippy --locked --all-targets --features managed-transport-interop -- -D warnings
+          cargo +1.98.1 test --locked --features managed-transport-interop --bin among --no-run --message-format=json > "$INTEROP_ROOT/host-tests.jsonl"
+      - name: Drive actual supervised admission and stale-response controls
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$root/host-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -f "$app_test" && test -x "$app_test" && test ! -L "$app_test"
+          sha256sum "$app_test" > "$root/host-test-sha256.txt"
+          "$app_test" --list > "$root/test-names.txt"
+          mkdir -m 700 "$root/cases" "$root/home" "$root/data" "$root/config" "$root/cache" "$root/run"
+          for environment_case in \
+            managed_timezone_absent_and_empty_remain_distinct_in_actual_children \
+            managed_timezone_budget_accepts_1024_bytes_and_rejects_the_next_byte \
+            managed_timezone_preserves_posix_file_and_non_utf8_bytes \
+            managed_timezone_rejects_every_ascii_control_before_command_mutation; do
+            name="plugin::host::environment::tests::$environment_case"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/environment-$environment_case.log"
+            env -u TZ AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+          done
+          for case_name in \
+            real_companion_admits_only_after_review_and_publishes_correlated_status \
+            real_companion_negotiates_subset_and_scoped_cwd_without_sibling_fields \
+            real_companion_identity_mismatch_never_becomes_admitted \
+            real_companion_closed_target_reply_releases_credit_without_publishing \
+            real_companion_retired_generation_reply_cannot_consume_current_credit; do
+            name="plugin::host::managed_runtime::transport_interop::$case_name"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/$case_name.log"
+            env -u TZ AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            grep -Fq "client_revision=$CLIENT_REVISION fixture_sha256=$AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256" "$log"
+            grep -Fq 'retirement_confirmed identity=' "$log"
+          done
+          # isolate host TZ input per exact test process, never through an
+          # in-process environment mutation or a serial substitute for old tests.
+          for clock_case in utc tokyo unset empty too_long control; do
+            timezone=()
+            case "$clock_case" in
+              utc) timezone=(TZ=UTC) ;;
+              tokyo) timezone=(TZ=Asia/Tokyo) ;;
+              unset) ;;
+              empty) timezone=(TZ=) ;;
+              too_long) printf -v oversized '%*s' 1025 ''; timezone=("TZ=${oversized// /x}") ;;
+              control) timezone=($'TZ=UTC\x1frefused') ;;
+              *) exit 1 ;;
+            esac
+            case "$clock_case" in
+              too_long|control) case_name=invalid_host_timezone_refuses_clock_before_spawn ;;
+              *) case_name=real_clock_reports_application_footer_in_inherited_timezone ;;
+            esac
+            name="plugin::host::managed_runtime::transport_interop::clock::$case_name"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/clock-$clock_case.log"
+            env -u TZ "${timezone[@]}" AMONG_CLOCK_CASE="$clock_case" \
+              AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            grep -Fq "client_revision=$CLIENT_REVISION fixture_sha256=$AMONG_MANAGED_CLOCK_SHA256 identity=github:1431055733/clock" "$log"
+            grep -Fq "clock_case=$clock_case" "$log"
+            grep -Fq 'retirement_confirmed identity=github:1431055733/clock' "$log"
+            case "$clock_case" in
+              too_long|control) grep -Fq 'refused_before_spawn=true' "$log" ;;
+              *)
+                grep -Fq "clock_sha256=$AMONG_MANAGED_CLOCK_SHA256 legacy_clock_sha256=$AMONG_LEGACY_CLOCK_SHA256 footer_time_observed=true" "$log"
+                ;;
+            esac
+          done
+      - name: Drive real resource header and retired-generation controls
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$root/host-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -f "$app_test" && test -x "$app_test" && test ! -L "$app_test"
+          sha256sum -c "$root/host-test-sha256.txt"
+          for resource_case in \
+            real_resources_require_review_and_publish_measured_header_meters \
+            real_resources_retired_reply_cannot_publish_into_reenabled_header; do
+            name="plugin::host::managed_runtime::transport_interop::resources::$resource_case"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/resource-$resource_case.log"
+            env -u TZ AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            grep -Fq "client_revision=$CLIENT_REVISION fixture_sha256=$AMONG_MANAGED_SYSTEM_SHA256 identity=github:1431055733/system-status" "$log"
+            grep -Fq 'meter_text_equal=true refresh_ms=1000' "$log"
+            grep -Fq 'retirement_confirmed identity=github:1431055733/system-status' "$log"
+          done
+      - name: Drive real SDK paging and production pane lifecycle
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$root/host-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -f "$app_test" && test -x "$app_test" && test ! -L "$app_test"
+          sha256sum -c "$root/host-test-sha256.txt"
+          for binary in "$AMONG_MANAGED_PWD_BINARY" "$AMONG_MANAGED_PAGES_FIXTURE"; do
+            case "$EXPECTED_KERNEL" in
+              x86_64) machine='Advanced Micro Devices X86-64' ;;
+              aarch64) machine=AArch64 ;;
+              *) exit 1 ;;
+            esac
+            readelf -h "$binary" > "$root/$(basename "$binary")-elf.txt"
+            grep -Eq "Machine: *$machine$" "$root/$(basename "$binary")-elf.txt"
+          done
+          for case_name in \
+            pwd::real_pwd_requires_all_grants_and_keeps_focused_hidden_unicode_paths_separate \
+            pwd::real_pwd_unknown_empty_and_host_unavailable_cwd_never_fall_back \
+            pwd::real_pwd_closed_and_retired_replies_cannot_overwrite_live_panes \
+            pages::real_sdk_application_count_paging_interleaves_a_live_pane_through_the_host \
+            pages::real_sdk_hidden_workspace_byte_paging_uses_all_pages_without_sibling_records \
+            pages::real_sdk_closed_workspace_continuation_fails_without_publishing_empty_success \
+            pages::real_sdk_retired_enumeration_cannot_attach_to_a_new_host_generation; do
+            name="plugin::host::managed_runtime::transport_interop::$case_name"
+            test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+            log="$root/${case_name//::/-}.log"
+            env -u TZ AMONG_CHECK_ROOT="$root/cases" HOME="$root/home" \
+              XDG_DATA_HOME="$root/data" XDG_CONFIG_HOME="$root/config" \
+              XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/run" \
+              "$app_test" "$name" --exact --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+            case "$case_name" in
+              pwd::*) identity=pane-pwd; digest="$AMONG_MANAGED_PWD_SHA256"; witness=host_pwd ;;
+              pages::*) identity=sdk-pages-fixture; digest="$AMONG_MANAGED_PAGES_SHA256"; witness=host_sdk ;;
+              *) exit 1 ;;
+            esac
+            grep -Fq "client_revision=$CLIENT_REVISION fixture_sha256=$digest identity=github:1431055733/$identity" "$log"
+            grep -Fq "$witness " "$log"
+            grep -Fq "retirement_confirmed identity=github:1431055733/$identity" "$log"
+          done
+          sha256sum -c "$root/pane-pwd-managed-sha256.txt" "$root/managed-pages-sha256.txt"
+      - name: Native resource-widget test prerequisites
+        run: |
+          sudo apt-get install -y xvfb openbox xdotool dbus-x11 imagemagick x11-utils xauth fonts-dejavu-core
+          CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 build --locked --manifest-path tools/among-tools/Cargo.toml
+      - name: Observe real resource widgets and keyboard lifecycle
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$root/host-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          sha256sum -c "$root/host-test-sha256.txt"
+          name="app::plugin_tests::resources::real_resource_meters_review_keyboard_input_and_disabled_restart"
+          test "$(grep -Fxc "$name: test" "$root/test-names.txt")" -eq 1
+          for scheme in light dark; do
+            gui="$root/gui/$scheme"
+            mkdir -p "$gui/screenshots"
+            AMONG_CHECK_ROOT="$gui" "$PWD/target/debug/among-tools" ci-x11 \
+              /usr/bin/env GTK_A11Y=test AMONG_COLOR_SCHEME="$scheme" \
+              AMONG_MANAGED_SYSTEM_BINARY="$AMONG_MANAGED_SYSTEM_BINARY" \
+              AMONG_MANAGED_SYSTEM_SHA256="$AMONG_MANAGED_SYSTEM_SHA256" \
+              AMONG_RESOURCE_GUI_SCREENSHOTS="$gui/screenshots" \
+              "$app_test" "$name" --exact --ignored --test-threads=1 --nocapture --color=never \
+              2>&1 | tee "$root/gui-$scheme.log"
+            # one selected case controls two fresh child processes. do not count
+            # those three successful harness results as three distinct tests.
+            test "$(grep -Fc 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$root/gui-$scheme.log")" -eq 3
+            grep -Fq 'PASS resource_gui real_keyboard_review_cancel_accept_disable=true' "$root/gui-$scheme.log"
+            grep -Fq 'PASS resource_gui fresh_disabled=true no_spawn=true no_bars=true saved_bytes_unchanged=true' "$root/gui-$scheme.log"
+            test "$(grep -Fc 'role=ProgressBar accessible_label_exact=true focusable=false' "$root/gui-$scheme.log")" -eq 3
+            for state in enabled disabled fresh-disabled; do
+              test -s "$gui/screenshots/resource-$scheme-$state.png"
+            done
+          done
+      - name: Retain source-bound protocol evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: managed-transport-interop-${{ matrix.kernel }}
+          path: |
+            ${{ runner.temp }}/managed-transport-interop/*.log
+            ${{ runner.temp }}/managed-transport-interop/*.txt
+            ${{ runner.temp }}/managed-transport-interop/*.json
+            ${{ runner.temp }}/managed-transport-interop/*.jsonl
+            ${{ runner.temp }}/managed-transport-interop/cases/**/installed.json
+            ${{ runner.temp }}/managed-transport-interop/cases/**/among-plugin.json
+            ${{ runner.temp }}/managed-transport-interop/gui/**/*.png
+            ${{ runner.temp }}/managed-transport-interop/gui/**/*.log
+            ${{ runner.temp }}/managed-transport-interop/gui/**/post-disable-managed.json
+          if-no-files-found: error
+          retention-days: 5

@@ -6,6 +6,9 @@ use crate::plugin::data::Problem;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
+#[cfg(all(test, feature = "managed-transport-interop"))]
+mod transport_interop;
+
 // one stdout frame remains available for the plugin's single enumeration request.
 pub(super) const MAX_MANAGED_REPLIES: usize = MAX_INFLIGHT - 1;
 
@@ -1443,16 +1446,54 @@ mod tests {
     }
 
     #[test]
+    fn an_expired_generation_clock_faults_handshake_before_a_new_observer_waits() {
+        let mut handshake = fixture("managed-hanging", &[], Some(&["status", "settings"]));
+        // control only the recorded deadline origin, not worker completion or
+        // stop ownership. first-poll time must not replace registration time.
+        handshake.host.plugins[0].io.as_mut().unwrap().started = Instant::now() - REQUEST_TIMEOUT;
+        handshake.host.poll();
+        assert!(
+            matches!(
+                &handshake.host.plugins[0].state,
+                PluginState::Stopping { reason, .. } | PluginState::Faulted { reason }
+                    if reason.starts_with("plugin did not complete handshake within five seconds")
+            ),
+            "{:?}",
+            handshake.host.listing()
+        );
+        assert!(handshake.host.healthy().is_empty());
+        assert!(handshake.host.drain_results().is_empty());
+    }
+
+    #[test]
     fn real_handshake_and_configuration_silence_enforce_five_second_deadlines() {
         let mut handshake = fixture("managed-hanging", &[], Some(&["status", "settings"]));
-        let start = Instant::now();
+        // registration starts the real handshake deadline. fixture return or a
+        // delayed test thread is not a new deadline origin.
+        let start = handshake.host.plugins[0].io.as_ref().unwrap().started;
+        let observer_start = Instant::now();
         handshake.wait_for(Duration::from_secs(7), |host| {
             matches!(
                 host.listing()[0].1,
                 PluginState::Stopping { .. } | PluginState::Faulted { .. }
             )
         });
-        assert!(start.elapsed() >= REQUEST_TIMEOUT);
+        assert!(
+            start.elapsed() >= REQUEST_TIMEOUT,
+            "generation_elapsed={:?}, observer_elapsed={:?}, state={:?}",
+            start.elapsed(),
+            observer_start.elapsed(),
+            handshake.host.listing()
+        );
+        assert!(
+            matches!(
+                &handshake.host.plugins[0].state,
+                PluginState::Stopping { reason, .. } | PluginState::Faulted { reason }
+                    if reason.starts_with("plugin did not complete handshake within five seconds")
+            ),
+            "{:?}",
+            handshake.host.listing()
+        );
         assert!(handshake.host.healthy().is_empty());
         assert!(handshake.host.drain_results().is_empty());
         let mut configuration = fixture(
