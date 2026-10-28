@@ -114,10 +114,14 @@ jobs:
           tools/among-tools/target/release/among-tools collect-appimage-sources \
             "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.audit.json" appimage-sources
       - name: Bind the checker for the clean hosts
+        env:
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir appimage-checker
           cp tools/among-tools/target/release/among-tools appimage-checker/among-tools
-          source="$(git rev-parse HEAD)"
+          source="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+            GIT_CONFIG_VALUE_0="$(pwd -P)" git rev-parse HEAD^{commit})"
+          test "$source" = "$EXPECTED_SOURCE"
           tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-probe \
             "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/audio
           tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-retirement-probe \
