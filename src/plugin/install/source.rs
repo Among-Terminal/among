@@ -668,7 +668,7 @@ impl Operation {
             || self.check(),
         )?;
         if self.resolve_release(&selected).await? != release {
-            return Err(Problem("release tag or immutable peel chain changed during installation; selection was not committed"));
+            return Err(Problem("release snapshot, tag or immutable peel chain changed during installation; selection was not committed"));
         }
         self.check_official_selection(&selected).await?;
         match &selected.previous {
