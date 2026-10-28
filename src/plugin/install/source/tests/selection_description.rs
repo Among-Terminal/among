@@ -8,49 +8,45 @@ fn parsed_versions_describe_the_native_selected_asset_not_an_alternative() {
         Architecture::Amd64 => ("amd64", "arm64"),
         Architecture::Arm64 => ("arm64", "amd64"),
     };
-    let mut versions = Vec::new();
     for (version, asset_id, size) in [("0.1.0-rc.1", 71, 123), ("2.7", 91, 456)] {
         let mut metadata = super::super::super::metadata::tests::single();
-        metadata.as_object_mut().unwrap().remove("schema_version");
         metadata["manifest"]["version"] = json!(version);
         let mut alternative = metadata["artifacts"][0].clone();
         alternative["architecture"] = json!(other);
-        alternative["asset_id"] = json!(asset_id + 1);
+        alternative["asset"] = json!(format!("other-{}.tar.gz", asset_id + 1));
         metadata["artifacts"][0]["architecture"] = json!(native);
         metadata["artifacts"][0]["runtime"]["minimum"] = json!("2.0");
-        metadata["artifacts"][0]["asset_id"] = json!(asset_id);
+        let asset = format!("native-{asset_id}.tar.gz");
+        metadata["artifacts"][0]["asset"] = json!(asset);
         metadata["artifacts"][0]["size"] = json!(size);
         // Put the incompatible target first so the label cannot follow array order.
         metadata["artifacts"]
             .as_array_mut()
             .unwrap()
             .insert(0, alternative);
-        versions.push(metadata);
-    }
-    let inspection = Inspection::from_bytes(
-        Origin {
-            repository_id: 12,
-            publisher_id: 34,
-            owner: "example".into(),
-            repository: "sample".into(),
-        },
-        "a".repeat(40),
-        json!({"schema_version":1,"plugins":[{"id":"sample","versions":versions}]})
-            .to_string()
-            .into_bytes(),
-    )
-    .unwrap();
-    for (version, asset_id, size) in [("0.1.0-rc.1", 71, 123), ("2.7", 91, 456)] {
+        let inspection = Inspection::from_bytes(
+            Origin {
+                repository_id: 12,
+                publisher_id: 34,
+                owner: "example".into(),
+                repository: "sample".into(),
+            },
+            "a".repeat(40),
+            metadata.to_string().into_bytes(),
+        )
+        .unwrap();
         let selection = inspection.select("sample", version).unwrap();
-        let expected = format!("github:12/sample · version {version} · linux/{native} · asset {asset_id} · {size} bytes");
-        assert_eq!(selection.artifact.asset_id, asset_id);
+        let expected = format!(
+            "github:12/sample · version {version} · linux/{native} · asset {asset} · {size} bytes"
+        );
+        assert_eq!(selection.artifact.asset, asset);
         assert_eq!(selection.description(), expected);
         assert!(selection
             .review_description()
             .starts_with(&format!("{expected}\n")));
         assert!(!selection.description().contains(&format!("linux/{other}")));
+        assert!(inspection.select("sample", "latest").is_err());
     }
-    assert!(inspection.select("sample", "latest").is_err());
 }
 
 #[test]
@@ -72,7 +68,7 @@ fn parsed_third_party_script_selection_keeps_its_version_target_and_runtime() {
             owner: "third-party".into(),
             repository: "scripts".into(),
         },
-        "b".repeat(40),
+        "a".repeat(40),
         metadata.to_string().into_bytes(),
     )
     .unwrap();
@@ -80,7 +76,7 @@ fn parsed_third_party_script_selection_keeps_its_version_target_and_runtime() {
     assert_eq!(
         selection.description(),
         format!(
-            "github:99/sample · version third-party<&> · linux/{native} · asset 11 · 123 bytes"
+            "github:99/sample · version third-party<&> · linux/{native} · asset sample-amd64.tar.gz · 123 bytes"
         )
     );
     assert!(
@@ -92,7 +88,7 @@ fn parsed_third_party_script_selection_keeps_its_version_target_and_runtime() {
     metadata["artifacts"][0]["runtime"]["minimum"] = json!("1.0");
     let inspection = Inspection::from_bytes(
         inspection.origin(),
-        "b".repeat(40),
+        "a".repeat(40),
         metadata.to_string().into_bytes(),
     )
     .unwrap();

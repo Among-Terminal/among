@@ -17,11 +17,11 @@ fn complete_observed_release_is_canonical_and_binds_every_asset() {
     assert_eq!(selected.id, 7);
     assert_eq!(selected.tag, "v1.0");
     assert_eq!(selected.assets.len(), 3);
-    let package = selected.asset_by_id(11).unwrap();
+    let package = selected.asset("sample-amd64.tar.gz").unwrap();
     assert_eq!(package.name, "sample-amd64.tar.gz");
     assert_eq!(package.size, 123);
     assert_eq!(package.sha256, "a".repeat(64));
-    assert!(selected.asset_by_id(99).is_err());
+    assert!(selected.asset("sample-amd64").is_err());
     let mut reordered = value.clone();
     reordered["assets"].as_array_mut().unwrap().reverse();
     assert_eq!(ReleaseSnapshot::from_value(&reordered).unwrap(), selected);

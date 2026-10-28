@@ -520,7 +520,7 @@ Keep the host-issued identity/session/generation bindings on every reply; return
 only declared and granted features. An application-only status provider needs no
 terminal-context grant. Package the manifest, contained executable and licensing
 material, then publish separate compatible ready-built artifacts in a public
-GitHub Release with schema-1 catalogue metadata. See the independent
+GitHub Release with schema-2 catalogue metadata. See the independent
 [official plugin repository](https://github.com/Among-Terminal/among-plugins) for
 managed implementations and shared protocol support.
 
@@ -595,8 +595,9 @@ fit the shared 16-MiB budget, including removal while offline. The proposed docu
 can evict old snapshots to make room without deleting unrelated registrations,
 settings or installed generations. If even that cannot fit, the operation refuses
 without committing a registration/cache change. There are at most four snapshots
-per source. A refreshed duplicate revision/
-digest replaces its retrieval observation rather than consuming another slot.
+per source. A duplicate revision/digest/full release-and-tag snapshot replaces
+its retrieval observation rather than consuming another slot. A changed release
+ID or inventory is a different snapshot even when the catalogue bytes match.
 Publisher reapproval drops the previous publisher's cached snapshots.
 
 Source edits use no-follow owned storage, a bounded worker/shared two-credit
@@ -616,31 +617,37 @@ It has 5-second connect, 10-second idle-read and 60-second operation limits,
 bounded streamed responses, cancellation and at most two retained network workers.
 It neither builds nor executes downloaded code.
 
-This foundation is still being converted to the required 0.2 release contract:
-ordinary `releases/latest` selection, a schema-2 release-asset catalogue,
-development mode and mandatory kernel confinement are not yet implemented here.
-Historical prerelease lifecycle results do not accept that contract. The release
-inventory gate below is part of the transition, not a complete ordinary installer.
+The 0.2 release transition is not yet accepted end to end. The backend below
+uses ordinary `releases/latest` and schema2; development mode, mandatory kernel
+confinement, update-version policy and new official/template/package acceptance
+are still pending. Historical prerelease lifecycle results do not accept them.
 
-The current preflight parser defines `among-plugins.json` schema 1. A root version
+The preflight parser defines `among-plugins.json` schema 2. A root version
 envelope normalizes to one plugin/version; a multi-plugin root has
-`schema_version: 1` and a `plugins` list of independent `id`/`versions` entries.
+`schema_version: 2` and a `plugins` list of independent `id`/`versions` entries,
+with exactly one version per plugin. Schema1 is refused, not migrated.
 Each version embeds the existing shared plugin `manifest`, a 40-lowercase-hex
-version commit `revision`, `manifest_sha256`, numeric GitHub `release_id` and `artifacts`.
+version commit `revision`, `manifest_sha256` and `artifacts`. Numeric `release_id`
+and `asset_id` are forbidden in the catalogue; IDs are API observations retained
+in local receipts, not publisher-supplied authority.
 Unknown fields, duplicate keys/IDs/version labels and executable hooks are refused.
 The catalogue-declared version `revision` must equal the exact commit obtained by
-resolving the selected GitHub release's actual `tag_name`. It is distinct from the
-separately resolved catalogue-snapshot commit and exact cached catalogue digest:
-one catalogue can describe releases at several different commits.
+resolving the selected GitHub release's actual `tag_name`. Every plugin in the
+catalogue describes that same release commit. The exact catalogue bytes are bound
+to the API-observed `among-plugins.json` asset's size and SHA256 before parsing;
+no default-branch catalogue or raw-content fallback is read.
 
-Before downloading, the installer reads the exact numeric release ID and requires
+Source inspection resolves the public numeric repository/publisher identity,
+then reads `/repositories/{id}/releases/latest` and requires
 `draft: false`, `prerelease: false` and `immutable: true`. Its complete inventory
 must contain at most 64 assets, unique positive IDs and exact names, exactly one
 `among-plugins.json`, and an uploaded state, numeric size and a mandatory
 `sha256:<64 lowercase hex>` digest for every asset, including unselected files.
-It verifies selected asset membership/ID/size/digest, then requests the exact fully qualified
+It downloads the catalogue through the observed numeric asset API with
+`Accept: application/octet-stream` and verifies every catalogue package's exact
+name, size and digest against that inventory. It requests the exact fully qualified
 `refs/tags/<tag_name>` through the numeric repository's Git-reference endpoint.
-There is no branch, prefix-match, `latest` or `target_commitish` fallback. A
+There is no branch, prefix-match or `target_commitish` fallback for this tag. A
 lightweight tag points directly to a commit; annotated tags are peeled through at
 most eight exact Git tag object IDs to a commit, which is fetched by SHA from the
 same numeric repository. Missing, ambiguous, cyclic, unsupported or inconsistent
@@ -654,7 +661,13 @@ or trailing component dots or `.lock` suffix. Other tag forms fail closed rather
 than being guessed or passed to a shell. All API paths are locally constructed;
 response-provided object URLs are never followed.
 
-After package extraction and before selection commitment, the full release
+The cache retains the canonical full release inventory and complete tag-object
+chain alongside the catalogue bytes/digest. Offline reopen revalidates all of
+them; a missing/malformed observation cannot become install authority. Installation
+checks numeric repository/publisher identity, latest and the complete tag chain
+again before package transfer, without redownloading the catalogue. This extra
+pre-transfer walk is retained in this foundation; request optimisation is separate.
+After package extraction and before selection commitment, identity, latest, the full release
 snapshot and complete tag-object/commit chain are re-observed with no-cache
 requests. A change to any asset's ID, exact name, size or digest, including an
 unselected asset or the catalogue, refuses publication. Inventory array order
@@ -664,21 +677,20 @@ These are observed consistency checks and the Release API's immutability claim,
 not independent publisher authentication or an atomic transaction with GitHub.
 
 New source receipts retain `release_binding` (`tag`, observed reference `object`,
-resolved `commit` equal to the version revision). Details distinguish that binding
-from catalogue-snapshot provenance. Older receipts remain readable/offline but
-show that tag verification was not recorded; a new install/update must pass the
-strict check. Matching tag commits and asset hashes establish content consistency,
+resolved `commit` equal to the version revision). Details retain the selected
+package's API-observed release/asset IDs and exact catalogue digest. Matching
+tag commits and asset hashes establish content consistency,
 not build reproducibility, independent publisher authentication or an OS sandbox.
 
 Artifacts declare `os: linux`, `architecture: amd64` or `arm64`, a `runtime`
 (`native` with `libc` and numeric `minimum`, or `script` with an explicit installed
-`/usr/bin/<name>` executable), `dependencies`, `format: tar.gz`, numeric `asset_id`,
+`/usr/bin/<name>` executable), `dependencies`, `format: tar.gz`, exact asset filename `asset`,
 exact `size`/`sha256` and `members`. Each regular-file member declares `path`,
 `size`, `sha256` and `executable`; the shared manifest and executable entrypoint
 must be present. This metadata selects ready-built packages, not DEB/RPM installers
 or a build command. Digest consistency is not independent publisher authentication.
 
-Preflight bounds catalogue bytes to 1 MiB, 32 plugins, 16 versions per plugin,
+Preflight bounds catalogue bytes to 1 MiB, 32 plugins, one version per plugin,
 8 artifacts per version and 16 dependencies per artifact. Shared manifests retain
 their 256-KiB limit. Package declarations are bounded to 64 MiB downloaded,
 256 MiB expanded, 2,048 regular files and 64 MiB per file. Paths use the shared
@@ -688,10 +700,9 @@ Platform selection never guesses from filenames or falls back to another CPU.
 An installed runtime file does not prove its minimum version: an unmeasured
 minimum is reported unavailable instead of executing a probe.
 
-The current install/update consumer still addresses a numeric release selected
-by the schema-1 foundation. It checks the complete inventory and mandatory
-digests, then streams the exact numeric package asset. Moving source discovery
-and its pre-commit observation to `releases/latest` remains pending. Signed CDN redirects must
+Install/update uses only the reviewed release snapshot; changed latest, identity,
+inventory or tag chain refuses and requires refresh and review, never a silent
+substitution. The package request uses its observed numeric asset ID. Signed CDN redirects must
 use GitHub's release-asset hosts and the selected numeric repository path. Tokens
 are not logged or stored in receipts. Size and SHA-256 must match selected metadata.
 The same connect/idle/operation deadlines and two worker credits cover inspection

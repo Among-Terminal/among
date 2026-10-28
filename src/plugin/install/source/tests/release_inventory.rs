@@ -23,7 +23,7 @@ fn actual_https_refuses_invalid_complete_release_inventory_before_package_transf
         let selection = selected(&metadata);
         let server = Server::new(move |request| {
             let mut reply = package_route(metadata.clone(), archive.clone(), request);
-            if request.starts_with("GET /repositories/12/releases/7 ") {
+            if request.starts_with("GET /repositories/12/releases/latest ") {
                 if case == "duplicate-release-key" {
                     let rest = std::str::from_utf8(&reply.body)
                         .unwrap()
@@ -96,7 +96,7 @@ fn actual_https_rechecks_unselected_assets_and_ignores_inventory_order_only() {
         let reads = AtomicUsize::new(0);
         let server = Server::new(move |request| {
             let mut reply = package_route(metadata.clone(), archive.clone(), request);
-            if request.starts_with("GET /repositories/12/releases/7 ")
+            if request.starts_with("GET /repositories/12/releases/latest ")
                 && reads.fetch_add(1, Ordering::AcqRel) > 0
             {
                 let mut value: Value = serde_json::from_slice(&reply.body).unwrap();

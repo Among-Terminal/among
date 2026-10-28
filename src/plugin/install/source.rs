@@ -11,12 +11,13 @@ use reqwest::{Client, Url};
 use serde_json::Value;
 
 use super::metadata::{Catalogue, Platform};
+use super::release_snapshot::ReleaseAsset;
 use super::{official, package, store};
 use crate::plugin::data::{self, Problem};
 use crate::plugin::inventory::{Receipt, SourceReceipt};
 use crate::plugin::origin::Origin;
 
-mod release;
+pub(super) mod release;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -74,6 +75,7 @@ pub struct Inspection {
     pub catalogue_revision: String,
     pub catalogue: Catalogue,
     pub(super) catalogue_bytes: Vec<u8>,
+    pub(super) release: release::ResolvedRelease,
     compatibility: std::collections::BTreeMap<(String, String), Result<usize, Problem>>,
 }
 
@@ -91,24 +93,38 @@ impl Inspection {
         }
     }
 
-    pub(super) fn from_bytes(
+    pub(super) fn from_release(
         origin: Origin,
-        revision: String,
+        release: release::ResolvedRelease,
         bytes: Vec<u8>,
     ) -> Result<Self, Problem> {
         official::validate(&origin)?;
-        if revision.len() != 40
-            || !revision
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        release.validate()?;
+        let catalogue_asset = release.snapshot.asset("among-plugins.json")?;
+        if bytes.len() > super::metadata::MAX_CATALOGUE_BYTES
+            || catalogue_asset.size != bytes.len() as u64
+            || crate::plugin::inventory::checksum(&bytes)? != catalogue_asset.sha256
         {
-            return Err(Problem("invalid pinned catalogue revision"));
+            return Err(Problem(
+                "catalogue bytes disagree with the observed release asset",
+            ));
         }
         let catalogue = Catalogue::parse(&bytes)?;
         let platform = Platform::current();
         let mut compatibility = std::collections::BTreeMap::new();
         for plugin in &catalogue.plugins {
             for version in &plugin.versions {
+                if version.revision != release.binding.commit {
+                    return Err(Problem(
+                        "catalogue version revision disagrees with the resolved release-tag commit",
+                    ));
+                }
+                for artifact in &version.artifacts {
+                    let observed = release.snapshot.asset(&artifact.asset)?;
+                    if observed.size != artifact.size || observed.sha256 != artifact.sha256 {
+                        return Err(Problem("catalogue package name, size or digest disagrees with its release asset"));
+                    }
+                }
                 let selected = platform
                     .as_ref()
                     .map_err(|problem| *problem)
@@ -117,7 +133,7 @@ impl Inspection {
                         version
                             .artifacts
                             .iter()
-                            .position(|artifact| artifact.asset_id == selected.asset_id)
+                            .position(|artifact| artifact.asset == selected.asset)
                             .ok_or(Problem("selected asset is unavailable"))
                     });
                 compatibility.insert(
@@ -134,9 +150,10 @@ impl Inspection {
                 owner: origin.owner,
                 name: origin.repository,
             },
-            catalogue_revision: revision,
+            catalogue_revision: release.binding.commit.clone(),
             catalogue,
             catalogue_bytes: bytes,
+            release,
             compatibility,
         })
     }
@@ -157,7 +174,7 @@ impl Inspection {
                 let state = match selected {
                     Ok(artifact) => format!(
                         "ready-built asset {}, {} bytes, {} files",
-                        artifact.asset_id,
+                        artifact.asset,
                         artifact.size,
                         artifact.members.len()
                     ),
@@ -171,7 +188,7 @@ impl Inspection {
                     state,
                     version.manifest.description,
                     version.revision,
-                    version.release_id,
+                    self.release.snapshot.id,
                     version.manifest_sha256
                 ));
                 if lines.iter().map(String::len).sum::<usize>() > 24 * 1024 {
@@ -211,12 +228,13 @@ impl Inspection {
             repository: self.repository.clone(),
             version,
             artifact,
+            release: self.release.clone(),
             previous: None,
             source: SourceReceipt {
                 publisher_id: self.publisher_id,
                 catalogue_revision: self.catalogue_revision.clone(),
                 catalogue_sha256: crate::plugin::inventory::checksum(&self.catalogue_bytes)?,
-                release_binding: None,
+                release_binding: Some(self.release.binding.clone()),
             },
         })
     }
@@ -235,6 +253,7 @@ pub struct Selection {
     repository: Repository,
     version: super::metadata::Version,
     artifact: super::metadata::Artifact,
+    release: release::ResolvedRelease,
     source: SourceReceipt,
     previous: Option<Receipt>,
 }
@@ -302,7 +321,7 @@ impl Selection {
             self.version.manifest.version,
             self.artifact.os,
             architecture,
-            self.artifact.asset_id,
+            self.artifact.asset,
             self.artifact.size
         )
     }
@@ -581,25 +600,24 @@ impl Operation {
         Ok(())
     }
 
-    async fn check_official_selection(&self, selected: &Selection) -> Result<(), Problem> {
+    async fn check_selection_identity(&self, selected: &Selection) -> Result<(), Problem> {
         official::validate(&selected.origin())?;
-        if selected.repository_id != official::REPOSITORY_ID {
-            return Ok(());
-        }
         let url = github_url(
             "api.github.com",
-            &["repositories", &official::REPOSITORY_ID.to_string()],
+            &["repositories", &selected.repository_id.to_string()],
         )?;
         let requested = url.clone();
         let (bytes, _) = self
             .get(url, |next| next == &requested, data::MAX_STATIC_BYTES)
             .await?;
         let document = data::parse_unique(&bytes, data::MAX_STATIC_BYTES)?;
-        if document["id"].as_u64() != Some(official::REPOSITORY_ID)
-            || document["owner"]["id"].as_u64() != Some(official::PUBLISHER_ID)
+        if document["id"].as_u64() != Some(selected.repository_id)
+            || document["owner"]["id"].as_u64() != Some(selected.source.publisher_id)
             || document["private"].as_bool() != Some(false)
         {
-            return Err(Problem("official repository or publisher no longer matches this application build; installation refused"));
+            return Err(Problem(
+                "repository or publisher identity changed; refresh and review again",
+            ));
         }
         Ok(())
     }
@@ -610,7 +628,7 @@ impl Operation {
         root: &std::path::Path,
         state: &AtomicU8,
     ) -> Result<store::Commit, Problem> {
-        self.check_official_selection(&selected).await?;
+        self.check_selection_identity(&selected).await?;
         let version = &selected.version;
         let artifact = &selected.artifact;
         artifact.compatibility(&Platform::current()?)?;
@@ -622,8 +640,8 @@ impl Operation {
             revision: version.revision.clone(),
             manifest_sha256: version.manifest_sha256.clone(),
             package_sha256: artifact.sha256.clone(),
-            release_id: version.release_id,
-            asset_id: artifact.asset_id,
+            release_id: selected.release.snapshot.id,
+            asset_id: selected.release.snapshot.asset(&artifact.asset)?.id,
             generation: store::token(),
             installation: selected.previous.as_ref().map_or_else(
                 || Some(store::token()),
@@ -645,6 +663,11 @@ impl Operation {
             transaction.refuse_existing(&receipt)?;
         }
         let release = self.resolve_release(&selected).await?;
+        if release != selected.release {
+            return Err(Problem(
+                "release tag or snapshot changed since review; refresh and review again",
+            ));
+        }
         receipt
             .source
             .as_mut()
@@ -670,7 +693,7 @@ impl Operation {
         if self.resolve_release(&selected).await? != release {
             return Err(Problem("release snapshot, tag or immutable peel chain changed during installation; selection was not committed"));
         }
-        self.check_official_selection(&selected).await?;
+        self.check_selection_identity(&selected).await?;
         match &selected.previous {
             Some(previous) => transaction.commit_update(
                 receipt,
@@ -692,8 +715,20 @@ impl Operation {
         output: &mut std::fs::File,
         state: &AtomicU8,
     ) -> Result<(), Problem> {
-        let repository = selected.repository_id.to_string();
-        let asset = selected.artifact.asset_id.to_string();
+        let asset = selected.release.snapshot.asset(&selected.artifact.asset)?;
+        self.download_asset(selected.repository_id, asset, output)
+            .await?;
+        self.progress(state, DOWNLOADING, VERIFYING)
+    }
+
+    async fn download_asset(
+        &self,
+        repository_id: u64,
+        observed: &ReleaseAsset,
+        output: &mut impl Write,
+    ) -> Result<(), Problem> {
+        let repository = repository_id.to_string();
+        let asset = observed.id.to_string();
         let mut url = github_url(
             "api.github.com",
             &["repositories", &repository, "releases", "assets", &asset],
@@ -707,6 +742,7 @@ impl Operation {
                         .get(url.clone())
                         .header("Accept", "application/octet-stream")
                         .header("Accept-Encoding", "identity")
+                        .header("Cache-Control", "no-cache")
                         .send(),
                 )
                 .await?;
@@ -723,7 +759,7 @@ impl Operation {
                 let next = url
                     .join(location)
                     .map_err(|_| Problem("invalid package redirect"))?;
-                if next != requested && !asset_delivery_url(&next, selected.repository_id) {
+                if next != requested && !asset_delivery_url(&next, repository_id) {
                     return Err(Problem(
                         "package redirect changed the approved repository or delivery origin",
                     ));
@@ -745,7 +781,7 @@ impl Operation {
                 .is_some_and(|value| value != "identity")
                 || response
                     .content_length()
-                    .is_some_and(|size| size != selected.artifact.size)
+                    .is_some_and(|size| size != observed.size)
             {
                 return Err(Problem(
                     "package transfer encoding or size disagrees with selected metadata",
@@ -757,7 +793,7 @@ impl Operation {
             while let Some(chunk) = self.wait(response.chunk()).await? {
                 size = size
                     .checked_add(chunk.len() as u64)
-                    .filter(|size| *size <= selected.artifact.size)
+                    .filter(|size| *size <= observed.size)
                     .ok_or(Problem("package transfer exceeds its declared byte budget"))?;
                 digest.update(&chunk);
                 output
@@ -765,9 +801,7 @@ impl Operation {
                     .map_err(|_| Problem("cannot write downloaded package"))?;
             }
             self.check()?;
-            self.progress(state, DOWNLOADING, VERIFYING)?;
-            if size != selected.artifact.size
-                || digest.string().as_deref() != Some(selected.artifact.sha256.as_str())
+            if size != observed.size || digest.string().as_deref() != Some(observed.sha256.as_str())
             {
                 return Err(Problem(
                     "downloaded package size or digest disagrees with selected metadata",
@@ -948,66 +982,29 @@ impl Operation {
             .as_str()
             .filter(|name| component(name))
             .ok_or(Problem("invalid canonical repository name"))?;
-        let branch = document["default_branch"]
-            .as_str()
-            .filter(|branch| !branch.is_empty() && data::bounded_text(branch, 256, false))
-            .ok_or(Problem("repository has no usable default branch"))?;
         let repository = Repository {
             owner: owner.into(),
             name: name.into(),
         };
-        let commit_url = github_url(
-            "api.github.com",
-            &["repositories", &id.to_string(), "commits", branch],
-        )?;
-        let requested = commit_url.clone();
-        let suffix = format!(
-            "/commits/{}",
-            requested
-                .path()
-                .rsplit('/')
-                .next()
-                .ok_or(Problem("invalid commit reference"))?
-        );
-        let (bytes, _) = self
-            .get(
-                commit_url,
-                |next| next == &requested || numeric_repository_url(next, Some(id), &suffix),
-                data::MAX_STATIC_BYTES,
-            )
-            .await?;
-        let commit: Value = data::parse_unique(&bytes, data::MAX_STATIC_BYTES)?;
-        let revision = commit["sha"]
-            .as_str()
-            .filter(|sha| {
-                sha.len() == 40
-                    && sha
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
-            .ok_or(Problem("commit response lacks an exact revision"))?;
-        let catalogue_url = github_url(
-            "raw.githubusercontent.com",
-            &[owner, name, revision, "among-plugins.json"],
-        )?;
-        let requested = catalogue_url.clone();
-        let (bytes, _) = self
-            .get(
-                catalogue_url,
-                |next| next == &requested,
-                super::metadata::MAX_CATALOGUE_BYTES,
-            )
-            .await?;
-        let inspection = Inspection::from_bytes(
-            Origin {
-                repository_id: id,
-                publisher_id,
-                owner: repository.owner,
-                repository: repository.name,
-            },
-            revision.into(),
-            bytes,
-        )?;
+        let origin = Origin {
+            repository_id: id,
+            publisher_id,
+            owner: repository.owner,
+            repository: repository.name,
+        };
+        official::validate(&origin)?;
+        let snapshot = self.latest_release(id).await?;
+        let catalogue_asset = snapshot.asset("among-plugins.json")?;
+        if catalogue_asset.size == 0
+            || catalogue_asset.size > super::metadata::MAX_CATALOGUE_BYTES as u64
+        {
+            return Err(Problem("release catalogue exceeds its byte budget"));
+        }
+        let mut bytes = Vec::new();
+        self.download_asset(id, catalogue_asset, &mut bytes).await?;
+        // Check the transfer digest before a catalogue parser receives these bytes.
+        let release = self.resolve_tag(id, snapshot).await?;
+        let inspection = Inspection::from_release(origin, release, bytes)?;
         self.check()?;
         Ok(inspection)
     }
