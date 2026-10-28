@@ -616,7 +616,13 @@ It has 5-second connect, 10-second idle-read and 60-second operation limits,
 bounded streamed responses, cancellation and at most two retained network workers.
 It neither builds nor executes downloaded code.
 
-The preflight parser defines `among-plugins.json` schema 1. A root version
+This foundation is still being converted to the required 0.2 release contract:
+ordinary `releases/latest` selection, a schema-2 release-asset catalogue,
+development mode and mandatory kernel confinement are not yet implemented here.
+Historical prerelease lifecycle results do not accept that contract. The release
+inventory gate below is part of the transition, not a complete ordinary installer.
+
+The current preflight parser defines `among-plugins.json` schema 1. A root version
 envelope normalizes to one plugin/version; a multi-plugin root has
 `schema_version: 1` and a `plugins` list of independent `id`/`versions` entries.
 Each version embeds the existing shared plugin `manifest`, a 40-lowercase-hex
@@ -627,8 +633,12 @@ resolving the selected GitHub release's actual `tag_name`. It is distinct from t
 separately resolved catalogue-snapshot commit and exact cached catalogue digest:
 one catalogue can describe releases at several different commits.
 
-Before downloading, the installer reads the exact numeric release ID, verifies its
-public asset membership/ID/size/digest, then requests the exact fully qualified
+Before downloading, the installer reads the exact numeric release ID and requires
+`draft: false`, `prerelease: false` and `immutable: true`. Its complete inventory
+must contain at most 64 assets, unique positive IDs and exact names, exactly one
+`among-plugins.json`, and an uploaded state, numeric size and a mandatory
+`sha256:<64 lowercase hex>` digest for every asset, including unselected files.
+It verifies selected asset membership/ID/size/digest, then requests the exact fully qualified
 `refs/tags/<tag_name>` through the numeric repository's Git-reference endpoint.
 There is no branch, prefix-match, `latest` or `target_commitish` fallback. A
 lightweight tag points directly to a commit; annotated tags are peeled through at
@@ -644,13 +654,14 @@ or trailing component dots or `.lock` suffix. Other tag forms fail closed rather
 than being guessed or passed to a shell. All API paths are locally constructed;
 response-provided object URLs are never followed.
 
-After package extraction and before selection commitment, the same release ID,
-asset checks and complete tag-object/commit chain are re-observed with no-cache
-requests. Any observed change, including a new annotation object with the same
-peeled commit, refuses publication. These checks pin one observation and reject
-visible drift; GitHub does not supply an atomic lock against movement after the
-last observation or a history proving a tag never moved and returned. No stronger
-immutability claim is made.
+After package extraction and before selection commitment, the full release
+snapshot and complete tag-object/commit chain are re-observed with no-cache
+requests. A change to any asset's ID, exact name, size or digest, including an
+unselected asset or the catalogue, refuses publication. Inventory array order
+alone is ignored. A new annotation object with the same peeled commit still
+refuses publication; the immutable flag does not replace either tag-chain walk.
+These are observed consistency checks and the Release API's immutability claim,
+not independent publisher authentication or an atomic transaction with GitHub.
 
 New source receipts retain `release_binding` (`tag`, observed reference `object`,
 resolved `commit` equal to the version revision). Details distinguish that binding
@@ -677,9 +688,10 @@ Platform selection never guesses from filenames or falls back to another CPU.
 An installed runtime file does not prove its minimum version: an unmeasured
 minimum is reported unavailable instead of executing a probe.
 
-The install/update consumer requests the exact numeric repository/release, checks
-selected asset membership/size and any supplied GitHub digest, then streams that
-exact numeric asset. It never refetches mutable latest. Signed CDN redirects must
+The current install/update consumer still addresses a numeric release selected
+by the schema-1 foundation. It checks the complete inventory and mandatory
+digests, then streams the exact numeric package asset. Moving source discovery
+and its pre-commit observation to `releases/latest` remains pending. Signed CDN redirects must
 use GitHub's release-asset hosts and the selected numeric repository path. Tokens
 are not logged or stored in receipts. Size and SHA-256 must match selected metadata.
 The same connect/idle/operation deadlines and two worker credits cover inspection

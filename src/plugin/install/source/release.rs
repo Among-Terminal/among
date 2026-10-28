@@ -1,6 +1,7 @@
 //! pin one exact tag object and peel only same-repository immutable Git objects.
 //! re-observation rejects visible drift, not hypothetical later movement or builds.
 
+use super::super::release_snapshot::ReleaseSnapshot;
 use super::{github_url, Operation, Selection};
 use crate::plugin::{
     data::{self, Problem},
@@ -14,6 +15,7 @@ const MAX_GIT_BYTES: usize = 64 * 1024;
 #[derive(PartialEq, Eq)]
 pub(super) struct ResolvedRelease {
     pub binding: ReleaseBinding,
+    snapshot: ReleaseSnapshot,
     chain: Vec<(String, String)>,
 }
 
@@ -69,42 +71,22 @@ impl Operation {
                 data::MAX_STATIC_BYTES,
             )
             .await?;
-        if release["id"].as_u64() != Some(selected.version.release_id)
-            || release["draft"].as_bool() != Some(false)
-        {
+        let snapshot = ReleaseSnapshot::from_value(&release)?;
+        if snapshot.id != selected.version.release_id {
             return Err(Problem(
                 "selected public release identity disagrees with the catalogue",
             ));
         }
-        let assets = release["assets"]
-            .as_array()
-            .ok_or(Problem("selected release has no asset inventory"))?;
-        let mut matches = assets
-            .iter()
-            .filter(|entry| entry["id"].as_u64() == Some(selected.artifact.asset_id));
-        let entry = matches.next().ok_or(Problem(
-            "selected asset does not belong to the selected release",
-        ))?;
-        if matches.next().is_some()
-            || entry["size"].as_u64() != Some(selected.artifact.size)
-            || entry["state"].as_str() != Some("uploaded")
-        {
+        let asset = snapshot.asset_by_id(selected.artifact.asset_id)?;
+        if asset.size != selected.artifact.size {
             return Err(Problem("selected release asset identity or size changed"));
         }
-        if entry.get("digest").is_some_and(|digest| {
-            !digest.is_null()
-                && digest.as_str() != Some(format!("sha256:{}", selected.artifact.sha256).as_str())
-        }) {
+        if asset.sha256 != selected.artifact.sha256 {
             return Err(Problem(
                 "release asset digest disagrees with selected metadata",
             ));
         }
-        let tag = release["tag_name"]
-            .as_str()
-            .filter(|tag| ReleaseBinding::supported_tag(tag))
-            .ok_or(Problem(
-                "selected release has no supported exact tag name; branch fallback is forbidden",
-            ))?;
+        let tag = snapshot.tag.as_str();
         let mut suffix = vec!["git", "ref", "tags"];
         suffix.extend(tag.split('/'));
         let reference = self
@@ -150,6 +132,7 @@ impl Operation {
                         object: head,
                         commit: current.1,
                     },
+                    snapshot,
                     chain,
                 });
             }

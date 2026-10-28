@@ -6,6 +6,7 @@ use std::sync::Mutex;
 mod installation_authority;
 mod official_source;
 mod release_binding;
+mod release_inventory;
 mod selection_description;
 
 pub(crate) static JOB_TESTS: Mutex<()> = Mutex::new(());
@@ -470,8 +471,10 @@ fn selected(metadata: &Value) -> Selection {
 pub(crate) fn package_route(metadata: Value, archive: Vec<u8>, request: &str) -> Reply {
     let path = request.split_whitespace().nth(1).unwrap();
     match path {
-        "/repositories/12/releases/7" => Reply::json(serde_json::json!({"id":7,"draft":false,"tag_name":"v1.0","assets":[
-            {"id":11,"size":archive.len(),"state":"uploaded","digest":format!("sha256:{}", metadata["artifacts"][0]["sha256"].as_str().unwrap())}]})),
+        "/repositories/12/releases/7" => Reply::json(serde_json::json!({"id":7,"draft":false,"prerelease":false,"immutable":true,"tag_name":"v1.0","assets":[
+            {"id":11,"name":"sample-amd64.tar.gz","size":archive.len(),"state":"uploaded","digest":format!("sha256:{}", metadata["artifacts"][0]["sha256"].as_str().unwrap())},
+            {"id":12,"name":"among-plugins.json","size":metadata.to_string().len(),"state":"uploaded","digest":format!("sha256:{}",crate::plugin::inventory::checksum(metadata.to_string().as_bytes()).unwrap())},
+            {"id":13,"name":"NOTICES","size":1,"state":"uploaded","digest":format!("sha256:{}","a".repeat(64))}]})),
         "/repositories/12/git/ref/tags/v1.0" => Reply::json(serde_json::json!({"ref":"refs/tags/v1.0","object":{"type":"commit","sha":metadata["revision"]}})),
         path if path == format!("/repositories/12/git/commits/{}", metadata["revision"].as_str().unwrap()) => Reply::json(serde_json::json!({"sha":metadata["revision"]})),
         "/repositories/12/releases/assets/11" => Reply { status: 302, headers: vec![("Location".into(),
