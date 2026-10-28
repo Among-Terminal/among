@@ -110,11 +110,7 @@ impl PluginHost {
             .workspaces
             .get(self.world.legacy.active_workspace);
         let current = workspaces.get(active);
-        for plugin in self
-            .plugins
-            .iter()
-            .filter(|plugin| plugin.managed.is_some())
-        {
+        for plugin in &self.plugins {
             store.remap_workspace_source(
                 &plugin.spec.name,
                 &self.world.workspaces,
@@ -266,7 +262,13 @@ impl PluginHost {
                 self.plugins[index]
                     .inflight
                     .insert(request_id, Instant::now());
-                self.plugins[index].scopes.insert(request_id, scope.into());
+                self.plugins[index].scopes.insert(
+                    request_id,
+                    StatusRequest {
+                        scope: scope.into(),
+                        workspace_revision: self.workspace_revision,
+                    },
+                );
                 if let Some(runtime) = self.plugins[index].runtime.as_mut() {
                     runtime.scopes.insert(request_id, target);
                 }
@@ -494,7 +496,7 @@ impl PluginHost {
                 let Some(sent) = self.plugins[index].inflight.remove(&request_id) else {
                     return;
                 };
-                self.plugins[index].scopes.remove(&request_id);
+                let request = self.plugins[index].scopes.remove(&request_id);
                 let target = self.plugins[index]
                     .runtime
                     .as_mut()
@@ -506,6 +508,9 @@ impl PluginHost {
                 let Some(scope) = target.and_then(|target| self.world.resolve(&target)) else {
                     return;
                 };
+                let Some(request) = request else {
+                    return;
+                };
                 if self.results.len() >= MAX_POLL_FRAMES {
                     self.fault(index, "managed result backlog exceeded");
                     return;
@@ -515,6 +520,7 @@ impl PluginHost {
                     scope,
                     fragments: valid.fragments,
                     refresh: refresh_ms.map_or(Refresh::OnEvent, Refresh::IntervalMs),
+                    workspace_revision: request.workspace_revision,
                 });
             }
             managed::Response::Configured {
@@ -1069,8 +1075,14 @@ mod tests {
             "workspace_summary:0"
         );
         fixture.wait(|host| !host.results.is_empty());
-        assert_eq!(fixture.host.drain_results()[0].scope, "workspace_summary:0");
+        assert!(fixture.host.drain_results().is_empty());
         assert!(!fixture.host.plugins[0].inflight.contains_key(&id));
+        fixture
+            .host
+            .request_status(KEY, "workspace_summary:0", &Context::default())
+            .unwrap();
+        fixture.wait(|host| !host.results.is_empty());
+        assert_eq!(fixture.host.drain_results()[0].scope, "workspace_summary:0");
     }
 
     #[test]
