@@ -6,3 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates gcc libc6-dev pkg-config desktop-file-utils appstream libgtk-4-bin librsvg2-common \
     libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# keep runner-only prerequisites separate from the reusable graphical layer.
+RUN apt-get update && apt-get install -y --no-install-recommends git squashfs-tools jq \
+    && rm -rf /var/lib/apt/lists/*

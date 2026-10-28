@@ -57,14 +57,87 @@ fn serve_with_delay(
 }
 
 fn write_owned(path: &str, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    publish_owned(path, |file| file.write_all(bytes.as_ref()))
+}
+
+fn publish_owned(
+    path: &str,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
+    // parents use marker existence as readiness; never expose an empty/partial
+    // resource-observed (or truncate the previous generation's complete marker).
+    let pending = format!("{path}.{}.pending", std::process::id());
     let mut file = std::fs::OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
         .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes.as_ref())
+        .open(&pending)?;
+    let written = write(&mut file);
+    drop(file);
+    let result = written.and_then(|()| std::fs::rename(&pending, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&pending);
+    }
+    result
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn marker_readiness_never_exposes_empty_partial_or_failed_writes() {
+        let root = std::env::temp_dir().join(format!("among-fake-marker-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join("resource-observed");
+        let path = marker.to_str().unwrap();
+        let pending = format!("{path}.{}.pending", std::process::id());
+
+        publish_owned(path, |file| {
+            assert!(!marker.exists(), "open is not publication");
+            file.write_all(b"2")?;
+            assert!(!marker.exists(), "partial write is not readiness");
+            file.write_all(b".0")
+        })
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "2.0");
+        assert_eq!(
+            std::fs::metadata(&marker).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!std::path::Path::new(&pending).exists());
+
+        publish_owned(path, |file| {
+            assert_eq!(std::fs::read_to_string(&marker)?, "2.0");
+            file.write_all(b"3")?;
+            assert_eq!(std::fs::read_to_string(&marker)?, "2.0");
+            file.write_all(b".0")
+        })
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "3.0");
+
+        assert!(publish_owned(path, |file| {
+            file.write_all(b"4")?;
+            Err(std::io::Error::other("injected interrupted publication"))
+        })
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "3.0");
+        assert!(!std::path::Path::new(&pending).exists());
+        write_owned(path, "4.0").unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "4.0");
+
+        std::fs::remove_file(&marker).unwrap();
+        assert!(publish_owned(path, |file| {
+            file.write_all(b"5")?;
+            Err(std::io::Error::other("injected first-write failure"))
+        })
+        .is_err());
+        assert!(!marker.exists());
+        assert!(!std::path::Path::new(&pending).exists());
+        std::fs::remove_dir(root).unwrap();
+    }
 }
 
 fn serve_managed(mode: &str) -> std::io::Result<()> {

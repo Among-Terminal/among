@@ -11,6 +11,10 @@ repository = "https://github.com/Among-Terminal/among"
 # keeps `cargo publish` from succeeding by accident.
 publish = false
 
+[features]
+# external protocol fixtures are required only by explicitly opted-in tests.
+managed-transport-interop = []
+
 [dependencies]
 # `v4_10` is mandatory: vte4's generated code references gtk::Accessible, which
 # is behind that feature, and without it the dependency tree fails to compile.

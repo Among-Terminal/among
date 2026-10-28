@@ -133,7 +133,7 @@ jobs:
       - name: Runtime and display tools only, no compiler or development headers
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates \
+          apt-get install -y --no-install-recommends git ca-certificates curl \
             desktop-file-utils appstream libglib2.0-bin xvfb xauth \
             openbox dbus-x11 xdotool x11-utils procps imagemagick
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

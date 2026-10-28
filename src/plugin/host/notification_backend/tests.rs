@@ -14,6 +14,19 @@ const ROLES: &[&str] = &[
     "context.terminals",
 ];
 
+#[test]
+fn notification_backend_preserves_shared_identity_admission() {
+    let admission = Admission::default();
+    let reservation = admission.acquire(KEY).ok().unwrap();
+    let core = Rc::new(RefCell::new(Host::new().unwrap()));
+    let backend = Rc::new(RefCell::new(Backend::new(core, Focus::default())));
+    let host = PluginHost::with_notification_backend(admission, Some(backend));
+    assert!(host.notifications.is_some());
+    assert!(!host.supervised_stopped(KEY));
+    drop(reservation);
+    assert!(host.supervised_stopped(KEY));
+}
+
 struct Fixture {
     host: PluginHost,
     backend: Rc<RefCell<Backend>>,
@@ -100,7 +113,7 @@ impl Fixture {
         core.borrow_mut().attach(2).unwrap();
         let backend = Rc::new(RefCell::new(Backend::new(core.clone(), Focus::default())));
         let mut host = PluginHost::with_notification_backend(
-            Rc::new(Cell::new(true)),
+            Admission::default(),
             attached.then(|| backend.clone()),
         );
         host.update_context(

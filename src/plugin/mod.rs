@@ -8,6 +8,7 @@
 //! The cost is a process spawn per plugin and a messaging round trip, both of
 //! which are invisible next to the work a status plugin actually does.
 
+mod admission;
 pub(crate) mod data;
 pub mod host;
 pub mod install;
