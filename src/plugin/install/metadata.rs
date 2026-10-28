@@ -279,7 +279,7 @@ impl Artifact {
     fn validate(&self, manifest: &Manifest, manifest_sha256: &str) -> Result<(), Problem> {
         if self.os != "linux"
             || self.format != "tar.gz"
-            || !super::release_snapshot::asset_name(&self.asset)
+            || !crate::plugin::inventory::release::asset_name(&self.asset)
             || self.asset == "among-plugins.json"
             || self.size == 0
             || self.size > MAX_PACKAGE_BYTES

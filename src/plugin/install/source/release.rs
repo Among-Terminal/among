@@ -1,8 +1,8 @@
 //! pin one exact tag object and peel only same-repository immutable Git objects.
 //! re-observation rejects visible drift, not hypothetical later movement or builds.
 
-use super::super::release_snapshot::ReleaseSnapshot;
 use super::{github_url, Operation, Selection};
+use crate::plugin::inventory::release::ReleaseSnapshot;
 use crate::plugin::{
     data::{self, Problem},
     inventory::ReleaseBinding,

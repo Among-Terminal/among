@@ -11,9 +11,9 @@ use reqwest::{Client, Url};
 use serde_json::Value;
 
 use super::metadata::{Catalogue, Platform};
-use super::release_snapshot::ReleaseAsset;
 use super::{official, package, store};
 use crate::plugin::data::{self, Problem};
+use crate::plugin::inventory::release::ReleaseAsset;
 use crate::plugin::inventory::{Receipt, SourceReceipt};
 use crate::plugin::origin::Origin;
 
@@ -234,7 +234,8 @@ impl Inspection {
                 publisher_id: self.publisher_id,
                 catalogue_revision: self.catalogue_revision.clone(),
                 catalogue_sha256: crate::plugin::inventory::checksum(&self.catalogue_bytes)?,
-                release_binding: Some(self.release.binding.clone()),
+                release_snapshot: Box::new(self.release.snapshot.clone()),
+                release_binding: self.release.binding.clone(),
             },
         })
     }
@@ -672,7 +673,7 @@ impl Operation {
             .source
             .as_mut()
             .ok_or(Problem("selected package has no source receipt"))?
-            .release_binding = Some(release.binding.clone());
+            .release_binding = release.binding.clone();
         self.download(&selected, &mut transaction.archive, state)
             .await?;
         transaction

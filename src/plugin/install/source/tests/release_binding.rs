@@ -57,7 +57,7 @@ fn actual_https_release_binding_peels_lightweight_annotated_nested_and_bounded_d
         let source = committed.receipt.source.as_ref().unwrap();
         assert_eq!(source.catalogue_revision, "d".repeat(40));
         assert_eq!(committed.receipt.revision, "d".repeat(40));
-        let binding = source.release_binding.as_ref().unwrap();
+        let binding = &source.release_binding;
         assert_eq!(binding.tag, tag);
         assert_eq!(binding.commit, committed.receipt.revision);
         assert_eq!(
