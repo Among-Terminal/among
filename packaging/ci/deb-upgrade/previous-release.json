@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "tag": "v0.1.1",
+  "packages": {
+    "debian13-amd64": {
+      "asset": "among-terminal-debian13-amd64.deb",
+      "sha256": "2f742ffca0fe897cfd49d740390f073ad8d87182402595af982dbe2733694c68",
+      "version": "0.1.1-1~debian13"
+    },
+    "debian13-arm64": {
+      "asset": "among-terminal-debian13-arm64.deb",
+      "sha256": "9ead8f74a4d819891115f9ed38d420146beed52414e1f97ee58bc0f070b73450",
+      "version": "0.1.1-1~debian13"
+    },
+    "ubuntu24.04-amd64": {
+      "asset": "among-terminal-ubuntu24.04-amd64.deb",
+      "sha256": "5f48cd24b835ce4cfb932722793b2cfbcc5bd88aba887d766f0f5764b58fe57b",
+      "version": "0.1.1-1~ubuntu24.04"
+    },
+    "ubuntu24.04-arm64": {
+      "asset": "among-terminal-ubuntu24.04-arm64.deb",
+      "sha256": "527346492ef294e4e2d7b755db8ebc33ab65073886aff43f61588eaf5dc25e36",
+      "version": "0.1.1-1~ubuntu24.04"
+    }
+  }
+}

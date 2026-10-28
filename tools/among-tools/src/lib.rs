@@ -11,6 +11,7 @@ pub mod deb822;
 pub mod deb_build;
 pub mod deb_installed;
 pub mod deb_lifecycle;
+pub mod deb_previous;
 pub mod deb_selection;
 pub mod deb_workflow;
 pub mod delivery_package;
