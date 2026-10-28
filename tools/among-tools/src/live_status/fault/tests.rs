@@ -107,7 +107,14 @@ fn exited_target_is_not_replaced_by_a_new_process_of_the_same_executable() -> Re
     let mut child = fixture.spawn(&selected)?;
     let host = Host::observe(std::process::id())?;
     let executable = File::open(&selected)?;
-    let target = target(&host, &executable)?;
+    let target = target(&host, &executable).inspect_err(|_| {
+        eprintln!(
+            "initial fault fixture selection: intended_pid={}; running={:?}; executable_inode={:?}",
+            child.id(),
+            child.is_running(),
+            inode(&executable)
+        );
+    })?;
     child.signal(nix::sys::signal::Signal::SIGTERM)?;
     child.wait(Duration::from_secs(5))?;
     let mut replacement = fixture.spawn(&selected)?;

@@ -199,9 +199,12 @@ fn inspect(preferences: &adw::PreferencesWindow) -> adw::PreferencesWindow {
         .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
         .unwrap()
         .buffer();
-    assert!(output
-        .text(&output.start_iter(), &output.end_iter(), false)
-        .contains(&format!("at {CATALOGUE_REVISION}")));
+    let preview = output.text(&output.start_iter(), &output.end_iter(), false);
+    assert!(
+        preview.contains(&format!("at {CATALOGUE_REVISION}")),
+        "published catalogue binding mismatch: expected {CATALOGUE_REVISION}; preview prefix: {:?}",
+        preview.chars().take(4096).collect::<String>()
+    );
     view
 }
 

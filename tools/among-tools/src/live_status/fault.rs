@@ -170,23 +170,40 @@ impl Target {
 
 fn target(host: &Host, executable: &File) -> Result<Target> {
     let expected = inode(executable)?;
+    let children = children(host)?;
     let mut matched = Vec::new();
-    for pid in children(host)? {
+    let mut unavailable = 0;
+    let mut wrong_parent = 0;
+    let mut wrong_group = 0;
+    let mut wrong_uid = 0;
+    let mut unreadable_executable = 0;
+    let mut wrong_inode = 0;
+    for &pid in &children {
         let observed = match process(pid) {
             Ok(observed) => observed,
-            Err(_) => continue,
+            Err(_) => {
+                unavailable += 1;
+                continue;
+            }
         };
         if observed.parent != host.identity.pid
             || observed.group != pid
             || observed.uid != host.identity.uid
         {
+            wrong_parent += usize::from(observed.parent != host.identity.pid);
+            wrong_group += usize::from(observed.group != pid);
+            wrong_uid += usize::from(observed.uid != host.identity.uid);
             continue;
         }
         let actual = match File::open(format!("/proc/{pid}/exe")) {
             Ok(file) => file,
-            Err(_) => continue,
+            Err(_) => {
+                unreadable_executable += 1;
+                continue;
+            }
         };
         if inode(&actual)? != expected {
+            wrong_inode += 1;
             continue;
         }
         let fd = unsafe { nix::libc::syscall(nix::libc::SYS_pidfd_open, pid, 0) };
@@ -201,10 +218,15 @@ fn target(host: &Host, executable: &File) -> Result<Target> {
         matched.push(candidate);
     }
     if matched.len() != 1 {
-        return Err(
-            "selected managed executable has no unique live supervised child; no signal sent"
-                .into(),
-        );
+        // The owned child set is bounded to 512 entries. Identity-only refusal
+        // evidence distinguishes missing/ambiguous targets without a retry or
+        // a basename/numeric-PID fallback (issue #50).
+        return Err(format!(
+            "selected managed executable has no unique live supervised child; no signal sent; matches={}; host={:?}; expected_inode={expected:?}; children={children:?}; unavailable={unavailable}; wrong_parent={wrong_parent}; wrong_group={wrong_group}; wrong_uid={wrong_uid}; unreadable_executable={unreadable_executable}; wrong_inode={wrong_inode}",
+            matched.len(),
+            host.identity
+        )
+        .into());
     }
     matched
         .pop()
