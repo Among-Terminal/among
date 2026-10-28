@@ -110,12 +110,14 @@ impl PluginHost {
             .workspaces
             .get(self.world.legacy.active_workspace);
         let current = workspaces.get(active);
+        // event-driven headers can describe positions/counts even when the
+        // active identity survives a move; pane-ID content remains untouched.
         for plugin in &self.plugins {
             store.remap_workspace_source(
                 &plugin.spec.name,
                 &self.world.workspaces,
                 workspaces,
-                previous != current,
+                previous != current || self.world.workspaces != workspaces,
             );
         }
     }

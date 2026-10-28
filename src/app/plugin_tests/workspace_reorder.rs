@@ -159,11 +159,27 @@ fn restore_button(widget: &gtk::Widget) -> Option<gtk::Button> {
 fn restored_plugin_drag_session(app: &adw::Application) {
     let ctx = build_with_writer(app, None, crate::session::Writer::new).unwrap();
     wait_for(
-        || restore_button(ctx.window.upcast_ref()).is_some(),
+        || restore_button(ctx.window.upcast_ref()).is_some_and(|button| button.width() > 0),
         Duration::from_secs(3),
     );
+    let window = xdo(&[
+        "search",
+        "--onlyvisible",
+        "--pid",
+        &std::process::id().to_string(),
+        "--name",
+        &ctx.window.title().unwrap(),
+    ])
+    .lines()
+    .last()
+    .unwrap()
+    .to_string();
+    xdo(&["windowactivate", "--sync", &window]);
+    xdo(&["windowfocus", "--sync", &window]);
+    wait_for(|| ctx.window.is_active(), Duration::from_secs(3));
     let button = restore_button(ctx.window.upcast_ref()).unwrap();
     assert!(button.grab_focus());
+    pump_for(Duration::from_millis(50));
     xdo(&["key", "Return"]);
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
     assert_eq!(references(&ctx), [3, 2]);
@@ -273,14 +289,54 @@ fn real_plugin_updates_and_structural_changes_do_not_retarget_a_workspace_drag()
     hover(&ctx, &window, 0, false);
     release(&ctx);
     wait_for(|| references(&ctx) == [1, 2, 3], Duration::from_secs(3));
+    let held_request = std::fs::read_to_string(package.join("transcript.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .rfind(|frame| {
+            frame["type"] == "status"
+                && frame["scope"]["slot"] == "workspace_summary"
+                && frame["scope"]["target"]["reference"] == "1"
+        })
+        .unwrap()["request_id"]
+        .as_u64()
+        .unwrap();
+    assert!(ctx.state.borrow().plugins.status_pending(KEY, held_request));
+    let stale_seen = Rc::new(Cell::new(false));
+    let observation = glib::timeout_add_local(Duration::from_millis(1), {
+        let ctx = ctx.handle();
+        let stale_seen = stale_seen.clone();
+        move || {
+            if (0..3).any(|index| summary(&ctx, index, "retired-target-marker"))
+                || has_label(ctx.workspace_list.upcast_ref(), "retired-target-marker")
+            {
+                stale_seen.set(true);
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+    std::fs::write(package.join("hold-following-status"), b"yes").unwrap();
     std::fs::remove_file(package.join("hold-summary")).unwrap();
     std::fs::write(package.join("allow-status"), b"yes").unwrap();
     wait_for(
-        || package.join("summary-released").exists(),
+        || {
+            package.join("following-status-held").exists()
+                && !ctx.state.borrow().plugins.status_pending(KEY, held_request)
+        },
         Duration::from_secs(3),
     );
-    fresh_summaries(&ctx);
     assert!((0..3).all(|index| !summary(&ctx, index, "retired-target-marker")));
+    assert!(!has_label(
+        ctx.workspace_list.upcast_ref(),
+        "retired-target-marker"
+    ));
+    assert!(
+        !stale_seen.get(),
+        "a stale response was briefly published before fresh collection"
+    );
+    observation.remove();
+    std::fs::write(package.join("allow-following-status"), b"yes").unwrap();
+    fresh_summaries(&ctx);
     assert_eq!(
         std::fs::read_to_string(package.join("executed")).unwrap(),
         pid
@@ -649,6 +705,96 @@ fn real_workspace_moves_preserve_nested_zoomed_terminals_and_do_not_leak_shortcu
     let shell = &original.iter().find(|entry| entry.0 == focused).unwrap().3[0].0;
     assert_eq!(&std::fs::read_to_string(proof).unwrap(), shell);
     println!("PASS active/inactive moves, no-op and Escape retain nested ratios, zoom, names, colours, directories, live shell/job PIDs, terminal parents and the active container; real typing reaches the original focused shell");
+
+    toggle_zoom(&ctx);
+    pump_for(Duration::from_millis(150));
+    let unzoomed_container = ctx.pane_area.first_child().unwrap();
+    begin(&ctx, &window, 1);
+    hover(&ctx, &window, 0, false);
+    release(&ctx);
+    assert_eq!(references(&ctx), [1, 5, 4]);
+    assert_eq!(ctx.pane_area.first_child().unwrap(), unzoomed_container);
+    let paned = ctx.paneds.borrow()[0].widget.clone();
+    let previous_ratio = ctx
+        .state
+        .borrow()
+        .workspaces
+        .active()
+        .nodes
+        .ratio_at(&[])
+        .unwrap();
+    let bounds = paned.compute_bounds(&ctx.window).unwrap();
+    let (sx, sy) = ctx.window.surface_transform();
+    let horizontal = paned.orientation() == gtk::Orientation::Horizontal;
+    let start = if horizontal {
+        (
+            (sx + f64::from(bounds.x()) + f64::from(paned.position())) as i32,
+            (sy + f64::from(bounds.y() + bounds.height() / 2.0)) as i32,
+        )
+    } else {
+        (
+            (sx + f64::from(bounds.x() + bounds.width() / 2.0)) as i32,
+            (sy + f64::from(bounds.y()) + f64::from(paned.position())) as i32,
+        )
+    };
+    move_pointer(&window, start);
+    pump_for(Duration::from_millis(50));
+    xdo(&["mousedown", "1"]);
+    pump_for(Duration::from_millis(50));
+    for offset in [20, 40, 70] {
+        move_pointer(
+            &window,
+            (
+                start.0 + if horizontal { offset } else { 0 },
+                start.1 + if horizontal { 0 } else { offset },
+            ),
+        );
+        pump_for(Duration::from_millis(50));
+    }
+    xdo(&["mouseup", "1"]);
+    wait_for(
+        || {
+            (ctx.state
+                .borrow()
+                .workspaces
+                .active()
+                .nodes
+                .ratio_at(&[])
+                .unwrap()
+                - previous_ratio)
+                .abs()
+                > 0.02
+        },
+        Duration::from_secs(2),
+    );
+    let changed_ratio = ctx
+        .state
+        .borrow()
+        .workspaces
+        .active()
+        .nodes
+        .ratio_at(&[])
+        .unwrap();
+    let changed_position = paned.position();
+    pump_for(Duration::from_millis(1200));
+    assert!(
+        (ctx.state
+            .borrow()
+            .workspaces
+            .active()
+            .nodes
+            .ratio_at(&[])
+            .unwrap()
+            - changed_ratio)
+            .abs()
+            < 0.005
+    );
+    assert!((paned.position() - changed_position).abs() <= 2);
+    begin(&ctx, &window, 0);
+    hover(&ctx, &window, 1, true);
+    release(&ctx);
+    assert_eq!(references(&ctx), [5, 1, 4]);
+    println!("PASS a real divider drag after moving the unzoomed active workspace updates its nested model and survives subsequent ratio-sync ticks");
 
     for _ in 3..10 {
         new_workspace(&ctx);

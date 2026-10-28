@@ -76,7 +76,11 @@ fn begin_drag(h: &mut Harness, source: usize) -> Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     }
     h.wait(10, |h| {
-        Ok(field(&h.text()?, "workspace_drag").is_some_and(|value| value != "none"))
+        let text = h.text()?;
+        Ok(
+            field(&text, "workspace_drag").is_some_and(|value| value != "none")
+                && field(&text, "workspace_native_drag").as_deref() == Some("true"),
+        )
     })
 }
 
@@ -194,11 +198,86 @@ fn long_list_and_identical_rows(h: &mut Harness) -> Result<()> {
     h.start("scroll-and-duplicates")?;
     h.ready()?;
     h.key("alt+F10")?;
-    h.xdo(&["windowsize", &h.window, "900", "500"])?;
-    h.wait(10, |h| Ok(viewport(h)?[3] < 600.0))?;
+    h.xdo(&["windowsize", &h.window, "900", "300"])?;
+    h.wait(10, |h| {
+        Ok(viewport(h)?[3] > 100.0 && viewport(h)?[3] < 300.0)
+    })?;
     for count in 2..=12 {
         h.key("ctrl+shift+t")?;
         h.wait(10, |h| Ok(order(h)?.len() == count))?;
+    }
+    for count in 13..=24 {
+        h.key("ctrl+shift+t")?;
+        h.wait(10, |h| Ok(order(h)?.len() == count))?;
+    }
+    for escape in [true, false] {
+        let bounds = viewport(h)?;
+        move_to(h, bounds, 0.5)?;
+        h.xdo(&["click", "--repeat", "30", "--delay", "10", "4"])?;
+        h.wait(10, |h| {
+            Ok(field(&h.text()?, "workspace_scroll").as_deref() == Some("0"))
+        })?;
+        begin_drag(h, 0)?;
+        let last = row(h, 23)?;
+        let scroll_limit = last[1] + last[3] - bounds[1] - bounds[3];
+        h.move_mouse(
+            (bounds[0] + bounds[2] * 0.4) as i64,
+            (bounds[1] + bounds[3] - 4.0) as i64,
+        )?;
+        h.wait(3, |h| {
+            let scroll: f64 = field(&h.text()?, "workspace_scroll")
+                .ok_or("scroll observation missing")?
+                .parse()?;
+            Ok(scroll > 0.0 && scroll < scroll_limit - 12.0)
+        })?;
+        if escape {
+            h.xdo(&["key", "Escape"])?;
+        } else {
+            h.move_mouse(
+                (bounds[0] + bounds[2] + 100.0) as i64,
+                (bounds[1] + 50.0) as i64,
+            )?;
+        }
+        h.wait(3, |h| {
+            let text = h.text()?;
+            Ok(
+                field(&text, "workspace_indicators").as_deref() == Some("[]")
+                    && field(&text, "workspace_target").as_deref() == Some("none"),
+            )
+        })?;
+        let stopped = field(&h.text()?, "workspace_scroll").ok_or("stopped adjustment missing")?;
+        let stopped_value: f64 = stopped.parse()?;
+        require(
+            stopped_value > 0.0 && stopped_value < scroll_limit,
+            "cleanup observation reached a scroll limit",
+        )?;
+        std::thread::sleep(Duration::from_millis(750));
+        let observation_boundary = h.text()?.len();
+        let mut later = None;
+        h.wait(3, |h| {
+            later = field(
+                h.text()?.get(observation_boundary..).unwrap_or(""),
+                "workspace_scroll",
+            );
+            Ok(later.is_some())
+        })?;
+        require(
+            later.as_deref() == Some(stopped.as_str()),
+            "drag scrolling continued after cancellation or leave",
+        )?;
+        h.xdo(&["mouseup", "1"])?;
+        h.wait(3, |h| {
+            Ok(field(&h.text()?, "workspace_drag").as_deref() == Some("none"))
+        })?;
+        require(
+            order(h)? == (1..=24).collect::<Vec<_>>(),
+            "mid-scroll cancellation or leave reordered workspaces",
+        )?;
+    }
+    println!("PASS Escape and leaving the sidebar stop drag scrolling in the middle of its range");
+    for remaining in (12..24).rev() {
+        h.key("ctrl+shift+w")?;
+        h.wait(10, |h| Ok(order(h)?.len() == remaining))?;
     }
     let shells = fs::read_to_string(h.base.join("shell-launches"))?;
     let bounds = viewport(h)?;
@@ -208,6 +287,7 @@ fn long_list_and_identical_rows(h: &mut Harness) -> Result<()> {
         Ok(field(&h.text()?, "workspace_scroll").as_deref() == Some("0"))
     })?;
     begin_drag(h, 0)?;
+    hover(h, 1, false)?;
     h.move_mouse(
         (bounds[0] + bounds[2] * 0.4) as i64,
         (bounds[1] + bounds[3] - 4.0) as i64,
@@ -372,16 +452,80 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
         fs::read_to_string(restored_proof)? == restored_shell,
         "restored Alt+3 did not route input to that workspace's shell",
     )?;
-    drop_on(&mut h, 2, 0, false, &[1, 2, 3])?;
-    h.key("alt+F4")?;
-    h.button("Exit")?;
+    // Hold the preview while a real cwd change reaches a periodic checkpoint.
+    // Releasing immediately afterwards leaves almost the full checkpoint period
+    // for native close/consent, without waiting for another self-check tick.
+    let exit_directory = h.base.join("exit-before-checkpoint");
+    fs::create_dir(&exit_directory)?;
+    h.command(&format!(
+        "sleep 2; cd '{}'; printf '\\033]7;file://localhost%s\\007' \"$PWD\"",
+        exit_directory.display()
+    ))?;
+    begin_drag(&mut h, 2)?;
+    hover(&mut h, 0, false)?;
     h.wait(10, |h| {
         Ok(h.snapshot_if_written().is_some_and(|snapshot| {
-            snapshot["workspaces"][0]["name"] == "project" && snapshot["active"] == 0
+            snapshot["workspaces"].as_array().is_some_and(|workspaces| {
+                workspaces.iter().any(|workspace| {
+                    workspace["directories"]
+                        .as_array()
+                        .is_some_and(|directories| {
+                            directories.iter().any(|directory| {
+                                directory["cwd"].as_str() == exit_directory.to_str()
+                            })
+                        })
+                })
+            })
         }))
     })?;
+    let before_exit = h
+        .snapshot_if_written()
+        .ok_or("pre-exit checkpoint missing")?;
+    require(
+        before_exit["workspaces"][0]["name"] == "project 2",
+        "pre-exit checkpoint already has the final order",
+    )?;
+    let boundary = h.text()?.len();
+    h.xdo(&["mouseup", "1", "key", "alt+F4"])?;
+    h.wait(3, |h| {
+        Ok(rectangles(h.text()?.get(boundary..).unwrap_or(""), "Exit")
+            .last()
+            .is_some_and(|rect| rect[2] > 0.0 && rect[3] > 0.0))
+    })?;
+    require(
+        h.snapshot_if_written().as_ref() == Some(&before_exit),
+        "periodic checkpoint saved the drop before confirmed exit",
+    )?;
+    let exit = rectangles(h.text()?.get(boundary..).unwrap_or(""), "Exit")
+        .last()
+        .copied()
+        .ok_or("Exit geometry missing")?;
+    h.move_mouse(
+        (exit[0] + exit[2] / 2.0) as i64,
+        (exit[1] + exit[3] / 2.0) as i64,
+    )?;
+    h.xdo(&["click", "1"])?;
+    let status = h
+        .process
+        .take()
+        .ok_or("application process missing")?
+        .wait(Duration::from_secs(15))?;
+    require(
+        status.success(),
+        "confirmed exit did not terminate normally",
+    )?;
+    let text = h.text()?;
+    let closing = text.get(boundary..).ok_or("closing observations missing")?;
+    require(
+        !closing.contains("checkpoint_submitted=true") && closing.contains("final_saved=true"),
+        "new order was not exclusively saved by the final-write completion path",
+    )?;
+    let final_snapshot = h.snapshot_if_written().ok_or("final snapshot missing")?;
+    require(
+        final_snapshot["workspaces"][0]["name"] == "project" && final_snapshot["active"] == 0,
+        "normal final save lost the moved workspace or active position",
+    )?;
     h.clean_log(&h.log)?;
-    h.stop(false)?;
     println!("PASS actual checkpoint, explicit Restore, and final save retain order and active position; evidence: {}", h.base.display());
     long_list_and_identical_rows(&mut h)?;
     Ok(h.base.clone())

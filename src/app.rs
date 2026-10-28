@@ -1248,6 +1248,16 @@ fn selfcheck(ctx: &Window, label: &str) {
             )
         })
         .unwrap_or_default();
+    let native_drag = ctx
+        .workspace_drag_source
+        .borrow()
+        .as_ref()
+        .and_then(|source| source.drag());
+    eprintln!(
+        "among[{label}]: workspace_native_drag={} workspace_native_action={:?}",
+        native_drag.is_some(),
+        native_drag.as_ref().map(|drag| drag.selected_action())
+    );
     eprintln!("among[{label}]: workspace_order=[{}] active_reference={} workspace_revision={} workspace_drag={} workspace_target={} workspace_indicators=[{}] workspace_hit_rows=[{}] workspace_viewport=[{}] workspace_scroll={}",
         state.workspaces.workspaces().iter().map(|workspace| workspace.reference.to_string()).collect::<Vec<_>>().join(","),
         workspace.reference, state.workspace_order_revision,
@@ -1961,7 +1971,6 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
     while let Some(child) = ctx.workspace_list.first_child() {
         ctx.workspace_list.remove(&child);
     }
-
     // Everything the rows need is collected before any widget is built, so the
     // state is not borrowed while closures that borrow it are created.
     struct RowPlan {
@@ -3074,7 +3083,7 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
             // drift from it.
             let state = ctx.state.clone();
             let generation = state.borrow().layout_generation;
-            let workspace_index = state.borrow().workspaces.active_index();
+            let workspace_reference = state.borrow().workspaces.active().reference;
             paned.connect_notify_local(Some("position"), move |paned, _| {
                 if !initialized.get() {
                     return;
@@ -3095,7 +3104,7 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
                 let new_ratio = (paned.position().max(0) as f64) / usable as f64;
                 let mut borrowed = state.borrow_mut();
                 if borrowed.layout_generation != generation
-                    || borrowed.workspaces.active_index() != workspace_index
+                    || borrowed.workspaces.active().reference != workspace_reference
                 {
                     return;
                 }
@@ -4514,6 +4523,9 @@ fn install_session_checkpoints(ctx: &Window) {
                 {
                     if let Some(writer) = &state.session_writer {
                         writer.submit(snapshot.clone(), false);
+                        if std::env::var_os("AMONG_SELFCHECK").is_some() {
+                            eprintln!("among[session-write]: checkpoint_submitted=true");
+                        }
                         state.session_submitted = Some(snapshot);
                     }
                 }
@@ -4550,6 +4562,9 @@ fn install_session_checkpoints(ctx: &Window) {
                     state.settings_status.splice(0, 1, &[&status]);
                     drop(state);
                     if completion.final_write {
+                        if std::env::var_os("AMONG_SELFCHECK").is_some() {
+                            eprintln!("among[session-write]: final_saved=true");
+                        }
                         finish_quit(&poll);
                     }
                 }

@@ -228,6 +228,12 @@ impl PluginHost {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn status_pending(&self, name: &str, request_id: u64) -> bool {
+        self.find(name)
+            .is_some_and(|index| self.plugins[index].inflight.contains_key(&request_id))
+    }
+
     /// Register plugins from configuration.
     ///
     /// A plugin whose file is missing is recorded as `Missing` rather than
@@ -1282,6 +1288,57 @@ mod tests {
             command,
             enabled: true,
         }
+    }
+
+    #[test]
+    fn workspace_reorder_refreshes_event_driven_positional_headers_without_restarting() {
+        use crate::{slots::Scope, tree::PaneId};
+        let mut host = PluginHost::new();
+        let mut context = Context {
+            workspace_count: 2,
+            ..Default::default()
+        };
+        host.update_context(vec![1, 2], context.clone());
+        host.register(spec(fake_plugin("workspace-position")));
+        assert!(wait_for(&mut host, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        let pid = host.plugins[0].io.as_ref().unwrap().process.pid();
+        let mut store = SlotStore::new();
+        host.request_status("probe", "workspace_header", &context)
+            .unwrap();
+        assert!(wait_for(&mut host, |host| !host.results.is_empty()));
+        let result = host.drain_results().remove(0);
+        assert_eq!(result.refresh, Refresh::OnEvent);
+        PluginHost::apply_fragments(
+            &mut store,
+            Scope::WorkspaceHeader,
+            "probe",
+            &result.fragments,
+            result.refresh,
+        );
+        PluginHost::apply_fragments(
+            &mut store,
+            Scope::PaneHeader(PaneId(1)),
+            "probe",
+            &result.fragments,
+            result.refresh,
+        );
+        store.mark_collected(Scope::WorkspaceHeader, "probe", 100);
+        assert!(!store.needs_collection(Scope::WorkspaceHeader, "probe", 100));
+        host.reconcile_workspace_content(&mut store, &[2, 1], 1);
+        assert!(store.is_empty(Scope::WorkspaceHeader));
+        assert!(store.needs_collection(Scope::WorkspaceHeader, "probe", 100));
+        assert!(!store.is_empty(Scope::PaneHeader(PaneId(1))));
+        context.active_workspace = 1;
+        host.update_context(vec![2, 1], context.clone());
+        host.request_status("probe", "workspace_header", &context)
+            .unwrap();
+        assert!(wait_for(&mut host, |host| !host.results.is_empty()));
+        let result = host.drain_results().remove(0);
+        assert_eq!(result.fragments[0].text.as_deref(), Some("position-1"));
+        assert_eq!(host.plugins[0].io.as_ref().unwrap().process.pid(), pid);
+        host.shutdown();
     }
 
     #[test]

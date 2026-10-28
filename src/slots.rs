@@ -331,7 +331,7 @@ impl SlotStore {
         source: &str,
         previous: &[u64],
         current: &[u64],
-        active_changed: bool,
+        invalidate_header: bool,
     ) {
         if previous != current {
             self.summaries = std::mem::take(&mut self.summaries)
@@ -346,7 +346,7 @@ impl SlotStore {
                 })
                 .collect();
         }
-        if active_changed {
+        if invalidate_header {
             if let Some(contributions) = self.slots.get_mut(&Scope::WorkspaceHeader) {
                 contributions.retain(|contribution| contribution.source != source);
             }

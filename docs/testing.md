@@ -16,6 +16,15 @@ reference or `none`), and `workspace_target` (insertion gap in the pre-drop orde
 `workspace_hit_rows` and `workspace_viewport` report native window coordinates;
 `workspace_scroll` reports the live vertical adjustment. These are observations,
 not an alternate API for injecting a successful drag.
+`workspace_native_drag` and `workspace_native_action` report the actual GDK drag
+object and selected action, separating native gesture recognition from a prepared
+application transaction.
+
+With self-checks enabled, `among[session-write]` reports
+`checkpoint_submitted=true` when a changed periodic snapshot is queued and
+`final_saved=true` when the final write completes successfully before teardown.
+The ordering check uses these observations, the on-disk pre-exit snapshot and
+normal process exit to distinguish final-save acceptance from an earlier tick.
 
 | Variable | Effect |
 | --- | --- |
