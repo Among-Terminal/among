@@ -15,6 +15,16 @@ pub mod release;
 
 pub const NATIVE_TEST: &str = "app::plugin_tests::installation::real_published_official_packages_install_review_enable_disable_uninstall";
 
+fn diagnostic_tail(output: &str) -> &str {
+    // Native logs are not uploaded by every caller; keep the refusal visible
+    // without flooding CI or slicing a UTF-8 code point.
+    let mut start = output.len().saturating_sub(16 * 1024);
+    while !output.is_char_boundary(start) {
+        start += 1;
+    }
+    &output[start..]
+}
+
 pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> {
     crate::preferences::owned_display()?;
     let executable = executable.canonicalize()?;
@@ -96,10 +106,22 @@ pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> 
     )?;
     let status = child.wait(Duration::from_secs(240))?;
     let output = fs::read_to_string(&log_path)?;
-    if !status.success() || !output.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
+    if !status.success()
+        || !output.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
         || !output.contains("PASS published_release_ui install_review_enable_disable_uninstall=true terminal_input=true")
-        || output.contains("CRITICAL") || output.contains("panicked")
-    { return Err(format!("published-package native installation not accepted; evidence: {}", base.display()).into()); }
+        || output.contains("CRITICAL")
+        || output.contains("panicked")
+    {
+        eprintln!(
+            "Native installation refusal (last at most 16384 bytes of native-install.log):\n{}",
+            diagnostic_tail(&output)
+        );
+        return Err(format!(
+            "published-package native installation not accepted; evidence: {}",
+            base.display()
+        )
+        .into());
+    }
     release::verify(&inputs)?;
     let profile = base.join(".runtime-published-live-profile");
     let metadata = storage::parse_json(&fs::read(profile.join("profile.json"))?)?;
@@ -117,4 +139,36 @@ pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> 
         base.display()
     );
     Ok(base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diagnostic_tail;
+
+    #[test]
+    fn refusal_diagnostics_keep_short_output_and_empty_logs() {
+        assert_eq!(diagnostic_tail(""), "");
+        assert_eq!(
+            diagnostic_tail("a native test failed\n"),
+            "a native test failed\n"
+        );
+    }
+
+    #[test]
+    fn refusal_diagnostics_bound_bytes_and_keep_the_failure_tail() {
+        let output = format!("{}native assertion failed\n", "x".repeat(32 * 1024));
+        let tail = diagnostic_tail(&output);
+        assert_eq!(tail.len(), 16 * 1024);
+        assert!(tail.ends_with("native assertion failed\n"));
+    }
+
+    #[test]
+    fn refusal_diagnostics_do_not_split_multibyte_characters() {
+        let output = format!("{}failed\n", "🦀".repeat(8192));
+        let tail = diagnostic_tail(&output);
+        assert!(tail.len() <= 16 * 1024);
+        assert!(tail.len() > 16 * 1024 - 4);
+        assert!(tail.starts_with('🦀'));
+        assert!(tail.ends_with("failed\n"));
+    }
 }
