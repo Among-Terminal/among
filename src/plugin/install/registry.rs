@@ -200,7 +200,7 @@ pub enum Outcome {
         problem: Option<Problem>,
     },
     Cached {
-        inspection: Inspection,
+        inspection: Box<Inspection>,
         retrieved_at: u64,
         stale: bool,
     },
@@ -734,7 +734,7 @@ fn run_user(
                     "no retained metadata snapshot; refresh this source when online",
                 ))?;
                 Ok(Outcome::Cached {
-                    inspection: snapshot.inspection()?,
+                    inspection: Box::new(snapshot.inspection()?),
                     retrieved_at: snapshot.retrieved_at,
                     stale: now().map_or(true, |now| current.stale_at(now)),
                 })
