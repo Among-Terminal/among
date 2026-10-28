@@ -352,7 +352,7 @@ impl Panel {
                     retrieved_at,
                     stale,
                 }) if panel.generation.get() == generation => {
-                    (panel.show)(inspection);
+                    (panel.show)(*inspection);
                     panel.feedback(if stale { "Cached metadata is stale or its clock is uncertain" } else { "Cached metadata; not an online check" }, &format!("Retrieved {}. No network request was made; refresh explicitly to check current metadata.", timestamp(retrieved_at)));
                 }
                 Ok(Outcome::Cached { .. }) => {}

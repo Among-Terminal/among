@@ -88,7 +88,7 @@ pub(crate) fn run(
             let inspection = snapshot.inspection()?;
             check()?;
             return Ok(Outcome::Cached {
-                inspection,
+                inspection: Box::new(inspection),
                 retrieved_at: snapshot.retrieved_at,
                 stale: now().map_or(true, |now| current.stale_at(now)),
             });
