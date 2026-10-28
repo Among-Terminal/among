@@ -467,7 +467,7 @@ pub(super) fn run() {
         assert_eq!(source.catalogue_revision, CATALOGUE_REVISION);
         assert_eq!(source.catalogue_sha256, CATALOGUE_SHA256);
         assert_eq!(source.publisher_id, 339567100);
-        let binding = source.release_binding.as_ref().unwrap();
+        let binding = &source.release_binding;
         assert_eq!(binding.object, TAG_OBJECT);
         assert_eq!(binding.commit, SOURCE);
         assert_eq!(binding.tag, "v0.1.0-rc.1");

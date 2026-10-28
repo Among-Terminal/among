@@ -139,7 +139,7 @@ pub(super) fn add_actions(
         } else {
             detail_row(&source, "Numeric publisher identity", "Unconfirmed in this pre-installer receipt; an update requires renewed review");
         }
-        if let Some(binding) = current.receipt.source.as_ref().and_then(|source| source.release_binding.as_ref()) {
+        if let Some(binding) = current.receipt.source.as_ref().map(|source| &source.release_binding) {
             detail_row(&package, "Release tag", &binding.tag);
             detail_row(&package, "Observed tag reference object", &binding.object);
             detail_row(&package, "Resolved release commit", &binding.commit);

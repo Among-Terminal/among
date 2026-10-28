@@ -10,7 +10,7 @@ pub(super) const MAX_RELEASE_ASSETS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ReleaseAsset {
+pub struct ReleaseAsset {
     pub id: u64,
     pub name: String,
     pub size: u64,
@@ -19,7 +19,7 @@ pub(super) struct ReleaseAsset {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ReleaseSnapshot {
+pub struct ReleaseSnapshot {
     pub id: u64,
     pub tag: String,
     assets: Vec<ReleaseAsset>,
@@ -113,7 +113,7 @@ impl ReleaseSnapshot {
     // Re-admit it through the same validation before offline use.
     pub fn validate(&self) -> Result<(), Problem> {
         if self.assets.is_empty() || self.assets.len() > MAX_RELEASE_ASSETS {
-            return Err(Problem("cached release inventory exceeds its bounds"));
+            return Err(Problem("stored release inventory exceeds its bounds"));
         }
         let assets = self
             .assets
@@ -130,7 +130,7 @@ impl ReleaseSnapshot {
             "immutable":true,"assets":assets
         }))?;
         if &canonical != self {
-            return Err(Problem("cached release inventory is not canonical"));
+            return Err(Problem("stored release inventory is not canonical"));
         }
         Ok(())
     }
@@ -143,9 +143,18 @@ impl ReleaseSnapshot {
                 "exact asset name does not belong to the selected release",
             ))
     }
+
+    pub fn asset_by_id(&self, id: u64) -> Result<&ReleaseAsset, Problem> {
+        self.assets
+            .iter()
+            .find(|asset| asset.id == id)
+            .ok_or(Problem(
+                "receipt asset identity is absent from its release snapshot",
+            ))
+    }
 }
 
-pub(super) fn asset_name(value: &str) -> bool {
+pub(crate) fn asset_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 255
         && !matches!(value, "." | "..")

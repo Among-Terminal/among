@@ -73,7 +73,7 @@ pub(super) fn component(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::inventory::{self, SourceReceipt};
+    use crate::plugin::inventory;
     use serde_json::json;
 
     #[test]
@@ -81,12 +81,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("among-origin-{}", glib::uuid_string_random()));
         let mut receipt = inventory::tests::fixture(&root);
-        receipt.source = Some(SourceReceipt {
-            release_binding: None,
-            publisher_id: 34,
-            catalogue_revision: "a".repeat(40),
-            catalogue_sha256: "b".repeat(64),
-        });
+        receipt.source = Some(inventory::tests::source_receipt(&receipt));
         let origin = Origin {
             repository_id: 12,
             publisher_id: 34,

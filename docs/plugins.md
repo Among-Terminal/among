@@ -676,9 +676,13 @@ refuses publication; the immutable flag does not replace either tag-chain walk.
 These are observed consistency checks and the Release API's immutability claim,
 not independent publisher authentication or an atomic transaction with GitHub.
 
-New source receipts retain `release_binding` (`tag`, observed reference `object`,
-resolved `commit` equal to the version revision). Details retain the selected
-package's API-observed release/asset IDs and exact catalogue digest. Matching
+Source receipts retain the canonical complete `release_snapshot` and
+`release_binding` (`tag`, observed reference `object`, resolved `commit` equal to
+the version revision). Offline inventory reads require both. The snapshot's
+release ID, selected asset ID/digest, catalogue digest and tag must agree with
+the committed receipt. Missing or inconsistent source observations refuse the
+read without repairing the receipt or changing user data. Details retain the
+selected package's API-observed release/asset IDs and exact catalogue digest. Matching
 tag commits and asset hashes establish content consistency,
 not build reproducibility, independent publisher authentication or an OS sandbox.
 
@@ -740,6 +744,10 @@ directory, never a followed link. Advisory serialization has cancellable off-loo
 waiting bounded to five seconds. It serializes cooperating package writers,
 including updates/removal and recovery. It does not protect against arbitrary same-user
 filesystem modification and is not an OS sandbox.
+
+Full snapshots count against the existing receipt/selection byte budgets.
+A large inventory can reach the byte limit before the identity-count limit;
+the operation refuses instead of omitting assets or increasing the quota.
 
 Complete flushed payloads move to fresh generations with no-replace rename before
 an atomic `installed.json` selection rename. Pre-selection failure leaves at most

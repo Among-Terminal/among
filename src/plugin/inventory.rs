@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 pub const MAX_INSTALLATIONS: usize = 128;
 
+pub(crate) mod release;
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseBinding {
@@ -42,8 +44,8 @@ pub struct SourceReceipt {
     pub publisher_id: u64,
     pub catalogue_revision: String,
     pub catalogue_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release_binding: Option<ReleaseBinding>,
+    pub release_snapshot: Box<release::ReleaseSnapshot>,
+    pub release_binding: ReleaseBinding,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -67,6 +69,33 @@ pub struct Receipt {
     pub source: Option<SourceReceipt>,
 }
 
+impl SourceReceipt {
+    fn validate(&self, receipt: &Receipt) -> Result<(), Problem> {
+        self.release_snapshot.validate()?;
+        let binding = &self.release_binding;
+        let catalogue = self.release_snapshot.asset("among-plugins.json")?;
+        let package = self.release_snapshot.asset_by_id(receipt.asset_id)?;
+        if self.publisher_id == 0
+            || self.catalogue_revision != receipt.revision
+            || self.release_snapshot.id != receipt.release_id
+            || self.release_snapshot.tag != binding.tag
+            || !ReleaseBinding::supported_tag(&binding.tag)
+            || !hex(&binding.object, 40)
+            || binding.commit != receipt.revision
+            || catalogue.sha256 != self.catalogue_sha256
+            || catalogue.size == 0
+            || package.name == "among-plugins.json"
+            || package.size == 0
+            || package.sha256 != receipt.package_sha256
+        {
+            return Err(Problem(
+                "source receipt disagrees with its release snapshot",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Receipt {
     pub fn identity(&self) -> Result<ManagedIdentity, Problem> {
         ManagedIdentity::new(self.repository_id, self.plugin_id.clone())
@@ -85,19 +114,12 @@ impl Receipt {
                 .as_ref()
                 .is_some_and(|token| !hex(token, 64))
             || self.release_id == 0
-            || self.source.as_ref().is_some_and(|source| {
-                source.publisher_id == 0
-                    || !hex(&source.catalogue_revision, 40)
-                    || !hex(&source.catalogue_sha256, 64)
-                    || source.release_binding.as_ref().is_some_and(|binding| {
-                        !ReleaseBinding::supported_tag(&binding.tag)
-                            || !hex(&binding.object, 40)
-                            || binding.commit != self.revision
-                    })
-            })
             || self.asset_id == 0
         {
             return Err(Problem("invalid committed installation receipt"));
+        }
+        if let Some(source) = &self.source {
+            source.validate(self)?;
         }
         Ok(())
     }
@@ -346,6 +368,26 @@ pub(crate) mod tests {
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
 
+    pub(crate) fn source_receipt(receipt: &Receipt) -> SourceReceipt {
+        // synthetic publication facts for inventory/origin controls, never API evidence.
+        let snapshot = release::ReleaseSnapshot::from_value(&json!({
+            "id":receipt.release_id,"tag_name":"releases/v1.0","draft":false,"prerelease":false,"immutable":true,
+            "assets":[{"id":receipt.asset_id,"name":"sample.tar.gz","size":123,"state":"uploaded","digest":format!("sha256:{}",receipt.package_sha256)},
+                {"id":receipt.asset_id+1,"name":"among-plugins.json","size":1,"state":"uploaded","digest":format!("sha256:{}","b".repeat(64))}]
+        })).unwrap();
+        SourceReceipt {
+            publisher_id: 34,
+            catalogue_revision: receipt.revision.clone(),
+            catalogue_sha256: "b".repeat(64),
+            release_snapshot: Box::new(snapshot),
+            release_binding: ReleaseBinding {
+                tag: "releases/v1.0".into(),
+                object: "c".repeat(40),
+                commit: receipt.revision.clone(),
+            },
+        }
+    }
+
     pub fn fixture(root: &Path) -> Receipt {
         let manifest = json!({"schema_version":1,"id":"sample","version":"1","name":"Sample",
             "description":"No probe","entrypoint":"plugin","api":{"major":1,"minor":2},
@@ -442,25 +484,10 @@ pub(crate) mod tests {
             glib::uuid_string_random()
         ));
         let mut receipt = fixture(&root);
-        receipt.source = Some(SourceReceipt {
-            publisher_id: 34,
-            catalogue_revision: "d".repeat(40),
-            catalogue_sha256: "b".repeat(64),
-            release_binding: Some(ReleaseBinding {
-                tag: "releases/v1.0".into(),
-                object: "c".repeat(40),
-                commit: receipt.revision.clone(),
-            }),
-        });
+        receipt.source = Some(source_receipt(&receipt));
         for invalid in ["commit", "object", "tag"] {
             let mut candidate = receipt.clone();
-            let binding = candidate
-                .source
-                .as_mut()
-                .unwrap()
-                .release_binding
-                .as_mut()
-                .unwrap();
+            let binding = &mut candidate.source.as_mut().unwrap().release_binding;
             match invalid {
                 "commit" => binding.commit = "e".repeat(40),
                 "object" => binding.object = "invalid".into(),
@@ -509,6 +536,94 @@ pub(crate) mod tests {
         assert!(!ReleaseBinding::supported_tag(&"x".repeat(257)));
         assert!(!ReleaseBinding::supported_tag(&vec!["x"; 17].join("/")));
         assert!(ReleaseBinding::supported_tag("releases/v1.0-rc_1"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn complete_source_snapshots_are_required_and_revalidated_on_offline_receipt_read() {
+        let root = std::env::temp_dir().join(format!(
+            "among-snapshot-receipt-{}",
+            glib::uuid_string_random()
+        ));
+        let mut receipt = fixture(&root);
+        receipt.source = Some(source_receipt(&receipt));
+        let original = json!({"version":1,"installations":[receipt]});
+        let settings = root.join("retained-settings");
+        std::fs::write(&settings, b"unrelated user bytes").unwrap();
+        for (pointer, value) in [
+            ("/source/release_snapshot/id", json!(999)),
+            ("/source/release_snapshot/tag", json!("v2.0")),
+            ("/source/release_snapshot/assets/1/id", json!(999)),
+            (
+                "/source/release_snapshot/assets/1/name",
+                json!("among-plugins.json"),
+            ),
+            (
+                "/source/release_snapshot/assets/1/sha256",
+                json!("e".repeat(64)),
+            ),
+            (
+                "/source/release_snapshot/assets/0/sha256",
+                json!("e".repeat(64)),
+            ),
+            ("/source/release_snapshot/assets/0/size", json!(0)),
+            ("/source/release_snapshot/assets/1/size", json!(0)),
+            ("/source/catalogue_revision", json!("d".repeat(40))),
+            ("/source/release_binding", Value::Null),
+        ] {
+            let mut candidate = original.clone();
+            *candidate["installations"][0].pointer_mut(pointer).unwrap() = value;
+            let bytes = candidate.to_string();
+            std::fs::write(root.join("installed.json"), &bytes).unwrap();
+            assert!(read(&root).is_err(), "{pointer}");
+            assert_eq!(
+                std::fs::read_to_string(root.join("installed.json")).unwrap(),
+                bytes
+            );
+            assert_eq!(std::fs::read(&settings).unwrap(), b"unrelated user bytes");
+        }
+        for case in [
+            "missing-snapshot",
+            "missing-binding",
+            "unknown-field",
+            "overflow",
+            "noncanonical",
+        ] {
+            let mut candidate = original.clone();
+            let source = &mut candidate["installations"][0]["source"];
+            match case {
+                "missing-snapshot" => {
+                    source.as_object_mut().unwrap().remove("release_snapshot");
+                }
+                "missing-binding" => {
+                    source.as_object_mut().unwrap().remove("release_binding");
+                }
+                "unknown-field" => {
+                    source["release_snapshot"]["fallback_url"] =
+                        json!("https://invalid.example/never")
+                }
+                "overflow" => {
+                    let asset = source["release_snapshot"]["assets"][0].clone();
+                    source["release_snapshot"]["assets"] = json!(vec![asset; 65]);
+                }
+                "noncanonical" => source["release_snapshot"]["assets"]
+                    .as_array_mut()
+                    .unwrap()
+                    .reverse(),
+                _ => unreachable!(),
+            }
+            let bytes = candidate.to_string();
+            std::fs::write(root.join("installed.json"), &bytes).unwrap();
+            assert!(read(&root).is_err(), "{case}");
+            assert_eq!(
+                std::fs::read_to_string(root.join("installed.json")).unwrap(),
+                bytes
+            );
+            assert_eq!(std::fs::read(&settings).unwrap(), b"unrelated user bytes");
+        }
+        std::fs::write(root.join("installed.json"), original.to_string()).unwrap();
+        assert_eq!(read(&root).unwrap()[0].receipt, receipt);
+        assert!(!root.join("executed").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

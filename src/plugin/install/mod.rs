@@ -7,7 +7,6 @@ mod official;
 mod operations;
 mod package;
 pub mod registry;
-mod release_snapshot;
 pub mod source;
 pub(crate) mod store;
 

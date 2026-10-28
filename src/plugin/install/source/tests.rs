@@ -538,7 +538,7 @@ impl Inspection {
             "sha256:{}",
             crate::plugin::inventory::checksum(&bytes)?
         ));
-        let snapshot = super::super::release_snapshot::ReleaseSnapshot::from_value(&document)?;
+        let snapshot = crate::plugin::inventory::release::ReleaseSnapshot::from_value(&document)?;
         Self::from_release(
             origin,
             release::ResolvedRelease::fixture(snapshot, revision),
