@@ -341,6 +341,15 @@ changed or deleted, its tag cannot move, and a deleted release's tag name
 cannot be reused, so a defect found after publishing ships as a new version.
 GitHub records an attestation for each published release, which
 `gh release verify <tag>` and `gh release verify-asset <tag> <file>` check.
+
+After a stable release is published, update
+`packaging/ci/deb-upgrade/previous-release.json` in a pull request: set `tag`
+to the new release and, for each Debian slot, the attached file's SHA-256 from
+its `SHA256SUMS` and the package version inside it. The next release's
+installed DEB checks then upgrade from the release users actually have; the
+`deb_previous` tests refuse a pin whose names or versions do not follow from
+its tag.
+
 Offline checks:
 `cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test release_assets --test release_notes --test readme_downloads --test release_draft_workflow -- --include-ignored`.
 The tests that execute the draft step need `jq`, as the GitHub-hosted runner

@@ -388,6 +388,41 @@ fn run_identity_and_existing_output_are_refused() -> Result<()> {
     Ok(())
 }
 
+/// A Debian package lands in a release slot named by its target and
+/// architecture. A build record from another slot means the artifact
+/// directories were mixed up, so the package would be published under a name
+/// that promises a system it was not built for. The refusal must name the
+/// mismatched field, which proves the identity check and not some later
+/// filename or digest check caught it.
+#[test]
+fn debian_records_for_another_target_or_architecture_are_refused() -> Result<()> {
+    for (directory, key, foreign) in [
+        ("deb-debian13-amd64", "architecture", "arm64"),
+        ("deb-ubuntu24.04-arm64", "architecture", "amd64"),
+        ("deb-debian13-arm64", "target", "ubuntu24.04"),
+        ("deb-ubuntu24.04-amd64", "target", "debian13"),
+    ] {
+        let root = scratch("among-release-assets-deb-identity")?;
+        let inputs = fixture(&root)?;
+        let path = inputs.join(directory).join("build-record.json");
+        let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+        record[key] = foreign.into();
+        fs::write(&path, serde_json::to_vec(&record)?)?;
+        let output = root.join("release-assets");
+        let error = release_assets::stage(&inputs, TAG, &commit(), &output)
+            .err()
+            .ok_or(format!("{directory} with {key} {foreign} was accepted"))?
+            .to_string();
+        assert!(
+            error.contains(&format!("build record {key} is \"{foreign}\"")),
+            "{directory}: {error}"
+        );
+        assert!(!output.exists(), "{directory} left partial output");
+        fs::remove_dir_all(root)?;
+    }
+    Ok(())
+}
+
 /// The RPM workflow ships an older package in a subdirectory so the installed
 /// job can test upgrades. It is lifecycle test input, never a release file.
 fn add_lifecycle_fixtures(inputs: &Path) -> Result<()> {
