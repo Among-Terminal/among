@@ -47,6 +47,34 @@ jobs:
           dirname "$(rustup which cargo)" >> "$GITHUB_PATH"
       - name: Three independent Cargo packages
         run: sh scripts/check-packages.sh
+      - name: Notification accessibility consumers on owned displays
+        run: |
+          set -euo pipefail
+          cargo build --locked --example notification-plugin
+          cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/notification-a11y-tests.jsonl"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$RUNNER_TEMP/notification-a11y-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -f "$app_test" && test -x "$app_test" && test ! -L "$app_test"
+          profile="$(dirname "$(dirname "$app_test")")"
+          test -x "$profile/notification-command-fixture"
+          test -x "$profile/examples/notification-plugin"
+          "$app_test" --list --ignored > "$RUNNER_TEMP/notification-a11y-listing.txt"
+          for case_name in \
+            accessibility_checks_reject_missing_and_incorrect_properties \
+            ordinary_app_provider_controls_and_declarative_actions_use_one_live_core \
+            native_role_review_is_explicit_reachable_and_restored_without_starting_code \
+            visual_attention_is_live_static_accessible_and_geometry_neutral; do
+            name="app::notification_ui_tests::$case_name"
+            test "$(grep -Fxc "$name: test" "$RUNNER_TEMP/notification-a11y-listing.txt")" -eq 1
+            log="$AMONG_CHECK_ROOT/notification-a11y-$case_name.log"
+            tools/among-tools/target/release/among-tools ci-x11 \
+              "$app_test" "$name" --exact --ignored --test-threads=1 --nocapture --color=never 2>&1 | tee "$log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+          done
       - name: Native metadata and offline release policy
         run: |
           desktop-file-validate data/com.github.among-terminal.desktop
