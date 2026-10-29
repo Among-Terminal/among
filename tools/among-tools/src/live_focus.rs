@@ -54,10 +54,10 @@ fn report(h: &mut Harness, tick: u64) -> Result<String> {
 /// also accept a report printed before the key was handled. One more report
 /// can be printed between reading the newest tick and sending the key, and the
 /// next one can fall right after the key is sent, so the third report after the
-/// one seen before the press is the one checked. It must show three things at once: only
-/// `pane` is rendered, it owns the model focus, and it is the one pane holding
-/// native keyboard focus. The pane count is part of the assertion because a
-/// split that slipped through would grow it.
+/// one seen before the press is the one checked. It must show three things at
+/// once: only `pane` is rendered, it owns the model focus, and it is the one
+/// pane holding native keyboard focus. The pane count is part of the assertion
+/// because a split that slipped through would grow it.
 fn key_keeps_expanded(h: &mut Harness, key: &str, pane: u64) -> Result<()> {
     let before = last_tick(&h.text()?);
     h.key(key)?;
