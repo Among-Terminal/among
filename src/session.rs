@@ -552,6 +552,51 @@ mod tests {
     }
 
     #[test]
+    fn reordered_version_one_snapshots_keep_order_active_identity_and_pane_associations() {
+        let mut first = Workspace::new("one".into(), PaneId(1), 0);
+        first.split_focused(800, 300, PaneId(2)).unwrap();
+        first.nodes.set_ratio_at(&[], 0.3);
+        let mut set = WorkspaceSet::new(first);
+        set.push_active(Workspace::new("two".into(), PaneId(10), 1));
+        set.push_active(Workspace::new("three".into(), PaneId(20), 2));
+        set.activate(0);
+        for (source, gap, expected) in [
+            (2, 0, ["three", "one", "two"]),
+            (0, 3, ["one", "two", "three"]),
+        ] {
+            set.reorder(source, gap).unwrap();
+            let snapshot =
+                Snapshot::capture(&set, |id| Some(format!("/workspace/pane-{}", id.0))).unwrap();
+            assert_eq!(snapshot.version, 1);
+            let (restored, _) = Snapshot::parse(&serde_json::to_vec(&snapshot).unwrap())
+                .unwrap()
+                .restore()
+                .unwrap();
+            assert_eq!(
+                restored
+                    .workspaces()
+                    .iter()
+                    .map(|workspace| workspace.name.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(restored.active().name, "one");
+            assert_eq!(restored.active_index(), set.active_index());
+            for (before, after) in set.workspaces().iter().zip(restored.workspaces()) {
+                assert_eq!(before.nodes, after.nodes);
+                assert_eq!(before.colour, after.colour);
+                assert_eq!(before.focused, after.focused);
+                for id in before.panes() {
+                    assert_eq!(
+                        after.cwd_of(id),
+                        Some(format!("/workspace/pane-{}", id.0).as_str())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn exhausted_identifiers_never_overflow_or_repeat() {
         let mut allocator = PaneAllocator::after(PaneId(u64::MAX - 1));
         assert_eq!(allocator.try_next(), Some(PaneId(u64::MAX)));

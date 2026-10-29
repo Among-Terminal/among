@@ -29,6 +29,7 @@ Usage:
   among-tools check-split-directory <among-binary>
   among-tools check-scroll-calibration <among-binary>
   among-tools check-sidebar-rename <among-binary>
+  among-tools check-workspace-reorder <among-binary>
   among-tools check-window-controls <among-binary> <prebuilt-notice-plugin>
   among-tools check-live-focus <among-binary>
   among-tools check-live-resize <among-binary>
@@ -705,6 +706,9 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, binary] if command == "check-sidebar-rename" => {
             among_tools::sidebar_rename::run(Path::new(binary), &among_tools::scratch::root()?)?;
+        }
+        [command, binary] if command == "check-workspace-reorder" => {
+            among_tools::workspace_reorder::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
         [command, binary, notifier] if command == "check-window-controls" => {
             among_tools::window_controls::run(

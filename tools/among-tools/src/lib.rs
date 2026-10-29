@@ -68,5 +68,6 @@ pub mod stable_source;
 pub mod storage;
 pub mod store_credentials;
 pub mod window_controls;
+pub mod workspace_reorder;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

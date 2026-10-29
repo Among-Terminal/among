@@ -347,6 +347,16 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
                 send(&mut output, &response)?;
                 if held_summary {
                     std::fs::write("summary-released", b"yes")?;
+                    if std::path::Path::new("hold-following-status").exists() {
+                        std::fs::write("following-status-held", b"yes")?;
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(3);
+                        while !std::path::Path::new("allow-following-status").exists()
+                            && std::time::Instant::now() < deadline
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(300));
                 }
                 if mode == "managed-enumerate"

@@ -219,6 +219,27 @@ pub struct WorkspaceSet {
     active: usize,
 }
 
+/// the same permutation must reach selection and index-keyed plugin summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceMove {
+    from: usize,
+    to: usize,
+}
+
+impl WorkspaceMove {
+    pub fn remap(self, index: usize) -> usize {
+        if index == self.from {
+            self.to
+        } else if self.from < index && index <= self.to {
+            index - 1
+        } else if self.to <= index && index < self.from {
+            index + 1
+        } else {
+            index
+        }
+    }
+}
+
 impl WorkspaceSet {
     pub fn from_restored(workspaces: Vec<Workspace>, active: usize) -> Option<Self> {
         if workspaces.is_empty() || active >= workspaces.len() {
@@ -304,6 +325,27 @@ impl WorkspaceSet {
         self.workspaces.push(workspace);
         self.active = self.workspaces.len() - 1;
         self.active
+    }
+
+    /// `gap` addresses the original sequence, before removal: zero is before the
+    /// first entry and `len` is after the last. both gaps beside the source are
+    /// no-ops, so a drop need not special-case upward and downward movement.
+    pub fn reorder(&mut self, source: usize, gap: usize) -> Option<WorkspaceMove> {
+        if source >= self.len() || gap > self.len() {
+            return None;
+        }
+        let destination = if gap > source { gap - 1 } else { gap };
+        if source == destination {
+            return None;
+        }
+        let movement = WorkspaceMove {
+            from: source,
+            to: destination,
+        };
+        let workspace = self.workspaces.remove(source);
+        self.workspaces.insert(destination, workspace);
+        self.active = movement.remap(self.active);
+        Some(movement)
     }
 
     /// Activate a workspace by its position in the list.
@@ -409,6 +451,134 @@ mod tests {
             .iter()
             .map(|workspace| workspace.name.clone())
             .collect()
+    }
+
+    #[test]
+    fn reorder_inserts_in_both_directions_rather_than_swapping() {
+        let mut set = three();
+        let moved = set.reorder(2, 0).unwrap();
+        assert_eq!(names(&set), ["third", "first", "second"]);
+        assert_eq!(
+            (0..3).map(|index| moved.remap(index)).collect::<Vec<_>>(),
+            [1, 2, 0]
+        );
+        assert_eq!(set.active_index(), 0);
+        let moved = set.reorder(0, 3).unwrap();
+        assert_eq!(names(&set), ["first", "second", "third"]);
+        assert_eq!(
+            (0..3).map(|index| moved.remap(index)).collect::<Vec<_>>(),
+            [2, 0, 1]
+        );
+        assert_eq!(set.active_index(), 2);
+    }
+
+    #[test]
+    fn every_reorder_keeps_the_active_workspace_and_other_relative_positions() {
+        for active in 0..3 {
+            for source in 0..3 {
+                for gap in 0..=3 {
+                    let mut set = three();
+                    set.activate(active);
+                    let active_reference = set.active().reference;
+                    let before: Vec<_> = set.workspaces().iter().map(|w| w.reference).collect();
+                    let movement = set.reorder(source, gap);
+                    assert_eq!(set.active().reference, active_reference);
+                    let unchanged: Vec<_> = set
+                        .workspaces()
+                        .iter()
+                        .filter(|w| w.reference != before[source])
+                        .map(|w| w.reference)
+                        .collect();
+                    assert_eq!(
+                        unchanged,
+                        before
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| *index != source)
+                            .map(|(_, id)| *id)
+                            .collect::<Vec<_>>()
+                    );
+                    if let Some(movement) = movement {
+                        for (old, reference) in before.iter().enumerate() {
+                            assert_eq!(set.workspaces()[movement.remap(old)].reference, *reference);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_and_adjacent_reorder_gaps_leave_the_model_unchanged() {
+        let mut set = three();
+        let before = format!("{set:?}");
+        for (source, gap) in [
+            (0, 0),
+            (0, 1),
+            (1, 1),
+            (1, 2),
+            (2, 2),
+            (2, 3),
+            (3, 0),
+            (usize::MAX, 1),
+            (0, 4),
+            (1, usize::MAX),
+        ] {
+            assert_eq!(set.reorder(source, gap), None);
+            assert_eq!(format!("{set:?}"), before);
+        }
+        let mut only = WorkspaceSet::new(workspace());
+        assert_eq!(only.reorder(0, 0), None);
+        assert_eq!(only.reorder(0, 1), None);
+        assert_eq!(only.len(), 1);
+    }
+
+    #[test]
+    fn reordering_equal_looking_entries_preserves_every_workspace_field() {
+        let mut set = three();
+        for (index, workspace) in set.workspaces_mut().iter_mut().enumerate() {
+            workspace.name = "same project".into();
+            workspace.colour = 0;
+            workspace.set_cwd(workspace.focused, Some(format!("/project/{index}")));
+            workspace.split_focused(600, 300, PaneId(10 + index as u64));
+            workspace.split_focused(300, 600, PaneId(20 + index as u64));
+            workspace.toggle_zoom();
+        }
+        let before: Vec<_> = set
+            .workspaces()
+            .iter()
+            .map(|workspace| (workspace.reference, format!("{workspace:?}")))
+            .collect();
+        for (source, gap) in [(0, 3), (2, 0), (1, 3), (2, 1)] {
+            set.reorder(source, gap).unwrap();
+            for workspace in set.workspaces() {
+                let original = before
+                    .iter()
+                    .find(|(reference, _)| *reference == workspace.reference)
+                    .unwrap();
+                assert_eq!(format!("{workspace:?}"), original.1);
+            }
+        }
+    }
+
+    #[test]
+    fn navigation_append_and_removal_follow_the_reordered_sequence() {
+        let mut set = three();
+        set.reorder(2, 0).unwrap();
+        assert!(set.activate(1));
+        assert_eq!(set.active().name, "first");
+        set.activate_next();
+        assert_eq!(set.active().name, "second");
+        set.activate_next();
+        assert_eq!(set.active().name, "third");
+        set.activate_previous();
+        assert_eq!(set.active().name, "second");
+        set.push_active(Workspace::new("fourth".into(), PaneId(50), 3));
+        assert_eq!(names(&set), ["third", "first", "second", "fourth"]);
+        assert_eq!(set.active().name, "fourth");
+        set.remove(1).unwrap();
+        assert_eq!(names(&set), ["third", "second", "fourth"]);
+        assert_eq!(set.active().name, "fourth");
     }
 
     #[test]

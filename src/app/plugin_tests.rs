@@ -5,6 +5,7 @@ mod installation;
 #[cfg(feature = "managed-transport-interop")]
 mod resources;
 mod settings;
+mod workspace_reorder;
 
 #[track_caller]
 fn wait_for(predicate: impl Fn() -> bool, timeout: Duration) {
