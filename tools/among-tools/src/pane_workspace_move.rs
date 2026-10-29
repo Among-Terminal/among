@@ -56,12 +56,14 @@ fn row(h: &Harness, index: usize) -> Result<[f64; 4]> {
     .ok_or_else(|| format!("row {index} has no visible geometry").into())
 }
 
-fn viewport(h: &Harness) -> Result<[f64; 4]> {
-    let text = field(&h.text()?, "workspace_viewport").ok_or("viewport missing")?;
-    rectangles(&text, "viewport")
-        .first()
-        .copied()
-        .ok_or_else(|| "viewport geometry missing".into())
+fn tree_boxes(h: &Harness) -> Result<String> {
+    let line = h.geometry()?;
+    let start = line.find("tree_boxes=[").ok_or("tree boxes missing")?;
+    let end = line[start..]
+        .find(']')
+        .map(|offset| start + offset)
+        .ok_or("tree boxes unclosed")?;
+    Ok(line[start..=end].to_string())
 }
 
 fn pane_counts(h: &Harness) -> Result<Vec<usize>> {
@@ -423,13 +425,11 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
         "a pane dropped on its own workspace changed the model",
     )?;
 
-    // Dropping outside the sidebar changes nothing.
+    // Dropping on the window chrome is outside both the sidebar and every pane,
+    // so neither a workspace nor a pane target may accept it.
     begin_pane_drag(&mut h, "4")?;
-    let bounds = viewport(&h)?;
-    h.move_mouse(
-        (bounds[0] + bounds[2] + 100.0) as i64,
-        (bounds[1] + 50.0) as i64,
-    )?;
+    let before_layout = tree_boxes(&h)?;
+    h.move_mouse(10, 10)?;
     h.wait(10, |h| {
         Ok(field(&h.text()?, "pane_indicators").as_deref() == Some("[]"))
     })?;
@@ -437,9 +437,10 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
     wait_no_pane_drag(&mut h)?;
     require(
         order(&h)? == before_order
+            && tree_boxes(&h)? == before_layout
             && field(&h.text()?, "active_reference").as_deref()
                 == Some(target_reference.to_string().as_str()),
-        "a pane dropped outside the sidebar changed the workspace",
+        "a pane dropped on window chrome changed the workspace or layout",
     )?;
 
     // Escape cancels while the destination is previewed.
