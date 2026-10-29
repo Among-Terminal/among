@@ -19,19 +19,22 @@ impl Fixture {
         fs::create_dir(self.0.join("managed"))?;
         fs::write(
             self.0.join("profile.json"),
-            serde_json::to_vec(&json!({"host_source_sha":SOURCE}))?,
+            serde_json::to_vec(
+                &json!({"host_source_sha":SOURCE,"source_revision":"e".repeat(40),"catalogue_revision":"e".repeat(40)}),
+            )?,
         )?;
         for path in [
             "managed/installed.json",
             "managed-plugins.json",
             "among-plugins.json",
+            "release-inputs.json",
         ] {
             fs::write(self.0.join(path), b"{}")?;
         }
         let hashes=inventory(&self.0)?.iter().map(|(path,bytes)|Ok(json!({"path":path,"size":bytes.len(),"sha256":storage::sha256(bytes.as_slice())?}))).collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"schema":1,"host_source_sha":SOURCE,"host_test_sha256":"b".repeat(64),"cargo_records_sha256":"d".repeat(64),"architecture":crate::platform::discover()?.architecture,"files":hashes,
-            "lifecycle":{"architecture":crate::platform::discover()?.architecture,"source_revision":super::super::release::SOURCE,"catalogue_revision":super::super::release::CATALOGUE,"actual_public_install":true,"explicit_review_cancel_accept":true,"three_mapped_outputs":true,"disabled_then_uninstalled":true,"same_pty_real_input":true}}),
+            "lifecycle":{"architecture":crate::platform::discover()?.architecture,"source_revision":"e".repeat(40),"catalogue_revision":"e".repeat(40),"actual_public_install":true,"explicit_review_cancel_accept":true,"three_mapped_outputs":true,"disabled_then_uninstalled":true,"same_pty_real_input":true}}),
         )
     }
 

@@ -1,74 +1,10 @@
+//! Byte checks, output preservation and workflow controls of the published
+//! release-input preparer. Catalogue selection is covered next to its parser.
+
 use among_tools::{plugin_install::release, storage, Result};
-use serde_json::{json, Value};
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
-
-fn catalogue() -> Value {
-    let plugins = ["clock", "system-status", "pane-pwd"].map(|id| {
-        let artifacts = [("arm64", 11), ("amd64", 22)].map(|(architecture, asset_id)| {
-            json!({"os":"linux","architecture":architecture,"asset_id":asset_id,"format":"tar.gz",
-                "runtime":{"kind":"native","libc":"glibc","minimum":"2.34"},"dependencies":[]})
-        });
-        json!({"id":id,"versions":[{"manifest":{"id":id,"version":"0.1.0-rc.1"},
-            "revision":release::SOURCE,"release_id":424255611,
-            "artifacts":artifacts}]})
-    });
-    json!({"schema_version":1,"plugins":plugins})
-}
-
-#[test]
-fn selection_uses_native_architecture_and_binary_source_not_catalogue_revision() -> Result<()> {
-    let catalogue = catalogue();
-    for (architecture, expected) in [("amd64", 22), ("arm64", 11)] {
-        let selected = release::select(&catalogue, architecture)?;
-        assert_eq!(selected.len(), 3);
-        for (version, artifact) in selected {
-            assert_eq!(version["revision"], release::SOURCE);
-            assert_ne!(version["revision"], release::CATALOGUE);
-            assert_eq!(artifact["architecture"], architecture);
-            assert_eq!(artifact["asset_id"], expected);
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn stale_and_ambiguous_release_inputs_are_refused_without_fallback() {
-    let mut variants = Vec::new();
-    for revision in [
-        release::CATALOGUE,
-        "306839e144d7a4c98432c6c68dad016c412dd656",
-    ] {
-        let mut value = catalogue();
-        value["plugins"][0]["versions"][0]["revision"] = json!(revision);
-        variants.push(value);
-    }
-    let mut value = catalogue();
-    value["plugins"][1] = value["plugins"][0].clone();
-    variants.push(value);
-    let mut value = catalogue();
-    value["plugins"][0]["versions"][0]["artifacts"][0]["architecture"] = json!("amd64");
-    variants.push(value);
-    let mut value = catalogue();
-    value["plugins"][0]["versions"][0]["release_id"] = json!(1);
-    variants.push(value);
-    let mut value = catalogue();
-    value["plugins"][0]["versions"][0]["manifest"]["version"] = json!("latest");
-    variants.push(value);
-    let mut value = catalogue();
-    value["plugins"][0]["versions"][0]["artifacts"][1]["runtime"]["minimum"] = json!("2.0");
-    variants.push(value);
-    let mut value = catalogue();
-    value["plugins"][0]["versions"][0]["artifacts"][1]["dependencies"] = json!(["compile-locally"]);
-    variants.push(value);
-    for value in variants {
-        assert!(release::select(&value, "amd64").is_err());
-    }
-    for architecture in ["", "x86_64", "aarch64", "riscv64", "latest"] {
-        assert!(release::select(&catalogue(), architecture).is_err());
-    }
-}
 
 fn fixture() -> Result<PathBuf> {
     let root = among_tools::scratch::root()?;
@@ -115,10 +51,15 @@ fn both_native_workflow_jobs_use_release_binaries_and_keep_required_behaviour_co
     let bytes = include_str!("../../../.github/workflows/managed-transport.yml");
     let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(bytes)?;
     let job = &workflow["jobs"]["native-interop"];
-    assert_eq!(
-        job["env"]["CLIENT_REVISION"].as_str(),
-        Some(release::SOURCE)
-    );
+    // The companion protocol fixture is built from a source commit, not from
+    // the published release; the workflow and the host test must name the
+    // same full commit so the fixture hash proves which client was exercised.
+    let client = job["env"]["CLIENT_REVISION"]
+        .as_str()
+        .ok_or("companion revision absent")?;
+    assert!(client.len() == 40 && client.bytes().all(|b| b.is_ascii_hexdigit()));
+    let host = include_str!("../../../src/app/plugin_tests/resources.rs");
+    assert!(host.contains(&format!("const CLIENT: &str = \"{client}\";")));
     let matrix = job["strategy"]["matrix"]["include"]
         .as_sequence()
         .ok_or("matrix absent")?;

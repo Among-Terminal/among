@@ -211,6 +211,7 @@ pub fn validate(directory: &Path, source: &str) -> Result<()> {
         "managed/installed.json",
         "managed-plugins.json",
         "among-plugins.json",
+        "release-inputs.json",
     ] {
         if !declared.iter().any(|entry| entry["path"] == path) {
             return Err("package profile omits a required observation".into());
@@ -218,8 +219,12 @@ pub fn validate(directory: &Path, source: &str) -> Result<()> {
     }
     let lifecycle = &record["lifecycle"];
     if lifecycle["architecture"] != record["architecture"]
-        || lifecycle["source_revision"] != super::release::SOURCE
-        || lifecycle["catalogue_revision"] != super::release::CATALOGUE
+        || !metadata["source_revision"]
+            .as_str()
+            .is_some_and(|value| hex(value, 40))
+        || metadata["catalogue_revision"] != metadata["source_revision"]
+        || lifecycle["source_revision"] != metadata["source_revision"]
+        || lifecycle["catalogue_revision"] != metadata["catalogue_revision"]
     {
         return Err("package profile lifecycle provenance differs".into());
     }
