@@ -531,10 +531,8 @@ fn genuine_kernel_records_gate_pidfd_admission_and_preserve_comm_bytes() {
     .unwrap();
     println!("GENUINE kernel positives: self PID={pid} pgrp={group}; foreign quiet without callback; matching live pidfd queried twice; unusual comm bytes record={unusual:?}");
 
-    let mut child = OwnedFixture(Some(
-        Command::new("/bin/true").process_group(0).spawn().unwrap(),
-    ));
-    let owned = child.0.as_mut().unwrap();
+    let mut child = OwnedFixture::spawn(Command::new("/bin/true").process_group(0));
+    let owned = child.child.as_mut().unwrap();
     tests::until(|| child_exited(owned.id()).unwrap());
     let zombie = std::fs::read(format!("/proc/{}/stat", owned.id())).unwrap();
     let (zpid, zgroup) = stat_group(&zombie).unwrap();
@@ -549,7 +547,7 @@ fn genuine_kernel_records_gate_pidfd_admission_and_preserve_comm_bytes() {
     let mut matching = GroupQuiescence::new(&root);
     assert!(!matching.poll(zgroup, member_exited).unwrap());
     assert!(matching.poll(zgroup, member_exited).unwrap());
-    child.0.take().unwrap().wait().unwrap();
+    child.child.take().unwrap().wait().unwrap();
     println!("GENUINE kernel exited member PID={zpid}: pidfd admitted and two quiet scans; direct child then reaped");
 }
 
@@ -598,12 +596,31 @@ fn a_reaped_leader_cannot_authorize_another_group_signal() {
     assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
 }
 
-struct OwnedFixture(Option<Child>);
+struct OwnedFixture {
+    child: Option<Child>,
+    admission: Arc<Lease>,
+    proof_control: ProofControl,
+}
+
+impl OwnedFixture {
+    fn spawn(command: &mut Command) -> Self {
+        // Direct-child probes need explicit WNOWAIT/reap access. Keep their
+        // cleanup authority alive from before spawn through group absence.
+        let admission = Arc::new(Lease::new());
+        let proof_control = ProofControl::default();
+        let child = command.spawn().unwrap();
+        Self {
+            child: Some(child),
+            admission,
+            proof_control,
+        }
+    }
+}
 
 impl Drop for OwnedFixture {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            terminate_and_reap(child);
+        if let Some(child) = &mut self.child {
+            terminate_and_reap(child, &self.admission, &self.proof_control);
         }
     }
 }
@@ -658,32 +675,28 @@ fn reserved_leader_identity_survives_group_signals_and_only_its_child_is_reaped(
     let root = root();
     let fixture = compile(&root);
     let cpu = cpu();
-    let mut leader = OwnedFixture(Some(
+    let mut leader = OwnedFixture::spawn(
         Command::new(fixture)
             .args(["inherited", root.to_str().unwrap(), &cpu.to_string()])
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    ));
+            .stderr(Stdio::null()),
+    );
     // This separate owned group is a canary, not an authority from the proc scan.
-    let sentinel = OwnedFixture(Some(
+    let sentinel = OwnedFixture::spawn(
         Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap(),
-    ));
-    let child = leader.0.as_mut().unwrap();
+            .stdout(Stdio::null()),
+    );
+    let child = leader.child.as_mut().unwrap();
     let descendant = descendant_from_stdout(child);
     let pid = child.id();
     let leader_id = identity(pid);
     let descendant_id = identity(descendant);
-    let sentinel_pid = sentinel.0.as_ref().unwrap().id();
+    let sentinel_pid = sentinel.child.as_ref().unwrap().id();
     let sentinel_id = identity(sentinel_pid);
     let leader_exit = pidfd(pid);
     let descendant_exit = pidfd(descendant);
@@ -729,7 +742,7 @@ fn reserved_leader_identity_survives_group_signals_and_only_its_child_is_reaped(
         "group quiet before descendant exit"
     );
     assert_eq!(identity(pid), leader_id);
-    let mut child = leader.0.take().unwrap();
+    let mut child = leader.child.take().unwrap();
     assert!(child.wait().unwrap().success());
     assert_eq!(
         child_exited(pid).unwrap_err().raw_os_error(),
