@@ -151,7 +151,10 @@ Debian/Ubuntu explicitly require `libgtk-4-media-gstreamer` and
 media implementation; `gstreamer1-plugins-good` supplies WAV parsing/pulsesink,
 and `libglvnd-gles` supplies the media paintable's dynamically opened GLES library.
 
-Snap stages the Ubuntu media/base/good route. AppImage preserves the GTK media
+Snap stages the Ubuntu media/base/good route but leaves out the Mesa GL drivers
+that route pulls in (`snap/snapcraft.yaml`, `prime`). With them bundled, GTK's
+display setup crashed under `snap run`. Audio needs no GL; the GUI renders
+without a bundled driver, as it did before the media route. AppImage preserves the GTK media
 module, ten declared GStreamer plugins and plugin scanner in their nested paths;
 linuxdeploy resolves/patches their dependency RUNPATHs before attribution.
 `data/audio/runtime-files.rs` is shared by packaging and startup requirements.
