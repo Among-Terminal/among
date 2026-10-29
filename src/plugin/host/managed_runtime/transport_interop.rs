@@ -12,7 +12,7 @@ mod pwd;
 mod resources;
 
 const KEY: &str = "github:1431055733/protocol-fixture";
-const CLIENT_REVISION: &str = "aa1ec272d4ed6326338f3de0e5fbf30bbe181e39";
+const CLIENT_REVISION: &str = "ac16a298b42022d9d62017e5d668e72458ba3b69";
 
 struct Fixture {
     host: PluginHost,
