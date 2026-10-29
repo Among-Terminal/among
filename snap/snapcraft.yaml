@@ -52,6 +52,25 @@ parts:
       - adwaita-icon-theme
       - gsettings-desktop-schemas
       - librsvg2-common
+    # The GStreamer media route pulls Mesa's GL drivers in as dependencies.
+    # Under `snap run` GTK's display setup then crashes inside the bundled
+    # driver (SIGSEGV during GL context creation), so the window never opens.
+    # Notification audio needs no GL, and the payload before the media route
+    # carried no GL driver either. The glvnd front ends that libgstgl links
+    # against stay; only the vendor drivers and what only they load are left out.
+    prime:
+      - -usr/lib/*/dri
+      - -usr/lib/*/gbm
+      - -usr/lib/*/libgallium-*
+      - -usr/lib/*/libGLX_mesa.so*
+      - -usr/lib/*/libGLX_indirect.so*
+      - -usr/lib/*/libEGL_mesa.so*
+      - -usr/lib/*/libLLVM*
+      - -usr/lib/*/libsensors.so*
+      - -usr/lib/*/libdrm_amdgpu.so*
+      - -usr/lib/*/libdrm_intel.so*
+      - -usr/share/glvnd/egl_vendor.d/50_mesa.json
+      - -usr/share/drirc.d
     build-environment:
       - LDFLAGS: >-
           -Wl,-rpath=\$ORIGIN/../usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:/snap/core24/current/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR
