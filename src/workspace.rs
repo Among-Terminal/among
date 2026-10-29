@@ -984,6 +984,21 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_pane_exiting_leaves_the_expanded_pane_focused() {
+        let mut ws = workspace();
+        ws.split_focused(400, 200, PaneId(2));
+        ws.focused = PaneId(2);
+        ws.toggle_zoom();
+
+        // Pane 1 is behind the expansion; its process ending must not move
+        // focus off the visible pane or end the expansion.
+        assert_eq!(ws.close(PaneId(1)), Some(()));
+        assert_eq!(ws.zoomed, Some(PaneId(2)));
+        assert_eq!(ws.focused, PaneId(2));
+        assert_eq!(ws.visible_panes(), vec![PaneId(2)]);
+    }
+
+    #[test]
     fn split_is_refused_while_a_pane_is_expanded() {
         let mut ws = workspace();
         ws.split_focused(400, 200, PaneId(2));

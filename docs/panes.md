@@ -146,8 +146,8 @@ An expanded pane is the only pane on screen and therefore the only focus target:
 is restored. The context menu still lists Split Pane, but it does nothing in that
 state. Close and restore keep working.
 
-Restore returns keyboard focus to its originating terminal, which never left it
-during the expansion. Rebuilding the layout preserves independently managed
+Restore returns keyboard focus to its originating terminal; focus never moves to
+another pane during the expansion. Rebuilding the layout preserves independently managed
 header content rather than treating it as part of expansion state. Focus-driven
 indicators follow their usual per-terminal lifecycle; restoring a sibling does not
 acknowledge them.

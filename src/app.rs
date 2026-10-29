@@ -2884,7 +2884,10 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
             move |pane: PaneId| {
                 let known = {
                     let mut borrowed = state.borrow_mut();
-                    if !borrowed.workspaces.active().panes().contains(&pane)
+                    // Only a rendered pane may take focus. A pane hidden behind an
+                    // expansion is detached from the window, but the rule must not
+                    // depend on the toolkit never delivering its focus event.
+                    if !borrowed.workspaces.active().visible_panes().contains(&pane)
                         || borrowed.workspaces.active().focused == pane
                     {
                         return;
