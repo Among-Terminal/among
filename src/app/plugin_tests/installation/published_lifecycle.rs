@@ -173,7 +173,10 @@ fn capture_live_profile(
     std::fs::write(profile.join("profile.json"), serde_json::to_vec_pretty(&json!({"kind":"observed_published_installation_profile","host_source_sha":option_env!("AMONG_CHECK_SOURCE_SHA"),"catalogue_revision":observation["catalogue_revision"],"source_revision":observation["source_revision"],"architecture":match Platform::current().unwrap().architecture {Architecture::Amd64=>"amd64",Architecture::Arm64=>"arm64"},"installed_size":installed.len(),"installed_sha256":crate::plugin::inventory::checksum(&installed).unwrap(),"settings_size":settings.len(),"settings_sha256":crate::plugin::inventory::checksum(&settings).unwrap()})).unwrap()).unwrap();
 }
 
-fn inspect(preferences: &adw::PreferencesWindow, revision: &str) -> adw::PreferencesWindow {
+pub(super) fn inspect(
+    preferences: &adw::PreferencesWindow,
+    revision: &str,
+) -> adw::PreferencesWindow {
     focus(preferences);
     press(&button(preferences, "Inspect repository…"));
     let view = inspector();
@@ -355,7 +358,21 @@ fn assert_output(ctx: &Window, id: &str, key: &str) {
     println!("published_release_output={id} actual_mapped_widgets=true");
 }
 
-pub(super) fn run() {
+/// The prepared observation of the official release, checked against its own
+/// catalogue bytes. Both native acceptance cases read the release, asset IDs
+/// and package digests from here, never from constants of an older release.
+pub(super) struct Observed {
+    pub(super) inputs_root: PathBuf,
+    pub(super) inputs: Value,
+    pub(super) platform: Platform,
+    pub(super) architecture: &'static str,
+    pub(super) snapshot: crate::plugin::inventory::release::ReleaseSnapshot,
+    pub(super) binding: crate::plugin::inventory::ReleaseBinding,
+    pub(super) revision: String,
+    pub(super) catalogue: Catalogue,
+}
+
+pub(super) fn observed() -> Observed {
     let inputs_root = PathBuf::from(
         std::env::var_os("AMONG_OFFICIAL_PLUGIN_INPUTS")
             .expect("dedicated runner must supply actual published Release inputs"),
@@ -380,7 +397,7 @@ pub(super) fn run() {
     snapshot.validate().unwrap();
     let binding: crate::plugin::inventory::ReleaseBinding =
         serde_json::from_value(inputs["release_binding"].clone()).unwrap();
-    let revision = inputs["source_revision"].as_str().unwrap();
+    let revision = inputs["source_revision"].as_str().unwrap().to_owned();
     assert_eq!(inputs["catalogue_revision"], revision);
     assert_eq!(binding.commit, revision);
     assert_eq!(binding.tag, snapshot.tag);
@@ -398,6 +415,31 @@ pub(super) fn run() {
     let catalogue = Catalogue::parse(&bytes).unwrap();
     assert_eq!(catalogue.plugins.len(), 3);
     assert_eq!(inputs["plugins"].as_array().unwrap().len(), 3);
+    Observed {
+        inputs_root,
+        inputs,
+        platform,
+        architecture,
+        snapshot,
+        binding,
+        revision,
+        catalogue,
+    }
+}
+
+pub(super) fn run() {
+    let Observed {
+        inputs_root,
+        inputs,
+        platform,
+        architecture,
+        snapshot,
+        binding,
+        revision,
+        catalogue,
+    } = observed();
+    let revision = revision.as_str();
+    let catalogue_asset = snapshot.asset("among-plugins.json").unwrap();
     let root = crate::plugin::inventory::root().unwrap();
     crate::test_isolation::assert_below_check_root(&root);
     assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());

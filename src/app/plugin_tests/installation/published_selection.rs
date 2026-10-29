@@ -1,16 +1,7 @@
+use super::published_lifecycle::{inspect, observed, Observed};
 use super::*;
-use crate::plugin::install::metadata::{Architecture, Platform};
 
-const CATALOGUE: &str = "86f784e6a0eb794cf070edb676207b7964b8317c";
-const CATALOGUE_SHA256: &str = "510bdef3b532ed266d10fd925bf15a0d7d536c1889f2454e8d9a7cb446cf8a5b";
-const SOURCE: &str = "aa1ec272d4ed6326338f3de0e5fbf30bbe181e39";
-const TAG_OBJECT: &str = "31b3ad165bb6a685dfe49fcde082949e12e5887b";
-const VERSION: &str = "0.1.0-rc.1";
 const KEY: &str = "github:1431055733/clock";
-
-fn description(id: &str, architecture: &str, asset: u64, size: u64) -> String {
-    format!("github:1431055733/{id} · version {VERSION} · linux/{architecture} · asset {asset} · {size} bytes")
-}
 
 fn selected_row(view: &adw::PreferencesWindow, expected: &str) -> adw::ActionRow {
     widgets(view.upcast_ref())
@@ -33,27 +24,38 @@ fn visible_description(row: &adw::ActionRow, expected: &str) {
     assert_eq!(label.accessible_role(), gtk::AccessibleRole::Label);
 }
 
+// The release, asset names, sizes and digests come from the prepared
+// observation of the current latest official release, so the case follows
+// each new release instead of asserting an older one.
 #[test]
-#[ignore = "requires an isolated native display, keyboard input, ImageMagick and the pinned public GitHub prerelease"]
+#[ignore = "requires an isolated native display, keyboard input and prepared inputs of the latest official release"]
 fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_implicit_access() {
-    let (architecture, assets) = match Platform::current().unwrap().architecture {
-        Architecture::Amd64 => (
-            "amd64",
-            [
-                ("clock", 678182662, 728319),
-                ("system-status", 678182661, 686717),
-                ("pane-pwd", 678182660, 683844),
-            ],
-        ),
-        Architecture::Arm64 => (
-            "arm64",
-            [
-                ("clock", 678182659, 712926),
-                ("system-status", 678182654, 671723),
-                ("pane-pwd", 678182754, 666864),
-            ],
-        ),
-    };
+    let Observed {
+        platform,
+        architecture,
+        snapshot,
+        binding,
+        revision,
+        catalogue,
+        ..
+    } = observed();
+    let rows: Vec<_> = catalogue
+        .plugins
+        .iter()
+        .map(|plugin| {
+            let version = &plugin.versions[0];
+            let artifact = version.select(&platform).unwrap();
+            (
+                plugin.id.clone(),
+                version.manifest.version.clone(),
+                artifact.clone(),
+                format!(
+                    "github:1431055733/{} · version {} · linux/{architecture} · asset {} · {} bytes",
+                    plugin.id, version.manifest.version, artifact.asset, artifact.size
+                ),
+            )
+        })
+        .collect();
     let root = crate::plugin::inventory::root().unwrap();
     crate::test_isolation::assert_below_check_root(&root);
     assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());
@@ -83,61 +85,20 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
 
     // Use the production manager action, network client and installer. No test
     // TLS roots, archive substitution, receipt injection or executable build.
-    let inspect = || {
-        focus(&preferences);
-        press(&button(&preferences, "Inspect repository…"));
-        let view = inspector();
-        focus(&view);
-        let address = widgets(view.upcast_ref())
-            .into_iter()
-            .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
-            .unwrap();
-        assert!(address.grab_focus());
-        xdo(&[
-            "type",
-            "--clearmodifiers",
-            "--delay",
-            "0",
-            "Among-Terminal/among-plugins",
-        ]);
-        press(&button(&view, "Inspect"));
-        wait_for(
-            || {
-                has_label(view.upcast_ref(), "Metadata preview ready")
-                    || has_label(view.upcast_ref(), "No metadata preview")
-            },
-            Duration::from_secs(65),
-        );
-        assert!(
-            has_label(view.upcast_ref(), "Metadata preview ready"),
-            "public inspection failed; no synthetic fallback is permitted"
-        );
-        let output = widgets(view.upcast_ref())
-            .into_iter()
-            .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
-            .unwrap()
-            .buffer();
-        let preview = output.text(&output.start_iter(), &output.end_iter(), false);
-        assert!(
-            preview.contains(&format!("at {CATALOGUE}")),
-            "this acceptance case is pinned, not an unresolved latest consumer"
-        );
-        assert!(preview.contains(SOURCE));
-        view
-    };
-    let view = inspect();
-    for (id, asset, size) in assets {
-        let expected = description(id, architecture, asset, size);
-        let row = selected_row(&view, &expected);
+    let view = inspect(&preferences, &revision);
+    for (_, _, _, expected) in &rows {
+        let row = selected_row(&view, expected);
         let install = button(&row, "Install disabled");
         assert!(install.grab_focus());
-        visible_description(&row, &expected);
+        visible_description(&row, expected);
         assert!(install.is_sensitive());
         println!("published_selection_row={expected}");
     }
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     assert!(!root.join("installed.json").exists());
-    let clock_description = description("clock", architecture, assets[0].1, assets[0].2);
+    let (_, clock_version, clock_artifact, clock_description) =
+        rows.iter().find(|(id, ..)| id == "clock").unwrap().clone();
+    let clock_asset = snapshot.asset(&clock_artifact.asset).unwrap();
     let clock = selected_row(&view, &clock_description);
     assert!(button(&clock, "Install disabled").grab_focus());
     screenshot(&view, "published-native-selection");
@@ -159,25 +120,22 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     );
     let entry = &installed[0];
     let receipt = &entry.receipt;
+    let catalogue_asset = snapshot.asset("among-plugins.json").unwrap();
     assert_eq!(receipt.repository_id, 1431055733);
-    assert_eq!(receipt.release_id, 424255611);
-    assert_eq!(receipt.asset_id, assets[0].1);
-    assert_eq!(receipt.revision, SOURCE);
-    let expected_package = match architecture {
-        "amd64" => "82ea5a94715d8c98f0977eaccbd21b33020e4b46c7b890c9facd79071c50e011",
-        "arm64" => "e4722f7d2a3ab593d2d03c9867b6faf28062dbdc9be099686f2089f4446c7860",
-        _ => unreachable!(),
-    };
-    assert_eq!(receipt.package_sha256, expected_package);
+    assert_eq!(receipt.release_id, snapshot.id);
+    assert_eq!(receipt.asset_id, clock_asset.id);
+    assert_eq!(receipt.revision, revision);
+    assert_eq!(receipt.package_sha256, clock_artifact.sha256);
     let source = receipt.source.as_ref().unwrap();
     assert_eq!(source.publisher_id, 339567100);
-    assert_eq!(source.catalogue_revision, CATALOGUE);
-    assert_eq!(source.catalogue_sha256, CATALOGUE_SHA256);
-    let binding = &source.release_binding;
-    assert_eq!(binding.tag, "v0.1.0-rc.1");
-    assert_eq!(binding.object, TAG_OBJECT);
-    assert_eq!(binding.commit, SOURCE);
-    assert_eq!(entry.inspected.as_ref().unwrap().manifest.version, VERSION);
+    assert_eq!(source.catalogue_revision, revision);
+    assert_eq!(source.catalogue_sha256, catalogue_asset.sha256);
+    assert_eq!(*source.release_snapshot, snapshot);
+    assert_eq!(source.release_binding, binding);
+    assert_eq!(
+        entry.inspected.as_ref().unwrap().manifest.version,
+        clock_version
+    );
     assert_eq!(ctx.state.borrow().plugins.listing().len(), 1);
     assert!(!ctx.state.borrow().plugins.desired_enabled(KEY));
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
@@ -192,7 +150,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     }
     view.destroy();
 
-    let view = inspect();
+    let view = inspect(&preferences, &revision);
     let row = selected_row(&view, &clock_description);
     press(&button(&row, "Apply update…"));
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
@@ -240,5 +198,5 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     assert_eq!(std::fs::read(proof).unwrap(), b"published-selection-alive");
     assert_eq!(terminal.pty().unwrap(), pty);
     ctx.window.destroy();
-    println!("PASS native {architecture} public selection rows and review dialog show chosen version/target; explicit keyboard Install verified Release 424255611 asset {}, source/tag/catalogue binding and disabled inventory with no grants/process. Cancel preserved bytes and the same PTY accepted real input. This is not enabled output, update execution, uninstall, source/legal acceptance or whole RC acceptance.", assets[0].1);
+    println!("PASS native {architecture} public selection rows and review dialog show chosen version/target; explicit keyboard Install verified Release {} asset {}, source/tag/catalogue binding and disabled inventory with no grants/process. Cancel preserved bytes and the same PTY accepted real input. This is not enabled output, update execution, uninstall, source/legal or whole RC acceptance.", snapshot.id, clock_asset.id);
 }
