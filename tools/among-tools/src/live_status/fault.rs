@@ -316,11 +316,8 @@ pub(super) fn inject(host: &Host, profile: &Path, base: &Path) -> Result<()> {
     if !metadata.is_file() || metadata.mode() & 0o111 == 0 {
         return Err("resource entrypoint is not a regular executable".into());
     }
-    let catalogue = storage::parse_json(&release::checked_bytes(
-        &storage::safe_path(profile, Path::new("among-plugins.json"))?,
-        634525,
-        release::CATALOGUE_SHA256,
-    )?)?;
+    let inputs = release::profile_inputs(profile)?;
+    let catalogue = release::catalogue(profile, &inputs)?;
     let (_, artifact) = release::select(&catalogue, &crate::platform::discover()?.architecture)?
         .into_iter()
         .find(|(version, _)| version["manifest"]["id"] == "system-status")
@@ -331,7 +328,7 @@ pub(super) fn inject(host: &Host, profile: &Path, base: &Path) -> Result<()> {
         .iter()
         .find(|member| member["path"] == entrypoint)
         .ok_or("resource entrypoint lacks public digest")?;
-    if artifact["asset_id"] != receipt["asset_id"]
+    if release::observed_asset(&inputs, text(artifact, "asset")?)?["id"] != receipt["asset_id"]
         || artifact["sha256"] != receipt["package_sha256"]
         || member["executable"] != true
         || member["size"] != metadata.len()

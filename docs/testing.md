@@ -76,15 +76,20 @@ configuration. CI workflows set the root explicitly.
 ## Published-plugin native checks
 
 `managed-transport.yml` runs on native amd64 and arm64 runners. Production clock,
-system-status and pane-pwd executables come from the public plugin prerelease
-`v0.1.0-rc.1`, Release `424255611`; they are not compiled by the host check. The
-catalogue snapshot `86f784e6a0eb794cf070edb676207b7964b8317c` is deliberately distinct
-from binary/source revision `aa1ec272d4ed6326338f3de0e5fbf30bbe181e39`.
+system-status and pane-pwd executables come from the official repository's latest
+stable immutable release; they are not compiled by the host check. A missing
+ordinary release is a failed prerequisite, not permission to use the historical
+prerelease or a default-branch catalogue.
 
 `among-tools prepare-official-plugin-inputs <new-directory>` validates the numeric
-repository/publisher, signed annotated tag, release membership, pinned catalogue,
-native package/archive-member digests and ELF architecture. It retains downloads
-and emits `inputs.json`; these are check inputs, not installed receipts or grants.
+repository/publisher, complete bounded release inventory and full tag chain. It
+downloads the schema2 catalogue through its observed asset ID and checks its size
+and digest before parsing; package names, sizes and digests must match that same
+release. Native archive members, ELF architecture and the common source delivery
+are checked without replacing them with host-built executables. Repository,
+latest, assets and the complete tag chain are re-observed after transfer; drift
+refuses preparation. It retains downloads and emits schema2 `inputs.json` with
+the observed numeric IDs, snapshot and binding, not installed receipts or grants.
 Only the protocol fixtures are built from the exact companion source. The
 supervised admission, stale-reply, paging, timezone, resource and keyboard controls
 remain mandatory. Transport fixture receipts remain synthetic and do not prove
@@ -106,6 +111,9 @@ requires a clean checkout before and after the actual UI lifecycle, one Cargo te
 artifact whose manifest and `src/main.rs` belong to that checkout, an unchanged
 test-executable digest, and a matching compiled-in source SHA. Its bounded internal
 transfer includes exact file hashes and the completed lifecycle observation.
+Its `release-inputs.json` preserves the prepared release observation so replay
+checks every selected receipt's full snapshot, catalogue and tag binding against
+the same source, without embedded historical release/asset constants.
 `check-package-plugin-profile` checks the expected host source, native architecture,
 all declared bytes and missing/duplicate/unrecorded/link inputs before a package
 renderer consumes it. The complete transfer remains within 8 MiB/64 entries.

@@ -48,10 +48,11 @@ pub fn replay(profile: &Path, destination: &Path) -> Result<()> {
         &storage::safe_path(profile, Path::new("profile.json"))?,
         64 * 1024,
     )?)?;
+    let inputs = release::profile_inputs(profile)?;
     let architecture = crate::platform::discover()?.architecture;
     if metadata["kind"] != "observed_published_installation_profile"
-        || metadata["source_revision"] != release::SOURCE
-        || metadata["catalogue_revision"] != release::CATALOGUE
+        || metadata["source_revision"] != inputs["source_revision"]
+        || metadata["catalogue_revision"] != inputs["catalogue_revision"]
         || metadata["architecture"] != architecture
     {
         return Err("runtime replay provenance or actual architecture differs".into());
@@ -78,12 +79,7 @@ pub fn replay(profile: &Path, destination: &Path) -> Result<()> {
     if selections["version"] != 1 || consent["version"] != 1 || receipts.len() != 3 {
         return Err("runtime replay needs the three actual selected installations".into());
     }
-    let catalogue = release::checked_bytes(
-        &storage::safe_path(profile, Path::new("among-plugins.json"))?,
-        634525,
-        release::CATALOGUE_SHA256,
-    )?;
-    let catalogue = storage::parse_json(&catalogue)?;
+    let catalogue = release::catalogue(profile, &inputs)?;
     let mut files: Vec<(PathBuf, Vec<u8>, u32)> = Vec::new();
     for (version, artifact) in release::select(&catalogue, &architecture)? {
         let id = text(&version["manifest"], "id")?;
@@ -96,20 +92,20 @@ pub fn replay(profile: &Path, destination: &Path) -> Result<()> {
         };
         let source = &receipt["source"];
         let binding = &source["release_binding"];
+        let asset = release::observed_asset(&inputs, text(artifact, "asset")?)?;
         let key = format!("github:1431055733/{id}");
         let local = &consent["plugins"][&key];
         if receipt["repository_id"] != 1431055733u64
-            || receipt["release_id"] != 424255611
-            || receipt["revision"] != release::SOURCE
-            || receipt["asset_id"] != artifact["asset_id"]
+            || receipt["release_id"] != inputs["release_id"]
+            || receipt["revision"] != inputs["source_revision"]
+            || receipt["asset_id"] != asset["id"]
             || receipt["manifest_sha256"] != version["manifest_sha256"]
             || receipt["package_sha256"] != artifact["sha256"]
-            || source["catalogue_revision"] != release::CATALOGUE
-            || source["catalogue_sha256"] != release::CATALOGUE_SHA256
+            || source["catalogue_revision"] != inputs["catalogue_revision"]
+            || source["catalogue_sha256"] != inputs["catalogue_sha256"]
             || source["publisher_id"] != 339567100u64
-            || binding["commit"] != release::SOURCE
-            || binding["tag"] != "v0.1.0-rc.1"
-            || binding["object"] != "31b3ad165bb6a685dfe49fcde082949e12e5887b"
+            || source["release_snapshot"] != inputs["release_snapshot"]
+            || *binding != inputs["release_binding"]
             || local["enabled"] != true
             || !receipt["installation"].is_string()
             || local["installation"] != receipt["installation"]
@@ -211,3 +207,6 @@ pub fn replay(profile: &Path, destination: &Path) -> Result<()> {
     println!("PASS renderer replay consumed native {architecture} public catalogue, exact installed/settings SHA, numeric assets/tag binding and observed explicit grants; selection bytes unchanged");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

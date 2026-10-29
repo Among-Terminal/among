@@ -29,7 +29,7 @@ pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> 
     crate::preferences::owned_display()?;
     let executable = executable.canonicalize()?;
     let inputs = inputs.canonicalize()?;
-    release::verify(&inputs)?;
+    let prepared = release::verify(&inputs)?;
     fs::create_dir_all(scratch)?;
     let base = storage::private_directory(scratch, "among-release-install-check")?;
     for name in ["home", "config", "data", "cache", "state", "run"] {
@@ -122,12 +122,15 @@ pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> 
         )
         .into());
     }
-    release::verify(&inputs)?;
+    if release::verify(&inputs)? != prepared {
+        return Err("prepared release observation changed during native installation".into());
+    }
     let profile = base.join(".runtime-published-live-profile");
     let metadata = storage::parse_json(&fs::read(profile.join("profile.json"))?)?;
     if metadata["kind"] != "observed_published_installation_profile"
-        || metadata["source_revision"] != release::SOURCE
-        || metadata["catalogue_revision"] != release::CATALOGUE
+        || metadata["source_revision"] != prepared["source_revision"]
+        || metadata["catalogue_revision"] != prepared["catalogue_revision"]
+        || release::profile_inputs(&profile)? != prepared
     {
         return Err(
             "native test did not export its observed published installation profile".into(),

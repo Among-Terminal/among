@@ -52,9 +52,9 @@ jobs:
           CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 test --locked --manifest-path tools/among-tools/Cargo.toml --test plugin_release_inputs
           "$PWD/target/debug/among-tools" prepare-official-plugin-inputs "$root/official"
           cp "$root/official/inputs.json" "$root/published-release-inputs.json"
-          cp "$root/official/release.json" "$root/published-release.json"
-          cp "$root/official/tag-ref.json" "$root/published-tag-ref.json"
-          cp "$root/official/tag-object.json" "$root/published-tag-object.json"
+          cp "$root/official/latest.json" "$root/published-release.json"
+          cp "$root/official/initial-ref.json" "$root/published-tag-ref.json"
+          cp "$root/official/initial-commit.json" "$root/published-tag-commit.json"
           cp "$root/official/repository.json" "$root/client-repository.json"
           for record in clock:CLOCK system-status:SYSTEM pane-pwd:PWD; do
             plugin="${record%:*}"

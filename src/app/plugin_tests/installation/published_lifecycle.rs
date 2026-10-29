@@ -3,11 +3,6 @@ use crate::plugin::install::metadata::{Architecture, Catalogue, Platform};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-const CATALOGUE_REVISION: &str = "86f784e6a0eb794cf070edb676207b7964b8317c";
-const CATALOGUE_SHA256: &str = "510bdef3b532ed266d10fd925bf15a0d7d536c1889f2454e8d9a7cb446cf8a5b";
-const SOURCE: &str = "aa1ec272d4ed6326338f3de0e5fbf30bbe181e39";
-const TAG_OBJECT: &str = "31b3ad165bb6a685dfe49fcde082949e12e5887b";
-
 fn input_proof(ctx: &Window, terminal: &vte::Terminal, pty: &vte::Pty, phase: &str) {
     assert_eq!(terminal.pty().as_ref(), Some(pty));
     focus(&ctx.window);
@@ -137,6 +132,11 @@ fn capture_live_profile(
         &profile.join("among-plugins.json"),
         false,
     );
+    copy(
+        &inputs.join("inputs.json"),
+        &profile.join("release-inputs.json"),
+        false,
+    );
     for receipt in receipts {
         let source = receipt.package_path(root);
         let target = receipt.package_path(&managed);
@@ -165,10 +165,15 @@ fn capture_live_profile(
     }
     let installed = read_regular(&managed.join("installed.json"), 256 * 1024);
     let settings = read_regular(&profile.join("managed-plugins.json"), 256 * 1024);
-    std::fs::write(profile.join("profile.json"), serde_json::to_vec_pretty(&json!({"kind":"observed_published_installation_profile","host_source_sha":option_env!("AMONG_CHECK_SOURCE_SHA"),"catalogue_revision":CATALOGUE_REVISION,"source_revision":SOURCE,"architecture":match Platform::current().unwrap().architecture {Architecture::Amd64=>"amd64",Architecture::Arm64=>"arm64"},"installed_size":installed.len(),"installed_sha256":crate::plugin::inventory::checksum(&installed).unwrap(),"settings_size":settings.len(),"settings_sha256":crate::plugin::inventory::checksum(&settings).unwrap()})).unwrap()).unwrap();
+    let observation: Value = crate::plugin::data::parse_unique(
+        &read_regular(&inputs.join("inputs.json"), 256 * 1024),
+        256 * 1024,
+    )
+    .unwrap();
+    std::fs::write(profile.join("profile.json"), serde_json::to_vec_pretty(&json!({"kind":"observed_published_installation_profile","host_source_sha":option_env!("AMONG_CHECK_SOURCE_SHA"),"catalogue_revision":observation["catalogue_revision"],"source_revision":observation["source_revision"],"architecture":match Platform::current().unwrap().architecture {Architecture::Amd64=>"amd64",Architecture::Arm64=>"arm64"},"installed_size":installed.len(),"installed_sha256":crate::plugin::inventory::checksum(&installed).unwrap(),"settings_size":settings.len(),"settings_sha256":crate::plugin::inventory::checksum(&settings).unwrap()})).unwrap()).unwrap();
 }
 
-fn inspect(preferences: &adw::PreferencesWindow) -> adw::PreferencesWindow {
+fn inspect(preferences: &adw::PreferencesWindow, revision: &str) -> adw::PreferencesWindow {
     focus(preferences);
     press(&button(preferences, "Inspect repository…"));
     let view = inspector();
@@ -201,8 +206,8 @@ fn inspect(preferences: &adw::PreferencesWindow) -> adw::PreferencesWindow {
         .buffer();
     let preview = output.text(&output.start_iter(), &output.end_iter(), false);
     assert!(
-        preview.contains(&format!("at {CATALOGUE_REVISION}")),
-        "published catalogue binding mismatch: expected {CATALOGUE_REVISION}; preview prefix: {:?}",
+        preview.contains(&format!("at {revision}")),
+        "published catalogue binding mismatch: expected {revision}; preview prefix: {:?}",
         preview.chars().take(4096).collect::<String>()
     );
     view
@@ -366,22 +371,29 @@ pub(super) fn run() {
         Architecture::Amd64 => "amd64",
         Architecture::Arm64 => "arm64",
     };
-    assert_eq!(inputs["schema_version"], 1);
+    assert_eq!(inputs["schema_version"], 2);
     assert_eq!(inputs["kind"], "published_release_inputs_not_installed");
     assert_eq!(inputs["repository_id"], 1431055733u64);
     assert_eq!(inputs["publisher_id"], 339567100u64);
-    assert_eq!(inputs["catalogue_revision"], CATALOGUE_REVISION);
-    assert_eq!(inputs["catalogue_sha256"], CATALOGUE_SHA256);
-    assert_eq!(inputs["source_revision"], SOURCE);
-    assert_eq!(inputs["release_id"], 424255611);
-    assert_eq!(inputs["tag"], "v0.1.0-rc.1");
-    assert_eq!(inputs["tag_object"], TAG_OBJECT);
+    let snapshot: crate::plugin::inventory::release::ReleaseSnapshot =
+        serde_json::from_value(inputs["release_snapshot"].clone()).unwrap();
+    snapshot.validate().unwrap();
+    let binding: crate::plugin::inventory::ReleaseBinding =
+        serde_json::from_value(inputs["release_binding"].clone()).unwrap();
+    let revision = inputs["source_revision"].as_str().unwrap();
+    assert_eq!(inputs["catalogue_revision"], revision);
+    assert_eq!(binding.commit, revision);
+    assert_eq!(binding.tag, snapshot.tag);
+    assert_eq!(inputs["release_id"], snapshot.id);
+    let catalogue_asset = snapshot.asset("among-plugins.json").unwrap();
+    assert_eq!(inputs["catalogue_size"], catalogue_asset.size);
+    assert_eq!(inputs["catalogue_sha256"], catalogue_asset.sha256);
     assert_eq!(inputs["architecture"], architecture);
     let bytes = read_regular(&inputs_root.join("among-plugins.json"), 1024 * 1024);
-    assert_eq!(bytes.len(), 634525);
+    assert_eq!(bytes.len() as u64, catalogue_asset.size);
     assert_eq!(
         crate::plugin::inventory::checksum(&bytes).unwrap(),
-        CATALOGUE_SHA256
+        catalogue_asset.sha256
     );
     let catalogue = Catalogue::parse(&bytes).unwrap();
     assert_eq!(catalogue.plugins.len(), 3);
@@ -414,7 +426,7 @@ pub(super) fn run() {
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
-    let view = inspect(&preferences);
+    let view = inspect(&preferences, revision);
     let mut receipts = Vec::new();
     for plugin in &catalogue.plugins {
         let version = &plugin.versions[0];
@@ -428,8 +440,12 @@ pub(super) fn run() {
         assert_eq!(expected_input["asset"], artifact.asset);
         let observed_asset_id = expected_input["asset_id"].as_u64().unwrap();
         assert_eq!(expected_input["version"], version.manifest.version);
-        assert_eq!(expected_input["revision"], SOURCE);
+        assert_eq!(expected_input["revision"], revision);
         assert_eq!(expected_input["architecture"], architecture);
+        let asset = snapshot.asset(&artifact.asset).unwrap();
+        assert_eq!(observed_asset_id, asset.id);
+        assert_eq!(artifact.size, asset.size);
+        assert_eq!(artifact.sha256, asset.sha256);
         let archive = inputs_root.join(format!("{}.tar.gz", plugin.id));
         assert_eq!(
             crate::plugin::inventory::checksum(&read_regular(&archive, 64 * 1024 * 1024)).unwrap(),
@@ -458,19 +474,17 @@ pub(super) fn run() {
         let (entry, _) = ctx.state.borrow().plugins.managed_details(&key).unwrap();
         let receipt = &entry.receipt;
         assert_eq!(receipt.repository_id, 1431055733);
-        assert_eq!(receipt.release_id, 424255611);
+        assert_eq!(receipt.release_id, snapshot.id);
         assert_eq!(receipt.asset_id, observed_asset_id);
-        assert_eq!(receipt.revision, SOURCE);
+        assert_eq!(receipt.revision, revision);
         assert_eq!(receipt.manifest_sha256, version.manifest_sha256);
         assert_eq!(receipt.package_sha256, artifact.sha256);
         let source = receipt.source.as_ref().unwrap();
-        assert_eq!(source.catalogue_revision, CATALOGUE_REVISION);
-        assert_eq!(source.catalogue_sha256, CATALOGUE_SHA256);
+        assert_eq!(source.catalogue_revision, revision);
+        assert_eq!(source.catalogue_sha256, catalogue_asset.sha256);
         assert_eq!(source.publisher_id, 339567100);
-        let binding = &source.release_binding;
-        assert_eq!(binding.object, TAG_OBJECT);
-        assert_eq!(binding.commit, SOURCE);
-        assert_eq!(binding.tag, "v0.1.0-rc.1");
+        assert_eq!(*source.release_snapshot, snapshot);
+        assert_eq!(source.release_binding, binding);
         let inspected = entry.inspected.as_ref().unwrap();
         assert_eq!(inspected.manifest, version.manifest);
         let member = artifact
@@ -656,7 +670,7 @@ pub(super) fn run() {
     assert!(ctx.state.borrow().plugins.listing().is_empty());
     input_proof(&ctx, &terminal, &pty, "after-uninstall");
     let evidence = crate::test_isolation::check_root().join("published-release-lifecycle.json");
-    std::fs::write(&evidence, serde_json::to_vec_pretty(&json!({"catalogue_revision":CATALOGUE_REVISION,"source_revision":SOURCE,"architecture":architecture,"installed_receipts":receipts,"actual_public_install":true,"explicit_review_cancel_accept":true,"three_mapped_outputs":true,"disabled_then_uninstalled":true,"same_pty_real_input":true,"scope":"native installed lifecycle, not package/source/legal or whole RC acceptance"})).unwrap()).unwrap();
+    std::fs::write(&evidence, serde_json::to_vec_pretty(&json!({"catalogue_revision":revision,"source_revision":revision,"release_snapshot":snapshot,"release_binding":binding,"architecture":architecture,"installed_receipts":receipts,"actual_public_install":true,"explicit_review_cancel_accept":true,"three_mapped_outputs":true,"disabled_then_uninstalled":true,"same_pty_real_input":true,"scope":"native installed lifecycle, not package/source/legal or whole RC acceptance"})).unwrap()).unwrap();
     preferences.destroy();
     ctx.window.destroy();
     println!("PASS published_release_ui install_review_enable_disable_uninstall=true terminal_input=true");
