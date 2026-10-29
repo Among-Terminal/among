@@ -38,7 +38,9 @@ fn tools(architecture: &str) -> Result<Vec<Tool<'static>>> {
         // appimagetool comes from the tagged 1.9.1 release, not from continuous.
         // Continuous assets are replaced in place on every upstream build, so a
         // pinned hash stops matching without any change on our side and every
-        // AppImage build is refused until someone re-reviews new bytes.
+        // AppImage build is refused until someone re-reviews new bytes. A tagged
+        // release is not rebuilt that way, but its assets are not immutable
+        // either: the hash, not the tag, still decides what may run.
         Tool { filename: "appimagetool.AppImage", url: format!("https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-{suffix}.AppImage"), sha256: appimagetool, elf: true },
         Tool { filename: "runtime", url: format!("https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-{suffix}"), sha256: runtime, elf: true },
         Tool { filename: "linuxdeploy-plugin-gtk.sh", url: "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/7a3fbc31a9e5075073ff8790f26effbac5f84453/linuxdeploy-plugin-gtk.sh".into(), sha256: "b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171", elf: false },
