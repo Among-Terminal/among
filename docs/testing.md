@@ -9,6 +9,12 @@ application's actual session file. Use the built tools executable's path in both
 positions, as with the other contributor checks. The check leaves logs and
 screenshots below `AMONG_CHECK_ROOT`; it never targets personal terminals.
 
+`among-tools ci-x11 among-tools check-pane-workspace-move <among-binary>` drives
+a pane header onto workspace entries in both sidebar presentations. It checks the
+destination indication, moved shell process, directory, scrollback, header colour,
+source closure, rejection and Escape cancellation, then relaunches from the
+application's checkpoint and verifies the inserted pane after Restore.
+
 Workspace drag observations include `workspace_order` (runtime references in
 display order), `active_reference`, `workspace_revision`, `workspace_drag` (source
 reference or `none`), and `workspace_target` (insertion gap in the pre-drop order).
@@ -19,6 +25,11 @@ not an alternate API for injecting a successful drag.
 `workspace_native_drag` and `workspace_native_action` report the actual GDK drag
 object and selected action, separating native gesture recognition from a prepared
 application transaction.
+
+Pane drag observations include `pane_drag` (the source pane id or `none`),
+`pane_target` (the workspace reference under the pointer or `none`), and
+`pane_indicators` (row indices currently showing the pane-destination style).
+They are live observations, not a way to inject a successful pane drop.
 
 With self-checks enabled, `among[session-write]` reports
 `checkpoint_submitted=true` when a changed periodic snapshot is queued and

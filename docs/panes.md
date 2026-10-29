@@ -35,6 +35,24 @@ the same afterwards, and focus follows the pane to its new position. The space
 the pane vacated is reclaimed by whatever shared it, so no gap is left behind. A
 drop on a pane's own area does nothing.
 
+## Moving a pane to another project
+
+Drag a pane header onto another workspace's entry in the sidebar, expanded list
+or collapsed strip. The entry is outlined while the pointer is over it. On drop,
+the pane joins that workspace and is placed after its last pane in layout order:
+a wide last pane is split side by side, a tall one is split into a stack.
+
+The destination becomes active and the moved pane receives keyboard focus. Its
+terminal, running process, scrollback, directory, plugin content and title-change
+marker stay with it, and its header takes the destination workspace's colour. If
+the pane was the only one in its former workspace, that workspace closes instead
+of being left empty; otherwise the vacated space closes up.
+
+Dropping on the pane's own workspace, in empty sidebar space, or with anything
+other than a pane does nothing. A pane drag does not reorder workspaces, activate
+an entry on hover, or move a pane whose source or destination disappeared during
+the gesture.
+
 ## Splitting a pane
 
 Splitting a pane gives the new terminal the directory of the pane being split, so

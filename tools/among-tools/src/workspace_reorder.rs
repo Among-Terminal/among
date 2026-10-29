@@ -132,26 +132,150 @@ fn viewport(h: &Harness) -> Result<[f64; 4]> {
         .ok_or_else(|| "viewport geometry missing".into())
 }
 
-fn reject_pane_drop(h: &mut Harness) -> Result<()> {
-    let before = order(h)?;
+fn pane_counts(h: &Harness) -> Result<Vec<usize>> {
+    let text = h.text()?;
+    let line = text
+        .lines()
+        .rfind(|line| line.contains("sidebar_states=["))
+        .ok_or("sidebar states missing")?;
+    let states = line
+        .split_once("sidebar_states=[")
+        .ok_or("sidebar states missing")?
+        .1;
+    states
+        .split(']')
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(|entry| {
+            entry
+                .rsplit_once(':')
+                .ok_or_else(|| "sidebar state has no count".into())
+                .and_then(|(_, count)| count.parse().map_err(Into::into))
+        })
+        .collect()
+}
+
+fn pane_drag_start(h: &Harness, pane: &str) -> Result<(i64, i64)> {
     let geometry = h.geometry()?;
     let origin = crate::sessions::pair(&geometry, "origin", ',')?;
-    let pane = crate::sessions::pane_rectangles(&geometry, "3")
+    let rect = crate::sessions::pane_rectangles(&geometry, pane)
         .first()
         .copied()
-        .ok_or("pane header geometry missing")?;
-    let x = origin[0] + pane[0] as i64 + 120;
-    let y = origin[1] + pane[1] as i64 + 10;
+        .ok_or_else(|| format!("pane {pane} header geometry missing"))?;
+    Ok((
+        origin[0] + rect[0] as i64 + 120,
+        origin[1] + rect[1] as i64 + 10,
+    ))
+}
+
+fn begin_pane_drag(h: &mut Harness, pane: &str) -> Result<()> {
+    let (x, y) = pane_drag_start(h, pane)?;
     h.move_mouse(x, y)?;
     h.xdo(&["mousedown", "1"])?;
     for offset in [8, 16, 24] {
         h.move_mouse(x + offset, y)?;
         std::thread::sleep(Duration::from_millis(100));
     }
-    move_to(h, row(h, 0)?, 0.5)?;
+    h.wait(10, |h| {
+        Ok(field(&h.text()?, "pane_drag").is_some_and(|value| value != "none"))
+    })
+}
+
+fn hover_pane(h: &mut Harness, destination: usize) -> Result<()> {
+    move_to(h, row(h, destination)?, 0.5)?;
+    let reference = order(h)?
+        .get(destination)
+        .ok_or("pane destination is outside the workspace order")?
+        .to_string();
+    let indicator = format!("[{destination}]");
+    h.wait(10, |h| {
+        let text = h.text()?;
+        Ok(
+            field(&text, "pane_target").as_deref() == Some(reference.as_str())
+                && field(&text, "pane_indicators").as_deref() == Some(indicator.as_str()),
+        )
+    })
+}
+
+fn drop_pane_on(h: &mut Harness, pane: &str, destination: usize) -> Result<()> {
+    begin_pane_drag(h, pane)?;
+    hover_pane(h, destination)?;
     h.xdo(&["mouseup", "1"])?;
-    std::thread::sleep(Duration::from_millis(350));
-    require(order(h)? == before, "a pane payload reordered workspaces")?;
+    h.wait(10, |h| {
+        let text = h.text()?;
+        Ok(field(&text, "pane_drag").as_deref() == Some("none")
+            && field(&text, "pane_indicators").as_deref() == Some("[]"))
+    })
+}
+
+fn reject_pane_drop(h: &mut Harness) -> Result<()> {
+    let before = order(h)?;
+    let before_counts = pane_counts(h)?;
+    let active_reference = field(&h.text()?, "active_reference")
+        .ok_or("active reference missing")?
+        .parse::<u64>()?;
+    let source_row = before
+        .iter()
+        .position(|reference| *reference == active_reference)
+        .ok_or("active workspace is not in the order")?;
+    let destination = if source_row == 0 { 1 } else { 0 };
+
+    // Dropping on the source entry is a no-op for both the pane and the order.
+    begin_pane_drag(h, "4")?;
+    move_to(h, row(h, source_row)?, 0.5)?;
+    h.wait(10, |h| {
+        let text = h.text()?;
+        Ok(field(&text, "pane_target").as_deref() == Some("none")
+            && field(&text, "pane_indicators").as_deref() == Some("[]"))
+    })?;
+    h.xdo(&["mouseup", "1"])?;
+    h.wait(10, |h| {
+        Ok(field(&h.text()?, "pane_drag").as_deref() == Some("none"))
+    })?;
+    require(
+        order(h)? == before
+            && pane_counts(h)? == before_counts
+            && field(&h.text()?, "active_reference").as_deref()
+                == Some(active_reference.to_string().as_str()),
+        "a pane dropped on its own workspace changed the model",
+    )?;
+
+    // A different entry receives the pane, but the workspace order stays put.
+    drop_pane_on(h, "4", destination)?;
+    let destination_reference = before[destination].to_string();
+    h.wait(10, |h| {
+        let counts = pane_counts(h)?;
+        Ok(order(h)? == before
+            && counts.get(destination).copied()
+                == before_counts.get(destination).map(|count| count + 1)
+            && counts.get(source_row).copied()
+                == before_counts.get(source_row).map(|count| count - 1)
+            && field(&h.text()?, "active_reference").as_deref()
+                == Some(destination_reference.as_str()))
+    })?;
+    require(
+        field(&h.text()?, "focused").as_deref() == Some("PaneId(4)"),
+        "a pane drop did not focus the moved pane",
+    )?;
+
+    // Put the fixture back where later reorder and session assertions expect it.
+    drop_pane_on(h, "4", source_row)?;
+    let expected_active = active_reference.to_string();
+    h.wait(10, |h| {
+        Ok(order(h)? == before
+            && pane_counts(h)? == before_counts
+            && field(&h.text()?, "active_reference").as_deref() == Some(expected_active.as_str()))
+    })?;
+    // The split added pane 4 and focused it; remove it again so the workspace's
+    // birth pane and therefore its restored reference stay unchanged.
+    h.key("ctrl+shift+w")?;
+    h.wait(10, |h| {
+        Ok(field(&h.text()?, "panes").as_deref() == Some("1")
+            && field(&h.text()?, "focused").as_deref() == Some("PaneId(3)")
+            && pane_counts(h)?.iter().sum::<usize>() == 3)
+    })?;
+    println!("PASS a pane drag moves the pane without reordering workspaces");
     Ok(())
 }
 
@@ -375,6 +499,12 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
         "typing did not reach the previously focused shell",
     )?;
     println!("PASS pointer insertion in both directions and no-op preserve active identity and shell processes");
+    // Give the active workspace a second pane so a pane move does not close it;
+    // this keeps the fixture's later workspace and session assertions stable.
+    h.key("ctrl+shift+n")?;
+    h.wait(10, |h| {
+        Ok(field(&h.text()?, "panes").as_deref() == Some("2"))
+    })?;
     reject_pane_drop(&mut h)?;
     begin_drag(&mut h, 0)?;
     let bounds = viewport(&h)?;
