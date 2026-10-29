@@ -54,14 +54,8 @@ impl ContextMenu {
     pub fn new(id: PaneId, terminal: &vte::Terminal, callbacks: Callbacks) -> Self {
         let popover = gtk::PopoverMenu::from_model(None::<&gio::Menu>);
         terminal.set_context_menu(Some(&popover));
-        terminal.set_allow_hyperlink(true);
-        // VTE requires PCRE2_MULTILINE for terminal match expressions.
-        match vte::Regex::for_match(PLAIN_URI_PATTERN, 0x400) {
-            Ok(regex) => {
-                terminal.match_add_regex(&regex, 0);
-            }
-            Err(error) => eprintln!("among: link matcher unavailable: {error}"),
-        }
+        // Link detection is installed with the pane, not with this optional
+        // menu: a pane without a menu still offers links to the click gesture.
         let inner = Rc::new(Inner {
             id,
             terminal: terminal.downgrade(),
@@ -242,15 +236,7 @@ impl Inner {
         let Some(terminal) = self.terminal.upgrade() else {
             return;
         };
-        let link = coordinates.and_then(|(x, y)| {
-            if let Some(uri) = terminal.check_hyperlink_at(x, y) {
-                return Link::parse(uri.as_str());
-            }
-            terminal.check_match_at(x, y).0.and_then(|uri| {
-                // Trim sentence punctuation only from a plain-text match, never OSC 8.
-                Link::parse(uri.trim_end_matches(['.', ',', ';', ':', '!', '?']))
-            })
-        });
+        let link = coordinates.and_then(|(x, y)| crate::links::at(&terminal, x, y));
         let generation = self.generation.get().wrapping_add(1);
         self.generation.set(generation);
         self.open.set(true);
@@ -463,37 +449,6 @@ fn install_rows(popover: &gtk::PopoverMenu, menu: &gio::Menu) {
     }
 }
 
-// A conservative absolute-URI match: paired delimiters and quotes are not guessed.
-const PLAIN_URI_PATTERN: &str = r#"(?i)\b(?:https?://|mailto:)[^\s<>"'()\[\]{}]+"#;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Link {
-    uri: String,
-    openable: bool,
-}
-
-impl Link {
-    fn parse(value: &str) -> Option<Self> {
-        if value.len() > 8192 || value.chars().any(|c| c.is_control() || c.is_whitespace()) {
-            return None;
-        }
-        let uri = glib::Uri::parse(value, glib::UriFlags::NONE).ok()?;
-        let scheme = uri.scheme().to_ascii_lowercase();
-        if matches!(scheme.as_str(), "http" | "https")
-            && uri.host().is_none_or(|host| host.is_empty())
-        {
-            return None;
-        }
-        if uri.path().is_empty() && scheme == "mailto" {
-            return None;
-        }
-        Some(Self {
-            uri: value.to_owned(),
-            openable: matches!(scheme.as_str(), "http" | "https" | "mailto"),
-        })
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 enum Setup {
     Open(Option<(f64, f64)>),
@@ -663,30 +618,5 @@ mod tests {
         window.destroy();
         pump();
         println!("PASS real VTE selection and private clipboard refresh an open GTK menu; retained and queued actions are revoked");
-    }
-
-    #[test]
-    fn uri_policy_never_turns_unsupported_schemes_into_commands() {
-        for value in [
-            "https://example.test/path?a=1&b=2",
-            "HTTP://example.test",
-            "mailto:a@example.test",
-        ] {
-            let link = Link::parse(value).expect("valid supported URI");
-            assert!(link.openable);
-            assert_eq!(link.uri, value);
-        }
-        for value in ["file:///tmp/test", "javascript:alert(1)", "custom:test"] {
-            assert!(!Link::parse(value).expect("valid copy-only URI").openable);
-        }
-        for value in [
-            "not-a-uri",
-            "https:///missing-host",
-            "https://a.test/\ncommand",
-            "mailto:",
-        ] {
-            assert!(Link::parse(value).is_none(), "{value:?}");
-        }
-        assert!(Link::parse(&format!("https://example.test/{}", "a".repeat(8192))).is_none());
     }
 }

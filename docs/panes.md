@@ -107,6 +107,30 @@ their shortcuts. The menu remains available when those shortcuts are unbound;
 its hints follow the current bindings. Closing the last terminal still asks for
 confirmation rather than silently exiting.
 
+## Following a link
+
+**Ctrl+left-click** a link to open it with the desktop's handler. An explicit
+hyperlink opens its target even when its cells show different text; a plain
+absolute http, https or mailto URL is taken from the text, without the sentence
+punctuation that follows it.
+
+Only http, https and mailto targets launch. A valid hyperlink with another scheme
+opens nothing and the click stays with the terminal. Clicks and drags without Ctrl
+are unchanged, and opening a link leaves the selection and the scrollback where
+they were. A drag that starts on an openable link while Ctrl is held opens
+the link instead of selecting text. A target that cannot be parsed, contains a
+control character or exceeds the size limit is treated like any other refused
+target: nothing opens.
+
+A program that has enabled mouse reporting receives every click as before, except
+a Ctrl+click on an openable link: that click opens the link and the program is not
+told about it. VTE does not expose whether a program is reporting mice, so the
+gesture cannot be narrowed further; GNOME Terminal makes the same choice.
+
+A launch the desktop refuses is reported on stderr and the terminal stays usable;
+no dialog appears. A Ctrl+click in an unfocused pane focuses that pane before the
+link opens.
+
 ## Closing and exiting
 
 Closing the focused pane focuses the sibling that expands into its space. If
