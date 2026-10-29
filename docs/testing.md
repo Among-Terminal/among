@@ -157,8 +157,9 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`aa1ec272d4ed6326338f3de0e5fbf30bbe181e39` (tree
-`514714d5a8aa2ac7e71051e0fb84de464aaffb13`), verifies its public repository identity,
+`ac16a298b42022d9d62017e5d668e72458ba3b69` (tree
+`4025654ad45b3cc4704908f80d097a7cad3916c6`), the source of the prepared
+official plugin release, verifies its public repository identity,
 and builds only its `managed-status` **protocol fixture** and labelled
 `managed-pages` SDK reducer fixture. Production `clock-managed`,
 `system-status-managed` and `pane-pwd-managed` instead come from the separately

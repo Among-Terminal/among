@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_BUILD_JOBS: '1'
-      CLIENT_REVISION: aa1ec272d4ed6326338f3de0e5fbf30bbe181e39
+      CLIENT_REVISION: ac16a298b42022d9d62017e5d668e72458ba3b69
       EXPECTED_KERNEL: ${{ matrix.kernel }}
       EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
     steps:
@@ -81,7 +81,7 @@ jobs:
           git -C "$client" fetch --no-tags --depth=1 https://github.com/Among-Terminal/among-plugins.git "$CLIENT_REVISION"
           git -C "$client" switch --detach FETCH_HEAD
           test "$(git -C "$client" rev-parse HEAD)" = "$CLIENT_REVISION"
-          test "$(git -C "$client" rev-parse 'HEAD^{tree}')" = 514714d5a8aa2ac7e71051e0fb84de464aaffb13
+          test "$(git -C "$client" rev-parse 'HEAD^{tree}')" = 4025654ad45b3cc4704908f80d097a7cad3916c6
           test -z "$(git -C "$client" status --porcelain=v1)"
           grep -Fx "const CLIENT: &str = \"$CLIENT_REVISION\";" src/app/plugin_tests/resources.rs
           git rev-parse HEAD > "$root/host-source.txt"
