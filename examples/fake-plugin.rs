@@ -342,6 +342,16 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
                 send(&mut output, &response)?;
                 if held_summary {
                     std::fs::write("summary-released", b"yes")?;
+                    if std::path::Path::new("hold-following-status").exists() {
+                        std::fs::write("following-status-held", b"yes")?;
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(3);
+                        while !std::path::Path::new("allow-following-status").exists()
+                            && std::time::Instant::now() < deadline
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(300));
                 }
                 if mode == "managed-enumerate"
@@ -388,6 +398,24 @@ fn main() -> std::io::Result<()> {
         "echo" => serve(true),
         "delayed" => serve_with_delay(true, std::time::Duration::from_millis(30), None),
         "rapid" => serve_with_delay(true, std::time::Duration::from_millis(1), Some(0)),
+        "workspace-position" => {
+            let mut output = std::io::stdout().lock();
+            for line in std::io::stdin().lock().lines() {
+                let message: Value = serde_json::from_str(&line?)?;
+                match message["type"].as_str() {
+                    Some("hello") => send(&mut output, &hello())?,
+                    Some("status") => send(
+                        &mut output,
+                        &json!({
+                            "type":"status", "request_id":message["request_id"],
+                            "fragments":[{"text":format!("position-{}", message["context"]["active_workspace"])}]
+                        }),
+                    )?,
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
         // Completes the handshake and then never answers a status request, so
         // the host has to time the request out instead of blocking on it.
         "hanging" => serve(false),
