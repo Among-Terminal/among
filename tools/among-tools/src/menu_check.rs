@@ -448,6 +448,11 @@ fn run_selected(
     m.action("Expand Pane")?;
     m.wait(|text| text.contains("visible=1 panes=3") && text.contains("3:true:true"))?;
     m.menu(3, true, false, None)?;
+    // The expanded pane refuses a split, so its menu shows Split Pane inactive.
+    // No earlier menu in this run was opened on an expanded pane, so an
+    // inactive Split Pane row can only come from this one.
+    m.wait(|text| text.contains("Split Pane:false:"))?;
+    m.check("expanded pane menu shows Split Pane inactive");
     m.action("Restore Pane")?;
     m.wait(|text| {
         text.starts_with("among[tick")
@@ -460,6 +465,9 @@ fn run_selected(
     )?;
     m.click(1, "1", false, None)?;
     m.menu(3, false, false, None)?;
+    // After restore the same pane's menu offers Split Pane again.
+    m.wait(|text| text.contains("terminal_menus=[3]") && text.contains("Split Pane:true:"))?;
+    m.check("restored pane menu shows Split Pane active again");
     m.action("Expand Pane")?;
     m.wait(|text| text.contains("visible=1 panes=3"))?;
     m.menu(3, true, false, None)?;

@@ -143,8 +143,8 @@ explicitly expanded.
 
 An expanded pane is the only pane on screen and therefore the only focus target:
 `Alt`+arrow directions leave focus on it, and Split is refused until the layout
-is restored. The context menu still lists Split Pane, but it does nothing in that
-state. Close and restore keep working.
+is restored. The context menu still lists Split Pane, but the entry is inactive in
+that state. Close and restore keep working.
 
 Restore returns keyboard focus to its originating terminal; focus never moves to
 another pane during the expansion. Rebuilding the layout preserves independently
