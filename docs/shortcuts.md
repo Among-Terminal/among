@@ -30,10 +30,10 @@ switches workspaces, and double-click still edits an expanded entry's name.
 
 | Action | Binding | Notes |
 | --- | --- | --- |
-| Focus up | `Alt+Up` | no neighbour in that direction: no change |
-| Focus down | `Alt+Down` | no neighbour in that direction: no change |
-| Focus left | `Alt+Left` | no neighbour in that direction: no change |
-| Focus right | `Alt+Right` | no neighbour in that direction: no change |
+| Focus up | `Alt+Up` | no change without a neighbour or while a pane is expanded |
+| Focus down | `Alt+Down` | no change without a neighbour or while a pane is expanded |
+| Focus left | `Alt+Left` | no change without a neighbour or while a pane is expanded |
+| Focus right | `Alt+Right` | no change without a neighbour or while a pane is expanded |
 | Activate workspace 1 | `Alt+1` | beyond the last workspace: no change |
 | Activate workspace 2 | `Alt+2` |  |
 | Activate workspace 3 | `Alt+3` |  |
@@ -44,7 +44,7 @@ switches workspaces, and double-click still edits an expanded entry's name.
 | Activate workspace 8 | `Alt+8` |  |
 | Activate workspace 9 | `Alt+9` |  |
 | New workspace | `Ctrl+Shift+t` | becomes the active workspace |
-| Split pane | `Ctrl+Shift+n` | orientation chosen from the pane's shape |
+| Split pane | `Ctrl+Shift+n` | orientation chosen from the pane's shape; refused while a pane is expanded |
 | Move divider up | `Ctrl+Shift+Up` | nearest stacked divider above the pane; one step |
 | Move divider down | `Ctrl+Shift+Down` | nearest stacked divider above the pane; one step |
 | Move divider left | `Ctrl+Shift+Left` | nearest side-by-side divider above the pane; one step |

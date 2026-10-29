@@ -26,6 +26,22 @@ fn focus(h: &mut Harness, pane: u64, offset: usize) -> Result<()> {
     Ok(())
 }
 
+/// Wait for the expanded state to prove three things at once: only `pane` is
+/// rendered, it owns the model focus, and it still holds native keyboard focus.
+///
+/// The pane count is part of the assertion because a split that slipped through
+/// would grow it, and the focus row catches a directional move to a hidden pane.
+fn expanded_focus(h: &mut Harness, pane: u64, offset: usize) -> Result<()> {
+    h.wait(12, |this| {
+        let text = this.text()?;
+        let text = text.get(offset..).ok_or("zoom log shrank")?;
+        Ok(text.contains("visible=1 panes=2")
+            && text.contains(&format!("focused=PaneId({pane})"))
+            && text.contains(&format!("{pane}:true:true")))
+    })?;
+    focus(h, pane, offset)
+}
+
 fn marker(h: &mut Harness, pane: u64, name: &str) -> Result<()> {
     let offset = h.text()?.len();
     h.command(&format!("printf \"\\033]0;{name}\\007\""))?;
@@ -68,6 +84,34 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
         let text = this.text()?;
         Ok(text.contains("panes=2") && text.contains("2:true:true"))
     })?;
+    let offset = h.text()?.len();
+    h.key("ctrl+shift+x")?;
+    expanded_focus(&mut h, 2, offset)?;
+    println!("PASS zoom renders only the focused pane");
+    for key in ["alt+Left", "alt+Right", "alt+Up", "alt+Down"] {
+        let offset = h.text()?.len();
+        h.key(key)?;
+        expanded_focus(&mut h, 2, offset)?;
+        println!("PASS {key} leaves focus on the expanded pane");
+    }
+    let offset = h.text()?.len();
+    h.key("ctrl+shift+n")?;
+    expanded_focus(&mut h, 2, offset)?;
+    println!("PASS split is refused while a pane is expanded");
+    let offset = h.text()?.len();
+    h.key("ctrl+shift+x")?;
+    h.wait(12, |this| {
+        let text = this.text()?;
+        let text = text.get(offset..).ok_or("restore log shrank")?;
+        Ok(text.contains("visible=2 panes=2")
+            && text.contains("focused=PaneId(2)")
+            && text.contains("2:true:true"))
+    })?;
+    println!("PASS restore keeps focus on the formerly expanded pane");
+    let offset = h.text()?.len();
+    h.key("alt+Left")?;
+    focus(&mut h, 1, offset)?;
+    println!("PASS directional focus resumes after restore");
     let offset = h.text()?.len();
     click(&h, 1, false)?;
     focus(&mut h, 1, offset)?;
