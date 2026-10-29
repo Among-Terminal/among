@@ -110,16 +110,14 @@ impl PluginHost {
             .workspaces
             .get(self.world.legacy.active_workspace);
         let current = workspaces.get(active);
-        for plugin in self
-            .plugins
-            .iter()
-            .filter(|plugin| plugin.managed.is_some())
-        {
+        // event-driven headers can describe positions/counts even when the
+        // active identity survives a move; pane-ID content remains untouched.
+        for plugin in &self.plugins {
             store.remap_workspace_source(
                 &plugin.spec.name,
                 &self.world.workspaces,
                 workspaces,
-                previous != current,
+                previous != current || self.world.workspaces != workspaces,
             );
         }
     }
@@ -266,7 +264,12 @@ impl PluginHost {
                 self.plugins[index]
                     .inflight
                     .insert(request_id, Instant::now());
-                self.plugins[index].scopes.insert(request_id, scope.into());
+                self.plugins[index].scopes.insert(
+                    request_id,
+                    StatusRequest {
+                        workspace_revision: self.workspace_revision,
+                    },
+                );
                 if let Some(runtime) = self.plugins[index].runtime.as_mut() {
                     runtime.scopes.insert(request_id, target);
                 }
@@ -496,7 +499,7 @@ impl PluginHost {
                 let Some(sent) = self.plugins[index].inflight.remove(&request_id) else {
                     return;
                 };
-                self.plugins[index].scopes.remove(&request_id);
+                let request = self.plugins[index].scopes.remove(&request_id);
                 let target = self.plugins[index]
                     .runtime
                     .as_mut()
@@ -508,6 +511,9 @@ impl PluginHost {
                 let Some(scope) = target.and_then(|target| self.world.resolve(&target)) else {
                     return;
                 };
+                let Some(request) = request else {
+                    return;
+                };
                 if self.results.len() >= MAX_POLL_FRAMES {
                     self.fault(index, "managed result backlog exceeded");
                     return;
@@ -517,6 +523,7 @@ impl PluginHost {
                     scope,
                     fragments: valid.fragments,
                     refresh: refresh_ms.map_or(Refresh::OnEvent, Refresh::IntervalMs),
+                    workspace_revision: request.workspace_revision,
                 });
             }
             managed::Response::Configured {
@@ -1135,8 +1142,34 @@ mod tests {
             "workspace_summary:0"
         );
         fixture.wait(|host| !host.results.is_empty());
-        assert_eq!(fixture.host.drain_results()[0].scope, "workspace_summary:0");
+        assert!(fixture.host.drain_results().is_empty());
         assert!(!fixture.host.plugins[0].inflight.contains_key(&id));
+        let pid = fixture.host.plugins[0].io.as_ref().unwrap().process.pid();
+        // an answer already received but not yet drained still names the old
+        // row order; a reorder committed before the drain must withdraw it.
+        fixture
+            .host
+            .request_status(KEY, "workspace_summary:0")
+            .unwrap();
+        fixture.wait(|host| !host.results.is_empty());
+        let mut context = fixture.host.world.legacy.clone();
+        context
+            .terminals
+            .iter_mut()
+            .for_each(|terminal| terminal.workspace = 1 - terminal.workspace);
+        fixture.host.update_context(vec![10, 20], context);
+        assert!(fixture.host.drain_results().is_empty());
+        fixture
+            .host
+            .request_status(KEY, "workspace_summary:0")
+            .unwrap();
+        fixture.wait(|host| !host.results.is_empty());
+        assert_eq!(fixture.host.drain_results()[0].scope, "workspace_summary:0");
+        assert_eq!(
+            fixture.host.plugins[0].io.as_ref().unwrap().process.pid(),
+            pid
+        );
+        assert!(fixture.host.plugins[0].state.is_healthy());
     }
 
     #[test]
@@ -1759,6 +1792,39 @@ mod tests {
         assert!(store.summaries(1).is_empty());
         assert!(store.is_empty(crate::slots::Scope::WorkspaceHeader));
         assert!(!store.is_empty(crate::slots::Scope::AppHeader));
+    }
+
+    #[test]
+    fn reorder_keeping_the_active_workspace_recollects_its_header_without_restarting() {
+        use crate::{slots::Scope, tree::PaneId};
+        // a header can describe position or count, so moving rows must drop it
+        // even when the active identity survives; pane-ID content is unaffected.
+        let mut fixture = fixture("managed-echo", &[], None);
+        fixture.wait(|host| host.plugins[0].state.is_healthy());
+        let pid = fixture.host.plugins[0].io.as_ref().unwrap().process.pid();
+        let mut store = SlotStore::new();
+        for scope in [Scope::WorkspaceHeader, Scope::PaneHeader(PaneId(1))] {
+            PluginHost::apply_fragments(
+                &mut store,
+                scope,
+                KEY,
+                &[serde_json::from_value(json!({"text":"before move"})).unwrap()],
+                Refresh::OnEvent,
+            );
+        }
+        store.mark_collected(Scope::WorkspaceHeader, KEY, 100);
+        assert!(!store.needs_collection(Scope::WorkspaceHeader, KEY, 100));
+        fixture
+            .host
+            .reconcile_workspace_content(&mut store, &[20, 10], 1);
+        assert!(store.is_empty(Scope::WorkspaceHeader));
+        assert!(store.needs_collection(Scope::WorkspaceHeader, KEY, 100));
+        assert!(!store.is_empty(Scope::PaneHeader(PaneId(1))));
+        fixture.host.poll();
+        assert_eq!(
+            fixture.host.plugins[0].io.as_ref().unwrap().process.pid(),
+            pid
+        );
     }
 
     #[test]

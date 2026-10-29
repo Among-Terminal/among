@@ -103,7 +103,7 @@ struct PluginEntry {
     /// Requests sent and not yet answered, for timeout accounting.
     inflight: HashMap<u64, Instant>,
     /// The scope each outstanding request asked about.
-    scopes: HashMap<u64, String>,
+    scopes: HashMap<u64, StatusRequest>,
     next_request_id: u64,
     /// The refresh policy the plugin last declared.
     refresh: Refresh,
@@ -136,6 +136,14 @@ pub struct PluginHost {
     starts_allowed: Rc<Cell<bool>>,
     admission: Admission,
     world: managed::World,
+    workspace_revision: u64,
+}
+
+/// The row order an outstanding status request was asked under. The managed
+/// runtime resolves the answer's scope from its own target; this only lets a
+/// reorder withdraw answers addressed to the old order.
+struct StatusRequest {
+    workspace_revision: u64,
 }
 
 /// One plugin's answer, ready to become slot content.
@@ -148,6 +156,7 @@ pub struct PluginResult {
     pub fragments: Vec<IncomingFragment>,
     /// `None` means the plugin declared event-driven refresh.
     pub refresh: Refresh,
+    workspace_revision: u64,
 }
 
 fn stop_io(plugin: &mut PluginEntry) {
@@ -193,6 +202,7 @@ impl PluginHost {
                 session: glib::uuid_string_random().to_string(),
                 ..Default::default()
             },
+            workspace_revision: 0,
         }
     }
 
@@ -213,7 +223,18 @@ impl PluginHost {
 
     /// Take the answers collected since the last poll.
     pub fn drain_results(&mut self) -> Vec<PluginResult> {
+        // replies can already be queued when a reorder commits. filtering only
+        // at receipt would give such an answer authority over its old row index.
         std::mem::take(&mut self.results)
+            .into_iter()
+            .filter(|result| result.workspace_revision == self.workspace_revision)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_pending(&self, name: &str, request_id: u64) -> bool {
+        self.find(name)
+            .is_some_and(|index| self.plugins[index].inflight.contains_key(&request_id))
     }
 
     pub fn register_managed(&mut self, entry: inventory::Entry, local: Option<&serde_json::Value>) {
@@ -405,6 +426,9 @@ impl PluginHost {
     }
 
     pub fn update_context(&mut self, workspaces: Vec<u64>, legacy: Context) {
+        if self.world.workspaces != workspaces {
+            self.workspace_revision = self.workspace_revision.wrapping_add(1);
+        }
         let previous = self
             .world
             .workspaces
