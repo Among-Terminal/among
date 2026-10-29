@@ -22,20 +22,26 @@ fn tools(architecture: &str) -> Result<Vec<Tool<'static>>> {
         "amd64" => (
             "x86_64",
             "8aea8da0f7f7039d2a2cecb14657d752a222a5e1d3825caeef186c82f751cdd1",
-            "95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6",
+            "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
             "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46",
         ),
         "arm64" => (
             "aarch64",
             "5c1fddf96066891e829831cac0d84424690f3b22846c7f8f1bb9990a5c6c73f4",
-            "a595ea34cd6136c7f595e9dcbb16f3e9725d7610efb9e43b38c3c6e86cafc270",
+            "f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158",
             "9a72a744d221576c9347ec074243acc5c3c7568896b12714e0e82e9f0bf47900",
         ),
         _ => return Err("unsupported AppImage helper architecture".into()),
     };
     Ok(vec![
         Tool { filename: "linuxdeploy.AppImage", url: format!("https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-{suffix}.AppImage"), sha256: linuxdeploy, elf: true },
-        Tool { filename: "appimagetool.AppImage", url: format!("https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-{suffix}.AppImage"), sha256: appimagetool, elf: true },
+        // appimagetool comes from the tagged 1.9.1 release, not from continuous.
+        // Continuous assets are replaced in place on every upstream build, so a
+        // pinned hash stops matching without any change on our side and every
+        // AppImage build is refused until someone re-reviews new bytes. A tagged
+        // release is not rebuilt that way, but its assets are not immutable
+        // either: the hash, not the tag, still decides what may run.
+        Tool { filename: "appimagetool.AppImage", url: format!("https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-{suffix}.AppImage"), sha256: appimagetool, elf: true },
         Tool { filename: "runtime", url: format!("https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-{suffix}"), sha256: runtime, elf: true },
         Tool { filename: "linuxdeploy-plugin-gtk.sh", url: "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/7a3fbc31a9e5075073ff8790f26effbac5f84453/linuxdeploy-plugin-gtk.sh".into(), sha256: "b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171", elf: false },
     ])
