@@ -2853,16 +2853,7 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                         crate::context_menu::Command::Zoom => toggle_zoom(&ctx),
                         crate::context_menu::Command::Close => close_pane(&ctx, id),
                         crate::context_menu::Command::OpenLink(uri) => {
-                            let launcher = gtk::UriLauncher::new(&uri);
-                            launcher.launch(
-                                Some(&ctx.window),
-                                None::<&gio::Cancellable>,
-                                move |result| {
-                                    if let Err(error) = result {
-                                        eprintln!("among: Could not open link: {error}");
-                                    }
-                                },
-                            );
+                            open_uri(&ctx.window, &uri);
                         }
                     }
                 }
@@ -2895,6 +2886,16 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                 if known {
                     apply_focus(&refresh);
                     refresh_slots(&refresh);
+                }
+            }
+        })),
+        on_open_link: Some(Rc::new({
+            let ctx = ctx.handle();
+            move |id, uri| {
+                // A press can arrive while its pane is closing. Launching then
+                // would parent the request to a window that is going away.
+                if menu_target_valid(&ctx, id) {
+                    open_uri(&ctx.window, &uri);
                 }
             }
         })),
@@ -3295,6 +3296,20 @@ fn run_action(ctx: &Window, action: Action) {
         Action::ToggleFullscreen => toggle_fullscreen(ctx),
         Action::ToggleZoom => toggle_zoom(ctx),
     }
+}
+
+/// Ask the desktop to open a URI, reporting a refused launch.
+///
+/// The context menu and the Ctrl+click gesture both come through here, so a
+/// failure reads the same way whichever asked for the target and there is one
+/// place that owns the asynchronous launcher call.
+fn open_uri(window: &adw::ApplicationWindow, uri: &str) {
+    let launcher = gtk::UriLauncher::new(uri);
+    launcher.launch(Some(window), None::<&gio::Cancellable>, move |result| {
+        if let Err(error) = result {
+            eprintln!("among: Could not open link: {error}");
+        }
+    });
 }
 
 fn menu_target_valid(ctx: &Window, id: PaneId) -> bool {
