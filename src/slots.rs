@@ -324,14 +324,14 @@ impl SlotStore {
         self.summaries.retain(|(index, _), _| *index < live_count);
     }
 
-    // managed content follows stable targets even after it has left the wire.
-    // legacy index-based sources keep their existing adapter semantics.
+    // cached summaries must follow their workspace, not whichever row takes its
+    // index after a move or close. this does not change the plugin wire format.
     pub fn remap_workspace_source(
         &mut self,
         source: &str,
         previous: &[u64],
         current: &[u64],
-        active_changed: bool,
+        invalidate_header: bool,
     ) {
         if previous != current {
             self.summaries = std::mem::take(&mut self.summaries)
@@ -346,7 +346,7 @@ impl SlotStore {
                 })
                 .collect();
         }
-        if active_changed {
+        if invalidate_header {
             if let Some(contributions) = self.slots.get_mut(&Scope::WorkspaceHeader) {
                 contributions.retain(|contribution| contribution.source != source);
             }
@@ -539,6 +539,46 @@ pub fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::tree::PaneId;
+
+    #[test]
+    fn workspace_summary_reorder_remaps_each_source_without_touching_panes() {
+        let mut store = SlotStore::new();
+        for source in ["one", "two"] {
+            for index in 0..3 {
+                store.set_summary(index, Summary::text(source, format!("{source}-{index}")));
+            }
+        }
+        store.set(
+            Scope::PaneHeader(PaneId(1)),
+            "one",
+            contribution("one", vec![Fragment::text("one", "pane")]),
+        );
+        for (previous, current, expected) in [
+            (vec![10, 20, 30], vec![30, 10, 20], vec![2, 0, 1]),
+            (vec![30, 10, 20], vec![10, 20, 30], vec![0, 1, 2]),
+        ] {
+            for source in ["one", "two"] {
+                store.remap_workspace_source(source, &previous, &current, false);
+            }
+            for (index, old) in expected.iter().enumerate() {
+                let text: Vec<_> = store
+                    .summaries(index)
+                    .iter()
+                    .map(|summary| summary.text.clone())
+                    .collect();
+                assert_eq!(
+                    text,
+                    vec![Some(format!("one-{old}")), Some(format!("two-{old}"))]
+                );
+            }
+            assert_eq!(
+                store.fragments(Scope::PaneHeader(PaneId(1)))[0]
+                    .text
+                    .as_deref(),
+                Some("pane")
+            );
+        }
+    }
 
     fn contribution(source: &str, fragments: Vec<Fragment>) -> Contribution {
         Contribution {
