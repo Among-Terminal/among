@@ -449,8 +449,8 @@ fn run_selected(
     m.wait(|text| text.contains("visible=1 panes=3") && text.contains("3:true:true"))?;
     m.menu(3, true, false, None)?;
     // The expanded pane refuses a split, so its menu shows Split Pane inactive.
-    // No earlier menu in this run was opened on an expanded pane, so an
-    // inactive Split Pane row can only come from this one.
+    // `menu` has already waited for a report of this new invocation and `wait`
+    // reads only the newest report, so the row checked belongs to this menu.
     m.wait(|text| text.contains("Split Pane:false:"))?;
     m.check("expanded pane menu shows Split Pane inactive");
     m.action("Restore Pane")?;
