@@ -115,8 +115,9 @@ absolute http, https or mailto URL is taken from the text, without the sentence
 punctuation that follows it.
 
 Only http, https and mailto targets launch. A valid hyperlink with another scheme
-opens nothing and the click stays with the terminal. Plain clicks, other modifiers
-and drags are unchanged, and opening a link leaves the selection and the scrollback
+opens nothing and the click stays with the terminal. Clicks and drags without Ctrl
+are unchanged, and
+opening a link leaves the selection and the scrollback
 where they were. A drag that starts on an openable link while Ctrl is held opens
 the link instead of selecting text. A target that cannot be parsed, contains a
 control character or exceeds the size limit is treated like any other refused

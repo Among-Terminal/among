@@ -180,6 +180,72 @@ fn list(h: &Harness, name: &str) -> Result<String> {
     Ok(items.to_string())
 }
 
+/// The items of a bracketed list field from a report printed after `offset`.
+///
+/// The window reports its state once a second, so the newest line in the log
+/// can predate the action being checked. Waiting for a line past an offset
+/// taken once the action's effect is known to have happened (for example after
+/// its handler receipt) is what lets a "nothing changed" assertion fail when
+/// something did change.
+fn list_after(h: &mut Harness, offset: usize, name: &str) -> Result<String> {
+    let field = format!("{name}=[");
+    h.wait(15, |this| {
+        Ok(this
+            .text()?
+            .get(offset..)
+            .ok_or("live report log shrank")?
+            .contains(&field))
+    })?;
+    let text = h.text()?;
+    let line = text
+        .get(offset..)
+        .ok_or("live report log shrank")?
+        .lines()
+        .rev()
+        .find(|line| line.contains(&field))
+        .ok_or_else(|| format!("no fresh live report line for {name}"))?;
+    let (_, tail) = line
+        .split_once(&field)
+        .ok_or_else(|| format!("state report has no {name}"))?;
+    let (items, _) = tail
+        .split_once(']')
+        .ok_or_else(|| format!("state report {name} is not a list"))?;
+    Ok(items.to_string())
+}
+
+/// The panes with a selection in a report printed after `offset`.
+fn selections_after(h: &mut Harness, offset: usize) -> Result<String> {
+    Ok(list_after(h, offset, "terminal_selections")?.replace(' ', ""))
+}
+
+/// The scroll distance of `pane` in a report printed after `offset`.
+fn scroll_after(h: &mut Harness, offset: usize, pane: u64) -> Result<f64> {
+    for entry in list_after(h, offset, "pane_scroll")?.split(',') {
+        let entry = entry.trim().trim_matches('"');
+        let Some((id, rest)) = entry.split_once(':') else {
+            continue;
+        };
+        if id.parse::<u64>().ok() == Some(pane) {
+            return Ok(rest
+                .split_once('@')
+                .map(|(lines, _)| lines)
+                .unwrap_or_default()
+                .parse()?);
+        }
+    }
+    Err("pane scroll report missing".into())
+}
+
+/// Wait for the window to report its state again.
+///
+/// Used after a click that must open nothing: a report printed after the click
+/// means the main loop has handled the press, so a launch it started would
+/// already have been requested before the receipts are compared.
+fn next_report(h: &mut Harness) -> Result<()> {
+    let offset = h.text()?.len();
+    list_after(h, offset, "terminal_selections").map(|_| ())
+}
+
 /// Whether the newest report shows no open context menu anywhere.
 fn no_menu(h: &Harness) -> Result<bool> {
     Ok(list(h, "terminal_menus")?.trim().is_empty())
@@ -387,7 +453,7 @@ fn click_phases(binary: &Path, scratch: &Path, results: &mut Vec<String>) -> Res
     ctrl_click_at(&h, cell(&h, 2, 0)?)?;
     wait_receipts(&mut h, &received, 3)?;
     click_at(&h, cell(&h, 2, 0)?)?;
-    std::thread::sleep(Duration::from_millis(600));
+    next_report(&mut h)?;
     expect(
         &received,
         &[
@@ -406,10 +472,10 @@ fn click_phases(binary: &Path, scratch: &Path, results: &mut Vec<String>) -> Res
     // the terminal, and a later link click still works.
     print(&h, "ordinary text")?;
     ctrl_click_at(&h, cell(&h, 2, 0)?)?;
-    std::thread::sleep(Duration::from_millis(600));
+    next_report(&mut h)?;
     print_link(&h, "custom:synthetic-only", "custom-link")?;
     ctrl_click_at(&h, cell(&h, 2, 0)?)?;
-    std::thread::sleep(Duration::from_millis(600));
+    next_report(&mut h)?;
     expect(
         &received,
         &[
@@ -439,10 +505,11 @@ fn click_phases(binary: &Path, scratch: &Path, results: &mut Vec<String>) -> Res
     let scrolled = scroll_of(&h, 2)?;
     ctrl_click_at(&h, cell(&h, 2, 0)?)?;
     wait_receipts(&mut h, &received, 5)?;
-    if selections(&h)? != selected {
+    let after = h.text()?.len();
+    if selections_after(&mut h, after)? != selected {
         return Err("ctrl+click changed the terminal selection".into());
     }
-    if (scroll_of(&h, 2)? - scrolled).abs() > f64::EPSILON {
+    if (scroll_after(&mut h, after, 2)? - scrolled).abs() > f64::EPSILON {
         return Err("ctrl+click moved the terminal history".into());
     }
     pass(
@@ -459,7 +526,10 @@ fn click_phases(binary: &Path, scratch: &Path, results: &mut Vec<String>) -> Res
     let start = cell(&h, 2, 0)?;
     drag(&h, start, (start.0 + 200, start.1), true)?;
     wait_receipts(&mut h, &received, 6)?;
-    h.wait(15, |this| Ok(selections(this)?.is_empty()))?;
+    let after = h.text()?.len();
+    if !selections_after(&mut h, after)?.is_empty() {
+        return Err("ctrl+drag from a link selected text".into());
+    }
     pass(
         results,
         "ctrl+drag from a link opens it once and does not select",

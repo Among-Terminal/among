@@ -438,10 +438,10 @@ impl Pane {
     ///
     /// Installed once, on the terminal itself: the terminal is created once and
     /// survives every container rebuild, so one controller serves every layout.
-    /// The capture phase is required rather than stylistic — the library's own
-    /// click gesture runs in the bubble phase and claims a primary press for
-    /// selection or for the child, so a later capture handler would never see
-    /// the press that is supposed to open a link.
+    /// It runs in the capture phase because the library's own click gesture
+    /// runs in the bubble phase and claims a primary press for selection or for
+    /// the child; a bubble-phase link handler would never see the press that is
+    /// supposed to open a link.
     ///
     /// The sequence is claimed only when it will actually open something. Every
     /// other press is denied so the library handles it exactly as before: plain

@@ -55,8 +55,7 @@ impl Link {
 /// Turn on explicit hyperlinks and the plain-URL matcher for `terminal`.
 ///
 /// Called once per terminal, when its pane is built. A matcher that cannot be
-/// compiled is logged and leaves explicit hyperlinks working, which is what
-/// this did while the setup lived in the context menu.
+/// compiled is logged, and explicit hyperlinks keep working without it.
 pub fn install(terminal: &vte::Terminal) {
     terminal.set_allow_hyperlink(true);
     // VTE requires PCRE2_MULTILINE for terminal match expressions.
@@ -94,6 +93,9 @@ fn from_plain_match(value: &str) -> Option<Link> {
 /// Kept free of widgets so the whole truth table can be tested: only a single
 /// primary press with Ctrl held, over a target that may actually launch,
 /// belongs to the link gesture. Everything else has to reach the terminal.
+/// The live gesture is already limited to the primary button; the button is
+/// checked here as well so the rule holds for any caller, not only for one
+/// controller's configuration.
 pub fn activates(ctrl: bool, button: u32, presses: i32, link: Option<&Link>) -> bool {
     ctrl && button == gtk::gdk::BUTTON_PRIMARY
         && presses == 1

@@ -2892,8 +2892,10 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
         on_open_link: Some(Rc::new({
             let ctx = ctx.handle();
             move |id, uri| {
-                // A press can arrive while its pane is closing. Launching then
-                // would parent the request to a window that is going away.
+                // The same liveness rule as the context menu: only a live,
+                // visible pane in a ready session that is not closing may
+                // launch. A press can still arrive while its pane is closing
+                // or after its process exited.
                 if menu_target_valid(&ctx, id) {
                     open_uri(&ctx.window, &uri);
                 }

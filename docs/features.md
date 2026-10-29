@@ -128,8 +128,8 @@ opens its target rather than its displayed text, and a plain absolute **http**,
 **https** or **mailto** URL opens as written, without trailing sentence
 punctuation. Only those three schemes launch; another explicit scheme opens
 nothing and keeps the click, and a target that cannot be parsed is refused the
-same way. Plain clicks, other modifiers and drags still select, scroll and reach
-the program as before, and opening a link leaves the selection and scrollback
+same way. Clicks and drags without Ctrl still select, scroll and reach the program as before, and
+opening a link leaves the selection and scrollback
 unchanged. A program that enabled mouse reporting receives every click except a
 Ctrl+click on an openable link. A refused launch is reported on stderr and the
 terminal stays usable.
