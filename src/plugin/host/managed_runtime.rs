@@ -1799,8 +1799,8 @@ mod tests {
         use crate::{slots::Scope, tree::PaneId};
         // a header can describe position or count, so moving rows must drop it
         // even when the active identity survives; pane-ID content is unaffected.
-        let mut fixture = fixture("managed-echo", &[], None);
-        fixture.wait(|host| host.plugins[0].state.is_healthy());
+        let mut fixture = fixture("managed-echo", &[], Some(&["status", "settings"]));
+        fixture.wait(|host| host.configuration(KEY) == Configuration::Applied);
         let pid = fixture.host.plugins[0].io.as_ref().unwrap().process.pid();
         let mut store = SlotStore::new();
         for scope in [Scope::WorkspaceHeader, Scope::PaneHeader(PaneId(1))] {
