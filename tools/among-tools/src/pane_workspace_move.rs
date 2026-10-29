@@ -241,6 +241,9 @@ fn set_directory(h: &mut Harness, pane: u64, directory: &Path) -> Result<()> {
 }
 
 fn write_file(h: &mut Harness, command: &str, path: &Path) -> Result<String> {
+    // A restored session checks the same directory again under the same name;
+    // an existing file would make the wait pass before the new command ran.
+    let _ = fs::remove_file(path);
     h.command(&format!("{} > '{}'", command, path.display()))?;
     h.wait(15, |_| Ok(path.exists()))?;
     Ok(fs::read_to_string(path)?.trim().to_string())
