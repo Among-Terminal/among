@@ -15,7 +15,7 @@ const MODULE: &str = "usr/lib/gstreamer-1.0/libgstpulseaudio.so";
 fn digest(path: &Path) -> Result<String> {
     let file =
         File::open(path).map_err(|error| format!("open hash input {}: {error}", path.display()))?;
-    Ok(storage::sha256(file)?)
+    storage::sha256(file)
 }
 fn copy(source: &Path, destination: &Path) -> Result<()> {
     if destination.exists() {
