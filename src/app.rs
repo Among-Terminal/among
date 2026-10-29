@@ -5943,6 +5943,10 @@ mod tests {
             .into_iter()
             .find_map(|widget| widget.downcast::<adw::PreferencesWindow>().ok())
             .unwrap();
+        // Preferences opens on General; shortcut rows on the hidden Keyboard
+        // page take focus but never receive the typed key sequence.
+        prefs.set_visible_page_name("keyboard");
+        pump();
         focus(&prefs);
         for (action, sequence) in [
             (Action::SplitPane, "F9"),
