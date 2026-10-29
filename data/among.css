@@ -124,6 +124,15 @@
   background: alpha(currentColor, 0.06);
 }
 
+/* inset shadows leave the row allocation unchanged while a drop is previewed. */
+.workspace-sidebar > .workspace-entry.workspace-drop-before {
+  box-shadow: inset 0 3px @accent_bg_color;
+}
+
+.workspace-sidebar > .workspace-entry.workspace-drop-after {
+  box-shadow: inset 0 -3px @accent_bg_color;
+}
+
 .workspace-row {
   padding: 2px 0;
 }

@@ -12,6 +12,20 @@ If saving fails, the edit remains session-only and Preferences shows a warning.
 Bindings live in a single registry (`src/shortcuts.rs`), which is what makes them
 inspectable and changeable without touching the code that uses them.
 
+## Workspace order
+
+Drag a workspace entry onto the upper or lower half of another entry to insert it
+before or after that workspace. The insertion edge is highlighted before the drop.
+This works in both the expanded sidebar and the collapsed strip; holding the drag
+near a scrollable sidebar edge reveals entries beyond the viewport. Escape or a
+drop outside the sidebar leaves the order unchanged.
+
+Alt+1 through Alt+9 select the current first nine positions, not the original
+creation order. Next/previous workspace and custom bindings for positional actions
+follow that same order immediately. There is no Alt+0 default for position ten.
+Moving an entry does not activate it or restart its terminals. Single-click still
+switches workspaces, and double-click still edits an expanded entry's name.
+
 ## Defaults
 
 | Action | Binding | Notes |

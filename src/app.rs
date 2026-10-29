@@ -95,6 +95,67 @@ pub struct AppState {
     session_restore_warnings: Vec<String>,
     session_closing: bool,
     layout_generation: u64,
+    workspace_order_revision: u64,
+    workspace_order: Vec<u64>,
+    workspace_drag: Option<WorkspaceDrag>,
+}
+
+#[derive(Clone, Debug, glib::Boxed)]
+#[boxed_type(name = "AmongWorkspaceDrag")]
+struct WorkspaceDrag {
+    token: String,
+    revision: u64,
+    source: usize,
+    reference: u64,
+    active: u64,
+    collapsed: bool,
+    target: Option<usize>,
+    pointer: Option<(f64, f64)>,
+}
+
+impl WorkspaceDrag {
+    fn accepts(&self, payload: &Self) -> bool {
+        self.token == payload.token
+            && self.reference == payload.reference
+            && self.revision == payload.revision
+    }
+
+    fn new(set: &WorkspaceSet, revision: u64, source: usize, collapsed: bool) -> Option<Self> {
+        Some(Self {
+            token: glib::uuid_string_random().to_string(),
+            revision,
+            source,
+            reference: set.workspaces().get(source)?.reference,
+            active: set.active().reference,
+            collapsed,
+            target: None,
+            pointer: None,
+        })
+    }
+
+    fn valid(&self, set: &WorkspaceSet, revision: u64, collapsed: bool) -> bool {
+        self.revision == revision
+            && self.collapsed == collapsed
+            && self.active == set.active().reference
+            && set
+                .workspaces()
+                .get(self.source)
+                .is_some_and(|workspace| workspace.reference == self.reference)
+    }
+}
+
+fn workspace_target_is_current(
+    set: &WorkspaceSet,
+    index: usize,
+    reference: u64,
+    opened: u64,
+    current: u64,
+) -> bool {
+    opened == current
+        && set
+            .workspaces()
+            .get(index)
+            .is_some_and(|workspace| workspace.reference == reference)
 }
 
 impl AppState {
@@ -132,6 +193,9 @@ impl AppState {
             session_restore_warnings: Vec::new(),
             session_closing: false,
             layout_generation: 0,
+            workspace_order_revision: 0,
+            workspace_order: vec![1],
+            workspace_drag: None,
         }
     }
 
@@ -346,6 +410,11 @@ fn update_plugin_context(state: &mut AppState) {
         .iter()
         .map(|workspace| workspace.reference)
         .collect();
+    if state.workspace_order != workspaces {
+        state.workspace_order_revision = state.workspace_order_revision.wrapping_add(1);
+        state.workspace_order.clone_from(&workspaces);
+        state.workspace_drag = None;
+    }
     if let Some(bells) = &state.bells {
         bells.set_workspaces(
             state
@@ -387,6 +456,8 @@ struct Window {
     window: adw::ApplicationWindow,
     split_view: adw::OverlaySplitView,
     workspace_list: gtk::ListBox,
+    sidebar_scroller: gtk::ScrolledWindow,
+    workspace_drag_source: Rc<RefCell<Option<gtk::DragSource>>>,
     pane_area: gtk::Box,
     /// Kept so the window's chrome can be inspected.
     header_bar: adw::HeaderBar,
@@ -721,6 +792,8 @@ fn build_with_writer(
         window,
         split_view,
         workspace_list,
+        sidebar_scroller,
+        workspace_drag_source: Rc::new(RefCell::new(None)),
         pane_area,
         header_bar,
         workspace_header,
@@ -733,6 +806,27 @@ fn build_with_writer(
         collection_cursor: Rc::new(Cell::new(0)),
         notification_renderer: Rc::new(RefCell::new(notification_ui::Renderer::default())),
     };
+
+    install_workspace_drop_target(&ctx);
+    let drag_keys = gtk::EventControllerKey::new();
+    drag_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    drag_keys.connect_key_pressed({
+        let target = ctx.handle();
+        move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape && target.state.borrow().workspace_drag.is_some() {
+                target.state.borrow_mut().workspace_drag = None;
+                let source = target.workspace_drag_source.borrow_mut().take();
+                if let Some(source) = source {
+                    source.drag_cancel();
+                }
+                refresh_after_workspace_drag(&target);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        }
+    });
+    ctx.window.add_controller(drag_keys);
 
     let removal_handler = Rc::new(RefCell::new(None));
     let handler = app.connect_window_removed({
@@ -838,6 +932,9 @@ fn build_with_writer(
 
     let for_activate = ctx.handle();
     ctx.workspace_list.connect_row_activated(move |_, row| {
+        if for_activate.state.borrow().workspace_drag.is_some() {
+            return;
+        }
         let index = row.index();
         if index < 0 {
             return;
@@ -1130,10 +1227,29 @@ fn selfcheck(ctx: &Window, label: &str) {
     let mut rows: Vec<String> = Vec::new();
     let mut row_states: Vec<String> = Vec::new();
     let mut name_rects: Vec<String> = Vec::new();
+    let mut hit_rows = Vec::new();
+    let mut drop_indicators = Vec::new();
     let mut row = ctx.workspace_list.first_child();
     let mut row_index = 0usize;
     while let Some(node) = row {
         if let Some(list_row) = node.downcast_ref::<gtk::ListBoxRow>() {
+            if let Some(rect) = list_row.compute_bounds(&ctx.window) {
+                hit_rows.push(format!(
+                    "{row_index}:{}+{}+{}x{}",
+                    (f64::from(rect.x()) + surface_x) as i32,
+                    (f64::from(rect.y()) + surface_y) as i32,
+                    rect.width() as i32,
+                    rect.height() as i32
+                ));
+            }
+            for (class, edge) in [
+                ("workspace-drop-before", "before"),
+                ("workspace-drop-after", "after"),
+            ] {
+                if list_row.has_css_class(class) {
+                    drop_indicators.push(format!("{row_index}:{edge}"));
+                }
+            }
             if let Some(rect) = list_row.compute_bounds(&ctx.workspace_list) {
                 rows.push(format!(
                     "{row_index}:{}+{}+{}x{}",
@@ -1194,6 +1310,35 @@ fn selfcheck(ctx: &Window, label: &str) {
         .iter()
         .map(|w| w.name.clone())
         .collect();
+    let viewport = ctx
+        .sidebar_scroller
+        .compute_bounds(&ctx.window)
+        .map(|rect| {
+            format!(
+                "viewport:{}+{}+{}x{}",
+                (f64::from(rect.x()) + surface_x) as i32,
+                (f64::from(rect.y()) + surface_y) as i32,
+                rect.width() as i32,
+                rect.height() as i32
+            )
+        })
+        .unwrap_or_default();
+    let native_drag = ctx
+        .workspace_drag_source
+        .borrow()
+        .as_ref()
+        .and_then(|source| source.drag());
+    eprintln!(
+        "among[{label}]: workspace_native_drag={} workspace_native_action={:?}",
+        native_drag.is_some(),
+        native_drag.as_ref().map(|drag| drag.selected_action())
+    );
+    eprintln!("among[{label}]: workspace_order=[{}] active_reference={} workspace_revision={} workspace_drag={} workspace_target={} workspace_indicators=[{}] workspace_hit_rows=[{}] workspace_viewport=[{}] workspace_scroll={}",
+        state.workspaces.workspaces().iter().map(|workspace| workspace.reference.to_string()).collect::<Vec<_>>().join(","),
+        workspace.reference, state.workspace_order_revision,
+        state.workspace_drag.as_ref().map(|drag| drag.reference.to_string()).unwrap_or_else(|| "none".into()),
+        state.workspace_drag.as_ref().and_then(|drag| drag.target).map(|gap| gap.to_string()).unwrap_or_else(|| "none".into()),
+        drop_indicators.join(","), hit_rows.join(" "), viewport, ctx.sidebar_scroller.vadjustment().value());
 
     // The pane area's position in window coordinates. A drag test needs pixel
     // coordinates, and deriving them from the layout avoids guessing at where
@@ -1862,8 +2007,33 @@ fn sidebar_shape(state: &AppState) -> String {
 /// cancelled or refused rename leaves every value the summary reads exactly as it
 /// was.
 fn rebuild_sidebar(ctx: &Window, force: bool) {
+    let cancelled = {
+        let mut state = ctx.state.borrow_mut();
+        let invalid = state.workspace_drag.as_ref().is_some_and(|drag| {
+            !drag.valid(
+                &state.workspaces,
+                state.workspace_order_revision,
+                state.sidebar_collapsed,
+            ) || state.session_closing
+                || state.exiting
+        });
+        if invalid {
+            state.workspace_drag = None;
+        }
+        invalid
+    };
+    let force = force || cancelled;
+    if ctx.state.borrow().workspace_drag.is_none() {
+        let source = ctx.workspace_drag_source.borrow_mut().take();
+        if let Some(source) = source {
+            source.drag_cancel();
+        }
+    }
     {
         let state = ctx.state.borrow();
+        if state.workspace_drag.is_some() {
+            return;
+        }
         // An in-progress rename owns the sidebar's widgets until it finishes.
         if state.renaming.is_some() {
             return;
@@ -1876,10 +2046,10 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
     while let Some(child) = ctx.workspace_list.first_child() {
         ctx.workspace_list.remove(&child);
     }
-
     // Everything the rows need is collected before any widget is built, so the
     // state is not borrowed while closures that borrow it are created.
     struct RowPlan {
+        reference: u64,
         name: String,
         colour: usize,
         panes: usize,
@@ -1893,6 +2063,7 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
             .iter()
             .enumerate()
             .map(|(index, workspace)| RowPlan {
+                reference: workspace.reference,
                 name: workspace.name.clone(),
                 colour: workspace.colour,
                 panes: workspace.panes().len(),
@@ -1912,6 +2083,7 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
     };
 
     for (index, row_plan) in plan.iter().enumerate() {
+        let reference = row_plan.reference;
         let row = gtk::ListBoxRow::new();
         row.add_css_class("workspace-entry");
         if index == active {
@@ -1989,10 +2161,13 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
                     let (name, colour) = {
                         let state = target.state.borrow();
                         match state.workspaces.workspaces().get(index) {
-                            Some(workspace) => (workspace.name.clone(), workspace.colour),
-                            None => return,
+                            Some(workspace) if workspace.reference == reference => {
+                                (workspace.name.clone(), workspace.colour)
+                            }
+                            _ => return,
                         }
                     };
+                    let revision = target.state.borrow().workspace_order_revision;
                     target.state.borrow_mut().renaming = Some(index);
                     // The field is opened once the click sequence has finished:
                     // ListBox takes focus back while the sequence is still live,
@@ -2000,6 +2175,21 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
                     let target = target.clone();
                     let content = content.clone();
                     glib::idle_add_local_once(move || {
+                        let valid = {
+                            let state = target.state.borrow();
+                            workspace_target_is_current(
+                                &state.workspaces,
+                                index,
+                                reference,
+                                revision,
+                                state.workspace_order_revision,
+                            )
+                        };
+                        if !valid {
+                            target.state.borrow_mut().renaming = None;
+                            rebuild_sidebar(&target, true);
+                            return;
+                        }
                         if let Err(problem) = Rename::begin(&target, index, &content, &name, colour)
                         {
                             eprintln!("among: workspace {index} cannot be renamed: {problem}");
@@ -2026,6 +2216,7 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
         }
 
         row.set_child(Some(&content));
+        install_workspace_drag_source(ctx, &row, index, reference);
         ctx.workspace_list.append(&row);
     }
 
@@ -2097,6 +2288,284 @@ fn present_attention(ctx: &Window) {
             aggregate.pulsing && motion,
         );
     }
+}
+
+fn clear_workspace_drop_indicator(ctx: &Window) {
+    let mut child = ctx.workspace_list.first_child();
+    while let Some(row) = child {
+        row.remove_css_class("workspace-drop-before");
+        row.remove_css_class("workspace-drop-after");
+        child = row.next_sibling();
+    }
+}
+
+fn refresh_after_workspace_drag(ctx: &Window) {
+    ctx.workspace_drag_source.borrow_mut().take();
+    clear_workspace_drop_indicator(ctx);
+    let target = ctx.handle();
+    // GTK still owns the source during drag-end/drop. removing it in the signal
+    // callback would invalidate the native drag while GTK is unwinding it.
+    glib::idle_add_local_once(move || {
+        rebuild_sidebar(&target, true);
+        apply_focus(&target);
+    });
+}
+
+fn finish_workspace_drag(ctx: &Window, token: &str) {
+    let matches = ctx
+        .state
+        .borrow()
+        .workspace_drag
+        .as_ref()
+        .is_some_and(|drag| drag.token == token);
+    if matches {
+        ctx.state.borrow_mut().workspace_drag = None;
+        refresh_after_workspace_drag(ctx);
+    }
+}
+
+fn remap_summary_clocks(
+    clocks: &mut std::collections::BTreeMap<(usize, String), u64>,
+    movement: crate::workspace::WorkspaceMove,
+) {
+    *clocks = std::mem::take(clocks)
+        .into_keys()
+        .map(|(index, source)| ((movement.remap(index), source), 0))
+        .collect();
+}
+
+fn preview_workspace_drop(ctx: &Window, x: f64, y: f64) -> bool {
+    clear_workspace_drop_indicator(ctx);
+    let valid = {
+        let state = ctx.state.borrow();
+        state.workspace_drag.as_ref().is_some_and(|drag| {
+            drag.valid(
+                &state.workspaces,
+                state.workspace_order_revision,
+                state.sidebar_collapsed,
+            ) && !state.session_closing
+                && !state.exiting
+        })
+    };
+    if !valid {
+        return false;
+    }
+    let Some(point) = ctx.sidebar_scroller.compute_point(
+        &ctx.workspace_list,
+        &gtk::graphene::Point::new(x as f32, y as f32),
+    ) else {
+        return false;
+    };
+    let count = ctx.state.borrow().workspaces.len();
+    let (gap, indicator) = if let Some(row) = ctx.workspace_list.row_at_y(point.y() as i32) {
+        let index = row.index().max(0) as usize;
+        let Some(bounds) = row.compute_bounds(&ctx.workspace_list) else {
+            return false;
+        };
+        let after = point.y() >= bounds.y() + bounds.height() / 2.0;
+        (index + usize::from(after), Some((row, after)))
+    } else if let Some(row) = ctx
+        .workspace_list
+        .row_at_index(count.saturating_sub(1) as i32)
+    {
+        (count, Some((row, true)))
+    } else {
+        return false;
+    };
+    if let Some(drag) = ctx.state.borrow_mut().workspace_drag.as_mut() {
+        drag.target = Some(gap);
+        drag.pointer = Some((x, y));
+    }
+    if let Some((row, after)) = indicator {
+        row.add_css_class(if after {
+            "workspace-drop-after"
+        } else {
+            "workspace-drop-before"
+        });
+    }
+    true
+}
+
+fn install_workspace_drag_source(
+    ctx: &Window,
+    row: &gtk::ListBoxRow,
+    index: usize,
+    reference: u64,
+) {
+    let source = gtk::DragSource::new();
+    let transaction = Rc::new(RefCell::new(None::<String>));
+    source.set_actions(gtk::gdk::DragAction::MOVE);
+    source.connect_prepare({
+        let target = ctx.handle();
+        let transaction = transaction.clone();
+        move |source, _, _| {
+            let mut state = target.state.borrow_mut();
+            if !state.session_ready
+                || state.session_closing
+                || state.exiting
+                || state.renaming.is_some()
+                || !state
+                    .workspaces
+                    .workspaces()
+                    .get(index)
+                    .is_some_and(|w| w.reference == reference)
+            {
+                return None;
+            }
+            let drag = WorkspaceDrag::new(
+                &state.workspaces,
+                state.workspace_order_revision,
+                index,
+                state.sidebar_collapsed,
+            )?;
+            *transaction.borrow_mut() = Some(drag.token.clone());
+            let value = drag.to_value();
+            state.workspace_drag = Some(drag);
+            *target.workspace_drag_source.borrow_mut() = Some(source.clone());
+            Some(gtk::gdk::ContentProvider::for_value(&value))
+        }
+    });
+    source.connect_drag_begin({
+        let target = ctx.handle();
+        move |_, _| {
+            mark_active_row(&target);
+            let Some(token) = target
+                .state
+                .borrow()
+                .workspace_drag
+                .as_ref()
+                .map(|drag| drag.token.clone())
+            else {
+                return;
+            };
+            let target = target.clone();
+            glib::timeout_add_local(Duration::from_millis(35), move || {
+                let pointer = {
+                    let state = target.state.borrow();
+                    let Some(drag) = state
+                        .workspace_drag
+                        .as_ref()
+                        .filter(|drag| drag.token == token)
+                    else {
+                        return glib::ControlFlow::Break;
+                    };
+                    drag.pointer
+                };
+                if let Some((x, y)) = pointer {
+                    let height = f64::from(target.sidebar_scroller.height());
+                    let delta = if y < 28.0 {
+                        -12.0
+                    } else if y > height - 28.0 {
+                        12.0
+                    } else {
+                        0.0
+                    };
+                    if delta != 0.0 {
+                        let adjustment = target.sidebar_scroller.vadjustment();
+                        adjustment.set_value((adjustment.value() + delta).clamp(
+                            adjustment.lower(),
+                            (adjustment.upper() - adjustment.page_size()).max(adjustment.lower()),
+                        ));
+                        preview_workspace_drop(&target, x, y);
+                    }
+                }
+                glib::ControlFlow::Continue
+            });
+        }
+    });
+    source.connect_drag_end({
+        let target = ctx.handle();
+        let transaction = transaction.clone();
+        move |_, _, _| {
+            if let Some(token) = transaction.borrow_mut().take() {
+                finish_workspace_drag(&target, &token);
+            }
+        }
+    });
+    source.connect_drag_cancel({
+        let target = ctx.handle();
+        move |_, _, _| {
+            // GTK may clear content before reporting an unsuccessful drop.
+            if let Some(token) = transaction.borrow_mut().take() {
+                finish_workspace_drag(&target, &token);
+            }
+            false
+        }
+    });
+    row.add_controller(source);
+}
+
+fn install_workspace_drop_target(ctx: &Window) {
+    let drop = gtk::DropTarget::new(WorkspaceDrag::static_type(), gtk::gdk::DragAction::MOVE);
+    drop.set_preload(true);
+    drop.connect_enter({
+        let target = ctx.handle();
+        move |_, x, y| {
+            if preview_workspace_drop(&target, x, y) {
+                gtk::gdk::DragAction::MOVE
+            } else {
+                gtk::gdk::DragAction::empty()
+            }
+        }
+    });
+    drop.connect_motion({
+        let target = ctx.handle();
+        move |_, x, y| {
+            if preview_workspace_drop(&target, x, y) {
+                gtk::gdk::DragAction::MOVE
+            } else {
+                gtk::gdk::DragAction::empty()
+            }
+        }
+    });
+    drop.connect_leave({
+        let target = ctx.handle();
+        move |_| {
+            clear_workspace_drop_indicator(&target);
+            if let Some(drag) = target.state.borrow_mut().workspace_drag.as_mut() {
+                drag.target = None;
+                drag.pointer = None;
+            }
+        }
+    });
+    drop.connect_drop({
+        let target = ctx.handle();
+        move |_, value, x, y| {
+            let Ok(payload) = value.get::<WorkspaceDrag>() else {
+                return false;
+            };
+            if !preview_workspace_drop(&target, x, y) {
+                return false;
+            }
+            let movement = {
+                let mut state = target.state.borrow_mut();
+                let Some(drag) = state
+                    .workspace_drag
+                    .as_ref()
+                    .filter(|drag| drag.accepts(&payload))
+                else {
+                    return false;
+                };
+                let Some(gap) = drag.target else {
+                    return false;
+                };
+                let source = drag.source;
+                state.workspaces.reorder(source, gap)
+            };
+            if let Some(movement) = movement {
+                let mut clocks = target.summary_requested.borrow_mut();
+                remap_summary_clocks(&mut clocks, movement);
+                std::mem::drop(clocks);
+                update_plugin_context(&mut target.state.borrow_mut());
+                refresh_slots(&target);
+                refresh_after_workspace_drag(&target);
+            } else {
+                finish_workspace_drag(&target, &payload.token);
+            }
+            true
+        }
+    });
+    ctx.sidebar_scroller.add_controller(drop);
 }
 
 /// Show a workspace that is already in the model.
@@ -2222,6 +2691,8 @@ fn name_label(name: &str, colour: usize) -> gtk::Label {
 struct Rename {
     /// The workspace whose name is being edited.
     index: usize,
+    reference: u64,
+    revision: u64,
     /// The name the field was opened with.
     ///
     /// A workspace that no longer carries it is not this rename's business: closing
@@ -2253,6 +2724,14 @@ impl Rename {
         name: &str,
         colour: usize,
     ) -> Result<(), String> {
+        let reference = ctx
+            .state
+            .borrow()
+            .workspaces
+            .workspaces()
+            .get(index)
+            .map(|workspace| workspace.reference)
+            .ok_or_else(|| "workspace no longer exists".to_string())?;
         // Which widget to replace is looked up now, not held from the row's build: a
         // rename that has already ended puts a fresh label back, and this click is
         // meant to edit whatever the row is showing at this moment.
@@ -2268,6 +2747,8 @@ impl Rename {
 
         let rename = std::rc::Rc::new(Rename {
             index,
+            reference,
+            revision: ctx.state.borrow().workspace_order_revision,
             opened: name.to_string(),
             colour,
             content: content.clone(),
@@ -2323,8 +2804,14 @@ impl Rename {
         }
         let typed = self.entry.text().to_string();
         let mut state = ctx.state.borrow_mut();
-        let known = state.workspaces.workspaces().get(self.index).is_some();
-        if confirm {
+        let known = workspace_target_is_current(
+            &state.workspaces,
+            self.index,
+            self.reference,
+            self.revision,
+            state.workspace_order_revision,
+        );
+        if confirm && known {
             state.workspaces.rename_at(self.index, &self.opened, &typed);
         }
         let name = state
@@ -2738,7 +3225,7 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
             // drift from it.
             let state = ctx.state.clone();
             let generation = state.borrow().layout_generation;
-            let workspace_index = state.borrow().workspaces.active_index();
+            let workspace_reference = state.borrow().workspaces.active().reference;
             paned.connect_notify_local(Some("position"), move |paned, _| {
                 if !initialized.get() {
                     return;
@@ -2759,7 +3246,7 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
                 let new_ratio = (paned.position().max(0) as f64) / usable as f64;
                 let mut borrowed = state.borrow_mut();
                 if borrowed.layout_generation != generation
-                    || borrowed.workspaces.active_index() != workspace_index
+                    || borrowed.workspaces.active().reference != workspace_reference
                 {
                     return;
                 }
@@ -3987,6 +4474,7 @@ fn new_workspace(ctx: &Window) {
             .workspaces
             .push_active(Workspace::new(name, id, colour));
     }
+    ctx.summary_requested.borrow_mut().clear();
     rebuild(ctx);
 }
 
@@ -4089,6 +4577,7 @@ fn close_pane(ctx: &Window, pane: PaneId) {
             None,
         );
         if ctx.state.borrow_mut().workspaces.remove(owner).is_some() {
+            ctx.summary_requested.borrow_mut().clear();
             prune_panes(ctx);
             rebuild(ctx);
         }
@@ -4296,6 +4785,7 @@ fn start_session(ctx: &Window, snapshot: Option<&crate::session::Snapshot>) {
                 let mut state = ctx.state.borrow_mut();
                 state.workspaces = workspaces;
                 state.allocator = allocator;
+                ctx.summary_requested.borrow_mut().clear();
             }
             Err(error) => session_warning(ctx, &error),
         }
@@ -4419,6 +4909,9 @@ fn install_session_checkpoints(ctx: &Window) {
                 {
                     if let Some(writer) = &state.session_writer {
                         writer.submit(snapshot.clone(), false);
+                        if std::env::var_os("AMONG_SELFCHECK").is_some() {
+                            eprintln!("among[session-write]: checkpoint_submitted=true");
+                        }
                         state.session_submitted = Some(snapshot);
                     }
                 }
@@ -4455,6 +4948,9 @@ fn install_session_checkpoints(ctx: &Window) {
                     state.settings_status.splice(0, 1, &[&status]);
                     drop(state);
                     if completion.final_write {
+                        if std::env::var_os("AMONG_SELFCHECK").is_some() {
+                            eprintln!("among[session-write]: final_saved=true");
+                        }
                         finish_quit(&poll);
                     }
                 }
@@ -4632,6 +5128,8 @@ impl Window {
         Window {
             state: self.state.clone(),
             workspace_list: self.workspace_list.clone(),
+            sidebar_scroller: self.sidebar_scroller.clone(),
+            workspace_drag_source: self.workspace_drag_source.clone(),
             pane_area: self.pane_area.clone(),
             header_bar: self.header_bar.clone(),
             workspace_header: self.workspace_header.clone(),
@@ -4857,11 +5355,9 @@ fn request_plugin_status(ctx: &Window) {
                 let scope_name = crate::plugin::protocol::summary_scope(index);
                 for name in &healthy {
                     let key = (index, name.clone());
-                    let due = ctx
-                        .summary_requested
-                        .borrow()
-                        .get(&key)
-                        .is_none_or(|last| now.saturating_sub(*last) >= SUMMARY_REFRESH_MS);
+                    let due = ctx.summary_requested.borrow().get(&key).is_none_or(|last| {
+                        *last == 0 || now.saturating_sub(*last) >= SUMMARY_REFRESH_MS
+                    });
                     if due
                         && state
                             .plugins
@@ -4922,6 +5418,51 @@ mod notification_ui_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workspace_reorder_remaps_summary_clocks_and_makes_every_source_due() {
+        use super::*;
+        let mut set = WorkspaceSet::new(Workspace::new("one".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("two".into(), PaneId(2), 1));
+        let mut clocks = std::collections::BTreeMap::from([
+            ((0, "alpha".into()), 100),
+            ((1, "beta".into()), 200),
+        ]);
+        let movement = set.reorder(0, 2).unwrap();
+        remap_summary_clocks(&mut clocks, movement);
+        assert_eq!(
+            clocks,
+            std::collections::BTreeMap::from([((1, "alpha".into()), 0), ((0, "beta".into()), 0),])
+        );
+    }
+
+    #[test]
+    fn workspace_drag_and_deferred_rename_reject_changed_order_membership_and_identity() {
+        use super::*;
+        let mut set = WorkspaceSet::new(Workspace::new("same".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("same".into(), PaneId(2), 0));
+        let drag = WorkspaceDrag::new(&set, 7, 0, false).unwrap();
+        assert!(drag.accepts(&drag));
+        let mut foreign = drag.clone();
+        foreign.token = "another window".into();
+        assert!(!drag.accepts(&foreign));
+        assert!(drag.valid(&set, 7, false));
+        assert!(!drag.valid(&set, 7, true));
+        assert!(!drag.valid(&set, 8, false));
+        assert!(workspace_target_is_current(&set, 0, 1, 7, 7));
+        assert!(!workspace_target_is_current(&set, 0, 1, 7, 8));
+        set.reorder(0, 2).unwrap();
+        assert!(!drag.valid(&set, 7, false));
+        assert!(!workspace_target_is_current(&set, 0, 1, 7, 7));
+        let drag = WorkspaceDrag::new(&set, 8, 0, false).unwrap();
+        set.push_active(Workspace::new("same".into(), PaneId(3), 0));
+        assert!(!drag.valid(&set, 9, false));
+        assert!(!workspace_target_is_current(&set, 0, 2, 8, 9));
+        set.remove(0).unwrap();
+        assert!(!workspace_target_is_current(&set, 0, 2, 9, 10));
+        let restored = WorkspaceSet::new(Workspace::new("same".into(), PaneId(2), 0));
+        assert!(!workspace_target_is_current(&restored, 0, 2, 9, 10));
+    }
+
     #[test]
     #[ignore = "requires an isolated graphical session and real pointer/keyboard input"]
     fn expanded_pane_restore_control_is_target_safe_and_keyboard_operable() {

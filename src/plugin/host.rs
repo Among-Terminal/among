@@ -104,7 +104,7 @@ struct PluginEntry {
     /// Requests sent and not yet answered, for timeout accounting.
     inflight: HashMap<u64, Instant>,
     /// The scope each outstanding request asked about.
-    scopes: HashMap<u64, String>,
+    scopes: HashMap<u64, StatusRequest>,
     next_request_id: u64,
     /// The refresh policy the plugin last declared.
     refresh: Refresh,
@@ -139,6 +139,12 @@ pub struct PluginHost {
     world: managed::World,
     notifications: Option<Rc<std::cell::RefCell<among::plugin_notifications::Backend>>>,
     pending_notification_registrations: BTreeSet<String>,
+    workspace_revision: u64,
+}
+
+struct StatusRequest {
+    scope: String,
+    workspace_revision: u64,
 }
 
 /// One plugin's answer, ready to become slot content.
@@ -151,6 +157,7 @@ pub struct PluginResult {
     pub fragments: Vec<IncomingFragment>,
     /// `None` means the plugin declared event-driven refresh.
     pub refresh: Refresh,
+    workspace_revision: u64,
 }
 
 fn stop_io(plugin: &mut PluginEntry) {
@@ -214,6 +221,7 @@ impl PluginHost {
             },
             notifications: None,
             pending_notification_registrations: Default::default(),
+            workspace_revision: 0,
         };
         host.notifications = notifications.filter(|backend| {
             backend
@@ -240,7 +248,18 @@ impl PluginHost {
 
     /// Take the answers collected since the last poll.
     pub fn drain_results(&mut self) -> Vec<PluginResult> {
+        // replies can already be queued when a reorder commits. filtering only
+        // at receipt would give such an answer authority over its old row index.
         std::mem::take(&mut self.results)
+            .into_iter()
+            .filter(|result| result.workspace_revision == self.workspace_revision)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_pending(&self, name: &str, request_id: u64) -> bool {
+        self.find(name)
+            .is_some_and(|index| self.plugins[index].inflight.contains_key(&request_id))
     }
 
     /// Register plugins from configuration.
@@ -462,6 +481,9 @@ impl PluginHost {
     }
 
     pub fn update_context(&mut self, workspaces: Vec<u64>, legacy: Context) {
+        if self.world.workspaces != workspaces {
+            self.workspace_revision = self.workspace_revision.wrapping_add(1);
+        }
         let previous = self
             .world
             .workspaces
@@ -798,7 +820,7 @@ impl PluginHost {
             || self.plugins[index]
                 .scopes
                 .values()
-                .any(|pending| pending == scope)
+                .any(|pending| pending.scope == scope)
         {
             return None;
         }
@@ -822,9 +844,13 @@ impl PluginHost {
                 self.plugins[index]
                     .inflight
                     .insert(request_id, Instant::now());
-                self.plugins[index]
-                    .scopes
-                    .insert(request_id, scope.to_string());
+                self.plugins[index].scopes.insert(
+                    request_id,
+                    StatusRequest {
+                        scope: scope.to_string(),
+                        workspace_revision: self.workspace_revision,
+                    },
+                );
                 Some(request_id)
             }
             Err(SendError::Full) => None,
@@ -1123,7 +1149,7 @@ impl PluginHost {
                     {
                         return;
                     }
-                    let Some(scope) = self.plugins[index].scopes.remove(&valid.request_id) else {
+                    let Some(request) = self.plugins[index].scopes.remove(&valid.request_id) else {
                         return;
                     };
                     if self.results.len() >= MAX_POLL_FRAMES {
@@ -1137,9 +1163,10 @@ impl PluginHost {
                     }
                     self.results.push(PluginResult {
                         plugin: name,
-                        scope,
+                        scope: request.scope,
                         fragments: valid.fragments,
                         refresh: self.plugins[index].refresh,
+                        workspace_revision: request.workspace_revision,
                     });
                 }
                 Err(rejection) => self.last_rejections.push((name, rejection)),
@@ -1305,6 +1332,97 @@ mod tests {
             command,
             enabled: true,
         }
+    }
+
+    #[test]
+    fn workspace_reorder_refreshes_event_driven_positional_headers_without_restarting() {
+        use crate::{slots::Scope, tree::PaneId};
+        let mut host = PluginHost::new();
+        let mut context = Context {
+            workspace_count: 2,
+            ..Default::default()
+        };
+        host.update_context(vec![1, 2], context.clone());
+        host.register(spec(fake_plugin("workspace-position")));
+        assert!(wait_for(&mut host, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        let pid = host.plugins[0].io.as_ref().unwrap().process.pid();
+        let mut store = SlotStore::new();
+        host.request_status("probe", "workspace_header", &context)
+            .unwrap();
+        assert!(wait_for(&mut host, |host| !host.results.is_empty()));
+        let result = host.drain_results().remove(0);
+        assert_eq!(result.refresh, Refresh::OnEvent);
+        PluginHost::apply_fragments(
+            &mut store,
+            Scope::WorkspaceHeader,
+            "probe",
+            &result.fragments,
+            result.refresh,
+        );
+        PluginHost::apply_fragments(
+            &mut store,
+            Scope::PaneHeader(PaneId(1)),
+            "probe",
+            &result.fragments,
+            result.refresh,
+        );
+        store.mark_collected(Scope::WorkspaceHeader, "probe", 100);
+        assert!(!store.needs_collection(Scope::WorkspaceHeader, "probe", 100));
+        host.reconcile_workspace_content(&mut store, &[2, 1], 1);
+        assert!(store.is_empty(Scope::WorkspaceHeader));
+        assert!(store.needs_collection(Scope::WorkspaceHeader, "probe", 100));
+        assert!(!store.is_empty(Scope::PaneHeader(PaneId(1))));
+        context.active_workspace = 1;
+        host.update_context(vec![2, 1], context.clone());
+        host.request_status("probe", "workspace_header", &context)
+            .unwrap();
+        assert!(wait_for(&mut host, |host| !host.results.is_empty()));
+        let result = host.drain_results().remove(0);
+        assert_eq!(result.fragments[0].text.as_deref(), Some("position-1"));
+        assert_eq!(host.plugins[0].io.as_ref().unwrap().process.pid(), pid);
+        host.shutdown();
+    }
+
+    #[test]
+    fn workspace_reorder_discards_queued_and_late_answers_without_restarting_the_plugin() {
+        let mut host = PluginHost::new();
+        let context = Context {
+            workspace_count: 2,
+            ..Default::default()
+        };
+        host.update_context(vec![1, 2], context.clone());
+        host.register(spec(fake_plugin("delayed")));
+        assert!(wait_for(&mut host, |host| host.plugins[0]
+            .state
+            .is_healthy()));
+        let pid = host.plugins[0].io.as_ref().unwrap().process.pid();
+        host.request_status("probe", "workspace_summary:0", &context)
+            .unwrap();
+        assert!(wait_for(&mut host, |host| !host.results.is_empty()));
+        let swapped = Context {
+            active_workspace: 1,
+            ..context.clone()
+        };
+        host.update_context(vec![2, 1], swapped.clone());
+        assert!(host.drain_results().is_empty());
+        let late = host
+            .request_status("probe", "workspace_summary:0", &swapped)
+            .unwrap();
+        host.update_context(vec![1, 2], context.clone());
+        assert!(wait_for(&mut host, |host| !host.plugins[0]
+            .inflight
+            .contains_key(&late)));
+        assert!(host.drain_results().is_empty());
+        assert!(host.plugins[0].scopes.is_empty());
+        assert_eq!(host.plugins[0].io.as_ref().unwrap().process.pid(), pid);
+        assert!(host.plugins[0].state.is_healthy());
+        host.request_status("probe", "workspace_summary:0", &context)
+            .unwrap();
+        assert!(wait_for(&mut host, |host| !host.results.is_empty()));
+        assert_eq!(host.drain_results()[0].scope, "workspace_summary:0");
+        host.shutdown();
     }
 
     #[test]

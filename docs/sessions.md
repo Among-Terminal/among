@@ -9,6 +9,10 @@ not rewrite preferences, install plugins or modify shell configuration.
 A new application process with a valid snapshot asks **Restore** or **Start new**.
 Restore recreates each terminal as a fresh shell in its saved directory, including
 inactive workspaces, and restores the active workspace and its focused pane.
+The saved sidebar sequence includes manual drag-and-drop ordering. Restore brings
+back that order, with the same workspace active at its new position; Alt+1 through
+Alt+9 then use those restored positions. Ordering is part of the session, not a
+separate preference, and does not bypass the Restore/Start new decision.
 It does not resume old processes, repeat commands, restore scrollback or retain
 temporary pane zoom. The window opens maximized as usual.
 

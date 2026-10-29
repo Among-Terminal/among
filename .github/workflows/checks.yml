@@ -159,6 +159,8 @@ jobs:
             tools/among-tools/target/release/among-tools check-scroll-calibration target/release/among
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-sidebar-rename target/release/among
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-workspace-reorder target/release/among
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example notice-plugin
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-window-controls target/release/among tools/among-tools/target/release/examples/notice-plugin
@@ -192,6 +194,7 @@ jobs:
             "$PWD/tools/among-tools/target/release/among-tools" check-installer-enospc-from-cargo "$root/cargo-tests.jsonl"
       - name: Ignored Rust graphical tests on individual owned displays
         run: |
+          cargo build --locked --example fake-plugin
           cargo test --locked --no-run --manifest-path tools/among-tools/Cargo.toml --message-format=json > "$RUNNER_TEMP/tool-tests.jsonl"
           tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/tool-tests.jsonl"
           cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/test-executables.jsonl"
