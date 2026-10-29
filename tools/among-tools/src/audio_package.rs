@@ -119,7 +119,14 @@ fn clone_tree(source: &Path, destination: &Path) -> Result<()> {
     } else if metadata.file_type().is_symlink() {
         symlink(fs::read_link(source)?, destination)?;
     } else if metadata.is_file() {
-        fs::hard_link(source, destination)?;
+        // An installed Snap's payload is a read-only squashfs mount, so the
+        // fixture copy on the evidence filesystem cannot be a hard link there.
+        match fs::hard_link(source, destination) {
+            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                fs::copy(source, destination)?;
+            }
+            result => result?,
+        }
     } else {
         return Err("unexpected package member type in audio fixture".into());
     }
