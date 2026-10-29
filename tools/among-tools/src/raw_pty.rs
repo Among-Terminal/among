@@ -19,7 +19,7 @@ impl Drop for RawMode {
 }
 
 pub fn run(output: &Path, mode: &str) -> Result<()> {
-    if !matches!(mode, "mouse" | "source" | "paste") {
+    if !matches!(mode, "mouse" | "mouse-link" | "source" | "paste") {
         return Err("unknown raw PTY fixture mode".into());
     }
     let base = output.parent().ok_or("raw PTY output has no parent")?;
@@ -34,7 +34,7 @@ pub fn run(output: &Path, mode: &str) -> Result<()> {
     let name = output.file_name().ok_or("raw PTY output name missing")?;
     if !matches!(
         name.to_str(),
-        Some("source.bin" | "paste.bin" | "mouse.bin")
+        Some("source.bin" | "paste.bin" | "mouse.bin" | "mouse-link.bin")
     ) {
         return Err("raw PTY output is not an approved fixture file".into());
     }
@@ -57,11 +57,19 @@ pub fn run(output: &Path, mode: &str) -> Result<()> {
     }
     let _restore = RawMode(old);
     let mut stdout = std::io::stdout();
-    stdout.write_all(if mode == "mouse" {
-        b"\x1b[?1000h\x1b[?1006h"
-    } else {
-        b"\x1b[?2004h"
-    })?;
+    match mode {
+        // Mouse reporting only: a check compares the bytes the program receives
+        // with the clicks that must not reach it.
+        "mouse" => stdout.write_all(b"\x1b[?1000h\x1b[?1006h")?,
+        // A screen a pointer check can aim at: an openable URL on the first
+        // row, ordinary text on the second, and an explicit hyperlink whose
+        // scheme must not launch on the third. Mouse reporting is enabled last,
+        // so the program is already reporting when the check clicks.
+        "mouse-link" => stdout.write_all(
+            b"\x1b[3J\x1b[2J\x1b[Hhttps://example.test/mouse-pointer\r\nordinary text\r\n\x1b]8;;custom:synthetic-only\x1b\\custom-link\x1b]8;;\x1b\\\r\n\x1b[?1000h\x1b[?1006h",
+        )?,
+        _ => stdout.write_all(b"\x1b[?2004h")?,
+    }
     if mode == "source" {
         stdout.write_all(
             b"\x1b[3J\x1b[2J\x1b[Howned source first line\r\nowned source second line\r\n",

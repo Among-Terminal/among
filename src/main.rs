@@ -7,6 +7,7 @@
 
 mod app;
 mod context_menu;
+mod links;
 mod packaged;
 mod pane;
 mod plugin;
