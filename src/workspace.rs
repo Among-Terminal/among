@@ -451,9 +451,11 @@ impl WorkspaceSet {
             .cwd_of(pane)
             .map(str::to_owned);
         let source_closed = source_panes.len() == 1;
-        // Both results are prepared on copies first, so a refusal on either
-        // side returns before anything is changed and the pane can never end
-        // up in neither workspace or in both.
+        // The destination and a source that keeps other panes are prepared on
+        // copies, so a refusal there returns before anything is changed. A
+        // source that closes is removed from the live set, which the checks
+        // above guarantee cannot be refused because two distinct workspaces
+        // exist.
         let mut target_after = self.workspaces[target_index].clone();
         if !target_after.adopt(pane, moved_cwd, orientation) {
             return None;
