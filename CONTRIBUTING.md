@@ -113,6 +113,10 @@ $tool ci-x11 $tool check-sessions target/release/among
 $tool ci-x11 $tool check-split-directory target/release/among
 $tool ci-x11 $tool check-scroll-calibration target/release/among
 $tool ci-x11 $tool check-sidebar-rename target/release/among
+$tool ci-x11 $tool check-pane-workspace-move target/release/among
+cargo build --release --locked --example check-drag-source
+cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example summary-plugin
+$tool ci-x11 $tool check-pane-drag-guards target/release/among target/release/examples/check-drag-source tools/among-tools/target/release/examples/summary-plugin
 $tool ci-x11 $tool check-window-controls target/release/among tools/among-tools/target/release/examples/notice-plugin
 $tool ci-x11 $tool check-desktop . target/release/among
 ```

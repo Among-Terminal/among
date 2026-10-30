@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::gdk;
+use gtk::glib;
 use gtk::glib::prelude::ToValue;
 use gtk::prelude::*;
 use vte::prelude::*;
@@ -21,9 +22,22 @@ use crate::tree::PaneId;
 // an additional 80-character cut discarded ordinary installed-profile paths.
 const PANE_SLOT_MAX_CHARS: usize = crate::plugin::protocol::MAX_TEXT_CHARS;
 
+/// The payload of a pane-header drag.
+///
+/// A dedicated boxed type keeps a pane drag structurally distinct from
+/// workspace reordering, terminal text and file drops. Without it an arbitrary
+/// `u64` could be accepted as a pane id by any drop target that happens to
+/// listen for numbers.
+#[derive(Clone, Debug, glib::Boxed)]
+#[boxed_type(name = "AmongPaneDrag")]
+pub struct PaneDrag {
+    pub pane: u64,
+}
+
 type CwdCallback = Box<dyn Fn(PaneId, Option<String>)>;
 type FocusCallback = Rc<dyn Fn(PaneId)>;
 type DropCallback = Rc<dyn Fn(PaneId, PaneId, crate::tree::DropSide)>;
+type DragPrepareCallback = Rc<dyn Fn(PaneId) -> bool>;
 
 /// Callbacks the host uses to observe a pane's terminal.
 pub struct PaneSignals {
@@ -32,6 +46,17 @@ pub struct PaneSignals {
     pub on_title: Option<Box<dyn Fn(PaneId, String)>>,
     pub on_exit: Option<Box<dyn Fn(PaneId, i32)>>,
     pub on_cwd: Option<CwdCallback>,
+    /// Whether a pane drag may start at all.
+    ///
+    /// The gesture is refused before GTK creates its native drag, so a sidebar
+    /// rename or shutdown cannot leave a half-live drag behind.
+    pub on_drag_prepare: Option<DragPrepareCallback>,
+    /// A Ctrl+click asked for a link target to be opened.
+    ///
+    /// The pane owns the gesture but not the window the launch would be
+    /// parented to, so the host performs the launch and can refuse a pane that
+    /// is no longer live.
+    pub on_open_link: Option<Rc<dyn Fn(PaneId, String)>>,
     /// A drag of this pane began.
     ///
     /// Shared rather than boxed because each rebuild attaches fresh handlers,
@@ -98,6 +123,7 @@ pub struct Pane {
 
 /// The drag handlers a pane applies to each container it builds.
 struct DragHandlers {
+    on_drag_prepare: Option<DragPrepareCallback>,
     on_drag_begin: Option<Rc<dyn Fn(PaneId)>>,
     on_drag_end: Option<Rc<dyn Fn()>>,
     on_drop: Option<DropCallback>,
@@ -142,6 +168,9 @@ impl Pane {
             .enable_bidi(true)
             .enable_shaping(true)
             .build();
+        // Links belong to the terminal, not to the optional context menu: a
+        // pane without a menu still offers Ctrl+click and link detection.
+        crate::links::install(&terminal);
         // Started after the terminal exists, so the terminal can be told to
         // watch the child and therefore report its exit.
         let state = Rc::new(RefCell::new(PaneState {
@@ -361,14 +390,17 @@ impl Pane {
         let PaneSignals {
             menu: _,
             on_focus,
+            on_open_link,
             on_title,
             on_exit,
             on_cwd: _,
+            on_drag_prepare,
             on_drag_begin,
             on_drag_end,
             on_drop,
         } = signals;
         *self.drag.borrow_mut() = Some(DragHandlers {
+            on_drag_prepare,
             on_drag_begin,
             on_drag_end,
             on_drop,
@@ -408,6 +440,10 @@ impl Pane {
             self.terminal.add_controller(focus);
         }
 
+        if let Some(callback) = on_open_link {
+            self.attach_link_gesture(callback);
+        }
+
         let state = self.state.clone();
         self.terminal.connect_map(move |terminal| {
             // Reconciliation is driven by the terminal being mapped, which
@@ -419,6 +455,47 @@ impl Pane {
         });
 
         self.attach_scroll();
+    }
+
+    /// Open a link on Ctrl+primary-click.
+    ///
+    /// Installed once, on the terminal itself: the terminal is created once and
+    /// survives every container rebuild, so one controller serves every layout.
+    /// It runs in the capture phase because the library's own click gesture
+    /// runs in the bubble phase and claims a primary press for selection or for
+    /// the child; a bubble-phase link handler would never see the press that is
+    /// supposed to open a link.
+    ///
+    /// The sequence is claimed only when it will actually open something. Every
+    /// other press is denied so the library handles it exactly as before: plain
+    /// clicks, drags, other modifiers and clicks on text that is not an
+    /// openable link never become the gesture's.
+    fn attach_link_gesture(&self, callback: Rc<dyn Fn(PaneId, String)>) {
+        let id = self.id;
+        let terminal = self.terminal.downgrade();
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(gdk::BUTTON_PRIMARY);
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        gesture.connect_pressed(move |gesture, presses, x, y| {
+            let Some(terminal) = terminal.upgrade() else {
+                return;
+            };
+            let ctrl = gesture
+                .current_event_state()
+                .contains(gdk::ModifierType::CONTROL_MASK);
+            let link = crate::links::at(&terminal, x, y);
+            if !crate::links::activates(ctrl, gesture.current_button(), presses, link.as_ref()) {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            // Claiming the press is what keeps it from reaching the terminal
+            // program and from clearing an existing selection.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(link) = link {
+                callback(id, link.uri);
+            }
+        });
+        self.terminal.add_controller(gesture);
     }
 
     /// Take over touch surface scrolling on this terminal.
@@ -486,6 +563,7 @@ impl Pane {
         let source = gtk::DragSource::new();
         source.set_actions(gdk::DragAction::MOVE);
         let id = self.id;
+        let prepare = handlers.on_drag_prepare.clone();
         source.connect_prepare(move |source, x, y| {
             if source
                 .widget()
@@ -493,9 +571,13 @@ impl Pane {
             {
                 return None;
             }
-            // The dragged pane's identity travels with the drag, so the target
-            // does not need the application to remember what is in flight.
-            let value = (id.0).to_value();
+            if prepare.as_ref().is_some_and(|allowed| !allowed(id)) {
+                return None;
+            }
+            // The pane's identity travels inside a pane-specific value, so a
+            // generic number or another application's payload cannot be
+            // mistaken for a pane move.
+            let value = PaneDrag { pane: id.0 }.to_value();
             Some(gdk::ContentProvider::for_value(&value))
         });
         if let Some(callback) = handlers.on_drag_begin.as_ref() {
@@ -506,9 +588,19 @@ impl Pane {
             let callback = callback.clone();
             source.connect_drag_end(move |_, _, _| callback());
         }
+        if let Some(callback) = handlers.on_drag_end.as_ref() {
+            let callback = callback.clone();
+            // The transaction is also ended on cancel, so it cannot outlive the
+            // source whichever of the two signals GTK delivers last; ending it
+            // twice is harmless.
+            source.connect_drag_cancel(move |_, _, _| {
+                callback();
+                false
+            });
+        }
         header.add_controller(source);
 
-        let target = gtk::DropTarget::new(gtk::glib::Type::U64, gdk::DragAction::MOVE);
+        let target = gtk::DropTarget::new(PaneDrag::static_type(), gdk::DragAction::MOVE);
         // The pending drop is shown on the pane itself, and the label is
         // removed as soon as the pointer leaves.
         let side = Rc::new(RefCell::new(None));
@@ -552,7 +644,7 @@ impl Pane {
             let side_for_drop = side.clone();
             target.connect_drop(move |_, value, x, y| {
                 apply_drop_side(&frame_for_drop, None, id);
-                let Ok(source_id) = value.get::<u64>() else {
+                let Ok(payload) = value.get::<PaneDrag>() else {
                     return false;
                 };
                 // The side is taken from the last motion when available, and
@@ -565,7 +657,7 @@ impl Pane {
                         frame_for_drop.height(),
                     )
                 });
-                callback(crate::tree::PaneId(source_id), id, side);
+                callback(crate::tree::PaneId(payload.pane), id, side);
                 true
             });
         }
