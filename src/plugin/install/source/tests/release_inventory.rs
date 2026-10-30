@@ -137,7 +137,7 @@ fn actual_https_rechecks_unselected_assets_and_ignores_inventory_order_only() {
         if case == "order-only" {
             let committed = outcome.unwrap();
             assert!(root.0.join("installed.json").is_file());
-            assert_eq!(committed.receipt.asset_id, 11);
+            assert_eq!(committed.receipt.release().unwrap().asset_id, 11);
             assert!(!committed
                 .receipt
                 .package_path(&root.0)

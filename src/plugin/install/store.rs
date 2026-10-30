@@ -57,6 +57,15 @@ pub(crate) fn while_uninstalled<T>(
     Ok(edit())
 }
 
+/// Whether a commit over a selected generation keeps its consent token (an
+/// update the user reviewed) or issues a new one (a replacement whose code
+/// the user has not approved yet).
+#[derive(Clone, Copy)]
+enum Consent {
+    Inherit,
+    Fresh,
+}
+
 pub(super) struct Transaction {
     root: File,
     root_path: PathBuf,
@@ -111,10 +120,7 @@ pub(crate) fn lease(
     root: &File,
     receipt: &Receipt,
 ) -> Result<Option<std::sync::Arc<File>>, Problem> {
-    let path = format!(
-        "generations/{}/{}/{}",
-        receipt.repository_id, receipt.plugin_id, receipt.generation
-    );
+    let path = receipt.generation_directory();
     let package = match data::contained_directory(root, &path) {
         Ok(package) => package,
         Err(_) => return Ok(None),
@@ -524,7 +530,7 @@ fn recover(root: &File, check: &impl Fn() -> Result<(), Problem>) -> Result<(), 
         .chain(&selected.previous)
         .map(|receipt| {
             (
-                receipt.repository_id.to_string(),
+                receipt.namespace_component(),
                 receipt.plugin_id.clone(),
                 receipt.generation.clone(),
             )
@@ -534,9 +540,10 @@ fn recover(root: &File, check: &impl Fn() -> Result<(), Problem>) -> Result<(), 
     for repo in children(&generations)? {
         check()?;
         let Some(repo_name) = repo.to_str().filter(|value| {
-            value
-                .parse::<u64>()
-                .is_ok_and(|id| id > 0 && id.to_string() == *value)
+            *value == crate::plugin::manifest::DEVELOPMENT_NAMESPACE
+                || value
+                    .parse::<u64>()
+                    .is_ok_and(|id| id > 0 && id.to_string() == *value)
         }) else {
             continue;
         };
@@ -581,7 +588,7 @@ fn recover(root: &File, check: &impl Fn() -> Result<(), Problem>) -> Result<(), 
                 )?)
                 .map_err(|_| Problem("invalid orphan generation receipt; cleanup deferred"))?;
                 seal.validate()?;
-                if seal.repository_id.to_string() != repo_name
+                if seal.namespace_component() != repo_name
                     || seal.plugin_id != plugin_name
                     || seal.generation != generation_name
                 {
@@ -678,13 +685,7 @@ fn mutate_with_confirmation(
                 ))?;
             let previous = selected.previous[index].clone();
             let _lease = lease(&root, &previous)?;
-            let package = data::contained_directory(
-                &root,
-                &format!(
-                    "generations/{}/{}/{}",
-                    previous.repository_id, previous.plugin_id, previous.generation
-                ),
-            )?;
+            let package = data::contained_directory(&root, &previous.generation_directory())?;
             let bytes = data::read_bounded(
                 &data::contained_file(&package, "among-plugin.json")?,
                 crate::plugin::manifest::MAX_MANIFEST_BYTES,
@@ -759,15 +760,9 @@ fn mutate_with_confirmation(
             let pinned = package
                 .metadata()
                 .map_err(|_| Problem("cannot inspect retained generation"))?;
-            let current = data::contained_directory(
-                &root,
-                &format!(
-                    "generations/{}/{}/{}",
-                    result.repository_id, result.plugin_id, result.generation
-                ),
-            )?
-            .metadata()
-            .map_err(|_| Problem("cannot inspect current retained generation"))?;
+            let current = data::contained_directory(&root, &result.generation_directory())?
+                .metadata()
+                .map_err(|_| Problem("cannot inspect current retained generation"))?;
             if (pinned.dev(), pinned.ino()) != (current.dev(), current.ino()) {
                 return Err(Problem(
                     "retained generation changed externally; refusing recovery",
@@ -914,13 +909,16 @@ impl Transaction {
             .iter()
             .find(|old| old.identity().ok() == receipt.identity().ok())
         {
-            if let Some(source) = &receipt.source {
+            if let Some((release, source)) = receipt
+                .release()
+                .and_then(|release| Some((release, release.source.as_ref()?)))
+            {
                 let change = previous.origin_change(
                     &crate::plugin::origin::Origin {
-                        repository_id: receipt.repository_id,
+                        repository_id: release.repository_id,
                         publisher_id: source.publisher_id,
-                        owner: receipt.owner.clone(),
-                        repository: receipt.repository.clone(),
+                        owner: release.owner.clone(),
+                        repository: release.repository.clone(),
                     },
                     &receipt.plugin_id,
                 );
@@ -962,13 +960,39 @@ impl Transaction {
         check: impl Fn() -> Result<(), Problem>,
         begin_commit: impl FnOnce() -> Result<(), Problem>,
     ) -> Result<Commit, Problem> {
-        self.commit_selection(receipt, Some(expected), check, begin_commit, File::sync_all)
+        self.commit_selection(
+            receipt,
+            Some((expected, Consent::Inherit)),
+            check,
+            begin_commit,
+            File::sync_all,
+        )
+    }
+
+    /// Replaces the selected generation of the same identity with a fresh
+    /// consent token, so the replacement starts disabled and without the
+    /// replaced installation's grants. The replaced generation stays
+    /// available as the previous one.
+    pub fn commit_replacement(
+        &self,
+        receipt: Receipt,
+        expected: &Receipt,
+        check: impl Fn() -> Result<(), Problem>,
+        begin_commit: impl FnOnce() -> Result<(), Problem>,
+    ) -> Result<Commit, Problem> {
+        self.commit_selection(
+            receipt,
+            Some((expected, Consent::Fresh)),
+            check,
+            begin_commit,
+            File::sync_all,
+        )
     }
 
     fn commit_selection(
         &self,
         receipt: Receipt,
-        expected: Option<&Receipt>,
+        expected: Option<(&Receipt, Consent)>,
         check: impl Fn() -> Result<(), Problem>,
         begin_commit: impl FnOnce() -> Result<(), Problem>,
         confirm: impl FnOnce(&File) -> std::io::Result<()>,
@@ -987,7 +1011,7 @@ impl Transaction {
                 "installed selection changed externally; refusing replacement",
             ));
         }
-        if let Some(expected) = expected {
+        if let Some((expected, consent)) = expected {
             if expected.identity()? != receipt.identity()?
                 || !selected.installations.contains(expected)
             {
@@ -995,8 +1019,19 @@ impl Transaction {
                     "selected installation changed or was removed; stale update refused",
                 ));
             }
-            if receipt.installation != expected.installation {
-                return Err(Problem("update cannot replace installation consent token"));
+            match consent {
+                Consent::Inherit if receipt.installation != expected.installation => {
+                    return Err(Problem("update cannot replace installation consent token"));
+                }
+                Consent::Fresh
+                    if receipt.installation.is_none()
+                        || receipt.installation == expected.installation =>
+                {
+                    return Err(Problem(
+                        "replacement must not inherit the replaced installation's consent",
+                    ));
+                }
+                _ => {}
             }
             selected
                 .previous
@@ -1025,7 +1060,7 @@ impl Transaction {
             .map_err(|_| Problem("cannot flush generation lease"))?;
         sync_tree(&self.payload, 0, &mut 0, &check)?;
         let generations = directory(&self.root, "generations")?;
-        let repository = directory(&generations, &receipt.repository_id.to_string())?;
+        let repository = directory(&generations, &receipt.namespace_component())?;
         let plugin = directory(&repository, &receipt.plugin_id)?;
         let from = name(OsStr::new("payload"))?;
         let to = name(OsStr::new(&receipt.generation))?;
@@ -1071,15 +1106,9 @@ impl Transaction {
             check()?;
             begin_commit()?;
             verify_root(&self.root, &self.root_path)?;
-            let published = data::contained_directory(
-                &self.root,
-                &format!(
-                    "generations/{}/{}/{}",
-                    receipt.repository_id, receipt.plugin_id, receipt.generation
-                ),
-            )?
-            .metadata()
-            .map_err(|_| Problem("cannot inspect published generation"))?;
+            let published = data::contained_directory(&self.root, &receipt.generation_directory())?
+                .metadata()
+                .map_err(|_| Problem("cannot inspect published generation"))?;
             let prepared = self
                 .payload
                 .metadata()

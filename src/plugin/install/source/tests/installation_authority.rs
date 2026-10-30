@@ -65,7 +65,12 @@ fn install(root: &Path, version: &str, previous: Option<&Receipt>) -> Receipt {
         .iter()
         .any(|request| request.contains("/github-production-release-asset/12/")));
     assert_eq!(
-        receipt.source.as_ref().unwrap().release_binding.commit,
+        receipt
+            .release()
+            .and_then(|release| release.source.as_ref())
+            .unwrap()
+            .release_binding
+            .commit,
         receipt.revision
     );
     receipt

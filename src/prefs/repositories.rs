@@ -515,8 +515,22 @@ fn run_install(
     window: &adw::PreferencesWindow,
 ) {
     let updating = selection.is_update();
+    run_job(button, row, install(selection), updating, changed, window);
+}
+
+/// Shows one started installation in its row until it commits, fails or is
+/// cancelled. A committed selection reaches the host through `changed` even
+/// if the row or window is gone by then.
+pub(super) fn run_job(
+    button: &gtk::Button,
+    row: &adw::ActionRow,
+    job: Result<InstallJob, Problem>,
+    updating: bool,
+    changed: Rc<dyn Fn()>,
+    window: &adw::PreferencesWindow,
+) {
     let window = window.downgrade();
-    match install(selection) {
+    match job {
         Err(problem) => row.set_subtitle(problem.0),
         Ok(job) => {
             button.set_sensitive(false);
@@ -570,7 +584,7 @@ fn run_install(
                         row.set_subtitle(&match outcome {
                                                 Ok(commit) => match commit.durability {
                                                     crate::settings::Durability::Durable if updating => "Update selected; previous verified generation retained. Current enabled choice is preserved; publisher/access and runtime admission can still refuse execution.".into(),
-                                                    crate::settings::Durability::Durable => format!("Installed github:{}/{} disabled. Enable separately in Your plugins.", commit.receipt.repository_id, commit.receipt.plugin_id),
+                                                    crate::settings::Durability::Durable => format!("Installed {} disabled. Enable separately in Your plugins.", commit.receipt.key()),
                                                     _ => "Selection written; durability uncertain. Inspect the installed inventory before retrying.".into(),
                                                 },
                                                 Err(problem) => problem.to_string(),

@@ -79,16 +79,21 @@ pub(super) fn add_actions(
         let source = adw::PreferencesGroup::new();
         source.set_title("Source and identity");
         detail_row(&source, "Identity", &current.key());
-        let repository_id = current.inspected.as_ref().map_or(current.receipt.repository_id,
-            |inspected| inspected.identity.repository_id());
-        detail_row(
-            &source,
-            "GitHub repository",
-            &format!(
-                "{}/{} (repository {})",
-                current.receipt.owner, current.receipt.repository, repository_id
+        match current.receipt.release() {
+            Some(release) => detail_row(
+                &source,
+                "GitHub repository",
+                &format!(
+                    "{}/{} (repository {})",
+                    release.owner, release.repository, release.repository_id
+                ),
             ),
-        );
+            None => {
+                detail_row(&source, "Source", crate::plugin::inventory::LOCAL_SOURCE_LABEL);
+                detail_row(&source, "Missing provenance", crate::plugin::inventory::LOCAL_MISSING_PROVENANCE);
+                detail_row(&source, "Development mode", "This installation starts only when Among is started with --plugin-development.");
+            }
+        }
         if let Ok(inspected) = &current.inspected {
             let manifest = &inspected.manifest;
             detail_row(&source, "Version", &manifest.version);
@@ -121,25 +126,30 @@ pub(super) fn add_actions(
         let package = adw::PreferencesGroup::new();
         package.set_title("Package provenance");
         detail_row(&package, "Catalogue-declared version commit", &current.receipt.revision);
-        detail_row(
-            &package,
-            "Release / asset",
-            &format!(
-                "{} / {}",
-                current.receipt.release_id, current.receipt.asset_id
-            ),
-        );
+        let release = current.receipt.release();
+        if let Some(release) = release {
+            detail_row(
+                &package,
+                "Release / asset",
+                &format!("{} / {}", release.release_id, release.asset_id),
+            );
+        }
+        if let Some(local) = current.receipt.local() {
+            detail_row(&package, "Local package file", &local.asset);
+            detail_row(&package, "Local catalogue SHA-256", &local.catalogue_sha256);
+        }
         detail_row(&package, "Package SHA-256", &current.receipt.package_sha256);
         detail_row(&package, "Manifest SHA-256", &current.receipt.manifest_sha256);
         detail_row(&package, "Selected generation", &current.receipt.generation);
-        if let Some(receipt) = &current.receipt.source {
+        let source_receipt = release.and_then(|release| release.source.as_ref());
+        if let Some(receipt) = source_receipt {
             detail_row(&source, "Numeric publisher identity", &receipt.publisher_id.to_string());
             detail_row(&package, "Resolved catalogue revision", &receipt.catalogue_revision);
             detail_row(&package, "Catalogue SHA-256", &receipt.catalogue_sha256);
-        } else {
+        } else if release.is_some() {
             detail_row(&source, "Numeric publisher identity", "Unconfirmed in this pre-installer receipt; an update requires renewed review");
         }
-        if let Some(binding) = current.receipt.source.as_ref().map(|source| &source.release_binding) {
+        if let Some(binding) = source_receipt.map(|source| &source.release_binding) {
             detail_row(&package, "Release tag", &binding.tag);
             detail_row(&package, "Observed tag reference object", &binding.object);
             detail_row(&package, "Resolved release commit", &binding.commit);

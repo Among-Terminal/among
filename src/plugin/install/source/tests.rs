@@ -952,17 +952,13 @@ fn actual_https_stream_commits_exact_selection_inert_and_loads_offline() {
     let outcome = install_at(&server, selection, &root.0).unwrap();
     assert_eq!(outcome.durability, crate::settings::Durability::Durable);
     assert_eq!(outcome.receipt.revision, "a".repeat(40));
-    assert_eq!(outcome.receipt.release_id, 7);
-    assert_eq!(outcome.receipt.asset_id, 11);
-    assert_eq!(outcome.receipt.source.as_ref().unwrap().publisher_id, 34);
-    assert_eq!(
-        outcome.receipt.source.as_ref().unwrap().catalogue_sha256,
-        catalogue_digest
-    );
-    assert_eq!(
-        outcome.receipt.source.as_ref().unwrap().catalogue_revision,
-        "a".repeat(40)
-    );
+    let release = outcome.receipt.release().unwrap();
+    assert_eq!(release.release_id, 7);
+    assert_eq!(release.asset_id, 11);
+    let source = release.source.as_ref().unwrap();
+    assert_eq!(source.publisher_id, 34);
+    assert_eq!(source.catalogue_sha256, catalogue_digest);
+    assert_eq!(source.catalogue_revision, "a".repeat(40));
     assert!(outcome.receipt.installation.is_some());
     let requests = server.requests();
     assert_eq!(

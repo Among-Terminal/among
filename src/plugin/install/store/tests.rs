@@ -2,6 +2,21 @@ use super::*;
 use crate::plugin::install::package::tests::{extract_bytes, fixture, OwnedRoot};
 use std::os::unix::fs::PermissionsExt;
 
+fn release_origin(repository_id: u64) -> inventory::Provenance {
+    inventory::Provenance::Release(inventory::ReleaseOrigin {
+        repository_id,
+        owner: "example".into(),
+        repository: "sample".into(),
+        release_id: 7,
+        asset_id: 11,
+        source: None,
+    })
+}
+
+fn set_repository(receipt: &mut Receipt, repository_id: u64) {
+    inventory::tests::release_of(receipt).repository_id = repository_id;
+}
+
 #[test]
 fn retained_settings_deletion_requires_absence_and_exclusive_operation_authority() {
     let root = super::super::package::tests::OwnedRoot::new();
@@ -19,7 +34,7 @@ fn retained_settings_deletion_requires_absence_and_exclusive_operation_authority
     assert!(while_uninstalled(&root.0, identity.clone(), || called.set(true)).is_err());
     drop(lock);
     let (transaction, mut receipt) = prepared(&root.0);
-    receipt.repository_id = 12;
+    set_repository(&mut receipt, 12);
     let commit = transaction.commit(receipt, || Ok(()), || Ok(())).unwrap();
     drop(transaction);
     assert!(while_uninstalled(&root.0, identity.clone(), || called.set(true)).is_err());
@@ -55,18 +70,13 @@ fn prepared(root: &Path) -> (Transaction, Receipt) {
     let mut transaction = Transaction::new(root, 8192, || Ok(())).unwrap();
     extract_bytes(&metadata, &bytes, &mut transaction, || Ok(())).unwrap();
     let receipt = Receipt {
-        repository_id: 42,
-        owner: "example".into(),
-        repository: "sample".into(),
+        origin: release_origin(42),
         plugin_id: "sample".into(),
         revision: metadata["revision"].as_str().unwrap().into(),
         manifest_sha256: metadata["manifest_sha256"].as_str().unwrap().into(),
         package_sha256: metadata["artifacts"][0]["sha256"].as_str().unwrap().into(),
-        release_id: 7,
-        asset_id: 11,
         generation: token(),
         installation: Some(token()),
-        source: None,
     };
     (transaction, receipt)
 }
@@ -472,18 +482,13 @@ fn real_process_exit_at_publication_boundaries_recovers_complete_old_or_new_with
             unsafe { libc::_exit(0) }
         }
         let mut receipt = Receipt {
-            repository_id: 42,
-            owner: "example".into(),
-            repository: "sample".into(),
+            origin: release_origin(42),
             plugin_id: "sample".into(),
             revision: metadata["revision"].as_str().unwrap().into(),
             manifest_sha256: metadata["manifest_sha256"].as_str().unwrap().into(),
             package_sha256: metadata["artifacts"][0]["sha256"].as_str().unwrap().into(),
-            release_id: 7,
-            asset_id: 11,
             generation: token(),
             installation: Some(token()),
-            source: None,
         };
         let expected = if phase.starts_with("update-") {
             Some(
@@ -500,7 +505,9 @@ fn real_process_exit_at_publication_boundaries_recovers_complete_old_or_new_with
         transaction
             .commit_selection(
                 receipt,
-                expected.as_ref(),
+                expected
+                    .as_ref()
+                    .map(|expected| (expected, Consent::Inherit)),
                 || Ok(()),
                 || {
                     if phase.ends_with("published") {
@@ -671,14 +678,14 @@ fn detached_supervision_retains_real_process_lease_until_the_child_has_been_reap
     }
     let pid = host.supervised_pids()[0];
     let (transaction, mut second) = prepared(&root.0);
-    second.repository_id = 12;
+    set_repository(&mut second, 12);
     second.installation = first.installation.clone();
     transaction
         .commit_update(second.clone(), &first, || Ok(()), || Ok(()))
         .unwrap();
     drop(transaction);
     let (transaction, mut third) = prepared(&root.0);
-    third.repository_id = 12;
+    set_repository(&mut third, 12);
     third.installation = first.installation.clone();
     transaction
         .commit_update(third, &second, || Ok(()), || Ok(()))
@@ -691,14 +698,7 @@ fn detached_supervision_retains_real_process_lease_until_the_child_has_been_reap
         "actual TERM-ignoring old child remains supervised during stop grace"
     );
     let directory = open_existing_root(&root.0).unwrap();
-    let package = data::contained_directory(
-        &directory,
-        &format!(
-            "generations/{}/{}/{}",
-            first.repository_id, first.plugin_id, first.generation
-        ),
-    )
-    .unwrap();
+    let package = data::contained_directory(&directory, &first.generation_directory()).unwrap();
     let lease = data::contained_file(&package, ".among-lease").unwrap();
     assert_ne!(
         unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
@@ -783,10 +783,8 @@ fn cancellation_and_external_selection_edits_do_not_publish_a_selected_install()
     let old = inventory::tests::fixture(&root.0);
     let before = std::fs::read(root.0.join("installed.json")).unwrap();
     // edit after the transaction's read/flush, exactly at its authority boundary.
-    let external = Receipt {
-        repository_id: 43,
-        ..old
-    };
+    let mut external = old;
+    set_repository(&mut external, 43);
     let replacement = serde_json::to_vec(&inventory::Selection {
         version: 1,
         installations: vec![external],

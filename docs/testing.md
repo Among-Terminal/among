@@ -11,6 +11,18 @@ development primary, that a later ordinary start is ordinary, and four
 simultaneous starts in both orders. The mode is read from the
 `plugin_development=` self-check line; logs stay below `AMONG_CHECK_ROOT`.
 
+Local catalogue installation is checked twice. The unit tests in
+`plugin::install::local` run in an ordinary process and check that the public
+actions refuse, that a package installs into `development/<plugin-id>` with
+no repository or release fields, the hostile package, directory and catalogue
+cases, a catalogue changed after review, replacement only after confirmation
+with a new consent token, and that a development install does not start
+without the flag. The ignored native test
+`local_catalogue_installs_and_replaces_only_with_explicit_review_in_development_mode`
+fixes development mode in its own process and drives Preferences, the review
+dialog and the replacement confirmation with real keyboard input; it runs with
+the other ignored graphical tests.
+
 `among-tools ci-x11 among-tools check-workspace-reorder <among-binary>` drives
 native workspace drags, cancellation, positional keys, and restoration from the
 application's actual session file. Use the built tools executable's path in both

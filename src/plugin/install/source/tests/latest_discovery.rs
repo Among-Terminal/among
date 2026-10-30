@@ -63,18 +63,14 @@ fn actual_latest_asset_discovery_uses_api_ids_and_reopens_the_same_snapshot_offl
         &root.0.join("managed"),
     )
     .unwrap();
-    assert_eq!(committed.receipt.release_id, 700);
-    assert_eq!(committed.receipt.asset_id, 111);
-    assert_eq!(
-        *committed.receipt.source.as_ref().unwrap().release_snapshot,
-        snapshot.snapshot
-    );
+    let release = committed.receipt.release().unwrap();
+    assert_eq!(release.release_id, 700);
+    assert_eq!(release.asset_id, 111);
+    let source = release.source.as_ref().unwrap();
+    assert_eq!(*source.release_snapshot, snapshot.snapshot);
     let offline = crate::plugin::inventory::read(&root.0.join("managed")).unwrap();
     assert_eq!(offline[0].receipt, committed.receipt);
-    assert_eq!(
-        committed.receipt.source.as_ref().unwrap().release_binding,
-        snapshot.binding
-    );
+    assert_eq!(source.release_binding, snapshot.binding);
     assert_eq!(server.requests().len(), 15);
     assert_eq!(
         server

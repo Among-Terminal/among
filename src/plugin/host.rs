@@ -16,6 +16,10 @@ use super::protocol::{
 };
 use crate::slots::{Contribution, Fragment, Refresh, SlotStore, Style, Summary};
 
+/// Shown instead of running a generation that may run only in development mode.
+pub const DEVELOPMENT_ONLY: &str =
+    "development install: it starts only when Among is started with --plugin-development";
+
 mod environment;
 mod managed_runtime;
 pub use managed_runtime::Configuration;
@@ -582,6 +586,21 @@ impl PluginHost {
             {
                 self.plugins[index].state = PluginState::Unavailable {
                     reason: "uninstall is still active for this installation".into(),
+                };
+                self.plugins[index].restart_at = None;
+                return false;
+            }
+            // Every launch and restart passes here, so a development install
+            // stays listed in an ordinary run but its code never starts, even
+            // when its switch was left on in a development run.
+            if self.plugins[index]
+                .managed
+                .as_ref()
+                .is_some_and(|entry| entry.receipt.requires_development())
+                && !crate::plugin::development::enabled()
+            {
+                self.plugins[index].state = PluginState::Unavailable {
+                    reason: DEVELOPMENT_ONLY.into(),
                 };
                 self.plugins[index].restart_at = None;
                 return false;

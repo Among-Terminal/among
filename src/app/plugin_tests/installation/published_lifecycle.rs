@@ -515,13 +515,14 @@ pub(super) fn run() {
         );
         let (entry, _) = ctx.state.borrow().plugins.managed_details(&key).unwrap();
         let receipt = &entry.receipt;
-        assert_eq!(receipt.repository_id, 1431055733);
-        assert_eq!(receipt.release_id, snapshot.id);
-        assert_eq!(receipt.asset_id, observed_asset_id);
+        let release = receipt.release().unwrap();
+        assert_eq!(release.repository_id, 1431055733);
+        assert_eq!(release.release_id, snapshot.id);
+        assert_eq!(release.asset_id, observed_asset_id);
         assert_eq!(receipt.revision, revision);
         assert_eq!(receipt.manifest_sha256, version.manifest_sha256);
         assert_eq!(receipt.package_sha256, artifact.sha256);
-        let source = receipt.source.as_ref().unwrap();
+        let source = release.source.as_ref().unwrap();
         assert_eq!(source.catalogue_revision, revision);
         assert_eq!(source.catalogue_sha256, catalogue_asset.sha256);
         assert_eq!(source.publisher_id, 339567100);
