@@ -110,12 +110,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let max_gap = Rc::new(Cell::new(Duration::ZERO));
     let last = Rc::new(Cell::new(Instant::now()));
     let (count, gap, previous) = (ticks.clone(), max_gap.clone(), last.clone());
-    let heartbeat = output.join("heartbeat.txt");
+    // The heartbeat measures whether Among blocks the GTK thread, so the tick
+    // itself does no file I/O: a per-tick write blocks in the kernel under
+    // write-back pressure and then reports the probe's own disk stall as an
+    // Among stall. The largest gap and when it ended (ms since the heartbeat
+    // started) are kept in memory and written once measurement is over.
+    let beat_start = Instant::now();
+    let worst_at = Rc::new(Cell::new(Duration::ZERO));
+    let worst = worst_at.clone();
     let timer = glib::timeout_add_local(Duration::from_millis(10), move || {
         let now = Instant::now();
-        gap.set(gap.get().max(now.duration_since(previous.replace(now))));
+        let elapsed = now.duration_since(previous.replace(now));
+        if elapsed > gap.get() {
+            gap.set(elapsed);
+            worst.set(now.duration_since(beat_start));
+        }
         count.set(count.get() + 1);
-        let _ = fs::write(&heartbeat, count.get().to_string());
         glib::ControlFlow::Continue
     });
     let sound = Sound::read_local(&input)?;
@@ -334,10 +344,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     // No latent replacement is replayed once retirement finishes.
     pump(Duration::from_millis(100));
     assert!(!audio.is_active());
+    // Phase boundaries on the heartbeat's clock, to place a reported gap;
+    // kept in memory for the same reason as the heartbeat itself.
+    let phases = std::cell::RefCell::new(String::new());
+    let mark = |label: &str| {
+        phases
+            .borrow_mut()
+            .push_str(&format!("{} {label}\n", beat_start.elapsed().as_millis()));
+    };
+    mark("first-retirement-checked");
     if scenario == "stall-retire-shutdown" {
         drop(audio);
+        mark("owner-dropped");
         audio = Audio::new()?;
         audio.select(sound)?;
+        mark("owner-recreated");
     }
     let Request::Started(current) = audio.preview()? else {
         return Err("decoder slot did not recover after confirmed retirement".into());
@@ -345,7 +366,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert_ne!(old, current);
     audio.cancel_event(old);
     assert!(audio.is_active());
+    mark("recovery-preview-started");
     pump(Duration::from_secs(3));
+    mark("recovery-pumped");
     let recovery = audio.drain_notices();
     assert!(
         recovery
@@ -356,9 +379,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(!recovery
         .iter()
         .any(|notice| matches!(notice, Notice::Failed { .. })));
+    fs::write(
+        output.join("heartbeat.txt"),
+        format!(
+            "ticks={} max_gap_ms={} max_gap_end_ms={}\n{}",
+            ticks.get(),
+            max_gap.get().as_millis(),
+            worst_at.get().as_millis(),
+            phases.borrow()
+        ),
+    )?;
     assert!(
         max_gap.get() < Duration::from_millis(250),
-        "GTK heartbeat exceeded its bound"
+        "GTK heartbeat exceeded its bound: {} ms ending {} ms after start",
+        max_gap.get().as_millis(),
+        worst_at.get().as_millis()
     );
     assert!(ticks.get() > first_ticks + 20);
     if scenario == "late-expiry" {
