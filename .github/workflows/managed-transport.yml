@@ -24,7 +24,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_BUILD_JOBS: '1'
-      CLIENT_REVISION: 306839e144d7a4c98432c6c68dad016c412dd656
+      CLIENT_REVISION: ac16a298b42022d9d62017e5d668e72458ba3b69
       EXPECTED_KERNEL: ${{ matrix.kernel }}
       EXPECTED_RUST_HOST: ${{ matrix.rust_host }}
     steps:
@@ -42,45 +42,62 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustc +1.98.1 --version --verbose
           test "$(rustc +1.98.1 --version --verbose | sed -n 's/^host: //p')" = "$EXPECTED_RUST_HOST"
-      - name: Build the exact companion fixture and production status entrypoints
+      - name: Resolve the pinned public native plugin packages
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/managed-transport-interop"
           mkdir -m 700 "$root"
           echo "INTEROP_ROOT=$root" >> "$GITHUB_ENV"
-          curl --fail --silent --show-error --connect-timeout 15 --max-time 60 \
-            https://api.github.com/repos/Among-Terminal/among-plugins > "$root/client-repository.json"
-          jq -e '.id == 1431055733 and .owner.id == 339567100 and .private == false' "$root/client-repository.json"
+          CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 build --locked --manifest-path tools/among-tools/Cargo.toml
+          CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 test --locked --manifest-path tools/among-tools/Cargo.toml --test plugin_release_inputs
+          "$PWD/target/debug/among-tools" prepare-official-plugin-inputs "$root/official"
+          cp "$root/official/inputs.json" "$root/published-release-inputs.json"
+          cp "$root/official/latest.json" "$root/published-release.json"
+          cp "$root/official/initial-ref.json" "$root/published-tag-ref.json"
+          cp "$root/official/initial-commit.json" "$root/published-tag-commit.json"
+          cp "$root/official/repository.json" "$root/client-repository.json"
+          for record in clock:CLOCK system-status:SYSTEM pane-pwd:PWD; do
+            plugin="${record%:*}"
+            prefix="${record#*:}"
+            binary="$(jq -er --arg id "$plugin" '.plugins[] | select(.id==$id) | .binary' "$root/official/inputs.json")"
+            digest="$(jq -er --arg id "$plugin" '.plugins[] | select(.id==$id) | .binary_sha256' "$root/official/inputs.json")"
+            printf 'AMONG_MANAGED_%s_BINARY=%s\nAMONG_MANAGED_%s_SHA256=%s\n' "$prefix" "$binary" "$prefix" "$digest" >> "$GITHUB_ENV"
+            printf '%s  %s\n' "$digest" "$binary" > "$root/$plugin-managed-sha256.txt"
+            sha256sum -c "$root/$plugin-managed-sha256.txt"
+            readelf -h "$binary" > "$root/$plugin-elf.txt"
+            case "$EXPECTED_KERNEL" in
+              x86_64) machine='Advanced Micro Devices X86-64' ;;
+              aarch64) machine=AArch64 ;;
+              *) exit 1 ;;
+            esac
+            grep -Eq "Machine: *$machine$" "$root/$plugin-elf.txt"
+          done
+      - name: Build only the exact companion protocol fixtures
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
           client="$root/client"
           git init "$client"
           git -C "$client" fetch --no-tags --depth=1 https://github.com/Among-Terminal/among-plugins.git "$CLIENT_REVISION"
           git -C "$client" switch --detach FETCH_HEAD
           test "$(git -C "$client" rev-parse HEAD)" = "$CLIENT_REVISION"
-          test "$(git -C "$client" rev-parse 'HEAD^{tree}')" = e9d7a98a8162a3b58154b4a9122c70cddaa1db16
+          test "$(git -C "$client" rev-parse 'HEAD^{tree}')" = 4025654ad45b3cc4704908f80d097a7cad3916c6
           test -z "$(git -C "$client" status --porcelain=v1)"
           grep -Fx "const CLIENT: &str = \"$CLIENT_REVISION\";" src/app/plugin_tests/resources.rs
           git rev-parse HEAD > "$root/host-source.txt"
           git -C "$client" rev-parse HEAD > "$root/client-source.txt"
           cargo +1.98.1 build --locked --manifest-path "$client/Cargo.toml" \
-            --example managed-status --example managed-pages --bin clock-managed --bin clock --bin system-status-managed --bin pane-pwd-managed
+            --example managed-status --example managed-pages
           fixture="$client/target/debug/examples/managed-status"
           test -f "$fixture" && test -x "$fixture" && test ! -L "$fixture"
           sha256sum "$fixture" | tee "$root/client-sha256.txt"
           echo "AMONG_MANAGED_TRANSPORT_FIXTURE=$fixture" >> "$GITHUB_ENV"
           echo "AMONG_MANAGED_TRANSPORT_FIXTURE_SHA256=$(cut -d ' ' -f 1 "$root/client-sha256.txt")" >> "$GITHUB_ENV"
-          for entrypoint in clock-managed clock system-status-managed pane-pwd-managed examples/managed-pages; do
+          for entrypoint in examples/managed-pages; do
             binary="$client/target/debug/$entrypoint"
             test -f "$binary" && test -x "$binary" && test ! -L "$binary"
             sha256sum "$binary" | tee "$root/$(basename "$entrypoint")-sha256.txt"
           done
-          echo "AMONG_MANAGED_CLOCK_BINARY=$client/target/debug/clock-managed" >> "$GITHUB_ENV"
-          echo "AMONG_MANAGED_CLOCK_SHA256=$(cut -d ' ' -f 1 "$root/clock-managed-sha256.txt")" >> "$GITHUB_ENV"
-          echo "AMONG_LEGACY_CLOCK_BINARY=$client/target/debug/clock" >> "$GITHUB_ENV"
-          echo "AMONG_LEGACY_CLOCK_SHA256=$(cut -d ' ' -f 1 "$root/clock-sha256.txt")" >> "$GITHUB_ENV"
-          echo "AMONG_MANAGED_SYSTEM_BINARY=$client/target/debug/system-status-managed" >> "$GITHUB_ENV"
-          echo "AMONG_MANAGED_SYSTEM_SHA256=$(cut -d ' ' -f 1 "$root/system-status-managed-sha256.txt")" >> "$GITHUB_ENV"
-          echo "AMONG_MANAGED_PWD_BINARY=$client/target/debug/pane-pwd-managed" >> "$GITHUB_ENV"
-          echo "AMONG_MANAGED_PWD_SHA256=$(cut -d ' ' -f 1 "$root/pane-pwd-managed-sha256.txt")" >> "$GITHUB_ENV"
           echo "AMONG_MANAGED_PAGES_FIXTURE=$client/target/debug/examples/managed-pages" >> "$GITHUB_ENV"
           echo "AMONG_MANAGED_PAGES_SHA256=$(cut -d ' ' -f 1 "$root/managed-pages-sha256.txt")" >> "$GITHUB_ENV"
       - name: Check the opt-in host test code
@@ -165,7 +182,8 @@ jobs:
             case "$clock_case" in
               too_long|control) grep -Fq 'refused_before_spawn=true' "$log" ;;
               *)
-                grep -Fq "clock_sha256=$AMONG_MANAGED_CLOCK_SHA256 legacy_clock_sha256=$AMONG_LEGACY_CLOCK_SHA256 footer_time_observed=true" "$log"
+                grep -Fq "clock_sha256=$AMONG_MANAGED_CLOCK_SHA256 " "$log"
+                grep -Fq 'footer_time_observed=true' "$log"
                 ;;
             esac
           done
@@ -247,6 +265,20 @@ jobs:
         run: |
           sudo apt-get install -y xvfb openbox xdotool dbus-x11 imagemagick x11-utils xauth fonts-dejavu-core
           CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 build --locked --manifest-path tools/among-tools/Cargo.toml
+      - name: Install the published native packages through the real UI
+        run: |
+          set -euo pipefail
+          root="$INTEROP_ROOT"
+          app_test="$(jq -s -er '
+            [.[] | select(.reason == "compiler-artifact" and .profile.test == true
+              and .target.name == "among" and .target.kind == ["bin"] and .executable != null)]
+            | if length == 1 then .[0].executable else error("expected one application test executable") end
+          ' "$root/host-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          sha256sum -c "$root/host-test-sha256.txt"
+          AMONG_CHECK_ROOT="$root/release-install" "$PWD/target/debug/among-tools" ci-x11 \
+            "$PWD/target/debug/among-tools" check-plugin-install "$app_test" "$root/official" \
+            2>&1 | tee "$root/published-native-install.log"
       - name: Observe real resource widgets and keyboard lifecycle
         run: |
           set -euo pipefail
@@ -295,5 +327,11 @@ jobs:
             ${{ runner.temp }}/managed-transport-interop/gui/**/*.png
             ${{ runner.temp }}/managed-transport-interop/gui/**/*.log
             ${{ runner.temp }}/managed-transport-interop/gui/**/post-disable-managed.json
+            ${{ runner.temp }}/managed-transport-interop/official/*.curl.log
+            ${{ runner.temp }}/managed-transport-interop/release-install/**/*.log
+            ${{ runner.temp }}/managed-transport-interop/release-install/**/*.txt
+            ${{ runner.temp }}/managed-transport-interop/release-install/**/*.json
+            ${{ runner.temp }}/managed-transport-interop/release-install/**/*.png
+            !${{ runner.temp }}/managed-transport-interop/release-install/**/.runtime-published-live-profile/**
           if-no-files-found: error
           retention-days: 5

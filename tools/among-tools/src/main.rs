@@ -21,18 +21,22 @@ Usage:
   among-tools check-preferences-from-cargo <cargo-test-executables.jsonl> <prebuilt-plugins-directory>
   among-tools install-prebuilt <source-root> <among-binary> <native-uninstaller>
   among-tools install <source-root> [--binary PATH | --install-deps | --uninstall]
-  among-tools check-plugin-install <source-root> <among-binary> <prebuilt-plugins> <prebuilt-plugin-installer>
+  among-tools prepare-official-plugin-inputs <new-output-directory>
+  among-tools capture-package-plugin-profile <source-root> <cargo-host-test-records> <new-directory>
+  among-tools check-package-plugin-profile <profile-directory> <host-source-sha>
+  among-tools check-plugin-install <among-test-executable> <official-plugin-inputs>
   among-tools check-sessions <among-binary>
   among-tools check-split-directory <among-binary>
   among-tools check-scroll-calibration <among-binary>
   among-tools check-sidebar-rename <among-binary>
   among-tools check-workspace-reorder <among-binary>
+  among-tools check-plugin-development <among-binary>
   among-tools check-pane-workspace-move <among-binary>
   among-tools check-pane-drag-guards <among-binary> <prebuilt-drag-source> <prebuilt-summary-plugin>
   among-tools check-window-controls <among-binary> <prebuilt-notice-plugin>
   among-tools check-live-focus <among-binary>
   among-tools check-live-resize <among-binary>
-  among-tools check-live-status <source-root> <among-binary> <prebuilt-plugins>
+  among-tools check-live-status <source-root> <among-binary> <observed-installed-profile>
   among-tools check-desktop <source-root> <among-binary>
   among-tools check-appimage-gnome <appimage> <new-evidence-directory> [--native-present]
   among-tools check-context-menu-launch <among-binary>
@@ -686,11 +690,11 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 &among_tools::scratch::root()?,
             )?;
         }
-        [command, root, binary, plugins] if command == "check-live-status" => {
+        [command, root, binary, profile] if command == "check-live-status" => {
             among_tools::live_status::run(
                 Path::new(root),
                 Path::new(binary),
-                Path::new(plugins),
+                Path::new(profile),
                 &among_tools::scratch::root()?,
             )?;
         }
@@ -708,6 +712,9 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, binary] if command == "check-workspace-reorder" => {
             among_tools::workspace_reorder::run(Path::new(binary), &among_tools::scratch::root()?)?;
+        }
+        [command, binary] if command == "check-plugin-development" => {
+            among_tools::plugin_development::run(Path::new(binary))?;
         }
         [command, binary] if command == "check-pane-workspace-move" => {
             among_tools::pane_workspace_move::run(
@@ -739,12 +746,24 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         [command, binary] if command == "check-sessions" => {
             among_tools::sessions::run(Path::new(binary), &among_tools::scratch::root()?)?;
         }
-        [command, root, app, built, installer] if command == "check-plugin-install" => {
-            among_tools::plugin_install::run(
+        [command, destination] if command == "prepare-official-plugin-inputs" => {
+            among_tools::plugin_install::release::prepare(Path::new(destination))?;
+        }
+        [command, root, records, output] if command == "capture-package-plugin-profile" => {
+            among_tools::plugin_install::package::capture(
                 Path::new(root),
-                Path::new(app),
-                Path::new(built),
-                Path::new(installer),
+                Path::new(records),
+                Path::new(output),
+                &among_tools::scratch::root()?,
+            )?;
+        }
+        [command, profile, source] if command == "check-package-plugin-profile" => {
+            among_tools::plugin_install::package::validate(Path::new(profile), source)?;
+        }
+        [command, executable, inputs] if command == "check-plugin-install" => {
+            among_tools::plugin_install::run(
+                Path::new(executable),
+                Path::new(inputs),
                 &among_tools::scratch::root()?,
             )?;
         }

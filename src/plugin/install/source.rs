@@ -11,12 +11,13 @@ use reqwest::{Client, Url};
 use serde_json::Value;
 
 use super::metadata::{Catalogue, Platform};
-use super::{package, store};
+use super::{official, package, store};
 use crate::plugin::data::{self, Problem};
+use crate::plugin::inventory::release::ReleaseAsset;
 use crate::plugin::inventory::{Receipt, SourceReceipt};
 use crate::plugin::origin::Origin;
 
-mod release;
+pub(super) mod release;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -74,10 +75,15 @@ pub struct Inspection {
     pub catalogue_revision: String,
     pub catalogue: Catalogue,
     pub(super) catalogue_bytes: Vec<u8>,
+    pub(super) release: release::ResolvedRelease,
     compatibility: std::collections::BTreeMap<(String, String), Result<usize, Problem>>,
 }
 
 impl Inspection {
+    pub fn validate_source(&self) -> Result<(), Problem> {
+        official::validate(&self.origin())
+    }
+
     pub fn origin(&self) -> Origin {
         Origin {
             repository_id: self.repository_id,
@@ -87,24 +93,51 @@ impl Inspection {
         }
     }
 
-    pub(super) fn from_bytes(
+    /// Whether this inspection observed the newest development prerelease
+    /// rather than the latest stable release. The channel lives in the
+    /// observed snapshot itself, so a cached inspection keeps it as well.
+    // `expect` rather than `allow`: once the Preferences development action
+    // uses this, the unfulfilled expectation fails the build and is removed.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the development-mode Preferences action reads it")
+    )]
+    pub fn is_prerelease(&self) -> bool {
+        self.release.snapshot.is_prerelease()
+    }
+
+    pub(super) fn from_release(
         origin: Origin,
-        revision: String,
+        release: release::ResolvedRelease,
         bytes: Vec<u8>,
     ) -> Result<Self, Problem> {
-        origin.validate()?;
-        if revision.len() != 40
-            || !revision
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        official::validate(&origin)?;
+        release.validate()?;
+        let catalogue_asset = release.snapshot.asset("among-plugins.json")?;
+        if bytes.len() > super::metadata::MAX_CATALOGUE_BYTES
+            || catalogue_asset.size != bytes.len() as u64
+            || crate::plugin::inventory::checksum(&bytes)? != catalogue_asset.sha256
         {
-            return Err(Problem("invalid pinned catalogue revision"));
+            return Err(Problem(
+                "catalogue bytes disagree with the observed release asset",
+            ));
         }
         let catalogue = Catalogue::parse(&bytes)?;
         let platform = Platform::current();
         let mut compatibility = std::collections::BTreeMap::new();
         for plugin in &catalogue.plugins {
             for version in &plugin.versions {
+                if version.revision != release.binding.commit {
+                    return Err(Problem(
+                        "catalogue version revision disagrees with the resolved release-tag commit",
+                    ));
+                }
+                for artifact in &version.artifacts {
+                    let observed = release.snapshot.asset(&artifact.asset)?;
+                    if observed.size != artifact.size || observed.sha256 != artifact.sha256 {
+                        return Err(Problem("catalogue package name, size or digest disagrees with its release asset"));
+                    }
+                }
                 let selected = platform
                     .as_ref()
                     .map_err(|problem| *problem)
@@ -113,7 +146,7 @@ impl Inspection {
                         version
                             .artifacts
                             .iter()
-                            .position(|artifact| artifact.asset_id == selected.asset_id)
+                            .position(|artifact| artifact.asset == selected.asset)
                             .ok_or(Problem("selected asset is unavailable"))
                     });
                 compatibility.insert(
@@ -130,9 +163,10 @@ impl Inspection {
                 owner: origin.owner,
                 name: origin.repository,
             },
-            catalogue_revision: revision,
+            catalogue_revision: release.binding.commit.clone(),
             catalogue,
             catalogue_bytes: bytes,
+            release,
             compatibility,
         })
     }
@@ -153,7 +187,7 @@ impl Inspection {
                 let state = match selected {
                     Ok(artifact) => format!(
                         "ready-built asset {}, {} bytes, {} files",
-                        artifact.asset_id,
+                        artifact.asset,
                         artifact.size,
                         artifact.members.len()
                     ),
@@ -167,7 +201,7 @@ impl Inspection {
                     state,
                     version.manifest.description,
                     version.revision,
-                    version.release_id,
+                    self.release.snapshot.id,
                     version.manifest_sha256
                 ));
                 if lines.iter().map(String::len).sum::<usize>() > 24 * 1024 {
@@ -182,6 +216,7 @@ impl Inspection {
     }
 
     pub fn select(&self, plugin: &str, version: &str) -> Result<Selection, Problem> {
+        self.validate_source()?;
         let artifact_index = self.artifact(plugin, version)?;
         let version = self
             .catalogue
@@ -206,12 +241,14 @@ impl Inspection {
             repository: self.repository.clone(),
             version,
             artifact,
+            release: self.release.clone(),
             previous: None,
             source: SourceReceipt {
                 publisher_id: self.publisher_id,
                 catalogue_revision: self.catalogue_revision.clone(),
                 catalogue_sha256: crate::plugin::inventory::checksum(&self.catalogue_bytes)?,
-                release_binding: None,
+                release_snapshot: Box::new(self.release.snapshot.clone()),
+                release_binding: self.release.binding.clone(),
             },
         })
     }
@@ -230,21 +267,39 @@ pub struct Selection {
     repository: Repository,
     version: super::metadata::Version,
     artifact: super::metadata::Artifact,
+    release: release::ResolvedRelease,
     source: SourceReceipt,
     previous: Option<Receipt>,
 }
 
 impl Selection {
+    fn origin(&self) -> Origin {
+        Origin {
+            repository_id: self.repository_id,
+            publisher_id: self.source.publisher_id,
+            owner: self.repository.owner.clone(),
+            repository: self.repository.name.clone(),
+        }
+    }
+
     pub fn for_update(
         mut self,
         entry: &crate::plugin::inventory::Entry,
         stored: Option<&Value>,
     ) -> Result<Self, Problem> {
-        if entry.receipt.repository_id != self.repository_id
+        if entry.receipt.release().map(|release| release.repository_id) != Some(self.repository_id)
             || entry.receipt.plugin_id != self.version.manifest.id
         {
             return Err(Problem(
                 "selected update belongs to a different authoritative identity",
+            ));
+        }
+        // An update keeps the installation's switch and grants. A prerelease
+        // may replace an install only after its own confirmation and without
+        // them, so it can never travel this path.
+        if self.is_prerelease() {
+            return Err(Problem(
+                "a prerelease replaces an installed plugin only through a confirmed replacement, never as an update",
             ));
         }
         if let Some(schema) = &self.version.manifest.settings {
@@ -256,6 +311,12 @@ impl Selection {
 
     pub fn is_update(&self) -> bool {
         self.previous.is_some()
+    }
+
+    /// Whether the selected package comes from a development prerelease. The
+    /// pre-commit re-observation repeats this same channel.
+    pub fn is_prerelease(&self) -> bool {
+        self.release.snapshot.is_prerelease()
     }
 
     pub fn identity(&self) -> String {
@@ -277,11 +338,18 @@ impl Selection {
         format!("{}\nSelected version {} · catalogue-declared version commit {}\n{}\nRequired access: {}\nOptional access: {}\nThe exact release tag must resolve to this commit and remain consistent through the pre-commit recheck. This is content consistency, not build reproducibility or independent publisher authentication. Only this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "))
     }
     pub fn description(&self) -> String {
+        let architecture = match self.artifact.architecture {
+            super::metadata::Architecture::Amd64 => "amd64",
+            super::metadata::Architecture::Arm64 => "arm64",
+        };
         format!(
-            "github:{}/{} · asset {} · {} bytes",
+            "github:{}/{} · version {} · {}/{} · asset {} · {} bytes",
             self.repository_id,
             self.version.manifest.id,
-            self.artifact.asset_id,
+            self.version.manifest.version,
+            self.artifact.os,
+            architecture,
+            self.artifact.asset,
             self.artifact.size
         )
     }
@@ -302,9 +370,11 @@ impl Permit {
     }
 }
 
+// A repository typed by address is always inspected through its latest stable
+// release; only an already registered source can be asked for a prerelease.
 enum Target {
     Address(Repository),
-    Registered(u64),
+    Registered(u64, release::Channel),
 }
 
 impl Drop for Permit {
@@ -323,7 +393,31 @@ impl Job {
     }
 
     pub fn refresh(repository_id: u64) -> Result<Self, Problem> {
-        Self::start_target(Target::Registered(repository_id), None)
+        Self::start_target(
+            Target::Registered(repository_id, release::Channel::Latest),
+            None,
+        )
+    }
+
+    /// Inspect a registered source through its newest prerelease instead of
+    /// `releases/latest`, with the same identity, inventory, catalogue and tag
+    /// checks. An ordinary instance refuses before any thread, worker slot or
+    /// request exists.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the development-mode Preferences action starts it"
+        )
+    )]
+    pub fn refresh_prerelease(repository_id: u64) -> Result<Self, Problem> {
+        if !crate::plugin::development::enabled() {
+            return Err(Problem(release::DEVELOPMENT_ONLY));
+        }
+        Self::start_target(
+            Target::Registered(repository_id, release::Channel::Prerelease),
+            None,
+        )
     }
 
     fn start_target(target: Target, client: Option<Client>) -> Result<Self, Problem> {
@@ -386,10 +480,10 @@ impl Drop for Job {
     }
 }
 
-const DOWNLOADING: u8 = 0;
-const VERIFYING: u8 = 1;
-const STAGING: u8 = 2;
-const COMMITTING: u8 = 3;
+pub(super) const DOWNLOADING: u8 = 0;
+pub(super) const VERIFYING: u8 = 1;
+pub(super) const STAGING: u8 = 2;
+pub(super) const COMMITTING: u8 = 3;
 const FINISHED: u8 = 4;
 const CANCELLED: u8 = 5;
 const FAILED: u8 = 6;
@@ -405,6 +499,11 @@ pub struct InstallJob {
 
 impl InstallJob {
     pub fn start(selection: Selection, root: PathBuf) -> Result<Self, Problem> {
+        // A prerelease selection can still come from a cached inspection made
+        // in an earlier development run; an ordinary instance must not commit it.
+        if selection.is_prerelease() && !crate::plugin::development::enabled() {
+            return Err(Problem(release::DEVELOPMENT_ONLY));
+        }
         Self::start_with(selection, root, None)
     }
 
@@ -413,14 +512,51 @@ impl InstallJob {
         root: PathBuf,
         client: Option<Client>,
     ) -> Result<Self, Problem> {
-        let permit = Permit::acquire()?;
-        let ticket = super::operations::Ticket::acquire(
-            &root,
-            crate::plugin::manifest::ManagedIdentity::new(
-                selection.repository_id,
-                selection.version.manifest.id.clone(),
-            )?,
+        official::validate(&selection.origin())?;
+        let identity = crate::plugin::manifest::ManagedIdentity::new(
+            selection.repository_id,
+            selection.version.manifest.id.clone(),
         )?;
+        Self::spawn(
+            root.clone(),
+            identity,
+            "among-install",
+            move |state, cancelled| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| Problem("cannot start the package network worker"))?;
+                let outcome = runtime.block_on(async {
+                    let client = match client {
+                        Some(client) => client,
+                        None => client_builder()
+                            .build()
+                            .map_err(|_| Problem("cannot initialize the HTTPS client"))?,
+                    };
+                    let operation = Operation {
+                        client,
+                        cancelled,
+                        deadline: Instant::now() + OPERATION_TIMEOUT,
+                    };
+                    operation.install(selection, &root, state).await
+                });
+                drop(runtime);
+                outcome
+            },
+        )
+    }
+
+    /// Runs one installation worker for `identity` with the shared phase,
+    /// cancellation and operation-ticket rules. `work` advances the phases
+    /// from downloading to committing through `progress`.
+    pub(super) fn spawn(
+        root: PathBuf,
+        identity: crate::plugin::manifest::ManagedIdentity,
+        thread: &str,
+        work: impl FnOnce(&AtomicU8, Arc<AtomicBool>) -> Result<store::Commit, Problem> + Send + 'static,
+    ) -> Result<Self, Problem> {
+        let permit = Permit::acquire()?;
+        let ticket = super::operations::Ticket::acquire(&root, identity)?;
         let identity = ticket.identity.clone();
         let generation = ticket.generation.clone();
         let state = Arc::new(AtomicU8::new(DOWNLOADING));
@@ -429,32 +565,11 @@ impl InstallJob {
         let worker_cancelled = cancelled.clone();
         let (send, result) = mpsc::sync_channel(1);
         std::thread::Builder::new()
-            .name("among-install".into())
+            .name(thread.into())
             .spawn(move || {
                 let _permit = permit;
                 let _ticket = ticket;
-                let outcome = (|| {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|_| Problem("cannot start the package network worker"))?;
-                    let outcome = runtime.block_on(async {
-                        let client = match client {
-                            Some(client) => client,
-                            None => client_builder()
-                                .build()
-                                .map_err(|_| Problem("cannot initialize the HTTPS client"))?,
-                        };
-                        let operation = Operation {
-                            client,
-                            cancelled: worker_cancelled,
-                            deadline: Instant::now() + OPERATION_TIMEOUT,
-                        };
-                        operation.install(selection, &root, &worker_state).await
-                    });
-                    drop(runtime);
-                    outcome
-                })();
+                let outcome = work(&worker_state, worker_cancelled);
                 if outcome.is_ok() {
                     worker_state.store(FINISHED, Ordering::Release);
                 } else if worker_state.load(Ordering::Acquire) == CANCELLED
@@ -500,6 +615,14 @@ impl InstallJob {
 
     pub fn phase(&self) -> &'static str {
         match self.state.load(Ordering::Acquire) {
+            DOWNLOADING
+                if self
+                    .identity
+                    .strip_prefix(crate::plugin::manifest::DEVELOPMENT_NAMESPACE)
+                    .is_some_and(|rest| rest.starts_with('/')) =>
+            {
+                "Reading selected local package file"
+            }
             DOWNLOADING => "Downloading selected package",
             VERIFYING => "Verifying package digest",
             STAGING => "Validating contained package files",
@@ -559,31 +682,58 @@ impl Operation {
         Ok(())
     }
 
+    async fn check_selection_identity(&self, selected: &Selection) -> Result<(), Problem> {
+        official::validate(&selected.origin())?;
+        let url = github_url(
+            "api.github.com",
+            &["repositories", &selected.repository_id.to_string()],
+        )?;
+        let requested = url.clone();
+        let (bytes, _) = self
+            .get(url, |next| next == &requested, data::MAX_STATIC_BYTES)
+            .await?;
+        let document = data::parse_unique(&bytes, data::MAX_STATIC_BYTES)?;
+        if document["id"].as_u64() != Some(selected.repository_id)
+            || document["owner"]["id"].as_u64() != Some(selected.source.publisher_id)
+            || document["private"].as_bool() != Some(false)
+        {
+            return Err(Problem(
+                "repository or publisher identity changed; refresh and review again",
+            ));
+        }
+        Ok(())
+    }
+
     async fn install(
         &self,
         selected: Selection,
         root: &std::path::Path,
         state: &AtomicU8,
     ) -> Result<store::Commit, Problem> {
+        self.check_selection_identity(&selected).await?;
         let version = &selected.version;
         let artifact = &selected.artifact;
         artifact.compatibility(&Platform::current()?)?;
         let mut receipt = Receipt {
-            repository_id: selected.repository_id,
-            owner: selected.repository.owner.clone(),
-            repository: selected.repository.name.clone(),
+            origin: crate::plugin::inventory::Provenance::Release(
+                crate::plugin::inventory::ReleaseOrigin {
+                    repository_id: selected.repository_id,
+                    owner: selected.repository.owner.clone(),
+                    repository: selected.repository.name.clone(),
+                    release_id: selected.release.snapshot.id,
+                    asset_id: selected.release.snapshot.asset(&artifact.asset)?.id,
+                    source: Some(selected.source.clone()),
+                },
+            ),
             plugin_id: version.manifest.id.clone(),
             revision: version.revision.clone(),
             manifest_sha256: version.manifest_sha256.clone(),
             package_sha256: artifact.sha256.clone(),
-            release_id: version.release_id,
-            asset_id: artifact.asset_id,
             generation: store::token(),
             installation: selected.previous.as_ref().map_or_else(
                 || Some(store::token()),
                 |previous| previous.installation.clone(),
             ),
-            source: Some(selected.source.clone()),
         };
         let anticipated = artifact
             .members
@@ -599,11 +749,16 @@ impl Operation {
             transaction.refuse_existing(&receipt)?;
         }
         let release = self.resolve_release(&selected).await?;
+        if release != selected.release {
+            return Err(Problem(
+                "release tag or snapshot changed since review; refresh and review again",
+            ));
+        }
         receipt
-            .source
-            .as_mut()
+            .release_mut()
+            .and_then(|origin| origin.source.as_mut())
             .ok_or(Problem("selected package has no source receipt"))?
-            .release_binding = Some(release.binding.clone());
+            .release_binding = release.binding.clone();
         self.download(&selected, &mut transaction.archive, state)
             .await?;
         transaction
@@ -622,8 +777,9 @@ impl Operation {
             || self.check(),
         )?;
         if self.resolve_release(&selected).await? != release {
-            return Err(Problem("release tag or immutable peel chain changed during installation; selection was not committed"));
+            return Err(Problem("release snapshot, tag or immutable peel chain changed during installation; selection was not committed"));
         }
+        self.check_selection_identity(&selected).await?;
         match &selected.previous {
             Some(previous) => transaction.commit_update(
                 receipt,
@@ -645,8 +801,20 @@ impl Operation {
         output: &mut std::fs::File,
         state: &AtomicU8,
     ) -> Result<(), Problem> {
-        let repository = selected.repository_id.to_string();
-        let asset = selected.artifact.asset_id.to_string();
+        let asset = selected.release.snapshot.asset(&selected.artifact.asset)?;
+        self.download_asset(selected.repository_id, asset, output)
+            .await?;
+        self.progress(state, DOWNLOADING, VERIFYING)
+    }
+
+    async fn download_asset(
+        &self,
+        repository_id: u64,
+        observed: &ReleaseAsset,
+        output: &mut impl Write,
+    ) -> Result<(), Problem> {
+        let repository = repository_id.to_string();
+        let asset = observed.id.to_string();
         let mut url = github_url(
             "api.github.com",
             &["repositories", &repository, "releases", "assets", &asset],
@@ -660,6 +828,7 @@ impl Operation {
                         .get(url.clone())
                         .header("Accept", "application/octet-stream")
                         .header("Accept-Encoding", "identity")
+                        .header("Cache-Control", "no-cache")
                         .send(),
                 )
                 .await?;
@@ -676,7 +845,7 @@ impl Operation {
                 let next = url
                     .join(location)
                     .map_err(|_| Problem("invalid package redirect"))?;
-                if next != requested && !asset_delivery_url(&next, selected.repository_id) {
+                if next != requested && !asset_delivery_url(&next, repository_id) {
                     return Err(Problem(
                         "package redirect changed the approved repository or delivery origin",
                     ));
@@ -698,7 +867,7 @@ impl Operation {
                 .is_some_and(|value| value != "identity")
                 || response
                     .content_length()
-                    .is_some_and(|size| size != selected.artifact.size)
+                    .is_some_and(|size| size != observed.size)
             {
                 return Err(Problem(
                     "package transfer encoding or size disagrees with selected metadata",
@@ -710,7 +879,7 @@ impl Operation {
             while let Some(chunk) = self.wait(response.chunk()).await? {
                 size = size
                     .checked_add(chunk.len() as u64)
-                    .filter(|size| *size <= selected.artifact.size)
+                    .filter(|size| *size <= observed.size)
                     .ok_or(Problem("package transfer exceeds its declared byte budget"))?;
                 digest.update(&chunk);
                 output
@@ -718,9 +887,7 @@ impl Operation {
                     .map_err(|_| Problem("cannot write downloaded package"))?;
             }
             self.check()?;
-            self.progress(state, DOWNLOADING, VERIFYING)?;
-            if size != selected.artifact.size
-                || digest.string().as_deref() != Some(selected.artifact.sha256.as_str())
+            if size != observed.size || digest.string().as_deref() != Some(observed.sha256.as_str())
             {
                 return Err(Problem(
                     "downloaded package size or digest disagrees with selected metadata",
@@ -849,16 +1016,18 @@ impl Operation {
     }
 
     async fn inspect_target(&self, target: Target) -> Result<Inspection, Problem> {
-        let expected_id = match &target {
-            Target::Registered(id) if *id > 0 => Some(*id),
-            Target::Registered(_) => return Err(Problem("invalid registered repository identity")),
-            _ => None,
+        let (expected_id, channel) = match &target {
+            Target::Registered(id, channel) if *id > 0 => (Some(*id), *channel),
+            Target::Registered(..) => {
+                return Err(Problem("invalid registered repository identity"))
+            }
+            Target::Address(_) => (None, release::Channel::Latest),
         };
         let repository_url = match target {
             Target::Address(input) => {
                 github_url("api.github.com", &["repos", &input.owner, &input.name])?
             }
-            Target::Registered(id) => {
+            Target::Registered(id, _) => {
                 github_url("api.github.com", &["repositories", &id.to_string()])?
             }
         };
@@ -901,66 +1070,29 @@ impl Operation {
             .as_str()
             .filter(|name| component(name))
             .ok_or(Problem("invalid canonical repository name"))?;
-        let branch = document["default_branch"]
-            .as_str()
-            .filter(|branch| !branch.is_empty() && data::bounded_text(branch, 256, false))
-            .ok_or(Problem("repository has no usable default branch"))?;
         let repository = Repository {
             owner: owner.into(),
             name: name.into(),
         };
-        let commit_url = github_url(
-            "api.github.com",
-            &["repositories", &id.to_string(), "commits", branch],
-        )?;
-        let requested = commit_url.clone();
-        let suffix = format!(
-            "/commits/{}",
-            requested
-                .path()
-                .rsplit('/')
-                .next()
-                .ok_or(Problem("invalid commit reference"))?
-        );
-        let (bytes, _) = self
-            .get(
-                commit_url,
-                |next| next == &requested || numeric_repository_url(next, Some(id), &suffix),
-                data::MAX_STATIC_BYTES,
-            )
-            .await?;
-        let commit: Value = data::parse_unique(&bytes, data::MAX_STATIC_BYTES)?;
-        let revision = commit["sha"]
-            .as_str()
-            .filter(|sha| {
-                sha.len() == 40
-                    && sha
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
-            .ok_or(Problem("commit response lacks an exact revision"))?;
-        let catalogue_url = github_url(
-            "raw.githubusercontent.com",
-            &[owner, name, revision, "among-plugins.json"],
-        )?;
-        let requested = catalogue_url.clone();
-        let (bytes, _) = self
-            .get(
-                catalogue_url,
-                |next| next == &requested,
-                super::metadata::MAX_CATALOGUE_BYTES,
-            )
-            .await?;
-        let inspection = Inspection::from_bytes(
-            Origin {
-                repository_id: id,
-                publisher_id,
-                owner: repository.owner,
-                repository: repository.name,
-            },
-            revision.into(),
-            bytes,
-        )?;
+        let origin = Origin {
+            repository_id: id,
+            publisher_id,
+            owner: repository.owner,
+            repository: repository.name,
+        };
+        official::validate(&origin)?;
+        let snapshot = self.observe(id, channel).await?;
+        let catalogue_asset = snapshot.asset("among-plugins.json")?;
+        if catalogue_asset.size == 0
+            || catalogue_asset.size > super::metadata::MAX_CATALOGUE_BYTES as u64
+        {
+            return Err(Problem("release catalogue exceeds its byte budget"));
+        }
+        let mut bytes = Vec::new();
+        self.download_asset(id, catalogue_asset, &mut bytes).await?;
+        // Check the transfer digest before a catalogue parser receives these bytes.
+        let release = self.resolve_tag(id, snapshot).await?;
+        let inspection = Inspection::from_release(origin, release, bytes)?;
         self.check()?;
         Ok(inspection)
     }

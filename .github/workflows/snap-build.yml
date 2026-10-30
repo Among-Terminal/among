@@ -41,6 +41,19 @@ jobs:
           # failure-evidence upload below take the root from here.
           echo "AMONG_CHECK_ROOT=$RUNNER_TEMP/among-checks" >> "$GITHUB_ENV"
           mkdir -m 700 "$RUNNER_TEMP/among-checks"
+      - name: Capture native plugin profile before destructive Snap build changes the checkout
+        run: |
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+          CARGO_BUILD_JOBS=1 cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
+          source_sha="$(git -c "safe.directory=$(pwd -P)" rev-parse HEAD)"
+          case "$source_sha" in ''|*[!0-9a-f]*) echo 'invalid host source SHA' >&2; exit 1 ;; esac
+          test "${#source_sha}" -eq 40
+          AMONG_CHECK_SOURCE_SHA="$source_sha" CARGO_BUILD_JOBS=1 cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
+          tool=tools/among-tools/target/release/among-tools
+          "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" package-plugin-profile
+          "$tool" check-package-plugin-profile package-plugin-profile "$GITHUB_SHA"
       - name: Build actual native core24 recipe
         id: build
         env:
@@ -85,7 +98,7 @@ jobs:
         run: |
           status=0
           tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-live-focus /snap/bin/among || status=1
-          tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-live-status "$PWD" /snap/bin/among /snap/among/current/usr/share/among/plugins || status=1
+          tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-live-status "$PWD" /snap/bin/among "$PWD/package-plugin-profile" || status=1
           tools/among-tools/target/release/among-tools ci-x11 tools/among-tools/target/release/among-tools check-sessions /snap/bin/among || status=1
           exit "$status"
       - name: Retain display check evidence after a failure
@@ -110,15 +123,17 @@ jobs:
           "$tool" package-native-checker target/release/examples/check-clipboard "$SOURCE_SHA" "v$SNAP_VERSION" ubuntu24.04 "$BUILD_ARCH" clean-snap-input/clipboard
           cp "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" clean-snap-input/among.snap
           cp docs/plugins.md clean-snap-input/docs/plugins.md
+          cp -a package-plugin-profile clean-snap-input/observed-profile
           printf 'v%s\n' "$SNAP_VERSION" > clean-snap-input/tag
           cd clean-snap-input
-          sha256sum among.snap tag docs/plugins.md tools/among-tools tools/checker-record.json clipboard/among-tools clipboard/checker-record.json > SHA256SUMS
+          sha256sum among.snap tag docs/plugins.md tools/among-tools tools/checker-record.json clipboard/among-tools clipboard/checker-record.json observed-profile/transfer.json > SHA256SUMS
       - name: Transfer internal runtime inputs separately
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: clean-snap-input-${{ matrix.arch }}
           path: clean-snap-input/
+          include-hidden-files: true
           retention-days: 5
       - name: Retain built packages
         # Keep packages at the archive root; evidence paths would change its common root.

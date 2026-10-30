@@ -1,32 +1,41 @@
-// A subprocess fixture: notifications and explicit slots are separate messages.
+// managed runtime fixture: unsupported notify cannot become UI or a fake event.
+use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 
 fn main() -> io::Result<()> {
     let mut output = io::stdout().lock();
+    let mut pane_opened = false;
     for line in io::stdin().lock().lines() {
-        let line = line?;
-        if line.contains("\"type\":\"shutdown\"") {
-            break;
-        }
-        if line.contains("\"type\":\"hello\"") {
-            writeln!(output, "{{\"type\":\"hello\",\"major\":1,\"minor\":1}}")?;
-            writeln!(
-                output,
-                "{{\"type\":\"notify\",\"message\":\"notification-check\"}}"
-            )?;
-        } else if line.contains("\"kind\":\"pane_opened\"") {
-            writeln!(
-                output,
-                "{{\"type\":\"notify\",\"message\":\"pane-opened-check\"}}"
-            )?;
-        } else if let Some((_, tail)) = line.split_once("\"request_id\":") {
-            let id: String = tail
-                .trim_start()
-                .chars()
-                .take_while(char::is_ascii_digit)
-                .collect();
-            writeln!(output, "{{\"type\":\"status\",\"request_id\":{id},\"refresh_ms\":1000,\"fragments\":[{{\"text\":\"fixture-status\"}}]}}")?;
-        }
+        let message: Value = serde_json::from_str(&line?)?;
+        match message["type"].as_str() {
+            Some("shutdown") => break,
+            Some("managed_hello") => serde_json::to_writer(&mut output, &message)?,
+            Some("event") => {
+                if message["event"]["kind"] == "pane_opened" {
+                    pane_opened = true;
+                }
+                continue;
+            }
+            Some("status") => {
+                writeln!(
+                    output,
+                    "{{\"type\":\"notify\",\"message\":\"notification-check-must-not-escape\"}}"
+                )?;
+                let fragments = if message["scope"]["slot"] == "app_footer" {
+                    vec![
+                        json!({"text":if pane_opened {"fixture-status-pane-opened"}else{"fixture-status"}}),
+                    ]
+                } else {
+                    vec![]
+                };
+                serde_json::to_writer(
+                    &mut output,
+                    &json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":message["request_id"],"refresh_ms":1000,"fragments":fragments}),
+                )?;
+            }
+            _ => continue,
+        };
+        output.write_all(b"\n")?;
         output.flush()?;
     }
     Ok(())

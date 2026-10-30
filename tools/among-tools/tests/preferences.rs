@@ -19,15 +19,18 @@ fn all_ten_original_phases_and_file_preservation_assertions_remain() -> among_to
             "invalid-plugins"
         ]
     );
-    let settings = json!({"keep":42,"plugins":[{}, {"name":"unavailable","enabled":true}]});
-    let before = BTreeMap::from([("plugins.json".into(), serde_json::to_vec(&settings)?)]);
+    let settings = json!({"version":1,"keep":42,"plugins":{"github:999/unavailable":{"enabled":true,"future":"keep"}}});
+    let before = BTreeMap::from([(
+        "managed-plugins.json".into(),
+        serde_json::to_vec(&settings)?,
+    )]);
     for phase in ["restore", "off", "fault"] {
         preferences::verify(phase, &before, &before)?;
         let mut after = before.clone();
         after.insert("shortcuts.json".into(), b"changed".to_vec());
         assert!(preferences::verify(phase, &before, &after).is_err());
     }
-    let lost = BTreeMap::from([("plugins.json".into(), b"{}".to_vec())]);
+    let lost = BTreeMap::from([("managed-plugins.json".into(), b"{}".to_vec())]);
     assert!(preferences::verify("edit", &before, &lost).is_err());
     preferences::verify("invalid-plugins", &before, &lost)?;
     Ok(())

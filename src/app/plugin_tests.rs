@@ -98,13 +98,45 @@ fn application(id: &str) -> adw::Application {
 }
 
 #[test]
+#[ignore = "requires an isolated graphical session and a real application startup"]
+fn manifestless_files_and_filename_settings_supply_no_plugin_inventory_or_execution() {
+    use std::os::unix::fs::PermissionsExt;
+    let app = application("com.github.among-terminal.no-manifestless-discovery-test");
+    let config = crate::settings::directory().unwrap();
+    let raw = config.join("plugins.json");
+    let document = br#"{"plugins":[{"name":"manifestless","enabled":true}],"unrelated":"retain"}"#;
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(&raw, document).unwrap();
+    let directory =
+        std::path::PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap()).join("among/plugins");
+    crate::test_isolation::assert_below_check_root(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("manifestless");
+    let marker = directory.join("must-not-execute");
+    let executable = format!("#!/bin/sh\nprintf executed > '{}'\n", marker.display());
+    std::fs::write(&file, &executable).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    ctx.state.borrow_mut().plugins.enable("manifestless");
+    assert!(ctx.state.borrow().plugins.listing().is_empty());
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
+    assert!(!marker.exists());
+    assert_eq!(std::fs::read(&raw).unwrap(), document);
+    assert_eq!(std::fs::read(&file).unwrap(), executable.as_bytes());
+    assert!(ctx.state.borrow().settings.problems.is_empty());
+    println!("PASS actual startup ignores manifestless executables/filename enablement, no child or inventory fallback, unrelated settings and files unchanged");
+    ctx.window.destroy();
+}
+
+#[test]
 #[ignore = "requires an isolated graphical session, built fake-plugin and real keyboard input"]
 fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
     let app = application("com.github.among-terminal.plugin-transport-test");
     let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
-    ctx.state.borrow_mut().plugins.register(PluginSpec {
-        name: "sole".into(),
+    ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+        name: "github:12/sole".into(),
         command: fixture("one-status"),
         enabled: true,
     });
@@ -124,10 +156,10 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
     println!(
         "PASS sole faulted contributor is withdrawn from the real header without another result"
     );
-    ctx.state.borrow_mut().plugins.disable("sole");
+    ctx.state.borrow_mut().plugins.disable("github:12/sole");
 
-    ctx.state.borrow_mut().plugins.register(PluginSpec {
-        name: "disabled".into(),
+    ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+        name: "github:12/disabled".into(),
         command: fixture("echo"),
         enabled: true,
     });
@@ -135,7 +167,7 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
         || has_label(ctx.app_header.upcast_ref(), "ok"),
         Duration::from_secs(5),
     );
-    ctx.state.borrow_mut().plugins.disable("disabled");
+    ctx.state.borrow_mut().plugins.disable("github:12/disabled");
     wait_for(
         || !has_label(ctx.app_header.upcast_ref(), "ok"),
         Duration::from_secs(2),
@@ -159,8 +191,8 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
         || ctx.state.borrow().workspaces.active_index() == 1,
         Duration::from_secs(2),
     );
-    ctx.state.borrow_mut().plugins.register(PluginSpec {
-        name: "blocked".into(),
+    ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+        name: "github:12/blocked".into(),
         command: fixture("never-read"),
         enabled: true,
     });
@@ -171,18 +203,18 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
                 .plugins
                 .listing()
                 .iter()
-                .any(|(name, state)| name == "blocked" && state.is_healthy())
+                .any(|(name, state)| name == "github:12/blocked" && state.is_healthy())
         },
         Duration::from_secs(2),
     );
     let started = std::time::Instant::now();
-    // two frames exceed even a 64-KiB page-rounded fixture pipe, without
-    // racing the separate 16-frame overflow boundary.
+    // two valid maximum-length granted cwd events exceed the fixture's owned
+    // 4-KiB pipe, without racing the separate 16-frame overflow boundary.
     for _ in 0..2 {
         ctx.state.borrow_mut().plugins.broadcast_event(
             EventKind::WorkingDirectoryChanged,
             1,
-            Some("x".repeat(60 * 1024)),
+            Some("x".repeat(4096)),
         );
     }
     xdo(&["key", "--clearmodifiers", "ctrl+Page_Up"]);
@@ -213,7 +245,7 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
                 .listing()
                 .iter()
                 .any(|(name, state)| {
-                    if name != "blocked" {
+                    if name != "github:12/blocked" {
                         return false;
                     }
                     if let PluginState::Stopping { reason, .. } | PluginState::Faulted { reason } =
@@ -230,8 +262,8 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
         Duration::from_secs(4),
     );
     println!("PASS real workspace shortcut and terminal input while stdin is full; writer deadline contained the fixture");
-    ctx.state.borrow_mut().plugins.register(PluginSpec {
-        name: "shutdown".into(),
+    ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+        name: "github:12/shutdown".into(),
         command: fixture("stubborn"),
         enabled: true,
     });
@@ -242,7 +274,7 @@ fn hostile_plugin_pipes_preserve_terminal_input_and_withdraw_sole_content() {
                 .plugins
                 .listing()
                 .iter()
-                .any(|(name, state)| name == "shutdown" && state.is_healthy())
+                .any(|(name, state)| name == "github:12/shutdown" && state.is_healthy())
         },
         Duration::from_secs(2),
     );
@@ -289,8 +321,9 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
     crate::test_isolation::assert_below_check_root(&root);
     let first = crate::plugin::inventory::tests::fixture(&root);
     let mut second = first.clone();
-    second.repository_id = 13;
-    second.owner = "another".into();
+    let release = crate::plugin::inventory::tests::release_of(&mut second);
+    release.repository_id = 13;
+    release.owner = "another".into();
     let package = second.package_path(&root);
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -454,8 +487,8 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
         "unfinished edit",
     ]);
     wait_for(|| field.text() == "unfinished edit", Duration::from_secs(2));
-    ctx.state.borrow_mut().plugins.register(PluginSpec {
-        name: "controlled-crash".into(),
+    ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+        name: "github:12/controlled-crash".into(),
         command: fixture("crashing"),
         enabled: true,
     });
@@ -467,7 +500,7 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
                 .listing()
                 .iter()
                 .any(|(key, state)| {
-                    key == "controlled-crash"
+                    key == "github:12/controlled-crash"
                         && matches!(
                             state,
                             PluginState::Stopping { .. } | PluginState::Faulted { .. }
@@ -1309,8 +1342,8 @@ fn preferences_switch_withdraws_sole_sidebar_summary_without_other_results() {
         .unwrap()
         .terminal()
         .clone();
-    ctx.state.borrow_mut().plugins.register(PluginSpec {
-        name: "sole-summary".into(),
+    ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+        name: "github:12/sole-summary".into(),
         command: fixture("echo"),
         enabled: true,
     });
@@ -1369,11 +1402,13 @@ fn preferences_switch_withdraws_sole_sidebar_summary_without_other_results() {
     );
     assert!(!has_label(ctx.app_header.upcast_ref(), "ok"));
     let saved = crate::settings::load(
-        &plugin_config_path().unwrap(),
-        crate::settings::Document::Plugins,
+        &crate::settings::directory()
+            .unwrap()
+            .join("managed-plugins.json"),
+        crate::settings::Document::ManagedPlugins,
     )
     .unwrap();
-    assert_eq!(saved["plugins"][0]["enabled"], false);
+    assert_eq!(saved["plugins"]["github:12/sole-summary"]["enabled"], false);
     assert_eq!(
         ctx.state.borrow().pane(PaneId(1)).unwrap().terminal(),
         &terminal
@@ -1410,8 +1445,8 @@ fn eight_pane_collection_is_fair_to_fast_slow_and_interval_zero_sources() {
         Duration::from_secs(5),
     );
     for (name, mode) in [("early", "echo"), ("late", "delayed"), ("hot", "rapid")] {
-        ctx.state.borrow_mut().plugins.register(PluginSpec {
-            name: name.into(),
+        ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+            name: format!("github:12/{name}"),
             command: fixture(mode),
             enabled: true,
         });
@@ -1481,25 +1516,15 @@ fn eight_pane_collection_is_fair_to_fast_slow_and_interval_zero_sources() {
 #[ignore = "requires an isolated graphical session and built fake-plugin"]
 fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
     let app = application("com.github.among-terminal.plugin-reactivation-test");
-    let config =
-        std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap()).join("among");
-    let installed =
-        std::path::PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap()).join("among/plugins");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::create_dir_all(&installed).unwrap();
-    let executable = fixture("stubborn").remove(0);
-    let mut plugins = Vec::new();
-    for index in 0..32 {
-        let name = format!("retire-{index}");
-        std::os::unix::fs::symlink(&executable, installed.join(&name)).unwrap();
-        plugins.push(serde_json::json!({"name":name,"enabled":true}));
-    }
-    std::fs::write(
-        config.join("plugins.json"),
-        serde_json::json!({"plugins":plugins}).to_string(),
-    )
-    .unwrap();
-    std::env::set_var("AMONG_FAKE_PLUGIN_MODE", "stubborn");
+    PluginHost::install_fixture_inventory(
+        &(0..32)
+            .map(|index| PluginSpec {
+                name: format!("github:12/retire-{index}"),
+                command: fixture("stubborn"),
+                enabled: true,
+            })
+            .collect::<Vec<_>>(),
+    );
     let latest = Rc::new(RefCell::new(None));
     app.connect_activate({
         let latest = latest.clone();
@@ -1523,7 +1548,7 @@ fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
                 .state
                 .borrow()
                 .plugins
-                .hold_retirement(&format!("retire-{index}"), None)
+                .hold_retirement(&format!("github:12/retire-{index}"), None)
                 .unwrap()
         })
         .collect();
@@ -1602,25 +1627,17 @@ fn reactivation_keeps_retiring_and_replacement_plugins_within_one_budget() {
         || current.state.borrow().plugins.is_stopped(),
         Duration::from_secs(2),
     );
-    std::env::remove_var("AMONG_FAKE_PLUGIN_MODE");
 }
 
 #[test]
 #[ignore = "requires an isolated graphical session and built fake-plugin"]
 fn one_unproven_retirement_keeps_replacement_window_terminals_and_other_plugins_usable() {
     let app = application("com.github.among-terminal.isolated-retirement-test");
-    let config =
-        std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap()).join("among");
-    let installed =
-        std::path::PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap()).join("among/plugins");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::create_dir_all(&installed).unwrap();
-    let executable = fixture("stubborn").remove(0);
-    for name in ["blocked", "unrelated"] {
-        std::os::unix::fs::symlink(&executable, installed.join(name)).unwrap();
-    }
-    std::fs::write(config.join("plugins.json"), serde_json::json!({"plugins":[{"name":"blocked","enabled":true},{"name":"unrelated","enabled":true}]}).to_string()).unwrap();
-    std::env::set_var("AMONG_FAKE_PLUGIN_MODE", "stubborn");
+    PluginHost::install_fixture_inventory(&["blocked", "unrelated"].map(|name| PluginSpec {
+        name: format!("github:12/{name}"),
+        command: fixture("stubborn"),
+        enabled: true,
+    }));
     let latest = Rc::new(RefCell::new(None));
     app.connect_activate({
         let latest = latest.clone();
@@ -1640,7 +1657,7 @@ fn one_unproven_retirement_keeps_replacement_window_terminals_and_other_plugins_
         .state
         .borrow()
         .plugins
-        .hold_retirement("blocked", Some(libc::EACCES))
+        .hold_retirement("github:12/blocked", Some(libc::EACCES))
         .unwrap();
     old.window.destroy();
     app.activate();
@@ -1663,13 +1680,17 @@ fn one_unproven_retirement_keeps_replacement_window_terminals_and_other_plugins_
             hold.observations() >= 2
                 && listing
                     .iter()
-                    .any(|(name, state)| name == "unrelated" && state.is_healthy())
+                    .any(|(name, state)| name == "github:12/unrelated" && state.is_healthy())
         },
         Duration::from_secs(5),
     );
     assert!(!old.state.borrow().plugins.is_stopped());
-    assert!(!current.state.borrow().plugins.supervised_stopped("blocked"));
-    assert!(current.state.borrow().plugins.listing().iter().any(|(name, state)| name == "blocked" && matches!(state, PluginState::Stopping { reason, .. } if reason.contains("permission denied"))));
+    assert!(!current
+        .state
+        .borrow()
+        .plugins
+        .supervised_stopped("github:12/blocked"));
+    assert!(current.state.borrow().plugins.listing().iter().any(|(name, state)| name == "github:12/blocked" && matches!(state, PluginState::Stopping { reason, .. } if reason.contains("permission denied"))));
     assert_eq!(
         old.state.borrow().plugins.supervised_count()
             + current.state.borrow().plugins.supervised_count(),
@@ -1703,5 +1724,4 @@ fn one_unproven_retirement_keeps_replacement_window_terminals_and_other_plugins_
         || current.state.borrow().plugins.is_stopped(),
         Duration::from_secs(2),
     );
-    std::env::remove_var("AMONG_FAKE_PLUGIN_MODE");
 }

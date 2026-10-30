@@ -55,6 +55,7 @@ impl Durability {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Document {
+    #[cfg(test)]
     Plugins,
     ManagedPlugins,
     Shortcuts,
@@ -63,7 +64,6 @@ pub enum Document {
 
 pub struct PreferencesStorage {
     directory: Option<PathBuf>,
-    pending_plugins: std::collections::BTreeMap<String, bool>,
     pending_shortcuts: std::collections::BTreeMap<String, Value>,
     pending_managed: std::collections::BTreeMap<String, ManagedEdits>,
     #[cfg(test)]
@@ -75,7 +75,6 @@ impl PreferencesStorage {
     pub fn new(directory: Option<PathBuf>) -> Self {
         Self {
             directory,
-            pending_plugins: Default::default(),
             pending_shortcuts: Default::default(),
             pending_managed: Default::default(),
             #[cfg(test)]
@@ -109,21 +108,24 @@ impl PreferencesStorage {
     }
 
     pub fn plugin_changed(&mut self, name: &str, enabled: bool) -> Result<(), StorageError> {
-        if name.starts_with("github:") && name.contains('/') {
-            self.pending_managed.entry(name.into()).or_default().enabled = Some(enabled);
-            return self.flush_managed().map(|_| ());
+        let identity = name
+            .strip_prefix("github:")
+            .and_then(|key| key.split_once('/'))
+            .and_then(|(repository, plugin)| {
+                crate::plugin::manifest::ManagedIdentity::new(
+                    repository.parse().ok()?,
+                    plugin.into(),
+                )
+                .ok()
+            });
+        if identity.is_none_or(|identity| identity.key() != name) {
+            return Err(invalid(
+                Path::new(Document::ManagedPlugins.filename()),
+                "plugin enablement requires an authoritative managed identity",
+            ));
         }
-        self.pending_plugins.insert(name.into(), enabled);
-        let result = self.path(Document::Plugins).and_then(|path| {
-            update(&path, Document::Plugins, |value| {
-                merge_plugins(value, &self.pending_plugins)
-            })
-        });
-        if result.is_ok() {
-            self.pending_plugins.clear();
-        }
-        self.record(Document::Plugins, &result);
-        result
+        self.pending_managed.entry(name.into()).or_default().enabled = Some(enabled);
+        self.flush_managed().map(|_| ())
     }
 
     pub fn shortcuts_changed(
@@ -475,6 +477,7 @@ impl PreferencesStorage {
 impl Document {
     pub fn filename(self) -> &'static str {
         match self {
+            #[cfg(test)]
             Self::Plugins => "plugins.json",
             Self::ManagedPlugins => "managed-plugins.json",
             Self::Shortcuts => "shortcuts.json",
@@ -484,6 +487,7 @@ impl Document {
 
     fn empty(self) -> Value {
         match self {
+            #[cfg(test)]
             Self::Plugins => json!({"plugins": []}),
             Self::ManagedPlugins => json!({"version":1,"plugins":{}}),
             Self::Shortcuts => json!({"version": 1, "overrides": {}}),
@@ -583,8 +587,11 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
                 return Err(invalid(path, "managed plugin preferences must be objects"));
             }
         }
-        Document::Plugins if value.get("plugins").is_some_and(|v| !v.is_array()) => {
-            return Err(invalid(path, "plugins must be an array"))
+        #[cfg(test)]
+        Document::Plugins => {
+            if value.get("plugins").is_some_and(|v| !v.is_array()) {
+                return Err(invalid(path, "plugins must be an array"));
+            }
         }
         Document::Shortcuts => {
             if value.get("version").and_then(Value::as_u64) != Some(1) {
@@ -610,7 +617,6 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
                 }
             }
         }
-        _ => {}
     }
     Ok(value)
 }
@@ -742,6 +748,7 @@ fn update_with_confirmation(
     ))
 }
 
+#[cfg(test)]
 pub fn merge_plugins(
     value: &mut Value,
     changes: &std::collections::BTreeMap<String, bool>,
@@ -1438,22 +1445,29 @@ mod tests {
         let temp = Temp::new();
         let dir = temp.0.join("config");
         std::fs::create_dir(&dir).unwrap();
-        let path = dir.join("plugins.json");
+        // Storage refuses a group- or world-writable directory or file, so
+        // the fixture's modes are set rather than inherited from the umask;
+        // otherwise the broken document below would fail on permissions
+        // instead of on parsing.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.join("managed-plugins.json");
         std::fs::write(&path, "broken").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let mut store = PreferencesStorage::new(Some(dir.clone()));
-        assert!(store.plugin_changed("clock", true).is_err());
+        assert!(store.plugin_changed("github:12/clock", true).is_err());
         assert!(store.status().contains("session-only"));
-        std::fs::write(&path, r#"{"plugins":[],"external":42}"#).unwrap();
-        store.plugin_changed("pane-pwd", false).unwrap();
+        std::fs::write(&path, r#"{"version":1,"plugins":{"github:99/other":{"enabled":true,"future":"keep"}},"external":42}"#).unwrap();
+        store.plugin_changed("github:12/pane-pwd", false).unwrap();
         assert!(store.status().is_empty());
-        let value = load(&path, Document::Plugins).unwrap();
+        let value = load(&path, Document::ManagedPlugins).unwrap();
         assert_eq!(value["external"], 42);
         assert_eq!(
             value["plugins"],
-            json!([{"name":"clock","enabled":true},{"name":"pane-pwd","enabled":false}])
+            json!({"github:12/clock":{"enabled":true},"github:12/pane-pwd":{"enabled":false},"github:99/other":{"enabled":true,"future":"keep"}})
         );
         let shortcut = dir.join("shortcuts.json");
         std::fs::write(&shortcut, r#"{"version":2,"overrides":{}}"#).unwrap();
+        std::fs::set_permissions(&shortcut, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(store
             .shortcuts_changed(std::collections::BTreeMap::from([(
                 "split-pane".into(),

@@ -185,6 +185,11 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
                 if mode == "managed-hanging" {
                     continue;
                 }
+                if mode == "managed-legacy-hello" {
+                    send(&mut output, &json!({"type":"hello","major":1,"minor":999}))?;
+                    write_owned("unsupported-hello-sent", b"yes")?;
+                    continue;
+                }
                 if mode == "managed-before-admission" {
                     send(
                         &mut output,
@@ -385,6 +390,83 @@ fn serve_managed(mode: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+fn serve_managed_transport(mode: &str) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    if mode == "never-read"
+        && unsafe { libc::fcntl(std::io::stdin().as_raw_fd(), libc::F_SETPIPE_SZ, 4096) } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    if mode == "stubborn" {
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        }
+    }
+    if mode == "crashing" {
+        std::process::exit(1);
+    }
+    let mut output = std::io::stdout().lock();
+    if mode == "unterminated" {
+        output.write_all(&vec![b'x'; 256 * 1024])?;
+        output.flush()?;
+    }
+    if mode == "flood" {
+        for _ in 0..4096 {
+            send(
+                &mut output,
+                &json!({"type":"notify","message":"unsupported transport flood"}),
+            )?;
+        }
+    }
+    for line in std::io::stdin().lock().lines() {
+        let message: Value = serde_json::from_str(&line?)?;
+        match message["type"].as_str() {
+            Some("managed_hello") => {
+                send(&mut output, &message)?;
+                if mode == "malformed" {
+                    writeln!(output, "this is not json")?;
+                    output.flush()?;
+                }
+                if mode == "unmatched" {
+                    send(
+                        &mut output,
+                        &json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":99999,"fragments":[{"text":"unsolicited"}]}),
+                    )?;
+                }
+                if matches!(mode, "never-read" | "stubborn") {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                    }
+                }
+            }
+            Some("status") if mode != "hanging" => {
+                if mode == "delayed" {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                } else if mode == "rapid" {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                let text = match mode {
+                    "one-status" => "vanishing",
+                    "duplicate" => "once",
+                    _ => "ok",
+                };
+                let mut response = json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":message["request_id"],"fragments":[{"text":text,"style":"success","priority":10}]});
+                if mode == "rapid" {
+                    response["refresh_ms"] = json!(0);
+                }
+                send(&mut output, &response)?;
+                if mode == "duplicate" {
+                    send(&mut output, &response)?;
+                }
+            }
+            Some("event") if mode == "one-status" => std::process::exit(1),
+            Some("shutdown") => return Ok(()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn main() -> std::io::Result<()> {
     // real discovery starts argv-less executables; only this unshipped fixture
     // reads the isolated test's environment to select that behaviour.
@@ -394,28 +476,11 @@ fn main() -> std::io::Result<()> {
         .or_else(|| std::fs::read_to_string("among-fake-mode").ok())
         .unwrap_or_default();
     match mode.as_str() {
+        mode if mode.starts_with("transport-") => serve_managed_transport(&mode[10..]),
         mode if mode.starts_with("managed-") => serve_managed(mode),
         "echo" => serve(true),
         "delayed" => serve_with_delay(true, std::time::Duration::from_millis(30), None),
         "rapid" => serve_with_delay(true, std::time::Duration::from_millis(1), Some(0)),
-        "workspace-position" => {
-            let mut output = std::io::stdout().lock();
-            for line in std::io::stdin().lock().lines() {
-                let message: Value = serde_json::from_str(&line?)?;
-                match message["type"].as_str() {
-                    Some("hello") => send(&mut output, &hello())?,
-                    Some("status") => send(
-                        &mut output,
-                        &json!({
-                            "type":"status", "request_id":message["request_id"],
-                            "fragments":[{"text":format!("position-{}", message["context"]["active_workspace"])}]
-                        }),
-                    )?,
-                    _ => {}
-                }
-            }
-            Ok(())
-        }
         // Completes the handshake and then never answers a status request, so
         // the host has to time the request out instead of blocking on it.
         "hanging" => serve(false),

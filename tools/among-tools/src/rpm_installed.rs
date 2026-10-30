@@ -244,6 +244,11 @@ pub fn run(
     storage::relative_path(Path::new(filename))?;
     let package = directory.join(filename);
     validate_record(&record, &tag, &source, target_name, architecture, &package)?;
+    let profile = directory.join("observed-profile");
+    crate::plugin_install::package::validate(&profile, &source)?;
+    let profile = profile
+        .to_str()
+        .ok_or("observed RPM profile path is not UTF-8")?;
     let fixture = validate_fixture(&record, &tag, target_name, architecture, &directory)?;
     let checker = directory.join("among-tools");
     if checker.canonicalize()? != std::env::current_exe()?.canonicalize()?
@@ -262,7 +267,7 @@ pub fn run(
     let mut evidence = json!({"schema":1,"tag":tag,"source_sha":source,"target":target_name,"architecture":architecture,
         "package_sha256":record["sha256"],"checker_sha256":record["checker_sha256"],"older_fixture":record["older_fixture"],
         "display":"X11/Xvfb/Openbox","status":"in-progress","checks":[],
-        "release_acceptance":false,"scope":"native clean RPM installation; X11 desktop, focus, keyboard divider resize, plugin status with the packaged plugins as external plugins and consented Sessions; downgrade to a repacked older fixture, upgrade, remove, reinstall and erase with seeded user state and a running user process untouched; no installed preferences editing, historical-release upgrade, application-state migration or GNOME/Wayland certification"});
+        "release_acceptance":false,"scope":"native clean RPM installation; X11 desktop, focus, keyboard divider resize, source-bound build-host installed plugin profile replayed through the packaged renderer and consented Sessions; package lifecycle with seeded user state and a running user process untouched; plugin installation/review was observed on the build host, not this packaged host; no installed preferences editing, historical-release upgrade, application-state migration or GNOME/Wayland certification"});
     let result = (|| -> Result<()> {
         runner.runtime_only()?;
         let package = package.to_str().ok_or("RPM path is not UTF-8")?;
@@ -311,7 +316,7 @@ pub fn run(
                     "check-live-status",
                     root.to_str().ok_or("root path is not UTF-8")?,
                     "/usr/bin/among",
-                    "/usr/share/among/plugins",
+                    profile,
                 ],
             ),
             // Keyboard divider movement in all four directions on the

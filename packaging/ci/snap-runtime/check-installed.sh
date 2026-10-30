@@ -30,6 +30,7 @@ sha256sum -c SHA256SUMS
 tool=/input/tools/among-tools
 "$tool" check-native-checker /input/tools "$EXPECTED_SOURCE" "$EXPECTED_TAG" ubuntu24.04 "$EXPECTED_ARCH"
 "$tool" check-native-checker /input/clipboard "$EXPECTED_SOURCE" "$EXPECTED_TAG" ubuntu24.04 "$EXPECTED_ARCH"
+"$tool" check-package-plugin-profile /input/observed-profile "$EXPECTED_SOURCE"
 cp SHA256SUMS "$checks/transferred-input-hashes.txt"
 cp tools/checker-record.json "$checks/tool-record.json"
 cp clipboard/checker-record.json "$checks/clipboard-record.json"
@@ -57,6 +58,6 @@ status=0
 "$tool" ci-x11 "$tool" check-context-menu-snap "$clipboard" light --github-hosted || status=1
 "$tool" ci-x11 "$tool" check-context-menu-snap "$clipboard" dark --github-hosted || status=1
 "$tool" ci-x11 "$tool" check-live-focus /snap/bin/among || status=1
-"$tool" ci-x11 "$tool" check-live-status /input /snap/bin/among /snap/among/current/usr/share/among/plugins || status=1
+"$tool" ci-x11 "$tool" check-live-status /input /snap/bin/among /input/observed-profile || status=1
 "$tool" ci-x11 "$tool" check-sessions /snap/bin/among || status=1
 exit "$status"

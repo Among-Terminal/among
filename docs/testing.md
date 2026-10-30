@@ -3,6 +3,26 @@
 These controls are for automated application tests, not normal use.
 Use an isolated test session: input automation must never target personal terminals.
 
+`among-tools ci-x11 among-tools check-plugin-development <among-binary>` starts
+real Among processes on the one session bus of that run. It checks that a
+secondary `--plugin-development` exits 2 with its diagnostic while an ordinary
+primary stays ordinary, that an ordinary secondary does not change a
+development primary, that a later ordinary start is ordinary, and four
+simultaneous starts in both orders. The mode is read from the
+`plugin_development=` self-check line; logs stay below `AMONG_CHECK_ROOT`.
+
+Local catalogue installation is checked twice. The unit tests in
+`plugin::install::local` run in an ordinary process and check that the public
+actions refuse, that a package installs into `development/<plugin-id>` with
+no repository or release fields, the hostile package, directory and catalogue
+cases, a catalogue changed after review, replacement only after confirmation
+with a new consent token, and that a development install does not start
+without the flag. The ignored native test
+`local_catalogue_installs_and_replaces_only_with_explicit_review_in_development_mode`
+fixes development mode in its own process and drives Preferences, the review
+dialog and the replacement confirmation with real keyboard input; it runs with
+the other ignored graphical tests.
+
 `among-tools ci-x11 among-tools check-workspace-reorder <among-binary>` drives
 native workspace drags, cancellation, positional keys, and restoration from the
 application's actual session file. Use the built tools executable's path in both
@@ -137,6 +157,58 @@ application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
 
+## Published-plugin native checks
+
+`managed-transport.yml` runs on native amd64 and arm64 runners. Production clock,
+system-status and pane-pwd executables come from the official repository's latest
+stable immutable release; they are not compiled by the host check. A missing
+ordinary release is a failed prerequisite, not permission to use the historical
+prerelease or a default-branch catalogue.
+
+`among-tools prepare-official-plugin-inputs <new-directory>` validates the numeric
+repository/publisher, complete bounded release inventory and full tag chain. It
+downloads the schema2 catalogue through its observed asset ID and checks its size
+and digest before parsing; package names, sizes and digests must match that same
+release. Native archive members, ELF architecture and the common source delivery
+are checked without replacing them with host-built executables. Repository,
+latest, assets and the complete tag chain are re-observed after transfer; drift
+refuses preparation. It retains downloads and emits schema2 `inputs.json` with
+the observed numeric IDs, snapshot and binding, not installed receipts or grants.
+Only the protocol fixtures are built from the exact companion source. The
+supervised admission, stale-reply, paging, timezone, resource and keyboard controls
+remain mandatory. Transport fixture receipts remain synthetic and do not prove
+repository installation.
+
+`among-tools check-plugin-install <among-test-executable> <input-directory>` requires
+an owned X11 display and an isolated check root. It runs the exact ignored host test
+`app::plugin_tests::installation::real_published_official_packages_install_review_enable_disable_uninstall`.
+An absent test, failed download, changed source/asset, ignored/zero-test result or
+missing lifecycle assertion is a failure, never a fallback to the old standalone
+plugin installer. Native UI, explicit access/enablement and terminal continuity
+must be demonstrated by that host test before this check can pass. Preparing the
+inputs alone establishes none of those behaviours or application-RC readiness.
+
+Package workflows compile exactly the `among` binary test target with
+`AMONG_CHECK_SOURCE_SHA` set to the checkout's full HEAD. The compile-time value is
+exported only with the observed runtime profile. `capture-package-plugin-profile`
+requires a clean checkout before and after the actual UI lifecycle, one Cargo test
+artifact whose manifest and `src/main.rs` belong to that checkout, an unchanged
+test-executable digest, and a matching compiled-in source SHA. Its bounded internal
+transfer includes exact file hashes and the completed lifecycle observation.
+Its `release-inputs.json` preserves the prepared release observation so replay
+checks every selected receipt's full snapshot, catalogue and tag binding against
+the same source, without embedded historical release/asset constants.
+`check-package-plugin-profile` checks the expected host source, native architecture,
+all declared bytes and missing/duplicate/unrecorded/link inputs before a package
+renderer consumes it. The complete transfer remains within 8 MiB/64 entries.
+
+This deliberate internal input may contain receipt/lease files; only its dedicated
+package-checker artifact includes them. Hidden runtime capture directories remain
+excluded from screenshot/failure uploads. No profile is a public application asset.
+On compiler-free hosts the selected AppImage/Snap/DEB/RPM/archive executable renders
+that observed profile. This is packaged **renderer replay**, not observation of
+installation or access review through that packaged executable.
+
 ## Cross-repository managed transport
 
 The `managed-transport-interop` Cargo feature only compiles additional internal
@@ -146,11 +218,13 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`306839e144d7a4c98432c6c68dad016c412dd656` (tree
-`e9d7a98a8162a3b58154b4a9122c70cddaa1db16`), verifies its public repository identity,
-and independently builds its `managed-status` **protocol fixture**, production
-`clock-managed`, legacy `clock` reference, production `system-status-managed`,
-production `pane-pwd-managed` and the labelled `managed-pages` SDK reducer fixture.
+`ac16a298b42022d9d62017e5d668e72458ba3b69` (tree
+`4025654ad45b3cc4704908f80d097a7cad3916c6`), the source of the prepared
+official plugin release, verifies its public repository identity,
+and builds only its `managed-status` **protocol fixture** and labelled
+`managed-pages` SDK reducer fixture. Production `clock-managed`,
+`system-status-managed` and `pane-pwd-managed` instead come from the separately
+verified public Release packages described above; no legacy clock is required.
 It records both sources, native
 compiler hosts and all executable hashes. The original five fixture cases still
 test real `PluginHost`, inventory inspection, pinned-descriptor spawn, access
@@ -166,17 +240,17 @@ as the workflow does, without changing process-global environment inside tests.
 The copied fixture and its synthetic receipt/manifest stay below the check root.
 Those receipts are local protocol setup, not authenticated Release installation.
 
-The separately labelled clock cases also require absolute regular executable
-paths `AMONG_MANAGED_CLOCK_BINARY`, `AMONG_LEGACY_CLOCK_BINARY` and their compiled
-digests `AMONG_MANAGED_CLOCK_SHA256`, `AMONG_LEGACY_CLOCK_SHA256`. Missing/wrong
-setup fails. The managed binary is copied and inspected under synthetic clock
-identity metadata before the real host reviews access and spawns it; the legacy
-binary is only the unchanged renderer reference, not a managed fallback.
+The separately labelled clock cases also require an absolute regular executable
+path `AMONG_MANAGED_CLOCK_BINARY` and its verified package-member digest in
+`AMONG_MANAGED_CLOCK_SHA256`. Missing/wrong setup fails. The published managed
+binary is copied and inspected under explicitly synthetic clock identity metadata
+before the real host reviews access and spawns it. That fixture setup is not an
+installed Release receipt.
 
 The workflow launches each exact clock case in its own test process with
 `AMONG_CLOCK_CASE` and child-only `TZ` setup. UTC/Tokyo output is checked against
-actual request-time UTC fences; unset/empty behavior is checked against the real
-legacy renderer under the same environment. Both real host footer observations
+actual request-time UTC fences; unset/empty behavior is checked against an
+independent system `localtime_r` oracle under the same environment. Both host footer observations
 must advance, carry the 1000-ms refresh and leave the application header empty;
 valid pane/workspace targets remain unavailable without their grants. Over-budget
 and control-byte cases must refuse before any supervisor is created. No Rust test
@@ -246,12 +320,13 @@ child exit code; direct SDK exit-status observations are a separate boundary.
 Setup requires `AMONG_MANAGED_PWD_BINARY`/`AMONG_MANAGED_PWD_SHA256` and
 `AMONG_MANAGED_PAGES_FIXTURE`/`AMONG_MANAGED_PAGES_SHA256`. Missing, linked,
 non-executable or digest-mismatched setup fails, never falls back to another binary.
-CI also checks the exact source tree and native ELF machine. Source-built binaries
-and synthetic receipts do not establish authenticated official packages,
-installation, package upgrades/rollback or whole tasks2.1/2.4 acceptance.
+CI also checks the exact source tree and native ELF machine. Source-built protocol
+fixtures and synthetic receipts do not establish repository installation, current
+managed updates/recovery or whole tasks2.1/2.4 acceptance. Published package-byte
+verification is a separate boundary from installation and runtime consent.
 
-The separately selected ignored resource-widget case uses the same exact real
-binary with explicitly synthetic local metadata, never an authenticated Release.
+The separately selected ignored resource-widget case uses the same published
+binary with explicitly synthetic local metadata, not an installed Release receipt.
 It drives Cancel/Escape, Accept and enable, then disable through native keyboard
 controls; actual terminal input must still reach the same PTY before review,
 while running and after disable. Three mapped, allocated GTK ProgressBars must

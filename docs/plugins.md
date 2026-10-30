@@ -8,8 +8,8 @@ that is the whole point: a plugin that segfaults, hangs, or misbehaves takes onl
 itself down, while the live terminals — which hold whatever the user is running —
 stay up.
 
-The cost is a process spawn and messaging round trips. Compiled examples also
-require a build step, unlike a script that can be copied with its runtime available.
+The cost is a process spawn and messaging round trips. Repository installation
+downloads ready-built packages; it does not compile plugins on the user's machine.
 
 The exchange is newline-delimited JSON on the plugin's stdin and stdout. Nothing
 else is shared. There is no GTK type, no widget handle, and no function pointer
@@ -17,7 +17,7 @@ crossing the boundary, so there is no ABI for either side to break.
 
 ## Live status examples
 
-Host protocol 1.1 adds optional `meter` on a fragment: a finite fraction from 0
+Managed API 1.2 supports optional `meter` on a fragment: a finite fraction from 0
 to 1 rendered as a compact GTK bar. Keep a readable percentage in `text`.
 Bars are 50 pixels wide. Their whole track and fill share a continuously changing
 hue: green at 0%, yellow at 50%, red at 100%; the track is translucent so the
@@ -26,7 +26,8 @@ The host's shared application header and footer use bold monospace by default,
 including the clock and N/A labels. Footer text has opacity 0.7; the upper panel
 and individual pane footers are not dimmed. Plugins do not select this typography.
 Omit or set `meter` to null for N/A. Values outside this range are rejected.
-Major 1 is unchanged; 1.0 hosts ignore the field and show only the text.
+Text-only fragments remain valid. Pre-0.2 executables and legacy wire handshakes
+are not a supported execution profile.
 
 `clock` shows local 24-hour HH:MM:SS once at the right of the shared application
 footer every second, demonstrating a different slot than the resource header.
@@ -44,8 +45,9 @@ Failed sources show N/A independently. These describe the process's proc/mount
 namespace; sandbox figures need not describe the whole host.
 
 `pane-pwd` polls each pane's last terminal-reported directory every second,
-including unfocused panes. The full path is in the tooltip; long labels are
-truncated. Labels contain only the path, without a `PWD:` prefix. Unknown
+including unfocused panes. The full path is in the tooltip; the plugin bounds
+label text to 480 characters and GTK visually ellipsizes it to fit the pane.
+Labels contain only the path, without a `PWD:` prefix. Unknown
 directories produce no content; the plugin never substitutes
 the host or focused pane's directory. A known initial shell directory is available
 at launch; subsequent directory changes require the shell to opt in to OSC 7.
@@ -79,79 +81,83 @@ their own prompt hook; no untested zsh/fish integration is claimed here.
 
 ## Installing
 
-Preferences saves explicit enable/disable choices immediately to `plugins.json`
+Preferences saves explicit enable/disable choices to `managed-plugins.json`
 and restores them on startup. A Faulted process remains desired-enabled until
 you disable it. Save failures are reported as session-only changes; see
 [Preferences storage](preferences.md).
 
-`cargo run --release` builds only the application. It does **not** build this
-independent example package, replace installed plugin files or enable new ones.
-To build all examples, back up installed copies and add only missing default
-configuration entries, run from the repository:
+Open Preferences → Plugins → Inspect repository. Inspect a public repository,
+choose a compatible version and use **Install disabled**. The row identifies the
+chosen manifest version, OS/architecture, exact asset ID and size. Selection uses
+the actual host architecture and declared runtime/libc requirements, not filenames.
+Native amd64 and arm64 packages are separate downloads; the source archive is not
+an installation payload. Packages also contain manifests and licensing material.
 
-```sh
-sh scripts/install-plugins.sh --enable-new
-```
+Installation checks the numeric Release/asset membership, size, SHA-256 and exact
+release-tag/source binding before committing an immutable generation. It does not
+grant access or enable code. Enable separately through the manager's access review.
+An installed script still requires its declared interpreter; the installer neither
+compiles code nor runs arbitrary installation commands.
 
-Existing configuration fields and enabled/disabled entries are preserved. Backups
-are created before replacement. All three plugins are disabled by default;
-enable wanted plugins explicitly in Preferences.
-Existing explicitly enabled examples stay enabled during upgrades; turn them off
-in Preferences if no longer wanted. Backups
-are stored under `${XDG_DATA_HOME:-$HOME/.local/share}/among/plugin-backups/`.
-To update only selected binaries without changing configuration:
+Only committed managed installation records supply inventory. Copying a file into
+`among/plugins`, retaining a filename in `plugins.json`, or placing an arbitrary
+manifest on disk does not install or authorize it. Missing/changed manifests refuse
+execution without a fallback. Refusal does not delete unrelated files or settings.
 
-```sh
-sh scripts/install-plugins.sh system-status clock
-```
+### Plugin development mode
 
-Disable/re-enable running plugins in Preferences after replacement. Newly added
-configuration names load on the next host startup. A rebuilt host does not
-replace an already running single-instance process: another `cargo run --release`
-may activate that process. Restart the host only when it is safe to end its live
-terminal sessions. Plugin updates alone do not close any terminal.
+Start Among with `among --plugin-development` to test plugins before an
+ordinary release. The flag applies only to the process that starts the first
+Among instance, and it is never saved: the next start without the flag is
+ordinary again. While the mode is on, Preferences → Plugins begins with a
+**Plugin development mode** row.
 
-Merge plugin configuration entries with existing settings rather than replacing
-them. Clock and resource plugins are optional demonstrations of status slots.
+If Among is already running, a second `among --plugin-development` does not
+switch the running instance. It prints
 
-Plugins are executables in `$XDG_DATA_HOME/among/plugins` (`~/.local/share/among/plugins`),
-named after the plugin:
+    among: --plugin-development applies only when it starts the first Among instance; quit the running instance and start it again with the flag
 
-```sh
-cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
-plugin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/among/plugins"
-mkdir -p "$plugin_dir"
-install -m 755 examples/plugins/target/release/clock "$plugin_dir/clock"
-install -m 755 examples/plugins/target/release/system-status "$plugin_dir/system-status"
-install -m 755 examples/plugins/target/release/pane-pwd "$plugin_dir/pane-pwd"
-```
+and exits with status 2. A second start without the flag opens a window in the
+running instance and keeps its mode. When two starts race, the process that
+becomes the first instance decides the mode.
 
-Then register them in `$XDG_CONFIG_HOME/among/plugins.json` (`~/.config/among/plugins.json`):
+#### Install from a local catalogue
 
-```json
-{"plugins": [
-  {"name": "clock", "enabled": false},
-  {"name": "system-status", "enabled": false},
-  {"name": "pane-pwd", "enabled": false}
-]}
-```
+In development mode the Plugin sources section has **Install from a local
+catalogue**. Choose an `among-plugins.json` (schema 2, the same format as a
+release catalogue) with the package files it names in the same directory.
+Opening it reads metadata only. Each compatible version has its own
+**Review…** action; installation starts only from the review.
 
-Configuration is read leniently, because one broken entry must not stop the
-application from starting:
+The catalogue supplies the expected manifest digest, package size and SHA-256,
+and the complete member list, and the package then goes through the same
+archive, ELF, member, digest, grant and sandbox checks as a release package.
+The directory, the catalogue and the package must be owned by you, not
+writable by group or others, and not symbolic links; a package with another
+size or digest is refused before it is unpacked. If the catalogue changes
+between review and commit, nothing is installed and you review it again.
 
-- A missing file, unparsable JSON, or a file without a `plugins` key means no
-  plugins are loaded.
-- A configured plugin whose file is absent remains an inspectable missing entry,
-  with its desired switch retained. It can still be disabled.
-- An entry without a `name` is skipped.
-- Legacy names must be single filenames, not paths or managed identity strings.
-  Duplicate configured names are registered once; stored unrelated data is not
-  rewritten during discovery. Installed but unconfigured legacy files appear
-  disabled, without adding defaults to configuration merely by inspection.
+A local package has none of the provenance a release has: no repository or
+publisher identity, no release, no immutability and no tag-to-commit
+binding. The review and the plugin details say so; nothing is filled in for
+them. A local install has the identity `development/<plugin-id>`, separate
+from any `github:<repository>/<plugin-id>` install of the same plugin, so its
+settings and switch never mix with a release install.
+
+Installing again under an ID that already has a development install is a
+replacement. It needs a separate **Replace** confirmation, starts disabled
+and receives no access granted to the replaced install; the replaced
+generation stays available as the previous one.
+
+Development installs are listed in every run, but outside development mode
+they do not start, even if their switch was left on; the row says that the
+install starts only with `--plugin-development`.
+
+Installing the newest GitHub prerelease of a source is not available yet.
 
 ### Native inventory
 
-Preferences → Plugins joins configured legacy entries, committed managed receipts
+Preferences → Plugins joins committed managed receipts
 and runtime observations by identity. Cards show origin/version and runtime state
 beside the desired enablement switch. Details shows the description (or its
 absence), declared compatibility, last observed wire API and package provenance;
@@ -166,70 +172,26 @@ discard unfinished settings text. Details/settings callbacks reject a removed or
 replaced package rather than silently retargeting an old action. The separate
 Plugin sources section opens repository inspection with a separate explicit
 Install disabled action for each compatible version; the search field filters
-only installed/configured plugins. Merely inspecting metadata never installs or
+only installed plugins. Merely inspecting metadata never installs or
 enables code. Registered sources have explicit Cached, Refresh and Remove source
 actions; source removal does not uninstall anything. Existing identities have a
 separate Apply update action. Managed Details exposes explicit recovery/removal;
 these do not modify legacy executables.
 
-### Updating an installed example
+### Updating an installed package
 
-Changing an example in this repository does not update the installed copy.
-Build first, then replace the selected installed executable at the same name:
-
-```sh
-cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
-install -m 755 examples/plugins/target/release/clock "${XDG_DATA_HOME:-$HOME/.local/share}/among/plugins/clock"
-```
-
-Disable and re-enable `clock` in preferences to start the updated copy
-without closing any terminals.
-Replacing an old script with the binary does not require deleting it first.
-An already-running process keeps executing its old code until restarted.
+Inspect its repository and choose **Apply update…** for the desired version.
+The confirmation includes the selected version/target and access requirements.
+Only the selected plugin may restart. Publisher/access changes still require
+renewed review; changing an on-disk filename cannot inherit another identity.
+The installer retains the previous verified generation for explicit recovery.
 
 ## Protocol
 
-### Host to plugin
-
-Every message has a `type` field.
-
-```jsonc
-// Sent once when the plugin starts.
-{"type": "hello", "major": 1, "minor": 2}
-
-// Collect data now. Answer with a status message carrying the same request_id.
-{"type": "status", "request_id": 7, "scope": "pane_header:1", "context": {
-  "active_workspace": 0,
-  "workspace_count": 2,
-  "focused_pane": 1,
-  "terminals": [
-    {"pane": 1, "workspace": 0, "cwd": "/home/demo/projects", "title": "bash", "running": true}
-  ]
-}}
-
-// Something happened the plugin may care about.
-{"type": "event", "event": {"kind": "working_directory_changed"}, "pane": 1, "detail": "/tmp"}
-
-// The host is stopping.
-{"type": "shutdown"}
-```
-
-Event kinds are `pane_opened`, `pane_closed`, `process_exited`, `working_directory_changed`,
-and `workspace_activated`.
-
-### Plugin to host
-
-```jsonc
-// Reply to hello. The major version must match the host's.
-{"type": "hello", "major": 1, "minor": 0}
-
-// The answer to a status request.
-{"type": "status", "request_id": 7, "refresh_ms": 2000,
- "fragments": [
-   {"icon": "git-branch-symbolic", "text": "main*", "style": "warning", "priority": 20,
-    "tooltip": "Uncommitted changes present"}
- ]}
-```
+Every message has a `type` field. The managed handshake, scoped status/context and
+configuration messages are specified under [Managed admission](#managed-admission-context-and-settings-api-12).
+Legacy `hello`, unbound status replies and `notify` cannot establish admission,
+expose context or route notifications, regardless of a claimed major/minor number.
 
 `refresh_ms` is how often the data changes:
 
@@ -316,10 +278,9 @@ data never reshuffles a slot.
 The protocol version is negotiated at start-up and is independent of the
 application's version.
 
-- The **major** version must match exactly. A plugin whose major differs is
-  reported as incompatible and its data is ignored — the host does not guess.
-- Legacy **minor** versions may be lower or higher: the legacy profile checks
-  major equality only. Managed admission separately checks its API and features.
+- Declared minimum API and required features must be supported before execution.
+- Managed runtime admission must match the authoritative identity, session,
+  generation and offered grants. Major equality alone is not admission.
 
 ### Static managed metadata and settings
 
@@ -327,9 +288,8 @@ Managed packages use a separate static `among-plugin.json`, schema version 1.
 The [complete vocabulary example](../examples/managed-manifest.json) is parsed
 by the production parser in tests. It is data, not a ready-built plugin package.
 Static metadata and local settings can be inspected without executing code.
-API 1.2 adds the distinct managed profile below; legacy executables still use
-`hello` and the existing major-1 messages. Managed packages never fall back to
-legacy execution. Notification production, notification UI and delivery features
+API 1.2 is the supported managed profile below. There is no manifestless/legacy
+execution path. Notification production, notification UI and delivery features
 remain unsupported and are not advertised.
 
 Manifest `id` is lowercase ASCII letters/digits/hyphens, at most 64 bytes.
@@ -377,7 +337,7 @@ managed preference edit retries pending identity-scoped settings/switch/review
 changes together, merging current unknown data rather than erasing it. Restarting
 the application before successful persistence can lose session-only changes.
 
-Managed installation selection is separate from legacy executables. The
+Managed installation selection is authoritative. The
 application reads only its committed `among/managed/installed.json` record in
 the XDG data directory, not arbitrary discovered manifests or staging files.
 It retains invalid/missing selected packages as unavailable entries. A receipt
@@ -398,8 +358,8 @@ upgrading their unconfirmed publisher boundary requires renewed review.
 Local state lives separately in `managed-plugins.json` in the XDG config directory.
 Retained preferences alone are not evidence of installation. Repository browsing,
 download, update and uninstall are separate installer operations, not implemented
-by static inspection. Existing manifestless discovery/configuration and all three
-bundled examples keep their legacy identities and enablement.
+by static inspection. Historical filenames/settings do not supply execution
+identity, enablement or inherited access.
 
 ### Managed admission, context and settings (API 1.2)
 
@@ -447,7 +407,7 @@ session ID. Old replies cannot establish admission or acknowledge new settings.
 
 | Feature | Actual host-mediated exposure |
 | --- | --- |
-| `status` | Answer status requests with validated legacy fragment data |
+| `status` | Answer managed status requests with validated text/meter fragments |
 | `settings` | Receive declared, validated configuration snapshots |
 | `context.terminals` | Scoped terminal/workspace references and enumeration |
 | `context.cwd` | Known working directory, or null |
@@ -504,8 +464,9 @@ Rejected and Restart required. A configuration unanswered for five seconds is
 reported unavailable, not applied; its eventual late reply cannot change that
 state. A manifest's `apply: restart` saves without sending live changes, and the
 next process receives them. Superseded revisions and stopped generations cannot
-mark a newer revision applied. Managed `notify` remains a generic, payload-omitted
-diagnostic; it never triggers notification routing or external delivery.
+mark a newer revision applied. Unsupported `notify` is refused with a bounded,
+value-free unknown-type diagnostic. It creates no fabricated event, attention,
+notification UI or delivery job.
 
 When a running plugin needs restart, its form offers **Restart plugin…** with
 explicit confirmation. Cancel keeps the current process and accepted settings.
@@ -555,9 +516,8 @@ capacity becomes free, including after a replacement window loads a different
 plugin set. Capacity contention is not a crash and consumes no crash-restart
 allowance. Disabling a waiting plugin cancels its pending startup.
 
-Starting is separate from Running: a compatible handshake is required within
-five seconds. Legacy plugins allow at most 16 outstanding statuses, one per scope.
-Managed statuses and configuration revisions share 15 reply credits, including
+Starting is separate from Running: managed admission is required within
+five seconds. Statuses and configuration revisions share 15 reply credits, including
 superseded/expired revisions and revoked targets whose replies have not arrived;
 one output slot is reserved for the single enumeration request. Reply consumption
 or generation shutdown releases credit. A full input
@@ -606,120 +566,38 @@ They can use any language; the host launches the file directly, so scripts need
 a shebang, executable permissions and an installed interpreter. Only protocol
 JSON lines belong on stdout, and every reply must be flushed.
 
-Create an independent Cargo package with a JSON dependency:
+Supply a schema-1 manifest and implement the managed API 1.2 exchange above.
+Keep the host-issued identity/session/generation bindings on every reply; return
+only declared and granted features. An application-only status provider needs no
+terminal-context grant. Package the manifest, contained executable and licensing
+material, then publish separate compatible ready-built artifacts in a public
+GitHub Release with schema-2 catalogue metadata. See the independent
+[official plugin repository](https://github.com/Among-Terminal/among-plugins) for
+managed implementations and shared protocol support.
 
-```sh
-cargo new --bin my-status
-cd my-status
-cargo add serde_json@1
-```
+The pre-0.2 filename installer and legacy protocol tutorial are withdrawn. Their
+historical source is not an alternative installation/admission path. Developer
+builds may still test old transport fixtures, but that is not supported legacy
+execution or an old-reader compatibility gate.
 
-Replace `src/main.rs` with:
+### Retired compatibility tests
 
-```rust
-use std::io::{self, BufRead, Write};
-use serde_json::{json, Value};
-
-fn main() -> io::Result<()> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { continue };
-        let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
-        let kind = message["type"].as_str().unwrap_or_default();
-        let reply = match kind {
-            // The host is going away; stop rather than block on stdin.
-            "shutdown" => break,
-            "hello" => json!({"type": "hello", "major": 1, "minor": 1}),
-            "status" => {
-                // Only the app header carries fragments; every other scope
-                // gets an empty list, which the host renders as nothing.
-                let fragments = if message["scope"] == "app_header" {
-                    json!([{"text": "Hello", "priority": 10}])
-                } else {
-                    json!([])
-                };
-                json!({
-                    "type": "status",
-                    "request_id": message["request_id"].as_i64().unwrap_or_default(),
-                    "refresh_ms": 2000,
-                    "fragments": fragments,
-                })
-            }
-            _ => continue,
-        };
-        // Every reply must be flushed: the host reads line by line and a
-        // buffered reply is indistinguishable from a hung plugin.
-        writeln!(stdout, "{reply}")?;
-        stdout.flush()?;
-    }
-    Ok(())
-}
-```
-
-Build it and install it under the same name you will register:
-
-```sh
-plugin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/among/plugins"
-mkdir -p "$plugin_dir"
-cargo build --release --locked
-install -m 755 target/release/my-status "$plugin_dir/my-status"
-```
-
-To retain an explicit choice, add `{"name": "my-status", "enabled": false}` to the `plugins` array in
-`${XDG_CONFIG_HOME:-$HOME/.config}/among/plugins.json`, preserving other entries
-and fields. If the file does not exist, create it with:
-
-```json
-{"plugins": [{"name": "my-status", "enabled": false}]}
-```
-
-The configuration name is the installed filename, not a path or display title.
-At startup the host retains configured names even when their files are missing,
-and discovers unconfigured executable files in the legacy plugin directory as
-disabled entries. Copying a new file does not trigger live legacy discovery.
-Restart Among Terminal when it is safe to close its terminal sessions, then open
-Settings → Plugins and enable `my-status`; `Hello` will
-appear in the application header. A protocol or launch failure is shown as
-Faulted rather than Running. For an already registered plugin update, disable
-it, replace its file, then re-enable it; no host restart is needed.
-
-For compiled Rust plugins, start with the independent package below; for other
-languages, use the same JSON-lines protocol documented above. There is no GTK
-dependency or application SDK requirement.
-
-The independent [example package](../examples/plugins/Cargo.toml) contains
-standalone binaries and [shared stdio plumbing](../examples/plugins/src/protocol.rs).
-It does not depend on or link the host. Within that package, a binary can use:
-
-```rust
-use among_example_plugins::protocol::{run, Status};
-use serde_json::json;
-
-fn main() -> std::process::ExitCode {
-    run(|scope, _context| Status {
-        refresh_ms: Some(2000),
-        fragments: if scope == "app_header" {
-            vec![json!({"text": "Hello", "priority": 10})]
-        } else {
-            Vec::new()
-        },
-    })
-}
-```
-
-The loop handles the version 1.0 handshake, request IDs, malformed JSON, events,
-flushing, EOF and shutdown. For a third-party package, implement that same wire
-contract or reuse the independent example code; no application library is needed.
-
-`pane-pwd` reports each pane's last known directory, including its actual initial
-shell directory. Later changes require OSC 7; an unknown directory emits no content.
-
-Test the binaries and their real stdio replies with:
-
-```sh
-cargo test --locked --manifest-path examples/plugins/Cargo.toml
-```
+The seven filename-configuration parser tests and five legacy-notification/
+major-only compatibility tests were withdrawn with that profile, not reported as
+passing replacements. Relevant safety/behavior assertions now use managed package
+fixtures: startup does not discover/execute manifestless files, changed manifests
+refuse start, legacy hello cannot unlock context, and unsupported notify cannot
+route attention. Shared fragment bounds and low-level hostile pipe/supervision
+tests remain; raw low-level transport fixtures do not imply managed admission.
+Native Preferences persistence uses clearly synthetic managed receipts and real
+published executable bytes. Its ten phases are distinct from the public Release
+installation/review/enable/output/disable/uninstall acceptance test.
+The live-status renderer runner accepts only a bounded runtime profile captured
+after that native test's actual installation and explicit review. It rechecks the
+native architecture, pinned catalogue, receipt/tag/asset bindings, saved grants,
+installed/settings SHA-256 and executable/resource digests before replay. This
+ephemeral executable/manifest/lease snapshot is excluded from uploaded artifacts;
+it is not a second installer or a new package/source archive.
 
 ## Repository package metadata — implementation in progress
 
@@ -753,19 +631,30 @@ Failed/rate-limited/cancelled refresh keeps the committed cache and installed
 selection/switch/settings unchanged. **Remove source** removes discovery and its
 cache only; it neither disables nor uninstalls a selected package.
 
-Registrations and exact raw catalogue bytes live in the owned data directory
-`among/plugin-sources/sources.json`, separate from managed selections and config.
-The total metadata storage budget is 16 MiB: the committed document is capped at
-8 MiB, reserving the other half for its flushed atomic replacement. There are at
-most 32 repositories and four snapshots per repository. Old snapshots can be evicted for cache quota without deleting
-registrations, settings or installed generations. A refreshed duplicate revision/
-digest replaces its retrieval observation rather than consuming another slot.
+The application-owned **Official plugins for Among Terminal** row is always present,
+in addition to at most 32 custom sources. Its numeric repository `1431055733` and
+publisher `339567100` are pinned; equal owner/name labels confer no official status.
+It cannot be removed or reassigned to a different publisher. A publisher mismatch
+is unavailable, not an approval prompt. Displaying this row neither fetches metadata
+nor installs, enables or grants access to a plugin.
+
+Custom registrations and exact raw catalogue bytes live in the owned data directory
+`among/plugin-sources/sources.json`; the official cache uses `official.json` beside it.
+Neither is managed selection or configuration storage. Each retained document is
+bounded to 8 MiB. Both retained documents plus any flushed atomic replacement must
+fit the shared 16-MiB budget, including removal while offline. The proposed document
+can evict old snapshots to make room without deleting unrelated registrations,
+settings or installed generations. If even that cannot fit, the operation refuses
+without committing a registration/cache change. There are at most four snapshots
+per source. A duplicate revision/digest/full release-and-tag snapshot replaces
+its retrieval observation rather than consuming another slot. A changed release
+ID or inventory is a different snapshot even when the catalogue bytes match.
 Publisher reapproval drops the previous publisher's cached snapshots.
 
 Source edits use no-follow owned storage, a bounded worker/shared two-credit
 budget, advisory serialization, flushed atomic replacement and an exact previous
 document/root-inode check. Written-but-unconfirmed durability is reported separately.
-Only safe files in the reserved `sources-<64-hex>` temporary namespace are recovered;
+Only safe files in the reserved `sources-<64-hex>` and `official-<64-hex>` temporary namespaces are recovered;
 links/unsafe entries refuse cleanup, unrelated files remain untouched. Directory
 enumeration is capped at 256 entries; one active atomic temporary is bounded by
 the same 8-MiB document cap. Each registration has a fresh token and edit revision;
@@ -779,21 +668,37 @@ It has 5-second connect, 10-second idle-read and 60-second operation limits,
 bounded streamed responses, cancellation and at most two retained network workers.
 It neither builds nor executes downloaded code.
 
-The preflight parser defines `among-plugins.json` schema 1. A root version
+The 0.2 release transition is not yet accepted end to end. The backend below
+uses ordinary `releases/latest` and schema2; development mode, mandatory kernel
+confinement, update-version policy and new official/template/package acceptance
+are still pending. Historical prerelease lifecycle results do not accept them.
+
+The preflight parser defines `among-plugins.json` schema 2. A root version
 envelope normalizes to one plugin/version; a multi-plugin root has
-`schema_version: 1` and a `plugins` list of independent `id`/`versions` entries.
+`schema_version: 2` and a `plugins` list of independent `id`/`versions` entries,
+with exactly one version per plugin. Schema1 is refused, not migrated.
 Each version embeds the existing shared plugin `manifest`, a 40-lowercase-hex
-version commit `revision`, `manifest_sha256`, numeric GitHub `release_id` and `artifacts`.
+version commit `revision`, `manifest_sha256` and `artifacts`. Numeric `release_id`
+and `asset_id` are forbidden in the catalogue; IDs are API observations retained
+in local receipts, not publisher-supplied authority.
 Unknown fields, duplicate keys/IDs/version labels and executable hooks are refused.
 The catalogue-declared version `revision` must equal the exact commit obtained by
-resolving the selected GitHub release's actual `tag_name`. It is distinct from the
-separately resolved catalogue-snapshot commit and exact cached catalogue digest:
-one catalogue can describe releases at several different commits.
+resolving the selected GitHub release's actual `tag_name`. Every plugin in the
+catalogue describes that same release commit. The exact catalogue bytes are bound
+to the API-observed `among-plugins.json` asset's size and SHA256 before parsing;
+no default-branch catalogue or raw-content fallback is read.
 
-Before downloading, the installer reads the exact numeric release ID, verifies its
-public asset membership/ID/size/digest, then requests the exact fully qualified
+Source inspection resolves the public numeric repository/publisher identity,
+then reads `/repositories/{id}/releases/latest` and requires
+`draft: false`, `prerelease: false` and `immutable: true`. Its complete inventory
+must contain at most 64 assets, unique positive IDs and exact names, exactly one
+`among-plugins.json`, and an uploaded state, numeric size and a mandatory
+`sha256:<64 lowercase hex>` digest for every asset, including unselected files.
+It downloads the catalogue through the observed numeric asset API with
+`Accept: application/octet-stream` and verifies every catalogue package's exact
+name, size and digest against that inventory. It requests the exact fully qualified
 `refs/tags/<tag_name>` through the numeric repository's Git-reference endpoint.
-There is no branch, prefix-match, `latest` or `target_commitish` fallback. A
+There is no branch, prefix-match or `target_commitish` fallback for this tag. A
 lightweight tag points directly to a commit; annotated tags are peeled through at
 most eight exact Git tag object IDs to a commit, which is fetched by SHA from the
 same numeric repository. Missing, ambiguous, cyclic, unsupported or inconsistent
@@ -807,30 +712,40 @@ or trailing component dots or `.lock` suffix. Other tag forms fail closed rather
 than being guessed or passed to a shell. All API paths are locally constructed;
 response-provided object URLs are never followed.
 
-After package extraction and before selection commitment, the same release ID,
-asset checks and complete tag-object/commit chain are re-observed with no-cache
-requests. Any observed change, including a new annotation object with the same
-peeled commit, refuses publication. These checks pin one observation and reject
-visible drift; GitHub does not supply an atomic lock against movement after the
-last observation or a history proving a tag never moved and returned. No stronger
-immutability claim is made.
+The cache retains the canonical full release inventory and complete tag-object
+chain alongside the catalogue bytes/digest. Offline reopen revalidates all of
+them; a missing/malformed observation cannot become install authority. Installation
+checks numeric repository/publisher identity, latest and the complete tag chain
+again before package transfer, without redownloading the catalogue. This extra
+pre-transfer walk is retained in this foundation; request optimisation is separate.
+After package extraction and before selection commitment, identity, latest, the full release
+snapshot and complete tag-object/commit chain are re-observed with no-cache
+requests. A change to any asset's ID, exact name, size or digest, including an
+unselected asset or the catalogue, refuses publication. Inventory array order
+alone is ignored. A new annotation object with the same peeled commit still
+refuses publication; the immutable flag does not replace either tag-chain walk.
+These are observed consistency checks and the Release API's immutability claim,
+not independent publisher authentication or an atomic transaction with GitHub.
 
-New source receipts retain `release_binding` (`tag`, observed reference `object`,
-resolved `commit` equal to the version revision). Details distinguish that binding
-from catalogue-snapshot provenance. Older receipts remain readable/offline but
-show that tag verification was not recorded; a new install/update must pass the
-strict check. Matching tag commits and asset hashes establish content consistency,
+Source receipts retain the canonical complete `release_snapshot` and
+`release_binding` (`tag`, observed reference `object`, resolved `commit` equal to
+the version revision). Offline inventory reads require both. The snapshot's
+release ID, selected asset ID/digest, catalogue digest and tag must agree with
+the committed receipt. Missing or inconsistent source observations refuse the
+read without repairing the receipt or changing user data. Details retain the
+selected package's API-observed release/asset IDs and exact catalogue digest. Matching
+tag commits and asset hashes establish content consistency,
 not build reproducibility, independent publisher authentication or an OS sandbox.
 
 Artifacts declare `os: linux`, `architecture: amd64` or `arm64`, a `runtime`
 (`native` with `libc` and numeric `minimum`, or `script` with an explicit installed
-`/usr/bin/<name>` executable), `dependencies`, `format: tar.gz`, numeric `asset_id`,
+`/usr/bin/<name>` executable), `dependencies`, `format: tar.gz`, exact asset filename `asset`,
 exact `size`/`sha256` and `members`. Each regular-file member declares `path`,
 `size`, `sha256` and `executable`; the shared manifest and executable entrypoint
 must be present. This metadata selects ready-built packages, not DEB/RPM installers
 or a build command. Digest consistency is not independent publisher authentication.
 
-Preflight bounds catalogue bytes to 1 MiB, 32 plugins, 16 versions per plugin,
+Preflight bounds catalogue bytes to 1 MiB, 32 plugins, one version per plugin,
 8 artifacts per version and 16 dependencies per artifact. Shared manifests retain
 their 256-KiB limit. Package declarations are bounded to 64 MiB downloaded,
 256 MiB expanded, 2,048 regular files and 64 MiB per file. Paths use the shared
@@ -840,9 +755,9 @@ Platform selection never guesses from filenames or falls back to another CPU.
 An installed runtime file does not prove its minimum version: an unmeasured
 minimum is reported unavailable instead of executing a probe.
 
-The install/update consumer requests the exact numeric repository/release, checks
-selected asset membership/size and any supplied GitHub digest, then streams that
-exact numeric asset. It never refetches mutable latest. Signed CDN redirects must
+Install/update uses only the reviewed release snapshot; changed latest, identity,
+inventory or tag chain refuses and requires refresh and review, never a silent
+substitution. The package request uses its observed numeric asset ID. Signed CDN redirects must
 use GitHub's release-asset hosts and the selected numeric repository path. Tokens
 are not logged or stored in receipts. Size and SHA-256 must match selected metadata.
 The same connect/idle/operation deadlines and two worker credits cover inspection
@@ -880,6 +795,10 @@ directory, never a followed link. Advisory serialization has cancellable off-loo
 waiting bounded to five seconds. It serializes cooperating package writers,
 including updates/removal and recovery. It does not protect against arbitrary same-user
 filesystem modification and is not an OS sandbox.
+
+Full snapshots count against the existing receipt/selection byte budgets.
+A large inventory can reach the byte limit before the identity-count limit;
+the operation refuses instead of omitting assets or increasing the quota.
 
 Complete flushed payloads move to fresh generations with no-replace rename before
 an atomic `installed.json` selection rename. Pre-selection failure leaves at most

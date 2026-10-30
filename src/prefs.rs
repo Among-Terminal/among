@@ -14,14 +14,15 @@ use gtk::gdk;
 use crate::plugin::host::{Configuration, PluginState};
 use crate::shortcuts::{self, Action, Bindings};
 
+pub(crate) mod local_catalogue;
 mod plugin_manager;
 mod plugin_settings;
 pub(crate) mod repositories;
 mod repository_sources;
 mod retained_settings;
 
-type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
-type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
+pub(crate) type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
+pub(crate) type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
 type ConfigurationQuery = dyn Fn(&str) -> Configuration;
 type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
 type RestartPlugin = dyn Fn(&str, &str, Option<gtk::Window>);
@@ -280,12 +281,6 @@ fn describe_state(state: &PluginState) -> String {
         PluginState::Running => "Running".into(),
         PluginState::Disabled => "Disabled".into(),
         PluginState::Missing { reason } => format!("Not installed ({reason})"),
-        PluginState::Incompatible {
-            plugin_major,
-            host_major,
-        } => format!(
-            "Incompatible: the plugin speaks protocol major {plugin_major}, this build speaks {host_major}"
-        ),
         PluginState::Faulted { reason } => format!("Stopped ({reason})"),
     }
 }
@@ -332,9 +327,8 @@ mod tests {
         assert!(describe_state(&PluginState::Running).contains("Running"));
         assert!(describe_state(&PluginState::Disabled).contains("Disabled"));
         assert!(describe_state(&PluginState::Missing { reason: "x".into() }).contains("x"));
-        let incompatible = describe_state(&PluginState::Incompatible {
-            plugin_major: 9,
-            host_major: 1,
+        let incompatible = describe_state(&PluginState::Unavailable {
+            reason: "managed API minimum 9.1 is unsupported".into(),
         });
         assert!(incompatible.contains('9') && incompatible.contains('1'));
         assert!(describe_state(&PluginState::Faulted {

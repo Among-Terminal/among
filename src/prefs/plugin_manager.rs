@@ -63,10 +63,54 @@ impl Row {
     }
 }
 
+/// The first row of the page while this instance runs in development mode, so
+/// the mode is visible wherever its actions appear. The row only informs: the
+/// mode is fixed by the command line and cannot be switched here.
+fn development_indicator() -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    let row = adw::ActionRow::builder()
+        .title("Plugin development mode")
+        .subtitle("Started with --plugin-development. This is not saved: start Among without the flag to leave it.")
+        .build();
+    row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+    group.add(&row);
+    group
+}
+
+/// The development-only action that installs packages from a local schema2
+/// catalogue. An ordinary instance never builds this row.
+fn local_catalogue_row(ctx: &PreferencesContext) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title("Install from a local catalogue")
+        .subtitle("Development mode: choose an among-plugins.json with its package files next to it. Packages are checked like release packages but have no repository, release or tag provenance.")
+        .build();
+    row.add_prefix(&gtk::Image::from_icon_name("folder-symbolic"));
+    let button = gtk::Button::with_label("Install from local catalogue…");
+    button.set_valign(gtk::Align::Center);
+    button.connect_clicked({
+        let changed = ctx.installations_changed.clone();
+        let details = ctx.plugin_details.clone();
+        move |button| {
+            if let Some(parent) = button
+                .root()
+                .and_then(|root| root.downcast::<gtk::Window>().ok())
+            {
+                super::local_catalogue::present(&parent, changed.clone(), details.clone());
+            }
+        }
+    });
+    row.add_suffix(&button);
+    row.set_activatable_widget(Some(&button));
+    row
+}
+
 pub(super) fn page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     page.set_title("Plugins");
     page.set_icon_name(Some("application-x-addon-symbolic"));
+    if crate::plugin::development::enabled() {
+        page.add(&development_indicator());
+    }
     add_storage_status(&page, ctx);
     let sources = adw::PreferencesGroup::new();
     sources.set_title("Plugin sources");
@@ -92,6 +136,9 @@ pub(super) fn page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     repository.add_suffix(&repositories);
     repository.set_activatable_widget(Some(&repositories));
     sources.add(&repository);
+    if crate::plugin::development::enabled() {
+        sources.add(&local_catalogue_row(ctx));
+    }
     let retained = adw::ActionRow::builder()
         .title("Settings retained after uninstall")
         .subtitle("Review and separately delete local settings of uninstalled plugins.")

@@ -2,11 +2,13 @@ use crate::{
     sessions::{fresh, pair, pane_rectangles, rectangles, Harness},
     storage, Result,
 };
-use serde_json::json;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+mod fault;
+pub mod profile;
 
 fn require(value: bool, message: &str) -> Result<()> {
     if value {
@@ -120,25 +122,10 @@ fn footer_widths(text: &str) -> Vec<u64> {
         .collect()
 }
 
-pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result<PathBuf> {
+pub fn run(root: &Path, binary: &Path, profile: &Path, scratch: &Path) -> Result<PathBuf> {
     let mut h = fresh(binary, scratch, "live-status")?;
     let names = ["clock", "system-status", "pane-pwd"];
-    let plugin_dir = h.base.join("data/among/plugins");
-    fs::create_dir(&plugin_dir)?;
-    for name in names {
-        let bytes = fs::read(storage::safe_path(plugins, Path::new(name))?)?;
-        require(
-            bytes.starts_with(b"\x7fELF"),
-            "status plugin is not native ELF",
-        )?;
-        storage::atomic_write(&plugin_dir, Path::new(name), &bytes, 0o755)?;
-    }
-    fs::write(
-        h.base.join("config/among/plugins.json"),
-        serde_json::to_vec(
-            &json!({"plugins":names.map(|name|json!({"name":name,"enabled":true}))}),
-        )?,
-    )?;
+    profile::replay(profile, &h.base)?;
     let docs = fs::read_to_string(root.join("docs/plugins.md"))?;
     let hook = docs
         .split_once("among_osc7() {")
@@ -150,6 +137,7 @@ pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result
     h.env
         .insert("AMONG_SCRIPT".into(), h.base.join("steps").into_os_string());
     let pid = h.start("app")?;
+    let host = fault::Host::observe(pid)?;
     wait(&mut h, 0, 15, |text| {
         text.contains("sidebar_states=[0:0:false:3 1:1:false:1]")
             && text.contains("rendered_footers=[\"")
@@ -298,19 +286,7 @@ pub fn run(root: &Path, binary: &Path, plugins: &Path, scratch: &Path) -> Result
         "long footer is unbounded",
     )?;
     h.screenshot("narrow.png")?;
-    let resource = h.probe(
-        "/usr/bin/pgrep",
-        &["-P", &pid.to_string(), "-x", "system-status"],
-    )?;
-    let resource = resource
-        .split_whitespace()
-        .next()
-        .ok_or("resource process missing")?
-        .parse::<i32>()?;
-    nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(resource),
-        nix::sys::signal::Signal::SIGKILL,
-    )?;
+    fault::inject(&host, profile, &h.base)?;
     let offset = h.text()?.len();
     wait(&mut h, offset, 15, |text| {
         text.contains("system-status=Faulted")

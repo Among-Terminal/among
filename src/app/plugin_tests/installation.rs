@@ -3,6 +3,29 @@ use crate::plugin::install::source::tests::{normal, Reply, Server};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
+mod local_catalogue;
+mod pane_render;
+mod published_lifecycle;
+mod published_selection;
+
+fn registered_source_row(view: &adw::PreferencesWindow, repository: u64) -> adw::ActionRow {
+    widgets(view.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| {
+            row.subtitle().is_some_and(|subtitle| {
+                subtitle.contains(&format!(" · repository {repository} · publisher "))
+            })
+        })
+        .expect("actual registered source row")
+}
+
+#[test]
+#[ignore = "requires prepared public Release inputs and the dedicated native check-plugin-install runner"]
+fn real_published_official_packages_install_review_enable_disable_uninstall() {
+    published_lifecycle::run();
+}
+
 #[test]
 #[ignore = "requires an isolated native display, real keyboard input and Rust HTTPS package pipeline"]
 fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
@@ -401,7 +424,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
             std::thread::sleep(Duration::from_millis(2));
         }
         let receipt = host.managed_details(KEY).unwrap().0.receipt;
-        host.request_status(KEY, "app_header", &Context::default());
+        host.request_status(KEY, "app_header");
         while !receipt
             .package_path(&root)
             .join("resource-observed")
@@ -465,8 +488,8 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .clone();
     let pty = terminal.pty().unwrap().fd().as_raw_fd();
     let first_pid = std::fs::read_to_string(first.package_path(&root).join("executed")).unwrap();
-    ctx.state.borrow_mut().plugins.register(PluginSpec {
-        name: "sibling".into(),
+    ctx.state.borrow_mut().plugins.register_fixture(PluginSpec {
+        name: "github:12/sibling".into(),
         command: fixture("echo"),
         enabled: true,
     });
@@ -477,7 +500,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
                 .plugins
                 .listing()
                 .iter()
-                .any(|(key, state)| key == "sibling" && state == &PluginState::Running)
+                .any(|(key, state)| key == "github:12/sibling" && state == &PluginState::Running)
         },
         Duration::from_secs(5),
     );
@@ -543,7 +566,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .any(|label| label.text().contains("Only this plugin may restart")));
     press(&button(&dialog, "Cancel"));
     wait_for(|| view.visible_dialog().is_none(), Duration::from_secs(2));
-    assert_eq!(server.requests().len(), 3);
+    assert_eq!(server.requests().len(), 5);
     assert_eq!(
         crate::plugin::inventory::read(&root).unwrap()[0].receipt,
         first
@@ -552,7 +575,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     screenshot_dialog(&view.visible_dialog().unwrap(), "update-consent");
     press(&button(&view.visible_dialog().unwrap(), "Apply update"));
-    wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
+    wait_for(|| server.requests().len() == 11, Duration::from_secs(5));
     let old_path = first.package_path(&root);
     std::fs::remove_file(old_path.join("resource-observed")).unwrap();
     wait_for(
@@ -625,7 +648,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .for_update(&entry, stored.as_ref())
         .unwrap();
     let job = server.install(selected, root.clone()).unwrap();
-    wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
+    wait_for(|| server.requests().len() == 11, Duration::from_secs(5));
     ctx.state.borrow_mut().plugins.disable(KEY);
     ctx.state
         .borrow_mut()
@@ -819,7 +842,10 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
             root.clone(),
         )
         .unwrap();
-    wait_for(|| late_server.requests().len() == 8, Duration::from_secs(5));
+    wait_for(
+        || late_server.requests().len() == 11,
+        Duration::from_secs(5),
+    );
     let details = open_details();
     press(&button(&details, "Uninstall…"));
     wait_for(
@@ -1048,12 +1074,9 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
                 Reply::json(
                     json!({"id":12,"owner":{"login":if mode==2 {"new-publisher"}else{"example"},"id":if mode==2 {99}else{34}},"name":if mode==0 {"sample"}else{"renamed"},"private":false,"default_branch":"main"}),
                 )
-            } else if path == "/repositories/12/commits/main" {
-                Reply::json(json!({"sha":"a".repeat(40)}))
-            } else if path.ends_with("/among-plugins.json") {
-                Reply::json(crate::plugin::install::test_package("sample").0)
             } else {
-                panic!("unexpected source fixture path: {path}");
+                let (metadata, archive) = crate::plugin::install::test_package("sample");
+                crate::plugin::install::source::tests::package_route(metadata, archive, request)
             }
         }
     }));
@@ -1083,6 +1106,27 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     present();
     let view = inspector();
     focus(&view);
+    wait_for(
+        || has_label(view.upcast_ref(), "Source registrations loaded"),
+        Duration::from_secs(5),
+    );
+    let official = registered_source_row(&view, 1431055733);
+    assert_eq!(official.title(), "Official plugins for Among Terminal");
+    let subtitle = official.subtitle().unwrap();
+    assert!(subtitle
+        .contains("Among-Terminal/among-plugins · repository 1431055733 · publisher 339567100"));
+    assert!(subtitle.contains("cannot be removed"));
+    assert!(!widgets(official.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .any(|button| button.label().as_deref() == Some("Remove source")));
+    assert!(!button(&official, "Cached").is_sensitive());
+    assert!(button(&official, "Refresh").is_sensitive());
+    assert!(server.requests().is_empty());
+    assert!(
+        !source_root.exists(),
+        "the permanent official row is inert until explicit refresh"
+    );
     let entry = widgets(view.upcast_ref())
         .into_iter()
         .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
@@ -1103,7 +1147,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         || has_label(view.upcast_ref(), "Source change saved"),
         Duration::from_secs(5),
     );
-    assert_eq!(server.requests().len(), 3);
+    assert_eq!(server.requests().len(), 5);
     let source = || {
         serde_json::from_slice::<serde_json::Value>(
             &std::fs::read(source_root.join("sources.json")).unwrap(),
@@ -1128,14 +1172,21 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         || has_label(view.upcast_ref(), "Cached source registrations loaded"),
         Duration::from_secs(5),
     );
-    press(&button(&view, "Cached"));
+    let official = registered_source_row(&view, 1431055733);
+    assert_eq!(official.title(), "Official plugins for Among Terminal");
+    assert!(official.subtitle().unwrap().contains("publisher 339567100"));
+    assert!(!widgets(official.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .any(|button| button.label().as_deref() == Some("Remove source")));
+    press(&button(&registered_source_row(&view, 12), "Cached"));
     wait_for(
         || has_label(view.upcast_ref(), "Cached metadata; not an online check"),
         Duration::from_secs(5),
     );
     assert_eq!(
         server.requests().len(),
-        3,
+        5,
         "cache reopen must make no network request"
     );
     let mut stale = source();
@@ -1150,7 +1201,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         || has_label(view.upcast_ref(), "Cached source registrations loaded"),
         Duration::from_secs(5),
     );
-    press(&button(&view, "Cached"));
+    press(&button(&registered_source_row(&view, 12), "Cached"));
     wait_for(
         || {
             has_label(
@@ -1162,12 +1213,12 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     assert_eq!(
         server.requests().len(),
-        3,
+        5,
         "stale cached inspection is still offline and does not imply a successful refresh"
     );
     screenshot(&view, "source-stale-offline");
     mode.store(1, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&button(&registered_source_row(&view, 12), "Refresh"));
     wait_for(
         || {
             source()["registrations"][0]["origin"]["repository"] == "renamed"
@@ -1184,12 +1235,12 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         initial["registrations"][0]["token"]
     );
     assert!(
-        server.requests()[3].starts_with("GET /repositories/12 "),
+        server.requests()[5].starts_with("GET /repositories/12 "),
         "refresh must target the registered numeric ID, not a reused repository name"
     );
     let renamed = std::fs::read(source_root.join("sources.json")).unwrap();
     mode.store(2, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&button(&registered_source_row(&view, 12), "Refresh"));
     wait_for(
         || has_label(view.upcast_ref(), "Source approval was not changed"),
         Duration::from_secs(5),
@@ -1215,7 +1266,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     );
     let transferred = std::fs::read(source_root.join("sources.json")).unwrap();
     mode.store(3, Ordering::Release);
-    press(&button(&view, "Refresh"));
+    press(&button(&registered_source_row(&view, 12), "Refresh"));
     wait_for(
         || {
             has_label(
@@ -1229,18 +1280,18 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         std::fs::read(source_root.join("sources.json")).unwrap(),
         transferred
     );
-    press(&button(&view, "Cached"));
+    press(&button(&registered_source_row(&view, 12), "Cached"));
     wait_for(
         || has_label(view.upcast_ref(), "Cached metadata; not an online check"),
         Duration::from_secs(5),
     );
     mode.store(4, Ordering::Release);
     let before = server.requests().len();
-    press(&button(&view, "Refresh"));
+    press(&button(&registered_source_row(&view, 12), "Refresh"));
     wait_for(|| server.requests().len() > before, Duration::from_secs(5));
-    assert!(!button(&view, "Cached").is_sensitive());
-    assert!(!button(&view, "Refresh").is_sensitive());
-    assert!(!button(&view, "Remove source").is_sensitive());
+    assert!(!button(&registered_source_row(&view, 12), "Cached").is_sensitive());
+    assert!(!button(&registered_source_row(&view, 12), "Refresh").is_sensitive());
+    assert!(!button(&registered_source_row(&view, 12), "Remove source").is_sensitive());
     screenshot(&view, "source-refresh-cancellable");
     press(&button(&view, "Cancel source request"));
     wait_for(
@@ -1256,7 +1307,7 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         std::fs::read(source_root.join("sources.json")).unwrap(),
         transferred
     );
-    press(&button(&view, "Remove source"));
+    press(&button(&registered_source_row(&view, 12), "Remove source"));
     wait_for(
         || {
             source()["registrations"].as_array().unwrap().is_empty()
@@ -1265,6 +1316,10 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
         Duration::from_secs(5),
     );
     assert!(source()["registrations"].as_array().unwrap().is_empty());
+    assert_eq!(
+        registered_source_row(&view, 1431055733).title(),
+        "Official plugins for Among Terminal"
+    );
     assert_eq!(
         std::fs::read(installed.join("installed.json")).unwrap(),
         selected
@@ -1277,6 +1332,80 @@ fn registered_sources_cache_refresh_trust_and_removal_are_real_and_separate_from
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     assert!(!installed.join("executed").exists());
     screenshot(&view, "source-removed-installed-preserved");
+    view.destroy();
+    let retained = std::fs::read(source_root.join("sources.json")).unwrap();
+    let unavailable=serde_json::to_vec(&json!({"version":1,"registrations":[{
+        "origin":{"repository_id":1431055733u64,"publisher_id":999,"owner":"changed-publisher","repository":"renamed"},
+        "token":"a".repeat(64),"revision":"b".repeat(64),"snapshots":[]
+    }]})).unwrap();
+    std::fs::write(source_root.join("official.json"), &unavailable).unwrap();
+    std::fs::set_permissions(
+        source_root.join("official.json"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let requests = server.requests().len();
+    present();
+    let view = inspector();
+    focus(&view);
+    wait_for(
+        || has_label(view.upcast_ref(), "Source registrations loaded"),
+        Duration::from_secs(5),
+    );
+    let official = registered_source_row(&view, 1431055733);
+    assert_eq!(official.title(), "Official plugins for Among Terminal");
+    assert!(official
+        .subtitle()
+        .unwrap()
+        .contains("Among-Terminal/among-plugins · repository 1431055733 · publisher 339567100"));
+    assert!(official.subtitle().unwrap().contains("Unavailable:"));
+    assert!(!button(&official, "Cached").is_sensitive());
+    assert!(!widgets(official.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .any(|button| button.label().as_deref() == Some("Remove source")));
+    screenshot(&view, "official-unavailable-pinned-not-removable");
+    view.destroy();
+    std::fs::write(
+        source_root.join("official.json"),
+        b"corrupt official discovery cache",
+    )
+    .unwrap();
+    present();
+    let view = inspector();
+    focus(&view);
+    wait_for(
+        || {
+            has_label(
+                view.upcast_ref(),
+                "Official metadata is unavailable; custom sources remain available",
+            )
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        registered_source_row(&view, 1431055733).title(),
+        "Official plugins for Among Terminal"
+    );
+    assert_eq!(
+        server.requests().len(),
+        requests,
+        "unavailable/corrupt official rows remain offline until explicit refresh"
+    );
+    assert_eq!(
+        std::fs::read(source_root.join("sources.json")).unwrap(),
+        retained
+    );
+    assert_eq!(
+        std::fs::read(installed.join("installed.json")).unwrap(),
+        selected
+    );
+    assert_eq!(
+        ["managed-plugins.json", "plugins.json", "shortcuts.json"]
+            .map(|name| std::fs::read(directory.join(name)).ok()),
+        preferences_before
+    );
+    assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     view.destroy();
     ctx.window.destroy();
     println!("PASS actual source Add, fresh-view offline cache, numeric Refresh/rename, explicit transferred publisher approval, actual rate-limit/cancellation and Remove without changing selected installation, enablement or settings. Native window hierarchy retained; simultaneous terminal input is exercised separately.");
@@ -1330,8 +1459,8 @@ fn native_install(close_after_commit: bool) {
     let (mut second, _) = fixture_for("second");
     first.as_object_mut().unwrap().remove("schema_version");
     second.as_object_mut().unwrap().remove("schema_version");
-    second["artifacts"][0]["asset_id"] = json!(22);
-    let catalogue = json!({"schema_version":1,"plugins":[{"id":"sample","versions":[first.clone()]},{"id":"second","versions":[second]}]});
+    second["artifacts"][0]["asset"] = json!("second.tar.gz");
+    let catalogue = json!({"schema_version":2,"plugins":[{"id":"sample","versions":[first.clone()]},{"id":"second","versions":[second]}]});
     let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!close_after_commit));
     let worker_release = release.clone();
     let server = Rc::new(Server::new(move |request| {
@@ -1342,16 +1471,16 @@ fn native_install(close_after_commit: bool) {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
-        if request
-            .split_whitespace()
-            .nth(1)
-            .unwrap()
-            .ends_with("/among-plugins.json")
-        {
-            // the catalogue is retrieved by the actual revision-pinned client.
+        let path = request.split_whitespace().nth(1).unwrap();
+        if path.ends_with("/releases/assets/12") {
+            // The catalogue is retrieved through its observed release asset ID.
             let mut reply = package_route(first.clone(), archive.clone(), request);
             reply.set_json(catalogue.clone());
             reply
+        } else if path.ends_with("/releases/latest") {
+            Reply::json(crate::plugin::install::source::tests::release_document(
+                &catalogue,
+            ))
         } else {
             package_route(first.clone(), archive.clone(), request)
         }
@@ -1408,10 +1537,10 @@ fn native_install(close_after_commit: bool) {
         "multi-plugin catalogue must expose independent actions"
     );
     assert!(!root.join("installed.json").exists());
-    assert_eq!(server.requests().len(), 3);
+    assert_eq!(server.requests().len(), 5);
     press(&installs[0]);
     if close_after_commit {
-        wait_for(|| server.requests().len() == 8, Duration::from_secs(5));
+        wait_for(|| server.requests().len() == 11, Duration::from_secs(5));
         release.store(true, std::sync::atomic::Ordering::Release);
         // hold the GUI loop while the worker commits, then destroy the view
         // before its polling callback has any chance to consume the outcome.
@@ -1459,11 +1588,11 @@ fn native_install(close_after_commit: bool) {
         retained
     );
     assert_eq!(crate::plugin::inventory::read(&root).unwrap().len(), 1);
-    assert_eq!(server.requests().len(), 11);
+    assert_eq!(server.requests().len(), 15);
     assert!(!server
         .requests()
         .iter()
-        .any(|request| request.contains("/assets/22")));
+        .any(|request| request.contains("/assets/14")));
     if !close_after_commit {
         screenshot(&view, "installed-disabled");
         view.destroy();
@@ -1846,7 +1975,7 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         )
         .contains("example/sample (repository 12, publisher 34)"));
     assert_eq!(requests.get(), 2);
-    assert_eq!(ready.requests().len(), 3);
+    assert_eq!(ready.requests().len(), 5);
     screenshot(&view, "repository-result");
     let id = focus(&view);
     xdo(&["windowsize", "--sync", &id, "480", "620"]);
@@ -2039,11 +2168,8 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
     );
     assert!(text().contains("example/sample (repository 12, publisher 34)"));
     assert!(text().contains("inspection does not install or enable plugins"));
-    assert_eq!(ready.requests().len(), 3);
-    assert!(ready.requests()[2].starts_with(&format!(
-        "GET /example/sample/{}/among-plugins.json ",
-        "a".repeat(40)
-    )));
+    assert_eq!(ready.requests().len(), 5);
+    assert!(ready.requests()[2].starts_with("GET /repositories/12/releases/assets/12 "));
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     assert_eq!(
         ctx.state.borrow().pane(PaneId(1)).unwrap().terminal(),

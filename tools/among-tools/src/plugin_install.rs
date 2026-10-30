@@ -1,187 +1,177 @@
+//! native acceptance delegates installation to the actual host UI, never a
+//! standalone copier or a hand-written installed.json receipt.
+
 use crate::{
     process::{allowed_environment, OwnedProcess},
     storage, Result,
 };
-use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-pub fn run(
-    root: &Path,
-    app: &Path,
-    built: &Path,
-    installer: &Path,
-    scratch: &Path,
-) -> Result<PathBuf> {
-    crate::preferences::owned_display()?;
-    let root = root.canonicalize()?;
-    let app = app.canonicalize()?;
-    let built = built.canonicalize()?;
-    let installer = installer.canonicalize()?;
-    let names = ["clock", "system-status", "pane-pwd"];
-    let source_names = fs::read_dir(root.join("examples/plugins/src/bin"))?
-        .map(|entry| {
-            let path = entry?.path();
-            Ok(path
-                .extension()
-                .is_some_and(|ext| ext == "rs")
-                .then(|| {
-                    path.file_stem()
-                        .map(|stem| stem.to_string_lossy().to_string())
-                })
-                .flatten())
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect::<BTreeSet<_>>();
-    if source_names
-        != names
-            .iter()
-            .map(|name| name.to_string())
-            .collect::<BTreeSet<_>>()
-    {
-        return Err("shipped plugin source inventory differs from approved three plugins".into());
+pub mod package;
+pub mod release;
+
+pub const NATIVE_TEST: &str = "app::plugin_tests::installation::real_published_official_packages_install_review_enable_disable_uninstall";
+
+fn diagnostic_tail(output: &str) -> &str {
+    // Native logs are not uploaded by every caller; keep the refusal visible
+    // without flooding CI or slicing a UTF-8 code point.
+    let mut start = output.len().saturating_sub(16 * 1024);
+    while !output.is_char_boundary(start) {
+        start += 1;
     }
+    &output[start..]
+}
+
+pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> {
+    crate::preferences::owned_display()?;
+    let executable = executable.canonicalize()?;
+    let inputs = inputs.canonicalize()?;
+    let prepared = release::verify(&inputs)?;
     fs::create_dir_all(scratch)?;
-    let base = storage::private_directory(scratch, "among-install-check")?;
-    for name in ["home", "config", "data", "cache", "state"] {
+    let base = storage::private_directory(scratch, "among-release-install-check")?;
+    for name in ["home", "config", "data", "cache", "state", "run"] {
         fs::DirBuilder::new().mode(0o700).create(base.join(name))?;
     }
-    let mut env = allowed_environment(
+    let mut environment = allowed_environment(
         &std::env::vars_os().collect(),
         &[
             "PATH",
             "LANG",
             "DISPLAY",
-            "XDG_RUNTIME_DIR",
             "LIBGL_ALWAYS_SOFTWARE",
             "GSK_RENDERER",
         ],
     );
-    for (key, dir) in [
+    for (key, directory) in [
         ("HOME", "home"),
         ("XDG_CONFIG_HOME", "config"),
         ("XDG_DATA_HOME", "data"),
         ("XDG_CACHE_HOME", "cache"),
         ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "run"),
     ] {
-        env.insert(key.into(), base.join(dir).into_os_string());
-    }
-    let install_log = File::create(base.join("install.log"))?;
-    let mut install =
-        OwnedProcess::spawn(&installer, &["--enable-new"], &env, &root, &install_log)?;
-    if !install.wait(Duration::from_secs(60))?.success() {
-        return Err(format!("plugin installation failed; evidence: {}", base.display()).into());
-    }
-    let config = base.join("config/among/plugins.json");
-    let original = fs::read(&config)?;
-    let document = storage::parse_json(&original)?;
-    let entries = document["plugins"]
-        .as_array()
-        .ok_or("plugin config has no entries")?;
-    if entries.len() != names.len()
-        || !entries
-            .iter()
-            .zip(names)
-            .all(|(entry, name)| entry["name"] == name && entry["enabled"] == false)
-    {
-        return Err("fresh plugin installation must add exactly three disabled entries".into());
-    }
-    let installed = base.join("data/among/plugins");
-    let installed_names = fs::read_dir(&installed)?
-        .map(|entry| Ok(entry?.file_name().to_string_lossy().to_string()))
-        .collect::<Result<BTreeSet<_>>>()?;
-    if installed_names
-        != names
-            .iter()
-            .map(|name| name.to_string())
-            .collect::<BTreeSet<_>>()
-    {
-        return Err("installed plugin payload differs from approved inventory".into());
-    }
-    for name in names {
-        let source = fs::read(storage::safe_path(&built, Path::new(name))?)?;
-        let destination = fs::read(storage::safe_path(&installed, Path::new(name))?)?;
-        if !destination.starts_with(b"\x7fELF")
-            || storage::sha256(source.as_slice())? != storage::sha256(destination.as_slice())?
-        {
-            return Err("installed plugin bytes differ from checked native binary".into());
-        }
+        environment.insert(key.into(), base.join(directory).into_os_string());
     }
     for (key, value) in [
-        ("AMONG_SELFCHECK", "1"),
-        ("AMONG_SELFCHECK_TICKS", "1000"),
         ("GDK_BACKEND", "x11"),
-        ("GTK_A11Y", "none"),
+        ("GTK_A11Y", "test"),
         ("G_DEBUG", "fatal-criticals"),
         ("GIO_USE_VFS", "local"),
         ("ADW_DISABLE_PORTAL", "1"),
         ("SHELL", "/bin/sh"),
         ("HISTFILE", "/dev/null"),
     ] {
-        env.insert(key.into(), value.into());
+        environment.insert(key.into(), value.into());
     }
-    for phase in ["disabled", "enabled"] {
-        let session = base.join("data/among/session.json");
-        match fs::remove_file(session) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        if phase == "enabled" {
-            env.insert("AMONG_ENABLE".into(), names.join(",").into());
-        }
-        let log_path = base.join(format!("{phase}.log"));
-        let log = File::create(&log_path)?;
-        let mut app = OwnedProcess::spawn(
-            Path::new("/usr/bin/dbus-run-session"),
-            &["--", app.to_str().ok_or("app path is not UTF-8")?],
-            &env,
-            &base,
-            &log,
-        )?;
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let state = if phase == "disabled" {
-            "Disabled"
-        } else {
-            "Running"
-        };
-        let text = loop {
-            let text = fs::read_to_string(&log_path)?;
-            if names
-                .iter()
-                .all(|name| text.contains(&format!("{name}={state}")))
-            {
-                break text;
-            }
-            if !app.is_running()? || Instant::now() >= deadline {
-                return Err(
-                    format!("plugin discovery failed; evidence: {}", log_path.display()).into(),
-                );
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        };
-        if !text.contains("pane_numbers=[\"#1\"]") || !text.contains("sidebar_states=[0:0:false:1]")
-        {
-            return Err("fresh plugin test lost native pane counts".into());
-        }
-        if phase == "disabled"
-            && (!text.contains("app_header=[]") || !text.contains("app_footer=[]"))
-        {
-            return Err("disabled plugins emitted fragments".into());
-        }
-        if fs::read(&config)? != original {
-            return Err("runtime plugin switches persisted into configuration".into());
-        }
-        if text.contains("CRITICAL") || text.contains("panicked") {
-            return Err("plugin test observed native critical/panic".into());
-        }
-        app.cleanup()?;
-        println!("PASS documented fresh plugin install: {phase}, built-in counts and pane number");
+    environment.insert("AMONG_CHECK_ROOT".into(), base.clone().into_os_string());
+    environment.insert(
+        "AMONG_OFFICIAL_PLUGIN_INPUTS".into(),
+        inputs.clone().into_os_string(),
+    );
+    let list_path = base.join("test-names.txt");
+    let list = File::create(&list_path)?;
+    let mut listing = OwnedProcess::spawn(&executable, &["--list"], &environment, &base, &list)?;
+    if !listing.wait(Duration::from_secs(10))?.success()
+        || fs::read_to_string(list_path)?
+            .lines()
+            .filter(|line| *line == format!("{NATIVE_TEST}: test"))
+            .count()
+            != 1
+    {
+        return Err(
+            "current host does not provide the exact published-package native acceptance test"
+                .into(),
+        );
     }
-    println!("Evidence: {}", base.display());
+    let log_path = base.join("native-install.log");
+    let log = File::create(&log_path)?;
+    let mut child = OwnedProcess::spawn(
+        Path::new("/usr/bin/dbus-run-session"),
+        &[
+            "--",
+            executable.to_str().ok_or("host test path is not UTF-8")?,
+            NATIVE_TEST,
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+            "--nocapture",
+            "--color=never",
+        ],
+        &environment,
+        &base,
+        &log,
+    )?;
+    let status = child.wait(Duration::from_secs(240))?;
+    let output = fs::read_to_string(&log_path)?;
+    if !status.success()
+        || !output.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
+        || !output.contains("PASS published_release_ui install_review_enable_disable_uninstall=true terminal_input=true")
+        || output.contains("CRITICAL")
+        || output.contains("panicked")
+    {
+        eprintln!(
+            "Native installation refusal (last at most 16384 bytes of native-install.log):\n{}",
+            diagnostic_tail(&output)
+        );
+        return Err(format!(
+            "published-package native installation not accepted; evidence: {}",
+            base.display()
+        )
+        .into());
+    }
+    if release::verify(&inputs)? != prepared {
+        return Err("prepared release observation changed during native installation".into());
+    }
+    let profile = base.join(".runtime-published-live-profile");
+    let metadata = storage::parse_json(&fs::read(profile.join("profile.json"))?)?;
+    if metadata["kind"] != "observed_published_installation_profile"
+        || metadata["source_revision"] != prepared["source_revision"]
+        || metadata["catalogue_revision"] != prepared["catalogue_revision"]
+        || release::profile_inputs(&profile)? != prepared
+    {
+        return Err(
+            "native test did not export its observed published installation profile".into(),
+        );
+    }
+    println!("Published profile: {}", profile.display());
+    println!(
+        "PASS actual published-package native installation; evidence: {}",
+        base.display()
+    );
     Ok(base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diagnostic_tail;
+
+    #[test]
+    fn refusal_diagnostics_keep_short_output_and_empty_logs() {
+        assert_eq!(diagnostic_tail(""), "");
+        assert_eq!(
+            diagnostic_tail("a native test failed\n"),
+            "a native test failed\n"
+        );
+    }
+
+    #[test]
+    fn refusal_diagnostics_bound_bytes_and_keep_the_failure_tail() {
+        let output = format!("{}native assertion failed\n", "x".repeat(32 * 1024));
+        let tail = diagnostic_tail(&output);
+        assert_eq!(tail.len(), 16 * 1024);
+        assert!(tail.ends_with("native assertion failed\n"));
+    }
+
+    #[test]
+    fn refusal_diagnostics_do_not_split_multibyte_characters() {
+        let output = format!("{}failed\n", "🦀".repeat(8192));
+        let tail = diagnostic_tail(&output);
+        assert!(tail.len() <= 16 * 1024);
+        assert!(tail.len() > 16 * 1024 - 4);
+        assert!(tail.starts_with('🦀'));
+        assert!(tail.ends_with("failed\n"));
+    }
 }

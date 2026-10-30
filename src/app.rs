@@ -14,7 +14,9 @@ use adw::prelude::*;
 use vte::prelude::*;
 
 use crate::pane::{Pane, PaneDrag, PaneSignals};
-use crate::plugin::host::{PluginHost, PluginSpec};
+use crate::plugin::host::PluginHost;
+#[cfg(test)]
+use crate::plugin::host::PluginSpec;
 use crate::plugin::{Context, EventKind, TerminalInfo};
 use crate::prefs;
 use crate::shortcuts::{self, Action, Bindings, Cycle, Direction, RESIZE_STEP};
@@ -338,109 +340,6 @@ fn slot_area(class: &str) -> gtk::Box {
     box_
 }
 
-/// Discover configured plugins. Any failure yields no plugins, never a crash.
-fn load_plugin_specs() -> Vec<PluginSpec> {
-    let mut specs = plugin_config_path()
-        .map(|path| read_plugin_config(&path))
-        .unwrap_or_default();
-    for name in installed_plugins() {
-        if legacy_plugin_name(&name) && !specs.iter().any(|spec| spec.name == name) {
-            if let Some(directory) = plugin_dir() {
-                specs.push(PluginSpec {
-                    command: vec![directory.join(&name).display().to_string()],
-                    name,
-                    enabled: false,
-                });
-            }
-        }
-    }
-    specs
-}
-
-fn legacy_plugin_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 255
-        && name != "."
-        && name != ".."
-        && !name.contains('/')
-        && !name.chars().any(char::is_control)
-}
-
-fn plugin_config_path() -> Option<std::path::PathBuf> {
-    crate::settings::directory().map(|directory| directory.join("plugins.json"))
-}
-
-fn plugin_dir() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))
-        })?;
-    Some(base.join("among").join("plugins"))
-}
-
-/// Parse the plugin configuration file.
-///
-/// Each failure path returns an empty list or skips one entry, because a single
-/// bad plugin must never stop the application from starting.
-pub fn read_plugin_config(path: &std::path::Path) -> Vec<PluginSpec> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Vec::new();
-    };
-    let Some(entries) = value.get("plugins").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-
-    let mut seen = std::collections::BTreeSet::new();
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let name = entry.get("name")?.as_str()?.to_string();
-            // missing files remain inventory entries; a filename still cannot
-            // escape the legacy directory or impersonate a managed identity.
-            if !legacy_plugin_name(&name) || !seen.insert(name.clone()) {
-                return None;
-            }
-            let enabled = entry
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let command = plugin_dir()
-                .map(|directory| vec![directory.join(&name).display().to_string()])
-                .unwrap_or_default();
-            Some(PluginSpec {
-                name,
-                command,
-                enabled,
-            })
-        })
-        .collect()
-}
-
-/// Names of executables present in the user's plugin directory.
-fn installed_plugins() -> Vec<String> {
-    let Some(dir) = plugin_dir() else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            if !path.is_file() {
-                return None;
-            }
-            path.file_name()?.to_str().map(str::to_string)
-        })
-        .collect();
-    names.sort();
-    names
-}
-
 /// Every pane with the index of the workspace that now contains it.
 ///
 /// Derived from the model on each request rather than cached in a pane widget,
@@ -653,7 +552,6 @@ fn build_with_writer(
     admission.current.replace(Rc::downgrade(&state));
     {
         let mut state = state.borrow_mut();
-        state.settings.load(crate::settings::Document::Plugins);
         state.sidebar_width = state
             .settings
             .load(crate::settings::Document::Window)
@@ -703,8 +601,9 @@ fn build_with_writer(
     }
     apply_env_rebindings(&mut state.borrow_mut().bindings);
 
-    let specs = load_plugin_specs();
-    state.borrow_mut().plugins.register_all(specs);
+    // only validated managed receipts supply plugin identities. historical
+    // filename-based configuration and executables are unrelated user data:
+    // neither inspect them as executable inventory nor rewrite/remove them.
     if let Some(root) = crate::plugin::inventory::root() {
         match crate::plugin::inventory::read(&root) {
             Ok(entries) => {
@@ -1095,6 +994,11 @@ fn selfcheck(ctx: &Window, label: &str) {
     {
         let state = ctx.state.borrow();
         eprintln!("among[{label}]: session_ready={} session_closing={} session_saved={} session_problem={:?}", state.session_ready, state.session_closing, state.session_saved.is_some(), state.session_problem);
+        eprintln!(
+            "among[{label}]: plugin_development={} pid={}",
+            crate::plugin::development::enabled(),
+            std::process::id()
+        );
         eprintln!(
             "among[{label}]: settings_problem={:?}",
             state.settings.status()
@@ -4277,12 +4181,11 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
         return;
     }
     let controls = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    let origin = gtk::Label::new(Some(&format!(
-        "{}/{} · {}",
-        entry.receipt.owner,
-        entry.receipt.repository,
-        entry.key()
-    )));
+    let source = entry.receipt.release().map_or_else(
+        || crate::plugin::inventory::LOCAL_SOURCE_LABEL.to_string(),
+        |release| format!("{}/{}", release.owner, release.repository),
+    );
+    let origin = gtk::Label::new(Some(&format!("{source} · {}", entry.key())));
     origin.set_wrap(true);
     controls.append(&origin);
     let mut features = Vec::new();
@@ -5342,7 +5245,6 @@ fn request_plugin_status(ctx: &Window) {
     let now = slots::now_ms();
     let mut state = ctx.state.borrow_mut();
     update_plugin_context(&mut state);
-    let context = plugin_context(&state);
     let healthy = state.plugins.healthy();
 
     let mut scopes = vec![
@@ -5371,10 +5273,7 @@ fn request_plugin_status(ctx: &Window) {
                 let scope_name = crate::plugin::protocol::scope_name(&scope);
                 for name in &healthy {
                     if state.store.needs_collection(scope, name, now)
-                        && state
-                            .plugins
-                            .request_status(name, &scope_name, &context)
-                            .is_some()
+                        && state.plugins.request_status(name, &scope_name).is_some()
                     {
                         state.store.mark_collected(scope, name, now);
                     }
@@ -5387,12 +5286,7 @@ fn request_plugin_status(ctx: &Window) {
                     let due = ctx.summary_requested.borrow().get(&key).is_none_or(|last| {
                         *last == 0 || now.saturating_sub(*last) >= SUMMARY_REFRESH_MS
                     });
-                    if due
-                        && state
-                            .plugins
-                            .request_status(name, &scope_name, &context)
-                            .is_some()
-                    {
+                    if due && state.plugins.request_status(name, &scope_name).is_some() {
                         ctx.summary_requested.borrow_mut().insert(key, now);
                     }
                 }
@@ -6217,6 +6111,93 @@ mod tests {
     #[test]
     #[ignore = "requires isolated XDG directories, display and xdotool; driven by among-tools check-preferences"]
     fn preferences_persist_across_fresh_processes() {
+        const CLOCK: &str = "github:1431055733/clock";
+        fn seed_preferences_fixture() {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            let root = crate::plugin::inventory::root().unwrap();
+            crate::test_isolation::assert_below_check_root(&root);
+            if root.join("installed.json").exists() {
+                return;
+            }
+            let inputs =
+                std::path::PathBuf::from(std::env::var_os("AMONG_OFFICIAL_PLUGIN_INPUTS").unwrap());
+            let catalogue_bytes = std::fs::read(inputs.join("among-plugins.json")).unwrap();
+            assert_eq!(
+                crate::plugin::inventory::checksum(&catalogue_bytes).unwrap(),
+                "510bdef3b532ed266d10fd925bf15a0d7d536c1889f2454e8d9a7cb446cf8a5b"
+            );
+            let catalogue =
+                crate::plugin::install::metadata::Catalogue::parse(&catalogue_bytes).unwrap();
+            let platform = crate::plugin::install::metadata::Platform::current().unwrap();
+            let mut receipts = Vec::new();
+            for (index, plugin) in catalogue.plugins.iter().enumerate() {
+                let version = &plugin.versions[0];
+                let artifact = version.select(&platform).unwrap();
+                // Persistence fixture only: real published executable/resource
+                // bytes, synthetic local receipts, never installation acceptance.
+                let receipt = crate::plugin::inventory::Receipt {
+                    origin: crate::plugin::inventory::Provenance::Release(
+                        crate::plugin::inventory::ReleaseOrigin {
+                            repository_id: 1431055733,
+                            owner: "fixture".into(),
+                            repository: "preferences".into(),
+                            release_id: 1,
+                            asset_id: 2,
+                            source: None,
+                        },
+                    ),
+                    plugin_id: plugin.id.clone(),
+                    revision: version.revision.clone(),
+                    manifest_sha256: version.manifest_sha256.clone(),
+                    package_sha256: artifact.sha256.clone(),
+                    generation: format!("{:064x}", index + 1),
+                    installation: None,
+                };
+                let package = receipt.package_path(&root);
+                for member in &artifact.members {
+                    let source = inputs.join(&plugin.id).join(&member.path);
+                    let metadata = std::fs::symlink_metadata(&source).unwrap();
+                    assert!(
+                        metadata.is_file()
+                            && metadata.len() == member.size
+                            && metadata.len() <= 64 * 1024 * 1024
+                    );
+                    let bytes = std::fs::read(&source).unwrap();
+                    assert_eq!(
+                        crate::plugin::inventory::checksum(&bytes).unwrap(),
+                        member.sha256
+                    );
+                    let target = package.join(&member.path);
+                    std::fs::DirBuilder::new()
+                        .recursive(true)
+                        .mode(0o700)
+                        .create(target.parent().unwrap())
+                        .unwrap();
+                    std::fs::write(&target, bytes).unwrap();
+                    std::fs::set_permissions(
+                        target,
+                        std::fs::Permissions::from_mode(if member.executable {
+                            0o700
+                        } else {
+                            0o600
+                        }),
+                    )
+                    .unwrap();
+                }
+                receipts.push(receipt);
+            }
+            std::fs::write(
+                root.join("installed.json"),
+                serde_json::json!({"version":1,"installations":receipts}).to_string(),
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                root.join("installed.json"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+            assert_eq!(crate::plugin::inventory::read(&root).unwrap().len(), 3);
+        }
         fn pump() {
             let end = std::time::Instant::now() + Duration::from_millis(450);
             while std::time::Instant::now() < end {
@@ -6270,19 +6251,49 @@ mod tests {
                 .find(|row| row.title() == title)
                 .unwrap()
         }
+        fn accept_review(prefs: &adw::PreferencesWindow) {
+            let Some(dialog) = prefs.visible_dialog() else {
+                return;
+            };
+            let accept = descendants(dialog.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+                .find(|button| button.label().as_deref() == Some("Accept and enable"))
+                .unwrap();
+            assert!(accept.grab_focus());
+            xdo(&["key", "Return"]);
+            pump();
+        }
         let phase = std::env::var("AMONG_PREFERENCES_TEST_PHASE").unwrap();
-        let path = plugin_config_path().unwrap();
+        let path = crate::settings::directory()
+            .unwrap()
+            .join("managed-plugins.json");
         crate::test_isolation::assert_below_check_root(&path);
+        seed_preferences_fixture();
+        let entries =
+            crate::plugin::inventory::read(&crate::plugin::inventory::root().unwrap()).unwrap();
+        let name = |id: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.receipt.plugin_id == id)
+                .unwrap()
+                .inspected
+                .as_ref()
+                .unwrap()
+                .manifest
+                .name
+                .clone()
+        };
         glib::set_prgname(Some("among-settings-test"));
         let app = adw::Application::builder()
             .application_id("com.github.among-terminal.settings-test")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
         app.register(None::<&gio::Cancellable>).unwrap();
-        build(&app, None);
+        let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
         pump();
-        let window = app.active_window().unwrap();
-        window.activate_action("win.preferences", None).unwrap();
+        let window = ctx.window.clone();
+        gtk::prelude::WidgetExt::activate_action(&window, "win.preferences", None).unwrap();
         pump();
         let prefs = gtk::Window::list_toplevels()
             .into_iter()
@@ -6304,7 +6315,7 @@ mod tests {
                 .subtitle()
                 .unwrap()
                 .contains(if phase == "invalid-plugins" {
-                    "plugins.json"
+                    "managed-plugins.json"
                 } else {
                     "shortcuts.json"
                 }));
@@ -6325,7 +6336,7 @@ mod tests {
             pump();
             if phase != "invalid-plugins" {
                 assert!(storage.subtitle().unwrap().contains("session-only"));
-                let plugin = row(&prefs, "clock");
+                let plugin = row(&prefs, &name("clock"));
                 let switch = descendants(plugin.upcast_ref())
                     .into_iter()
                     .find_map(|node| node.downcast::<gtk::Switch>().ok())
@@ -6340,9 +6351,10 @@ mod tests {
                 assert!(switch.grab_focus());
                 xdo(&["key", "space"]);
                 pump();
+                accept_review(&prefs);
                 assert_eq!(
-                    crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                        ["plugins"][0]["enabled"],
+                    crate::settings::load(&path, crate::settings::Document::ManagedPlugins)
+                        .unwrap()["plugins"][CLOCK]["enabled"],
                     true
                 );
             } else {
@@ -6384,26 +6396,22 @@ mod tests {
             window.destroy();
             return;
         }
-        let plugin_row = row(&prefs, "clock");
-        for name in ["system-status", "pane-pwd"] {
-            let plugin = row(&prefs, name);
+        let plugin_row = row(&prefs, &name("clock"));
+        for id in ["system-status", "pane-pwd"] {
+            let plugin = row(&prefs, &name(id));
             let toggle = descendants(plugin.upcast_ref())
                 .into_iter()
                 .find_map(|node| node.downcast::<gtk::Switch>().ok())
                 .unwrap();
             assert!(
                 !toggle.is_active(),
-                "untouched plugin choice remains disabled: {name}"
+                "untouched plugin choice remains disabled: {id}"
             );
         }
         if matches!(phase.as_str(), "edit" | "off" | "failure") {
-            let output = std::process::Command::new("pgrep")
-                .args(["-P", &std::process::id().to_string(), "-x", "clock"])
-                .output()
-                .unwrap();
             assert_eq!(
-                output.status.code(),
-                Some(1),
+                ctx.state.borrow().plugins.supervised_count(),
+                0,
                 "disabled plugin must not be spawned"
             );
         }
@@ -6431,13 +6439,14 @@ mod tests {
             assert!(switch.grab_focus());
             xdo(&["key", "space"]);
             pump();
+            accept_review(&prefs);
             assert!(switch.is_active());
             assert_eq!(
-                crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                    ["plugins"][0]["enabled"],
+                crate::settings::load(&path, crate::settings::Document::ManagedPlugins).unwrap()
+                    ["plugins"][CLOCK]["enabled"],
                 true
             );
-            let resource = row(&prefs, "system-status");
+            let resource = row(&prefs, &name("system-status"));
             let resource_switch = descendants(resource.upcast_ref())
                 .into_iter()
                 .find_map(|node| node.downcast::<gtk::Switch>().ok())
@@ -6445,6 +6454,7 @@ mod tests {
             assert!(resource_switch.grab_focus());
             xdo(&["key", "space"]);
             pump();
+            accept_review(&prefs);
             pump();
             assert!(resource_switch.is_active());
             assert!(
@@ -6521,8 +6531,8 @@ mod tests {
                 pump();
                 assert!(!switch.is_active());
                 assert_eq!(
-                    crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                        ["plugins"][0]["enabled"],
+                    crate::settings::load(&path, crate::settings::Document::ManagedPlugins)
+                        .unwrap()["plugins"][CLOCK]["enabled"],
                     false
                 );
             }
@@ -6553,8 +6563,8 @@ mod tests {
                 xdo(&["key", "space"]);
                 pump();
                 assert_eq!(
-                    crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                        ["plugins"][0]["enabled"],
+                    crate::settings::load(&path, crate::settings::Document::ManagedPlugins)
+                        .unwrap()["plugins"][CLOCK]["enabled"],
                     true
                 );
                 assert!(
@@ -6566,28 +6576,27 @@ mod tests {
                 );
             }
             if phase == "fault" {
-                let pid = std::process::id().to_string();
-                let output = std::process::Command::new("pgrep")
-                    .args(["-P", &pid, "-x", "clock"])
-                    .output()
-                    .unwrap();
-                assert!(output.status.success(), "enabled plugin process exists");
-                let child = String::from_utf8(output.stdout).unwrap();
+                let pids = ctx.state.borrow().plugins.supervised_pids();
+                assert_eq!(
+                    pids.len(),
+                    1,
+                    "only the explicitly enabled clock process exists"
+                );
                 assert!(std::process::Command::new("kill")
-                    .args(["-KILL", child.trim()])
+                    .args(["-KILL", &pids[0].to_string()])
                     .status()
                     .unwrap()
                     .success());
                 pump();
                 prefs.destroy();
                 pump();
-                window.activate_action("win.preferences", None).unwrap();
+                gtk::prelude::WidgetExt::activate_action(&window, "win.preferences", None).unwrap();
                 pump();
                 let reopened = gtk::Window::list_toplevels()
                     .into_iter()
                     .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
                     .unwrap();
-                let fault_row = row(&reopened, "clock");
+                let fault_row = row(&reopened, &name("clock"));
                 assert!(fault_row.subtitle().unwrap().contains("Stopped"));
                 assert!(descendants(fault_row.upcast_ref())
                     .into_iter()
@@ -6595,8 +6604,8 @@ mod tests {
                     .unwrap()
                     .is_active());
                 assert_eq!(
-                    crate::settings::load(&path, crate::settings::Document::Plugins).unwrap()
-                        ["plugins"][0]["enabled"],
+                    crate::settings::load(&path, crate::settings::Document::ManagedPlugins)
+                        .unwrap()["plugins"][CLOCK]["enabled"],
                     true
                 );
                 reopened.destroy();
@@ -6952,74 +6961,6 @@ mod tests {
         window.destroy();
         app.quit();
     }
-    use std::io::Write;
-
-    fn write_config(body: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join("opencode")
-            .join(format!("among-test-config-{}", glib::uuid_string_random()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("plugins.json");
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.write_all(body.as_bytes()).unwrap();
-        path
-    }
-
-    #[test]
-    fn a_missing_config_yields_no_plugins() {
-        let path = std::env::temp_dir().join("among-does-not-exist/plugins.json");
-        assert!(read_plugin_config(&path).is_empty());
-    }
-
-    #[test]
-    fn unparsable_config_still_yields_no_plugins() {
-        let path = write_config("{ this is not json");
-        assert!(read_plugin_config(&path).is_empty());
-    }
-
-    #[test]
-    fn config_without_a_plugins_key_is_ignored() {
-        let path = write_config(r#"{"other": true}"#);
-        assert!(read_plugin_config(&path).is_empty());
-    }
-
-    #[test]
-    fn a_plugin_that_is_not_installed_retains_its_configured_identity_and_choice() {
-        let path =
-            write_config(r#"{"plugins":[{"name":"definitely-not-installed","enabled":true}]}"#);
-        let before = std::fs::read(&path).unwrap();
-        let specs = read_plugin_config(&path);
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "definitely-not-installed");
-        assert!(specs[0].enabled);
-        assert_eq!(before, std::fs::read(&path).unwrap());
-    }
-
-    #[test]
-    fn entries_without_a_name_are_skipped() {
-        let path = write_config(r#"{"plugins":[{"enabled":true},{"name":42}]}"#);
-        assert!(read_plugin_config(&path).is_empty());
-    }
-
-    #[test]
-    fn a_disabled_entry_is_still_registered_but_off() {
-        let path = write_config(r#"{"plugins":[{"name":"x","enabled":false}]}"#);
-        let specs = read_plugin_config(&path);
-        assert_eq!(specs.len(), 1);
-        assert!(!specs[0].enabled);
-    }
-
-    #[test]
-    fn retained_legacy_names_cannot_escape_or_impersonate_managed_installations() {
-        let path = write_config(
-            r#"{"plugins":[{"name":"../other"},{"name":"/bin/sh"},{"name":"github:12/sample"},{"name":"."},{"name":".."},{"name":"valid_name","enabled":false},{"name":"valid_name","enabled":true}]}"#,
-        );
-        let specs = read_plugin_config(&path);
-        assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].name, "valid_name");
-        assert!(!specs[0].enabled);
-    }
-
     #[test]
     fn a_pane_is_found_in_the_tree_by_path() {
         let tree = Node::single_pane(PaneId(1))

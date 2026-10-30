@@ -50,7 +50,7 @@ fn main_snap_workflow_uses_native_rust_drivers_without_publication() -> Result<(
             "forbidden Snap build/runtime caller: {forbidden}"
         );
     }
-    for required in ["package-version .","SNAP_VERSION=","Internal tooling leaked","cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools","cargo build --locked --release --example check-clipboard","check-snap-runtime --github-hosted","check-context-menu-snap \"$PWD/target/release/examples/check-clipboard\" light --github-hosted","check-context-menu-snap \"$PWD/target/release/examples/check-clipboard\" dark --github-hosted","check-live-focus /snap/bin/among","check-live-status \"$PWD\" /snap/bin/among /snap/among/current/usr/share/among/plugins","check-sessions /snap/bin/among"] {assert!(scripts.contains(required),"required tested native caller absent: {required}");}
+    for required in ["package-version .","SNAP_VERSION=","Internal tooling leaked","cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools","cargo build --locked --release --example check-clipboard","check-snap-runtime --github-hosted","check-context-menu-snap \"$PWD/target/release/examples/check-clipboard\" light --github-hosted","check-context-menu-snap \"$PWD/target/release/examples/check-clipboard\" dark --github-hosted","check-live-focus /snap/bin/among","check-live-status \"$PWD\" /snap/bin/among \"$PWD/package-plugin-profile\"","check-sessions /snap/bin/among"] {assert!(scripts.contains(required),"required tested native caller absent: {required}");}
     // This checks caller wiring, not live execution or compiler-free acceptance.
     // Runtime drivers were separately exercised on both installed architectures.
     Ok(())

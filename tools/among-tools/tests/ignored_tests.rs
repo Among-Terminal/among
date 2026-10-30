@@ -69,6 +69,18 @@ fn only_the_exact_dedicated_enospc_case_is_routed_out_of_graphics() -> among_too
     Ok(())
 }
 
+#[test]
+fn only_the_exact_published_install_case_uses_its_dedicated_runner() -> among_tools::Result<()> {
+    let name = among_tools::plugin_install::NATIVE_TEST;
+    let suffix = format!("{name}_suffix");
+    let prefix = format!("other::{name}");
+    assert_eq!(
+        ignored_tests::names(&format!("{name}: test\n{suffix}: test\n{prefix}: test"))?,
+        [suffix, prefix]
+    );
+    Ok(())
+}
+
 struct SelectionFixture(std::path::PathBuf);
 
 impl Drop for SelectionFixture {

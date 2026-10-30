@@ -79,7 +79,8 @@ jobs:
             rpmdevtools \
             git \
              tar \
-              zstd curl ca-certificates cpio shadow-utils util-linux util-linux-script
+              zstd curl ca-certificates cpio shadow-utils util-linux util-linux-script \
+              xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo xwininfo openbox dbus-x11 xdotool procps-ng ImageMagick
           rpm --version
 
       - name: Install pinned Rust and validate tag-bound packaging inputs
@@ -321,6 +322,16 @@ jobs:
           "$AMONG_CHECK_ROOT"/target/release/among-tools record-rpm-candidate . "${{ matrix.target }}" "${{ matrix.architecture }}" "$AMONG_CHECK_ROOT"/rpm-candidate
           (cd "$AMONG_CHECK_ROOT"/rpm-candidate && sha256sum among-tools *.rpm ci-lifecycle-fixture-not-for-release/*.rpm > SHA256SUMS)
 
+      - name: Observe native installation and bind its profile for compiler-free renderer replay
+        run: |
+          source_sha="$(git -c "safe.directory=$(pwd -P)" rev-parse HEAD)"
+          case "$source_sha" in ''|*[!0-9a-f]*) echo 'invalid host source SHA' >&2; exit 1 ;; esac
+          test "${#source_sha}" -eq 40
+          AMONG_CHECK_SOURCE_SHA="$source_sha" cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
+          tool="$AMONG_CHECK_ROOT/target/release/among-tools"
+          "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" "$AMONG_CHECK_ROOT/rpm-candidate/observed-profile"
+          (cd "$AMONG_CHECK_ROOT/rpm-candidate" && sha256sum observed-profile/transfer.json >> SHA256SUMS)
+
       - name: Retain the candidate and its evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -338,6 +349,7 @@ jobs:
         with:
           name: rpm-${{ matrix.target }}-${{ matrix.architecture }}
           path: ${{ env.AMONG_CHECK_ROOT }}/rpm-candidate/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
 

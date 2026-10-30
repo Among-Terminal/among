@@ -107,22 +107,32 @@ jobs:
             --mount "type=bind,source=$PWD,target=$PWD,readonly" \
             --workdir "$PWD" among-source-audit:ci \
             "$PWD/$1" --ignored --exact actual_collection_preserves_a_local_signed_repository_in_a_root_container --nocapture
+      # A separate step, so these real-process checks run even when a later
+      # step that needs published plugin inputs cannot.
+      - name: Plugin development mode belongs to the primary instance
+        run: |
+          set -euo pipefail
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-plugin-development target/release/among
       - name: Isolated native X11 regressions
         run: |
+          set -euo pipefail
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-live-focus target/release/among
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-live-resize target/release/among
-          tools/among-tools/target/release/among-tools ci-x11 \
-            tools/among-tools/target/release/among-tools check-live-status . target/release/among examples/plugins/target/release
-          cargo build --release --locked --example install --manifest-path examples/plugins/Cargo.toml
-          tools/among-tools/target/release/among-tools ci-x11 \
-            tools/among-tools/target/release/among-tools check-plugin-install . target/release/among \
-            examples/plugins/target/release examples/plugins/target/release/examples/install
           cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/preferences-tests.jsonl"
+          host_tests="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one actual among test executable") end' "$RUNNER_TEMP/preferences-tests.jsonl")"
+          tools/among-tools/target/release/among-tools prepare-official-plugin-inputs "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-plugin-install "$host_tests" \
+            "$AMONG_CHECK_ROOT/official-plugin-inputs" | tee "$AMONG_CHECK_ROOT/published-install.log"
+          profile="$(awk '/^Published profile: / { count++; sub(/^Published profile: /, ""); path=$0 } END { if (count != 1) exit 1; print path }' "$AMONG_CHECK_ROOT/published-install.log")"
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-live-status . target/release/among "$profile"
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-preferences-from-cargo \
-            "$RUNNER_TEMP/preferences-tests.jsonl" examples/plugins/target/release
+            "$RUNNER_TEMP/preferences-tests.jsonl" "$AMONG_CHECK_ROOT/official-plugin-inputs"
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-sessions target/release/among
           tools/among-tools/target/release/among-tools ci-x11 \

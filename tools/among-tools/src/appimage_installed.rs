@@ -148,6 +148,18 @@ pub fn run(
     }
     let (image, digest) = candidate(directory, architecture)?;
     let checker = std::env::current_exe()?;
+    let profile = checker
+        .parent()
+        .ok_or("checker directory absent")?
+        .join("observed-profile");
+    crate::plugin_install::package::validate(
+        &profile,
+        &crate::release_policy::git(root, &["rev-parse", "HEAD"])?,
+    )?;
+    let profile = profile
+        .to_str()
+        .ok_or("observed profile path is not UTF-8")?
+        .to_string();
     let tools = checker
         .to_str()
         .ok_or("checker path is not UTF-8")?
@@ -167,7 +179,7 @@ pub fn run(
     let mut evidence = json!({"schema":1,"host":host_name,"architecture":architecture,
         "appimage":image.file_name().and_then(|name| name.to_str()),"sha256":digest,
         "checker_sha256":storage::sha256(File::open(&checker)?)?,
-        "display":"X11/Xvfb/Openbox","checks":[],"status":"failed"});
+        "display":"X11/Xvfb/Openbox","checks":[],"status":"failed","plugin_profile_scope":"source-bound build-host UI installation/access, replayed for packaged renderer only; not packaged installation acceptance"});
     let result = (|| -> Result<()> {
         let visible = ["cargo", "rustc", "rustup"]
             .into_iter()
@@ -290,11 +302,6 @@ pub fn run(
         add_check(&mut evidence, "all-bundled-libraries-resolve-on-host")?;
         let root = root.canonicalize()?;
         let root = root.to_str().ok_or("root path is not UTF-8")?.to_string();
-        let plugins = extracted.join("usr/share/among/plugins");
-        let plugins = plugins
-            .to_str()
-            .ok_or("plugin path is not UTF-8")?
-            .to_string();
         let apprun = extracted.join("AppRun");
         let apprun = apprun
             .to_str()
@@ -309,7 +316,7 @@ pub fn run(
                         "check-live-status",
                         root.as_str(),
                         binary.as_str(),
-                        plugins.as_str(),
+                        profile.as_str(),
                     ],
                     300,
                 ),

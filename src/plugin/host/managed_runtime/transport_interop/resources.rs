@@ -82,10 +82,7 @@ fn real_resources_require_review_and_publish_measured_header_meters() {
     );
     for scope in ["pane_footer:1", "workspace_summary:0"] {
         assert!(fixture.host.world.scope(scope).is_some());
-        assert!(fixture
-            .host
-            .request_status(RESOURCE, scope, &Context::default())
-            .is_none());
+        assert!(fixture.host.request_status(RESOURCE, scope).is_none());
     }
     let generation = fixture.host.running_generation(RESOURCE).unwrap();
     let (_, initial) = fixture.capture("app_header");
