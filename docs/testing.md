@@ -13,7 +13,29 @@ screenshots below `AMONG_CHECK_ROOT`; it never targets personal terminals.
 a pane header onto workspace entries in both sidebar presentations. It checks the
 destination indication, moved shell process, directory, scrollback, header colour,
 source closure, rejection and Escape cancellation, then relaunches from the
-application's checkpoint and verifies the inserted pane after Restore.
+application's checkpoint and verifies the inserted pane after Restore. A second
+window covers drops into and out of an expanded workspace and a dragged pane
+whose shell is killed during the drag.
+
+`among-tools ci-x11 among-tools check-pane-drag-guards <among-binary>
+<check-drag-source> <summary-plugin>` needs two prebuilt fixtures:
+`cargo build --release --locked --example check-drag-source` and
+`cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
+--example summary-plugin`. `check-drag-source` is a separate X11 client that
+drags terminal text, a file or a number in a private format onto a workspace
+entry; it runs only on a display the check owns. Over the entry no pane
+destination, pane drag or workspace reorder may be reported, and the release
+must leave every workspace unchanged. A private format that no drop target
+lists is never delivered to Among by GTK, so that case shows that the payload
+changes nothing rather than that a guard refused it. `summary-plugin` reports
+every workspace summary from `summary.txt` beside its executable; the check
+rewrites that file while a pane header is held over another entry and requires
+the shown destination and the old drawn summary to survive until the drop, and
+the new summary to be drawn after it.
+
+A self-check line after the pane drag observations reports `rendered_summaries` (the summary each sidebar
+row draws) and `stored_summaries` (what the slot store holds), so a held
+sidebar rebuild is visible as the two disagreeing.
 
 Workspace drag observations include `workspace_order` (runtime references in
 display order), `active_reference`, `workspace_revision`, `workspace_drag` (source

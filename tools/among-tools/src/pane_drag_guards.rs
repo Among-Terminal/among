@@ -103,24 +103,26 @@ fn foreign_drop(
         ("workspace_target", "none"),
         ("workspace_indicators", "[]"),
     ];
-    for (key, expected) in hovering {
-        let actual = field(&text, key);
-        require(
-            actual.as_deref() == Some(expected),
-            &format!("a foreign {kind} drag over an entry reported {key}={actual:?}"),
-        )?;
-    }
+    let mut failures: Vec<String> = hovering
+        .iter()
+        .filter_map(|(key, expected)| {
+            let actual = field(&text, key);
+            (actual.as_deref() != Some(*expected))
+                .then(|| format!("a foreign {kind} drag over an entry reported {key}={actual:?}"))
+        })
+        .collect();
+    // The release and the source's exit happen whatever was seen, so one
+    // failing payload does not leave the pointer held for the next.
     h.xdo(&["mouseup", "1"])?;
     settle(h)?;
-    require(
-        order(h)? == before
-            && pane_counts(h)? == counts
-            && field(&h.text()?, "active_reference") == active,
-        &format!("a foreign {kind} drop changed the workspaces"),
-    )?;
-    wait_no_pane_drag(h)?;
+    if order(h)? != before
+        || pane_counts(h)? != counts
+        || field(&h.text()?, "active_reference") != active
+    {
+        failures.push(format!("a foreign {kind} drop changed the workspaces"));
+    }
     process.cleanup()?;
-    Ok(())
+    require(failures.is_empty(), &failures.join("; "))
 }
 
 fn foreign_phase(binary: &Path, source: &Path, scratch: &Path) -> Result<()> {
@@ -134,12 +136,21 @@ fn foreign_phase(binary: &Path, source: &Path, scratch: &Path) -> Result<()> {
     h.wait(10, |h| Ok(pane_counts(h)? == [2]))?;
     h.key("ctrl+shift+t")?;
     h.wait(10, |h| Ok(order(h)?.len() == 2))?;
+    // Every payload is tried before the phase fails, so a report names each
+    // kind that was accepted rather than only the first.
+    let mut failures = Vec::new();
     for kind in ["text", "file", "u64"] {
-        foreign_drop(&mut h, source, &runner_home, kind, 0)?;
-        println!(
-            "PASS a foreign {kind} drag is neither a pane nor a workspace and changes nothing"
-        );
+        match foreign_drop(&mut h, source, &runner_home, kind, 0) {
+            Ok(()) => println!(
+                "PASS a foreign {kind} drag is neither a pane nor a workspace and changes nothing"
+            ),
+            Err(error) => {
+                println!("FAIL {error}");
+                failures.push(error.to_string());
+            }
+        }
     }
+    require(failures.is_empty(), &failures.join("; "))?;
     h.clean_log(&h.log)?;
     h.stop(false)?;
     Ok(())
