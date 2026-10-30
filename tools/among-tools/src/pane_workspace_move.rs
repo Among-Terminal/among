@@ -196,8 +196,46 @@ fn pane_start(h: &Harness, pane: &str) -> Result<(i64, i64)> {
     ))
 }
 
+/// The header of the expanded pane.
+///
+/// `tree_boxes` reports the stored layout, where an expanded pane keeps its
+/// place among the hidden ones, while on screen it fills the whole pane area.
+/// Its header therefore starts at the top-left corner of the union of the
+/// stored boxes.
+fn expanded_start(h: &Harness) -> Result<(i64, i64)> {
+    let geometry = h.geometry()?;
+    let origin = crate::sessions::pair(&geometry, "origin", ',')?;
+    let boxes = geometry
+        .split_once("tree_boxes=[")
+        .and_then(|(_, tail)| tail.split_once(']'))
+        .map(|(boxes, _)| boxes)
+        .ok_or("pane layout geometry missing")?;
+    let corners: Vec<(f64, f64)> = boxes
+        .split_whitespace()
+        .filter_map(|entry| entry.split_once(':'))
+        .filter_map(|(_, rect)| {
+            let mut parts = rect.split(['+', 'x']);
+            Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+        })
+        .collect();
+    let left = corners
+        .iter()
+        .map(|corner| corner.0)
+        .fold(f64::MAX, f64::min);
+    let top = corners
+        .iter()
+        .map(|corner| corner.1)
+        .fold(f64::MAX, f64::min);
+    require(!corners.is_empty(), "pane layout has no boxes")?;
+    Ok((origin[0] + left as i64 + 120, origin[1] + top as i64 + 10))
+}
+
 fn begin_pane_drag(h: &mut Harness, pane: &str) -> Result<()> {
-    let (x, y) = pane_start(h, pane)?;
+    let start = pane_start(h, pane)?;
+    begin_drag_at(h, start)
+}
+
+fn begin_drag_at(h: &mut Harness, (x, y): (i64, i64)) -> Result<()> {
     h.move_mouse(x, y)?;
     h.xdo(&["mousedown", "1"])?;
     for offset in [8, 16, 24] {
@@ -670,7 +708,11 @@ fn edge_phases(binary: &Path, scratch: &Path) -> Result<()> {
         Ok(field(&h.text()?, "visible").as_deref() == Some("1")
             && field(&h.text()?, "focused").as_deref() == Some("PaneId(4)"))
     })?;
-    drop_pane_on(&mut h, "4", 1)?;
+    let start = expanded_start(&h)?;
+    begin_drag_at(&mut h, start)?;
+    hover_pane(&mut h, 1)?;
+    h.xdo(&["mouseup", "1"])?;
+    wait_no_pane_drag(&mut h)?;
     h.wait(10, |h| {
         let text = h.text()?;
         Ok(pane_counts(h)? == [2, 2]
