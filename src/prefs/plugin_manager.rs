@@ -63,10 +63,27 @@ impl Row {
     }
 }
 
+/// The first row of the page while this instance runs in development mode, so
+/// the mode is visible wherever its actions appear. The row only informs: the
+/// mode is fixed by the command line and cannot be switched here.
+fn development_indicator() -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    let row = adw::ActionRow::builder()
+        .title("Plugin development mode")
+        .subtitle("Started with --plugin-development. This is not saved: start Among without the flag to leave it.")
+        .build();
+    row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+    group.add(&row);
+    group
+}
+
 pub(super) fn page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     page.set_title("Plugins");
     page.set_icon_name(Some("application-x-addon-symbolic"));
+    if crate::plugin::development::enabled() {
+        page.add(&development_indicator());
+    }
     add_storage_status(&page, ctx);
     let sources = adw::PreferencesGroup::new();
     sources.set_title("Plugin sources");

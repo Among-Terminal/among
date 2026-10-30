@@ -34,8 +34,8 @@ fn main() -> glib::ExitCode {
     }
     // An action named in the environment is run once the window is up. This
     // goes through the environment rather than a command-line flag because
-    // GApplication parses and rejects any option it does not recognise, which
-    // would make a custom flag unusable.
+    // GApplication rejects every option that is not registered with it, and a
+    // secondary instance forwards only activation, not its own options.
     let requested: Option<crate::shortcuts::Action> = std::env::var("AMONG_ACTION")
         .ok()
         .as_deref()
@@ -49,6 +49,33 @@ fn main() -> glib::ExitCode {
         .application_id("com.github.among-terminal")
         .resource_base_path("/com/github/among-terminal")
         .build();
+    app.add_main_option(
+        plugin::development::OPTION,
+        glib::Char::from(0u8),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Offer plugin development actions in this instance; the mode is not saved",
+        None,
+    );
+    // Registering here decides which process is the primary before anything
+    // is forwarded: only the primary's own flag sets its mode, and a secondary
+    // that asks for development mode stops instead of activating the primary.
+    app.connect_handle_local_options(|app, options| {
+        let development = options.contains(plugin::development::OPTION);
+        if let Err(error) = app.register(gio::Cancellable::NONE) {
+            eprintln!("among: cannot register the application: {error}");
+            return std::ops::ControlFlow::Break(glib::ExitCode::FAILURE);
+        }
+        if app.is_remote() {
+            if development {
+                eprintln!("{}", plugin::development::SECONDARY_REFUSAL);
+                return std::ops::ControlFlow::Break(glib::ExitCode::from(2));
+            }
+        } else {
+            plugin::development::fix(development);
+        }
+        std::ops::ControlFlow::Continue(())
+    });
 
     app.connect_activate(move |app| app::build(app, requested));
     app.run()

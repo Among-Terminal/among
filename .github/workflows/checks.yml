@@ -107,6 +107,13 @@ jobs:
             --mount "type=bind,source=$PWD,target=$PWD,readonly" \
             --workdir "$PWD" among-source-audit:ci \
             "$PWD/$1" --ignored --exact actual_collection_preserves_a_local_signed_repository_in_a_root_container --nocapture
+      # A separate step, so these real-process checks run even when a later
+      # step that needs published plugin inputs cannot.
+      - name: Plugin development mode belongs to the primary instance
+        run: |
+          set -euo pipefail
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-plugin-development target/release/among
       - name: Isolated native X11 regressions
         run: |
           set -euo pipefail

@@ -10,6 +10,7 @@
 
 mod admission;
 pub(crate) mod data;
+pub mod development;
 pub mod host;
 pub mod install;
 pub mod inventory;

@@ -37,6 +37,7 @@ pub mod nightly;
 pub mod notices;
 pub mod package_version;
 pub mod platform;
+pub mod plugin_development;
 pub mod plugin_install;
 pub mod preferences;
 pub mod process;
