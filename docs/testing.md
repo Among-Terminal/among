@@ -32,7 +32,10 @@ every workspace summary from `summary.txt` beside its executable; the check
 rewrites that file while a pane header is held over another entry and requires
 the shown destination and the old drawn summary to survive until the drop, and
 the new summary to be drawn after it. It repeats the refresh during a drag that
-is cancelled with Escape, where no move forces a rebuild. The drag source writes
+is cancelled with Escape: the old summary must stay drawn while the drag lasts
+and the new one must appear after the cancel. A later plugin answer may be what
+draws it, so this case shows that the hold ends with the gesture, not which
+rebuild ends it. The drag source writes
 markers when its native drag begins and ends, and the check requires both, so a
 drag that never started cannot pass as a rejected one.
 
