@@ -119,3 +119,24 @@ fn probe_receipt_binds_architecture_artifact_source_and_real_binary_bytes() -> R
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+// Under a CI checkout the long retirement scenario names made the server
+// socket 109 bytes; PulseAudio truncated it and readiness timed out. The
+// harness must refuse such a directory instead of waiting for a socket that
+// can never appear, and accept the longest path that still fits.
+#[test]
+fn private_server_socket_must_fit_the_unix_path_limit() -> Result<()> {
+    let socket_suffix = "/runtime/pulse.sock".len();
+    let fits = format!("/{}", "a".repeat(107 - socket_suffix - 1));
+    assert_eq!(
+        audio_capture::owned_socket(std::path::Path::new(&fits))?
+            .as_os_str()
+            .len(),
+        107
+    );
+    let historical = std::path::Path::new(
+        "/__w/among/among/audio-package-evidence/retirement/cancel-late-spawn-event-revoke-recovery",
+    );
+    assert!(audio_capture::owned_socket(historical).is_err());
+    Ok(())
+}
