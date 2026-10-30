@@ -514,18 +514,15 @@ fn a_reviewed_prerelease_installs_with_its_channel_and_reopens_offline() {
     assert!(selection.is_prerelease());
     let inspected = server.requests().len();
     let committed = install_at(&server, selection, &root.0).unwrap();
-    let source = committed.receipt.source.as_ref().unwrap();
-    assert_eq!(committed.receipt.release_id, 30);
+    let release = committed.receipt.release().unwrap();
+    let source = release.source.as_ref().unwrap();
+    assert_eq!(release.release_id, 30);
     assert!(source.release_snapshot.is_prerelease());
+    // A generation from a prerelease starts only in development mode.
+    assert!(committed.receipt.requires_development());
     let offline = crate::plugin::inventory::read(&root.0).unwrap();
     assert_eq!(offline[0].receipt, committed.receipt);
-    assert!(offline[0]
-        .receipt
-        .source
-        .as_ref()
-        .unwrap()
-        .release_snapshot
-        .is_prerelease());
+    assert!(offline[0].receipt.requires_development());
     let install = server.requests()[inspected..]
         .iter()
         .map(|request| path(request).to_string())
@@ -557,6 +554,18 @@ fn a_reviewed_prerelease_installs_with_its_channel_and_reopens_offline() {
     assert!(install
         .iter()
         .all(|path| !path.ends_with("/releases/latest")));
+    // Applying a prerelease as an update would keep the install's switch and
+    // grants, so that path refuses it.
+    let again = server
+        .inspect_prerelease()
+        .unwrap()
+        .select("sample", "1.0")
+        .unwrap();
+    assert!(again
+        .for_update(&offline[0], None)
+        .unwrap_err()
+        .0
+        .contains("confirmed replacement"));
 }
 
 #[test]
@@ -627,11 +636,12 @@ fn an_ordinary_selection_still_follows_latest_and_ignores_newer_prereleases() {
         .unwrap();
     assert!(!selection.is_prerelease());
     let committed = install_at(&server, selection, &root.0).unwrap();
-    assert_eq!(committed.receipt.release_id, 7);
+    assert_eq!(committed.receipt.release().unwrap().release_id, 7);
+    assert!(!committed.receipt.requires_development());
     assert!(!committed
         .receipt
-        .source
-        .as_ref()
+        .release()
+        .and_then(|release| release.source.as_ref())
         .unwrap()
         .release_snapshot
         .is_prerelease());
