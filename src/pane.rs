@@ -589,8 +589,9 @@ impl Pane {
         }
         if let Some(callback) = handlers.on_drag_end.as_ref() {
             let callback = callback.clone();
-            // GTK may not deliver drag-end after a cancelled gesture; the
-            // transaction must not outlive the source either way.
+            // The transaction is also ended on cancel, so it cannot outlive the
+            // source whichever of the two signals GTK delivers last; ending it
+            // twice is harmless.
             source.connect_drag_cancel(move |_, _, _| {
                 callback();
                 false

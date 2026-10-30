@@ -22,6 +22,28 @@ fn require(condition: bool, message: &str) -> Result<()> {
     }
 }
 
+/// The number of the newest periodic self-check report in the log.
+fn last_tick(text: &str) -> u64 {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("among[tick"))
+        .filter_map(|rest| rest.split(']').next())
+        .filter_map(|number| number.parse().ok())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Wait until the newest report was taken after everything sent so far.
+///
+/// A rejected gesture changes nothing, so reading the model straight after it
+/// would also accept a report printed before the window handled the release.
+/// One report can be in flight when this is called and the next can fall just
+/// before the release is processed; once a third one has started, the second
+/// is complete and later than both.
+pub(crate) fn settle(h: &mut Harness) -> Result<()> {
+    let before = last_tick(&h.text()?);
+    h.wait(10, |h| Ok(last_tick(&h.text()?) > before + 2))
+}
+
 fn field(text: &str, key: &str) -> Option<String> {
     let marker = format!(" {key}=");
     let (_, value) = text.rsplit_once(&marker)?;
@@ -403,8 +425,11 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
             && field(&h.text()?, "focused").as_deref() == Some("PaneId(4)"))
     })?;
 
-    // Dropping on the pane's own workspace is a no-op.
+    // Dropping on the pane's own workspace is a no-op. The pointer visits a
+    // foreign entry first so the indication is known to be live; clearing it on
+    // the own entry then proves that entry was actually under the pointer.
     begin_pane_drag(&mut h, "4")?;
+    hover_pane(&mut h, 1)?;
     move_to(&h, row(&h, 0)?, 0.5)?;
     h.wait(10, |h| {
         let text = h.text()?;
@@ -413,6 +438,7 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
     })?;
     h.xdo(&["mouseup", "1"])?;
     wait_no_pane_drag(&mut h)?;
+    settle(&mut h)?;
     require(
         order(&h)? == before_order
             && {
@@ -429,12 +455,16 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
     // so neither a workspace nor a pane target may accept it.
     begin_pane_drag(&mut h, "4")?;
     let before_layout = tree_boxes(&h)?;
+    hover_pane(&mut h, 1)?;
     h.move_mouse(10, 10)?;
     h.wait(10, |h| {
-        Ok(field(&h.text()?, "pane_indicators").as_deref() == Some("[]"))
+        let text = h.text()?;
+        Ok(field(&text, "pane_target").as_deref() == Some("none")
+            && field(&text, "pane_indicators").as_deref() == Some("[]"))
     })?;
     h.xdo(&["mouseup", "1"])?;
     wait_no_pane_drag(&mut h)?;
+    settle(&mut h)?;
     require(
         order(&h)? == before_order
             && tree_boxes(&h)? == before_layout
@@ -443,12 +473,42 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
         "a pane dropped on window chrome changed the workspace or layout",
     )?;
 
+    // Empty sidebar space below the last entry names no workspace: the
+    // indication from a foreign entry must clear and a release there must not
+    // move anything.
+    begin_pane_drag(&mut h, "4")?;
+    hover_pane(&mut h, 1)?;
+    let last = row(&h, before_order.len() - 1)?;
+    move_to(
+        &h,
+        [last[0], last[1] + last[3] * 2.0, last[2], last[3]],
+        0.5,
+    )?;
+    h.wait(10, |h| {
+        let text = h.text()?;
+        Ok(field(&text, "pane_target").as_deref() == Some("none")
+            && field(&text, "pane_indicators").as_deref() == Some("[]"))
+    })?;
+    h.xdo(&["mouseup", "1"])?;
+    wait_no_pane_drag(&mut h)?;
+    settle(&mut h)?;
+    require(
+        order(&h)? == before_order
+            && tree_boxes(&h)? == before_layout
+            && field(&h.text()?, "active_reference").as_deref()
+                == Some(target_reference.to_string().as_str()),
+        "a pane dropped on empty sidebar space changed the workspace or layout",
+    )?;
+
     // Escape cancels while the destination is previewed.
     begin_pane_drag(&mut h, "4")?;
     hover_pane(&mut h, 1)?;
     h.xdo(&["key", "Escape"])?;
     wait_no_pane_drag(&mut h)?;
     h.xdo(&["mouseup", "1"])?;
+    // The release after Escape is the one that must not commit, so the model is
+    // read from a report taken after the release was handled.
+    settle(&mut h)?;
     require(
         order(&h)? == before_order
             && pane_counts(&h)? == {
@@ -461,7 +521,9 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
                 == Some(target_reference.to_string().as_str()),
         "Escape still committed the pane move",
     )?;
-    println!("PASS source-entry, out-of-sidebar and Escape pane gestures are rejected");
+    println!(
+        "PASS source-entry, window-chrome, empty-sidebar and Escape pane gestures are rejected"
+    );
 
     // Collapse the sidebar and move the remaining pane of the former source
     // workspace. That workspace loses its last pane and must disappear.
@@ -550,5 +612,113 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
     assert_pwd(&mut h, &moved_dir)?;
     println!("PASS a saved session restores the moved pane in its destination with its directory");
 
+    edge_phases(binary, scratch)?;
     Ok(base)
+}
+
+/// Expanded panes on either side of a move, and a source whose process exits
+/// while its header is being dragged. Run in a fresh window so the main
+/// scenario's counts and restored session stay exactly as they were.
+fn edge_phases(binary: &Path, scratch: &Path) -> Result<()> {
+    let mut h = fresh(binary, scratch, "among-pane-workspace-move-edges")?;
+    h.env.insert("AMONG_SELFCHECK_TICKS".into(), "2400".into());
+    h.start("edges")?;
+    h.ready()?;
+    // Workspace one: panes 1 and 2. Workspace two: panes 3 and 4.
+    h.key("ctrl+shift+n")?;
+    h.wait(10, |h| Ok(pane_counts(h)? == [2]))?;
+    h.key("ctrl+shift+t")?;
+    h.wait(10, |h| Ok(order(h)?.len() == 2))?;
+    h.key("ctrl+shift+n")?;
+    h.wait(10, |h| Ok(pane_counts(h)? == [2, 2]))?;
+    let references = order(&h)?;
+
+    // An expanded destination: the drop must end the expansion and show the
+    // new split, with focus on the pane that arrived.
+    h.key("alt+1")?;
+    h.wait(10, |h| {
+        Ok(field(&h.text()?, "active_reference") == Some(references[0].to_string()))
+    })?;
+    h.key("ctrl+shift+x")?;
+    h.wait(10, |h| {
+        Ok(field(&h.text()?, "visible").as_deref() == Some("1"))
+    })?;
+    h.key("alt+2")?;
+    h.wait(10, |h| {
+        Ok(
+            field(&h.text()?, "active_reference") == Some(references[1].to_string())
+                && field(&h.text()?, "visible").as_deref() == Some("2"),
+        )
+    })?;
+    drop_pane_on(&mut h, "4", 0)?;
+    h.wait(10, |h| {
+        let text = h.text()?;
+        Ok(pane_counts(h)? == [3, 1]
+            && field(&text, "active_reference") == Some(references[0].to_string())
+            && field(&text, "visible").as_deref() == Some("3")
+            && field(&text, "focused").as_deref() == Some("PaneId(4)"))
+    })?;
+    wait_terminal_focus(&mut h, "4")?;
+    println!(
+        "PASS a drop into an expanded workspace ends its expansion and focuses the moved pane"
+    );
+
+    // An expanded source: only the expanded pane's header is on screen, and
+    // dragging it away must leave the source's normal layout behind.
+    h.key("ctrl+shift+x")?;
+    h.wait(10, |h| {
+        Ok(field(&h.text()?, "visible").as_deref() == Some("1")
+            && field(&h.text()?, "focused").as_deref() == Some("PaneId(4)"))
+    })?;
+    drop_pane_on(&mut h, "4", 1)?;
+    h.wait(10, |h| {
+        let text = h.text()?;
+        Ok(pane_counts(h)? == [2, 2]
+            && field(&text, "active_reference") == Some(references[1].to_string())
+            && field(&text, "visible").as_deref() == Some("2")
+            && field(&text, "focused").as_deref() == Some("PaneId(4)"))
+    })?;
+    h.key("alt+1")?;
+    h.wait(10, |h| {
+        Ok(
+            field(&h.text()?, "active_reference") == Some(references[0].to_string())
+                && field(&h.text()?, "visible").as_deref() == Some("2"),
+        )
+    })?;
+    println!("PASS moving an expanded pane out restores the source's normal layout");
+
+    // The dragged pane's shell exits while the destination is previewed. The
+    // gesture must not move anything: the pane closes in its own workspace and
+    // the destination keeps its panes.
+    let focused = field(&h.text()?, "focused").ok_or("focused pane missing")?;
+    let pane = focused
+        .strip_prefix("PaneId(")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .ok_or("focused pane has an unexpected form")?
+        .to_string();
+    let pid_file = h.base.join("exiting-pid");
+    let pid = write_file(&mut h, "printf '%s' \"$$\"", &pid_file)?;
+    begin_pane_drag(&mut h, &pane)?;
+    hover_pane(&mut h, 1)?;
+    let killed = std::process::Command::new("kill")
+        .args(["-KILL", pid.trim()])
+        .status()?;
+    require(
+        killed.success(),
+        "the dragged pane's shell could not be stopped",
+    )?;
+    h.wait(10, |h| Ok(pane_counts(h)?.first().copied() == Some(1)))?;
+    h.xdo(&["mouseup", "1"])?;
+    wait_no_pane_drag(&mut h)?;
+    settle(&mut h)?;
+    require(
+        order(&h)? == references
+            && pane_counts(&h)? == [1, 2]
+            && field(&h.text()?, "active_reference") == Some(references[0].to_string()),
+        "a pane whose process exited during the drag was moved",
+    )?;
+    println!("PASS a pane whose process exits during the drag is not moved");
+    h.clean_log(&h.log)?;
+    h.stop(false)?;
+    Ok(())
 }

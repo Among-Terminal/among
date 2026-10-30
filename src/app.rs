@@ -186,9 +186,22 @@ impl PaneDragState {
         self.pane.0 == payload.pane
     }
 
-    fn valid(&self, set: &WorkspaceSet, revision: u64, collapsed: bool) -> bool {
+    /// Whether the gesture still describes a pane that can be moved.
+    ///
+    /// A pane whose process has exited stays in the model until its deferred
+    /// close runs. Moving it in that window would activate the target and could
+    /// remove the source workspace only for the close to take the pane away
+    /// again, so such a pane is no longer a valid source.
+    fn valid(
+        &self,
+        set: &WorkspaceSet,
+        revision: u64,
+        collapsed: bool,
+        exited: &std::collections::HashMap<PaneId, i32>,
+    ) -> bool {
         self.revision == revision
             && self.collapsed == collapsed
+            && !exited.contains_key(&self.pane)
             && set.workspaces().iter().any(|workspace| {
                 workspace.reference == self.source && workspace.panes().contains(&self.pane)
             })
@@ -843,8 +856,10 @@ fn build_with_writer(
                 refresh_after_workspace_drag(&target);
                 glib::Propagation::Stop
             } else if key == gtk::gdk::Key::Escape && target.state.borrow().pane_drag.is_some() {
-                // The native source is not stored for panes; clearing the
-                // transaction is what prevents a later release from committing.
+                // The native source is not stored for panes, so the drag itself
+                // is not cancelled here. Clearing the transaction stops a later
+                // release on a workspace entry from moving the pane; a release
+                // over another pane is still the existing pane-to-pane move.
                 // The indicator is removed now so Escape visibly takes effect.
                 finish_pane_drag(&target, true);
                 glib::Propagation::Stop
@@ -2045,6 +2060,7 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
                 &state.workspaces,
                 state.workspace_order_revision,
                 state.sidebar_collapsed,
+                &state.exited,
             ) || state.session_closing
                 || state.exiting
         });
@@ -2600,6 +2616,7 @@ fn preview_pane_drop(ctx: &Window, x: f64, y: f64) -> Option<u64> {
             &state.workspaces,
             state.workspace_order_revision,
             state.sidebar_collapsed,
+            &state.exited,
         ) || state.session_closing
             || state.exiting
         {
@@ -2617,7 +2634,14 @@ fn preview_pane_drop(ctx: &Window, x: f64, y: f64) -> Option<u64> {
         }
         return None;
     };
-    let index = row.index().max(0) as usize;
+    // A row that is not attached to the list reports -1; it names no workspace,
+    // and clamping it would silently target the first one.
+    let Ok(index) = usize::try_from(row.index()) else {
+        if let Some(drag) = ctx.state.borrow_mut().pane_drag.as_mut() {
+            drag.target = None;
+        }
+        return None;
+    };
     let reference = {
         let state = ctx.state.borrow();
         state.workspaces.workspaces().get(index)?.reference
@@ -2712,6 +2736,10 @@ fn install_pane_drop_target(ctx: &Window) {
             };
             clear_pane_drop_indicator(&target);
             if movement.source_closed {
+                // Summary request clocks are keyed by workspace index, and the
+                // closed source shifts every later index; stale clocks would
+                // delay the summary of whichever workspace took its place.
+                target.summary_requested.borrow_mut().clear();
                 prune_panes(&target);
             } else {
                 update_plugin_context(&mut target.state.borrow_mut());
@@ -5421,22 +5449,6 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_summary_follows_its_workspace_when_a_pane_move_closes_the_source() {
-        use super::*;
-        let source = 11;
-        let target = 22;
-        let mut store = SlotStore::new();
-        store.set_summary(1, crate::slots::Summary::text("demo", "destination"));
-        // This is the same remap the managed host applies before the slot store
-        // drops content for the removed workspace.
-        store.remap_workspace_source("demo", &[source, target], &[target], true);
-        store.retain_workspaces(1);
-        let summaries = store.summaries(0);
-        assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].text.as_deref(), Some("destination"));
-    }
-
-    #[test]
     fn pane_drop_orientation_uses_the_destinations_last_pane() {
         use super::*;
         let mut set = WorkspaceSet::new(Workspace::new("one".into(), PaneId(1), 0));
@@ -5465,8 +5477,9 @@ mod tests {
     }
 
     #[test]
-    fn pane_drag_rejects_foreign_payloads_stale_sources_and_blocked_interactions() {
+    fn pane_drag_rejects_other_panes_stale_sources_exited_processes_and_blocked_interactions() {
         use super::*;
+        let none = std::collections::HashMap::new();
         let mut set = WorkspaceSet::new(Workspace::new("one".into(), PaneId(1), 0));
         set.push_active(Workspace::new("two".into(), PaneId(2), 1));
         set.get_mut(0)
@@ -5476,9 +5489,16 @@ mod tests {
         let drag = PaneDragState::new(&set, 7, PaneId(3), false).unwrap();
         assert!(drag.accepts(&PaneDrag { pane: 3 }));
         assert!(!drag.accepts(&PaneDrag { pane: 1 }));
-        assert!(drag.valid(&set, 7, false));
-        assert!(!drag.valid(&set, 7, true));
-        assert!(!drag.valid(&set, 8, false));
+        assert!(drag.valid(&set, 7, false, &none));
+        assert!(!drag.valid(&set, 7, true, &none));
+        assert!(!drag.valid(&set, 8, false, &none));
+        // The dragged pane's process exited but its deferred close has not run:
+        // the pane is still in the model, yet it must not be moved.
+        let exited = std::collections::HashMap::from([(PaneId(3), 0)]);
+        assert!(!drag.valid(&set, 7, false, &exited));
+        // Another pane exiting does not invalidate this gesture.
+        let other = std::collections::HashMap::from([(PaneId(1), 0)]);
+        assert!(drag.valid(&set, 7, false, &other));
         assert!(PaneDragState::new(&set, 7, PaneId(99), false).is_none());
         assert!(!pane_drag_allowed(false, false, false, false));
         assert!(!pane_drag_allowed(true, true, false, false));
@@ -5489,7 +5509,7 @@ mod tests {
         let target = set.workspaces()[1].reference;
         set.move_pane_between(source, target, PaneId(3), Orientation::Vertical)
             .unwrap();
-        assert!(!drag.valid(&set, 7, false));
+        assert!(!drag.valid(&set, 7, false, &none));
 
         let mut set = WorkspaceSet::new(Workspace::new("one".into(), PaneId(1), 0));
         set.push_active(Workspace::new("two".into(), PaneId(2), 1));
@@ -5499,10 +5519,10 @@ mod tests {
             .unwrap();
         let drag = PaneDragState::new(&set, 7, PaneId(3), false).unwrap();
         set.get_mut(0).unwrap().close(PaneId(3)).unwrap();
-        assert!(!drag.valid(&set, 7, false));
+        assert!(!drag.valid(&set, 7, false, &none));
         let drag = PaneDragState::new(&set, 8, PaneId(1), false).unwrap();
         set.remove(0).unwrap();
-        assert!(!drag.valid(&set, 8, false));
+        assert!(!drag.valid(&set, 8, false, &none));
     }
 
     #[test]

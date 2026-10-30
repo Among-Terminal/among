@@ -136,7 +136,7 @@ impl Workspace {
         true
     }
 
-    /// Commit an adoption whose tree was prepared by the caller.
+    /// Record an adopted pane in a tree that `adopt` has already built.
     fn commit_adopted(&mut self, nodes: Node, pane: PaneId, cwd: Option<String>) {
         self.nodes = nodes;
         self.cwd.push((pane, cwd));
@@ -451,27 +451,21 @@ impl WorkspaceSet {
             .cwd_of(pane)
             .map(str::to_owned);
         let source_closed = source_panes.len() == 1;
-        // Adopt first. If the source mutation cannot complete, the target can
-        // be restored from this snapshot without losing the pane.
-        let target_before = self.workspaces[target_index].clone();
-        if !self.workspaces[target_index].adopt(pane, moved_cwd, orientation) {
+        // Both results are prepared on copies first, so a refusal on either
+        // side returns before anything is changed and the pane can never end
+        // up in neither workspace or in both.
+        let mut target_after = self.workspaces[target_index].clone();
+        if !target_after.adopt(pane, moved_cwd, orientation) {
             return None;
         }
-
-        let source_result = if source_closed {
-            self.remove(source_index).map(|_| ())
+        if source_closed {
+            // Source and target are distinct entries, so there are at least two
+            // workspaces and removing the source cannot be refused.
+            self.remove(source_index)?;
         } else {
-            self.workspaces[source_index].close(pane)
-        };
-        if source_result.is_none() {
-            if let Some(target_index) = self
-                .workspaces
-                .iter()
-                .position(|workspace| workspace.reference == target)
-            {
-                self.workspaces[target_index] = target_before;
-            }
-            return None;
+            let mut source_after = self.workspaces[source_index].clone();
+            source_after.close(pane)?;
+            self.workspaces[source_index] = source_after;
         }
 
         // Removing the source may shift the target's position, so resolve it by
@@ -480,6 +474,7 @@ impl WorkspaceSet {
             .workspaces
             .iter()
             .position(|workspace| workspace.reference == target)?;
+        self.workspaces[target_index] = target_after;
         self.active = target_index;
         Some(WorkspacePaneMove {
             target: target_index,
@@ -732,6 +727,28 @@ mod tests {
         assert_eq!(names(&set), ["first", "second"]);
         assert_eq!(set.workspaces()[0].panes(), vec![PaneId(1), PaneId(3)]);
         assert_eq!(set.workspaces()[1].panes(), vec![PaneId(2)]);
+    }
+
+    #[test]
+    fn a_pane_move_finds_its_target_by_reference_when_names_repeat() {
+        let mut set = WorkspaceSet::new(Workspace::new("same".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("same".into(), PaneId(2), 1));
+        set.push_active(Workspace::new("same".into(), PaneId(3), 2));
+        set.get_mut(0)
+            .expect("first workspace")
+            .split_focused(600, 300, PaneId(4))
+            .expect("source split");
+        let source = set.workspaces()[0].reference;
+        let target = set.workspaces()[2].reference;
+
+        let movement = set
+            .move_pane_between(source, target, PaneId(4), Orientation::Vertical)
+            .expect("the pane moves");
+        // Three entries share one name; only the reference picks the third.
+        assert_eq!(movement.target, 2);
+        assert_eq!(set.workspaces()[0].panes(), vec![PaneId(1)]);
+        assert_eq!(set.workspaces()[1].panes(), vec![PaneId(2)]);
+        assert_eq!(set.workspaces()[2].panes(), vec![PaneId(3), PaneId(4)]);
     }
 
     #[test]

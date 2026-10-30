@@ -222,7 +222,10 @@ fn reject_pane_drop(h: &mut Harness) -> Result<()> {
     let destination = if source_row == 0 { 1 } else { 0 };
 
     // Dropping on the source entry is a no-op for both the pane and the order.
+    // The foreign entry is indicated first, so clearing the indication on the
+    // source entry proves the pointer really reached it.
     begin_pane_drag(h, "4")?;
+    hover_pane(h, destination)?;
     move_to(h, row(h, source_row)?, 0.5)?;
     h.wait(10, |h| {
         let text = h.text()?;
@@ -233,6 +236,7 @@ fn reject_pane_drop(h: &mut Harness) -> Result<()> {
     h.wait(10, |h| {
         Ok(field(&h.text()?, "pane_drag").as_deref() == Some("none"))
     })?;
+    crate::pane_workspace_move::settle(h)?;
     require(
         order(h)? == before
             && pane_counts(h)? == before_counts
