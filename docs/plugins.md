@@ -104,6 +104,25 @@ Only committed managed installation records supply inventory. Copying a file int
 manifest on disk does not install or authorize it. Missing/changed manifests refuse
 execution without a fallback. Refusal does not delete unrelated files or settings.
 
+### Plugin development mode
+
+Start Among with `among --plugin-development` to test plugins before an
+ordinary release. The flag applies only to the process that starts the first
+Among instance, and it is never saved: the next start without the flag is
+ordinary again. While the mode is on, Preferences → Plugins begins with a
+**Plugin development mode** row.
+
+If Among is already running, a second `among --plugin-development` does not
+switch the running instance. It prints
+
+    among: --plugin-development applies only when it starts the first Among instance; quit the running instance and start it again with the flag
+
+and exits with status 2. A second start without the flag opens a window in the
+running instance and keeps its mode. When two starts race, the process that
+becomes the first instance decides the mode.
+
+The development installation actions themselves are not available yet.
+
 ### Native inventory
 
 Preferences → Plugins joins committed managed receipts

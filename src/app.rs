@@ -908,6 +908,11 @@ fn selfcheck(ctx: &Window, label: &str) {
         let state = ctx.state.borrow();
         eprintln!("among[{label}]: session_ready={} session_closing={} session_saved={} session_problem={:?}", state.session_ready, state.session_closing, state.session_saved.is_some(), state.session_problem);
         eprintln!(
+            "among[{label}]: plugin_development={} pid={}",
+            crate::plugin::development::enabled(),
+            std::process::id()
+        );
+        eprintln!(
             "among[{label}]: settings_problem={:?}",
             state.settings.status()
         );

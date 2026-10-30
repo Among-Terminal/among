@@ -3,6 +3,14 @@
 These controls are for automated application tests, not normal use.
 Use an isolated test session: input automation must never target personal terminals.
 
+`among-tools ci-x11 among-tools check-plugin-development <among-binary>` starts
+real Among processes on the one session bus of that run. It checks that a
+secondary `--plugin-development` exits 2 with its diagnostic while an ordinary
+primary stays ordinary, that an ordinary secondary does not change a
+development primary, that a later ordinary start is ordinary, and four
+simultaneous starts in both orders. The mode is read from the
+`plugin_development=` self-check line; logs stay below `AMONG_CHECK_ROOT`.
+
 `among-tools ci-x11 among-tools check-workspace-reorder <among-binary>` drives
 native workspace drags, cancellation, positional keys, and restoration from the
 application's actual session file. Use the built tools executable's path in both
