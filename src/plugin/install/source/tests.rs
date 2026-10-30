@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 mod installation_authority;
 mod latest_discovery;
+mod newest_prerelease;
 mod official_source;
 mod release_binding;
 mod release_inventory;
@@ -191,7 +192,28 @@ impl Server {
     }
 
     pub(crate) fn refresh(&self, repository_id: u64) -> Result<Job, Problem> {
-        Job::start_target(Target::Registered(repository_id), Some(self.client(true)))
+        Job::start_target(
+            Target::Registered(repository_id, release::Channel::Latest),
+            Some(self.client(true)),
+        )
+    }
+
+    // The development gate is checked by the public `Job::refresh_prerelease`;
+    // the test binary is never in development mode, so the selection itself is
+    // driven below the gate.
+    pub(crate) fn inspect_prerelease(&self) -> Result<Inspection, Problem> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(
+            Operation {
+                client: self.client(true),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                deadline: Instant::now() + OPERATION_TIMEOUT,
+            }
+            .inspect_target(Target::Registered(12, release::Channel::Prerelease)),
+        )
     }
 
     pub(crate) fn install(
