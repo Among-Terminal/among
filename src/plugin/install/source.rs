@@ -274,7 +274,7 @@ impl Selection {
         entry: &crate::plugin::inventory::Entry,
         stored: Option<&Value>,
     ) -> Result<Self, Problem> {
-        if entry.receipt.repository_id != self.repository_id
+        if entry.receipt.release().map(|release| release.repository_id) != Some(self.repository_id)
             || entry.receipt.plugin_id != self.version.manifest.id
         {
             return Err(Problem(
@@ -427,10 +427,10 @@ impl Drop for Job {
     }
 }
 
-const DOWNLOADING: u8 = 0;
-const VERIFYING: u8 = 1;
-const STAGING: u8 = 2;
-const COMMITTING: u8 = 3;
+pub(super) const DOWNLOADING: u8 = 0;
+pub(super) const VERIFYING: u8 = 1;
+pub(super) const STAGING: u8 = 2;
+pub(super) const COMMITTING: u8 = 3;
 const FINISHED: u8 = 4;
 const CANCELLED: u8 = 5;
 const FAILED: u8 = 6;
@@ -455,14 +455,50 @@ impl InstallJob {
         client: Option<Client>,
     ) -> Result<Self, Problem> {
         official::validate(&selection.origin())?;
-        let permit = Permit::acquire()?;
-        let ticket = super::operations::Ticket::acquire(
-            &root,
-            crate::plugin::manifest::ManagedIdentity::new(
-                selection.repository_id,
-                selection.version.manifest.id.clone(),
-            )?,
+        let identity = crate::plugin::manifest::ManagedIdentity::new(
+            selection.repository_id,
+            selection.version.manifest.id.clone(),
         )?;
+        Self::spawn(
+            root.clone(),
+            identity,
+            "among-install",
+            move |state, cancelled| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| Problem("cannot start the package network worker"))?;
+                let outcome = runtime.block_on(async {
+                    let client = match client {
+                        Some(client) => client,
+                        None => client_builder()
+                            .build()
+                            .map_err(|_| Problem("cannot initialize the HTTPS client"))?,
+                    };
+                    let operation = Operation {
+                        client,
+                        cancelled,
+                        deadline: Instant::now() + OPERATION_TIMEOUT,
+                    };
+                    operation.install(selection, &root, state).await
+                });
+                drop(runtime);
+                outcome
+            },
+        )
+    }
+
+    /// Runs one installation worker for `identity` with the shared phase,
+    /// cancellation and operation-ticket rules. `work` advances the phases
+    /// from downloading to committing through `progress`.
+    pub(super) fn spawn(
+        root: PathBuf,
+        identity: crate::plugin::manifest::ManagedIdentity,
+        thread: &str,
+        work: impl FnOnce(&AtomicU8, Arc<AtomicBool>) -> Result<store::Commit, Problem> + Send + 'static,
+    ) -> Result<Self, Problem> {
+        let permit = Permit::acquire()?;
+        let ticket = super::operations::Ticket::acquire(&root, identity)?;
         let identity = ticket.identity.clone();
         let generation = ticket.generation.clone();
         let state = Arc::new(AtomicU8::new(DOWNLOADING));
@@ -471,32 +507,11 @@ impl InstallJob {
         let worker_cancelled = cancelled.clone();
         let (send, result) = mpsc::sync_channel(1);
         std::thread::Builder::new()
-            .name("among-install".into())
+            .name(thread.into())
             .spawn(move || {
                 let _permit = permit;
                 let _ticket = ticket;
-                let outcome = (|| {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|_| Problem("cannot start the package network worker"))?;
-                    let outcome = runtime.block_on(async {
-                        let client = match client {
-                            Some(client) => client,
-                            None => client_builder()
-                                .build()
-                                .map_err(|_| Problem("cannot initialize the HTTPS client"))?,
-                        };
-                        let operation = Operation {
-                            client,
-                            cancelled: worker_cancelled,
-                            deadline: Instant::now() + OPERATION_TIMEOUT,
-                        };
-                        operation.install(selection, &root, &worker_state).await
-                    });
-                    drop(runtime);
-                    outcome
-                })();
+                let outcome = work(&worker_state, worker_cancelled);
                 if outcome.is_ok() {
                     worker_state.store(FINISHED, Ordering::Release);
                 } else if worker_state.load(Ordering::Acquire) == CANCELLED
@@ -542,6 +557,14 @@ impl InstallJob {
 
     pub fn phase(&self) -> &'static str {
         match self.state.load(Ordering::Acquire) {
+            DOWNLOADING
+                if self
+                    .identity
+                    .strip_prefix(crate::plugin::manifest::DEVELOPMENT_NAMESPACE)
+                    .is_some_and(|rest| rest.starts_with('/')) =>
+            {
+                "Reading selected local package file"
+            }
             DOWNLOADING => "Downloading selected package",
             VERIFYING => "Verifying package digest",
             STAGING => "Validating contained package files",
@@ -634,21 +657,25 @@ impl Operation {
         let artifact = &selected.artifact;
         artifact.compatibility(&Platform::current()?)?;
         let mut receipt = Receipt {
-            repository_id: selected.repository_id,
-            owner: selected.repository.owner.clone(),
-            repository: selected.repository.name.clone(),
+            origin: crate::plugin::inventory::Provenance::Release(
+                crate::plugin::inventory::ReleaseOrigin {
+                    repository_id: selected.repository_id,
+                    owner: selected.repository.owner.clone(),
+                    repository: selected.repository.name.clone(),
+                    release_id: selected.release.snapshot.id,
+                    asset_id: selected.release.snapshot.asset(&artifact.asset)?.id,
+                    source: Some(selected.source.clone()),
+                },
+            ),
             plugin_id: version.manifest.id.clone(),
             revision: version.revision.clone(),
             manifest_sha256: version.manifest_sha256.clone(),
             package_sha256: artifact.sha256.clone(),
-            release_id: selected.release.snapshot.id,
-            asset_id: selected.release.snapshot.asset(&artifact.asset)?.id,
             generation: store::token(),
             installation: selected.previous.as_ref().map_or_else(
                 || Some(store::token()),
                 |previous| previous.installation.clone(),
             ),
-            source: Some(selected.source.clone()),
         };
         let anticipated = artifact
             .members
@@ -670,8 +697,8 @@ impl Operation {
             ));
         }
         receipt
-            .source
-            .as_mut()
+            .release_mut()
+            .and_then(|origin| origin.source.as_mut())
             .ok_or(Problem("selected package has no source receipt"))?
             .release_binding = release.binding.clone();
         self.download(&selected, &mut transaction.archive, state)

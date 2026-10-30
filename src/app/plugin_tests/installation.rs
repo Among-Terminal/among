@@ -3,6 +3,7 @@ use crate::plugin::install::source::tests::{normal, Reply, Server};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
+mod local_catalogue;
 mod pane_render;
 mod published_lifecycle;
 mod published_selection;

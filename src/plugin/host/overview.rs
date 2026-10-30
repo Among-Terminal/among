@@ -92,12 +92,7 @@ impl PluginHost {
                     running_version: plugin.io.as_ref().and_then(|io| io.package_version.clone()),
                 };
                 if let Some(entry) = &plugin.managed {
-                    overview.origin = format!(
-                        "GitHub: {}/{} · {}",
-                        entry.receipt.owner,
-                        entry.receipt.repository,
-                        entry.key()
-                    );
+                    overview.origin = format!("{} · {}", entry.receipt.source_label(), entry.key());
                     overview.generation = Some(entry.receipt.generation.clone());
                     overview.available = entry.inspected.as_ref().is_ok_and(|inspected| {
                         inspected
@@ -157,7 +152,7 @@ mod tests {
             let mut receipt = inventory::tests::fixture(&directory);
             if repository != 12 {
                 let previous = receipt.package_path(&directory);
-                receipt.repository_id = repository;
+                inventory::tests::release_of(&mut receipt).repository_id = repository;
                 let selected = receipt.package_path(&directory);
                 std::fs::DirBuilder::new()
                     .recursive(true)

@@ -14,14 +14,15 @@ use gtk::gdk;
 use crate::plugin::host::{Configuration, PluginState};
 use crate::shortcuts::{self, Action, Bindings};
 
+pub(crate) mod local_catalogue;
 mod plugin_manager;
 mod plugin_settings;
 pub(crate) mod repositories;
 mod repository_sources;
 mod retained_settings;
 
-type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
-type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
+pub(crate) type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
+pub(crate) type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
 type ConfigurationQuery = dyn Fn(&str) -> Configuration;
 type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
 type RestartPlugin = dyn Fn(&str, &str, Option<gtk::Window>);

@@ -121,7 +121,39 @@ and exits with status 2. A second start without the flag opens a window in the
 running instance and keeps its mode. When two starts race, the process that
 becomes the first instance decides the mode.
 
-The development installation actions themselves are not available yet.
+#### Install from a local catalogue
+
+In development mode the Plugin sources section has **Install from a local
+catalogue**. Choose an `among-plugins.json` (schema 2, the same format as a
+release catalogue) with the package files it names in the same directory.
+Opening it reads metadata only. Each compatible version has its own
+**Review…** action; installation starts only from the review.
+
+The catalogue supplies the expected manifest digest, package size and SHA-256,
+and the complete member list, and the package then goes through the same
+archive, ELF, member, digest, grant and sandbox checks as a release package.
+The directory, the catalogue and the package must be owned by you, not
+writable by group or others, and not symbolic links; a package with another
+size or digest is refused before it is unpacked. If the catalogue changes
+between review and commit, nothing is installed and you review it again.
+
+A local package has none of the provenance a release has: no repository or
+publisher identity, no release, no immutability and no tag-to-commit
+binding. The review and the plugin details say so; nothing is filled in for
+them. A local install has the identity `development/<plugin-id>`, separate
+from any `github:<repository>/<plugin-id>` install of the same plugin, so its
+settings and switch never mix with a release install.
+
+Installing again under an ID that already has a development install is a
+replacement. It needs a separate **Replace** confirmation, starts disabled
+and receives no access granted to the replaced install; the replaced
+generation stays available as the previous one.
+
+Development installs are listed in every run, but outside development mode
+they do not start, even if their switch was left on; the row says that the
+install starts only with `--plugin-development`.
+
+Installing the newest GitHub prerelease of a source is not available yet.
 
 ### Native inventory
 

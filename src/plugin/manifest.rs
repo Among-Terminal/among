@@ -18,28 +18,54 @@ const MAX_ICON_DIMENSION: u32 = 2048;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ManagedIdentity {
-    repository: u64,
+    namespace: Namespace,
     plugin: String,
 }
+
+/// Where an identity's data, settings and generations live. A development
+/// install from a local catalogue has no repository, so it cannot share a
+/// namespace with any repository plugin of the same local ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Namespace {
+    Repository(u64),
+    Development,
+}
+
+/// Generation directory and key prefix of local development installs. It is
+/// not a decimal number, so it never collides with a repository directory.
+pub const DEVELOPMENT_NAMESPACE: &str = "development";
 
 impl ManagedIdentity {
     pub fn new(repository: u64, plugin: String) -> Result<Self, Problem> {
         if repository == 0 || !local_id(&plugin) {
             return Err(Problem("invalid authoritative plugin identity"));
         }
-        Ok(Self { repository, plugin })
+        Ok(Self {
+            namespace: Namespace::Repository(repository),
+            plugin,
+        })
+    }
+
+    pub fn development(plugin: String) -> Result<Self, Problem> {
+        if !local_id(&plugin) {
+            return Err(Problem("invalid development plugin identity"));
+        }
+        Ok(Self {
+            namespace: Namespace::Development,
+            plugin,
+        })
     }
 
     pub fn local_id(&self) -> &str {
         &self.plugin
     }
-    pub fn repository_id(&self) -> u64 {
-        self.repository
-    }
     pub fn key(&self) -> String {
         // '/' cannot occur in a legacy executable filename, so these keys never
         // inherit a legacy switch by a coincidental display-name match.
-        format!("github:{}/{}", self.repository, self.plugin)
+        match self.namespace {
+            Namespace::Repository(id) => format!("github:{id}/{}", self.plugin),
+            Namespace::Development => format!("{DEVELOPMENT_NAMESPACE}/{}", self.plugin),
+        }
     }
 }
 
@@ -232,7 +258,6 @@ fn metadata_text(value: &str, limit: usize, multiline: bool) -> bool {
 
 #[derive(Clone, Debug)]
 pub struct Inspected {
-    pub identity: ManagedIdentity,
     pub manifest: Manifest,
     pub executable: PathBuf,
     pub raster_icon: Option<Vec<u8>>,
@@ -276,7 +301,6 @@ pub fn inspect(
         (None, manifest.icon_problem)
     };
     Ok(Inspected {
-        identity,
         executable: root.join(&manifest.entrypoint),
         manifest,
         raster_icon,
@@ -422,6 +446,15 @@ mod tests {
         );
         assert!(ManagedIdentity::new(0, "sample".into()).is_err());
         assert!(ManagedIdentity::new(1, "../sample".into()).is_err());
+        // A local development install never shares data, settings or switches
+        // with a repository plugin that happens to use the same local ID.
+        let development = ManagedIdentity::development("sample".into()).unwrap();
+        assert_eq!(development.key(), "development/sample");
+        assert_ne!(
+            development,
+            ManagedIdentity::new(1, "sample".into()).unwrap()
+        );
+        assert!(ManagedIdentity::development("../sample".into()).is_err());
         let mut value = sample();
         value["delivery_channels"] = json!([{"id":"one","name":"One","description":"Delivery"},{"id":"one","name":"Two","description":"Duplicate"}]);
         assert!(Manifest::parse(value.to_string().as_bytes()).is_err());
@@ -451,7 +484,7 @@ mod tests {
         let before = std::fs::read(path.join("among-plugin.json")).unwrap();
         let inspected =
             inspect(&path, ManagedIdentity::new(123, "sample".into()).unwrap()).unwrap();
-        assert_eq!(inspected.identity.repository_id(), 123);
+        assert_eq!(inspected.manifest.id, "sample");
         assert_eq!(inspected.manifest.name, "Sample");
         assert_eq!(inspected.executable, path.join("bin/plugin"));
         assert_eq!(

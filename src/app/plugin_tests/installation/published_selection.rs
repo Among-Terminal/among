@@ -121,12 +121,13 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     let entry = &installed[0];
     let receipt = &entry.receipt;
     let catalogue_asset = snapshot.asset("among-plugins.json").unwrap();
-    assert_eq!(receipt.repository_id, 1431055733);
-    assert_eq!(receipt.release_id, snapshot.id);
-    assert_eq!(receipt.asset_id, clock_asset.id);
+    let release = receipt.release().unwrap();
+    assert_eq!(release.repository_id, 1431055733);
+    assert_eq!(release.release_id, snapshot.id);
+    assert_eq!(release.asset_id, clock_asset.id);
     assert_eq!(receipt.revision, revision);
     assert_eq!(receipt.package_sha256, clock_artifact.sha256);
-    let source = receipt.source.as_ref().unwrap();
+    let source = release.source.as_ref().unwrap();
     assert_eq!(source.publisher_id, 339567100);
     assert_eq!(source.catalogue_revision, revision);
     assert_eq!(source.catalogue_sha256, catalogue_asset.sha256);

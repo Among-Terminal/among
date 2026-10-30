@@ -48,36 +48,169 @@ pub struct SourceReceipt {
     pub release_binding: ReleaseBinding,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Receipt {
+/// A generation published by a GitHub release of a public repository.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseOrigin {
     pub repository_id: u64,
     pub owner: String,
     pub repository: String,
+    pub release_id: u64,
+    pub asset_id: u64,
+    pub source: Option<SourceReceipt>,
+}
+
+/// A generation installed in development mode from a local schema2
+/// catalogue. Only what the author's files state is recorded: there is no
+/// repository, publisher, release, immutability or tag binding to record,
+/// and none is invented.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalOrigin {
+    pub catalogue_sha256: String,
+    pub asset: String,
+}
+
+/// How a local development install is named wherever a repository would be.
+pub const LOCAL_SOURCE_LABEL: &str = "Local development catalogue";
+
+/// What a local development install lacks compared with a release install;
+/// shown before installation and in the plugin details.
+pub const LOCAL_MISSING_PROVENANCE: &str = "No repository or publisher identity, no release, no immutability and no tag-to-commit binding: only the local catalogue's digests are checked.";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Provenance {
+    Release(ReleaseOrigin),
+    Local(LocalOrigin),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(try_from = "StoredReceipt", into = "StoredReceipt")]
+pub struct Receipt {
+    pub origin: Provenance,
     pub plugin_id: String,
     pub revision: String,
     pub manifest_sha256: String,
     pub package_sha256: String,
-    pub release_id: u64,
-    pub asset_id: u64,
     pub generation: String,
     // fresh installs cannot inherit an earlier installation's persisted switch.
     // absent tokens retain startup compatibility for pre-installer receipts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation: Option<String>,
+}
+
+// The on-disk form keeps release receipts exactly as they were written before
+// local development installs existed; a local receipt replaces every release
+// field with one `development` object.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<SourceReceipt>,
+    development: Option<LocalOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repository_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    repository: Option<String>,
+    plugin_id: String,
+    revision: String,
+    manifest_sha256: String,
+    package_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    release_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asset_id: Option<u64>,
+    generation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    installation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<SourceReceipt>,
+}
+
+impl TryFrom<StoredReceipt> for Receipt {
+    type Error = &'static str;
+
+    fn try_from(stored: StoredReceipt) -> Result<Self, Self::Error> {
+        let origin = match (
+            stored.development,
+            stored.repository_id,
+            stored.owner,
+            stored.repository,
+            stored.release_id,
+            stored.asset_id,
+            stored.source,
+        ) {
+            (Some(local), None, None, None, None, None, None) => Provenance::Local(local),
+            (
+                None,
+                Some(repository_id),
+                Some(owner),
+                Some(repository),
+                Some(release_id),
+                Some(asset_id),
+                source,
+            ) => Provenance::Release(ReleaseOrigin {
+                repository_id,
+                owner,
+                repository,
+                release_id,
+                asset_id,
+                source,
+            }),
+            _ => return Err("a receipt is either a complete release record or a local one"),
+        };
+        Ok(Self {
+            origin,
+            plugin_id: stored.plugin_id,
+            revision: stored.revision,
+            manifest_sha256: stored.manifest_sha256,
+            package_sha256: stored.package_sha256,
+            generation: stored.generation,
+            installation: stored.installation,
+        })
+    }
+}
+
+impl From<Receipt> for StoredReceipt {
+    fn from(receipt: Receipt) -> Self {
+        let mut stored = Self {
+            development: None,
+            repository_id: None,
+            owner: None,
+            repository: None,
+            plugin_id: receipt.plugin_id,
+            revision: receipt.revision,
+            manifest_sha256: receipt.manifest_sha256,
+            package_sha256: receipt.package_sha256,
+            release_id: None,
+            asset_id: None,
+            generation: receipt.generation,
+            installation: receipt.installation,
+            source: None,
+        };
+        match receipt.origin {
+            Provenance::Local(local) => stored.development = Some(local),
+            Provenance::Release(release) => {
+                stored.repository_id = Some(release.repository_id);
+                stored.owner = Some(release.owner);
+                stored.repository = Some(release.repository);
+                stored.release_id = Some(release.release_id);
+                stored.asset_id = Some(release.asset_id);
+                stored.source = release.source;
+            }
+        }
+        stored
+    }
 }
 
 impl SourceReceipt {
-    fn validate(&self, receipt: &Receipt) -> Result<(), Problem> {
+    fn validate(&self, release: &ReleaseOrigin, receipt: &Receipt) -> Result<(), Problem> {
         self.release_snapshot.validate()?;
         let binding = &self.release_binding;
         let catalogue = self.release_snapshot.asset("among-plugins.json")?;
-        let package = self.release_snapshot.asset_by_id(receipt.asset_id)?;
+        let package = self.release_snapshot.asset_by_id(release.asset_id)?;
         if self.publisher_id == 0
             || self.catalogue_revision != receipt.revision
-            || self.release_snapshot.id != receipt.release_id
+            || self.release_snapshot.id != release.release_id
             || self.release_snapshot.tag != binding.tag
             || !ReleaseBinding::supported_tag(&binding.tag)
             || !hex(&binding.object, 40)
@@ -98,14 +231,55 @@ impl SourceReceipt {
 
 impl Receipt {
     pub fn identity(&self) -> Result<ManagedIdentity, Problem> {
-        ManagedIdentity::new(self.repository_id, self.plugin_id.clone())
+        match &self.origin {
+            Provenance::Release(release) => {
+                ManagedIdentity::new(release.repository_id, self.plugin_id.clone())
+            }
+            Provenance::Local(_) => ManagedIdentity::development(self.plugin_id.clone()),
+        }
+    }
+
+    pub fn release(&self) -> Option<&ReleaseOrigin> {
+        match &self.origin {
+            Provenance::Release(release) => Some(release),
+            Provenance::Local(_) => None,
+        }
+    }
+
+    pub fn release_mut(&mut self) -> Option<&mut ReleaseOrigin> {
+        match &mut self.origin {
+            Provenance::Release(release) => Some(release),
+            Provenance::Local(_) => None,
+        }
+    }
+
+    pub fn local(&self) -> Option<&LocalOrigin> {
+        match &self.origin {
+            Provenance::Local(local) => Some(local),
+            Provenance::Release(_) => None,
+        }
+    }
+
+    /// Whether this generation may start only in a primary started with
+    /// `--plugin-development`. A local catalogue has no publication behind it
+    /// at all, so its generation never runs in an ordinary instance.
+    pub fn requires_development(&self) -> bool {
+        matches!(self.origin, Provenance::Local(_))
+    }
+
+    /// The relative directory of this generation below the store root.
+    pub fn generation_directory(&self) -> String {
+        format!(
+            "generations/{}/{}/{}",
+            self.namespace_component(),
+            self.plugin_id,
+            self.generation
+        )
     }
 
     pub(super) fn validate(&self) -> Result<(), Problem> {
         self.identity()?;
-        if !super::origin::component(&self.owner)
-            || !super::origin::component(&self.repository)
-            || !hex(&self.revision, 40)
+        if !hex(&self.revision, 40)
             || !hex(&self.manifest_sha256, 64)
             || !hex(&self.package_sha256, 64)
             || !hex(&self.generation, 64)
@@ -113,13 +287,33 @@ impl Receipt {
                 .installation
                 .as_ref()
                 .is_some_and(|token| !hex(token, 64))
-            || self.release_id == 0
-            || self.asset_id == 0
         {
             return Err(Problem("invalid committed installation receipt"));
         }
-        if let Some(source) = &self.source {
-            source.validate(self)?;
+        match &self.origin {
+            Provenance::Release(release) => {
+                if !super::origin::component(&release.owner)
+                    || !super::origin::component(&release.repository)
+                    || release.release_id == 0
+                    || release.asset_id == 0
+                {
+                    return Err(Problem("invalid committed installation receipt"));
+                }
+                if let Some(source) = &release.source {
+                    source.validate(release, self)?;
+                }
+            }
+            // A local install always has its own consent token: there is no
+            // earlier receipt format it could be compatible with.
+            Provenance::Local(local) => {
+                if self.installation.is_none()
+                    || !hex(&local.catalogue_sha256, 64)
+                    || !release::asset_name(&local.asset)
+                    || local.asset == "among-plugins.json"
+                {
+                    return Err(Problem("invalid committed development receipt"));
+                }
+            }
         }
         Ok(())
     }
@@ -130,47 +324,99 @@ impl Receipt {
         plugin_id: &str,
     ) -> super::origin::Change {
         use super::origin::{Change, Origin};
-        if self.repository_id != candidate.repository_id || self.plugin_id != plugin_id {
+        let Some(release) = self.release() else {
+            return Change::IdentityChanged;
+        };
+        if release.repository_id != candidate.repository_id || self.plugin_id != plugin_id {
             return Change::IdentityChanged;
         }
-        match &self.source {
+        match &release.source {
             Some(source) => candidate.compare(&Origin {
-                repository_id: self.repository_id,
+                repository_id: release.repository_id,
                 publisher_id: source.publisher_id,
-                owner: self.owner.clone(),
-                repository: self.repository.clone(),
+                owner: release.owner.clone(),
+                repository: release.repository.clone(),
             }),
             None => Change::PublisherChanged,
         }
     }
 
     pub fn review(&self, features: Vec<String>) -> Value {
-        let mut review = serde_json::json!({"owner":self.owner,"repository":self.repository,"features":features});
-        if let Some(source) = &self.source {
-            review["repository_id"] = self.repository_id.into();
-            review["publisher_id"] = source.publisher_id.into();
+        match &self.origin {
+            Provenance::Release(release) => {
+                let mut review = serde_json::json!({"owner":release.owner,"repository":release.repository,"features":features});
+                if let Some(source) = &release.source {
+                    review["repository_id"] = release.repository_id.into();
+                    review["publisher_id"] = source.publisher_id.into();
+                }
+                review
+            }
+            // Without a publisher the only thing an approval can be bound to is
+            // this installation's consent token, so a replacement from another
+            // catalogue never inherits it.
+            Provenance::Local(_) => serde_json::json!({
+                "development": self.plugin_id,
+                "installation": self.installation,
+                "features": features
+            }),
         }
-        review
     }
 
     pub fn matches_review(&self, review: &Value) -> bool {
-        match &self.source {
-            Some(source) => {
-                review["repository_id"].as_u64() == Some(self.repository_id)
-                    && review["publisher_id"].as_u64() == Some(source.publisher_id)
-            }
-            None => {
-                review["owner"].as_str() == Some(&self.owner)
-                    && review["repository"].as_str() == Some(&self.repository)
+        match &self.origin {
+            Provenance::Release(release) => match &release.source {
+                Some(source) => {
+                    review["repository_id"].as_u64() == Some(release.repository_id)
+                        && review["publisher_id"].as_u64() == Some(source.publisher_id)
+                }
+                None => {
+                    review["owner"].as_str() == Some(&release.owner)
+                        && review["repository"].as_str() == Some(&release.repository)
+                }
+            },
+            Provenance::Local(_) => {
+                review["development"].as_str() == Some(&self.plugin_id)
+                    && self.installation.is_some()
+                    && review["installation"].as_str() == self.installation.as_deref()
             }
         }
     }
 
     pub fn package_path(&self, root: &Path) -> PathBuf {
-        root.join("generations")
-            .join(self.repository_id.to_string())
-            .join(&self.plugin_id)
-            .join(&self.generation)
+        root.join(self.generation_directory())
+    }
+
+    /// What the manager shows as the source: the GitHub repository, or the
+    /// fact that a local catalogue has no repository at all.
+    pub fn source_label(&self) -> String {
+        match &self.origin {
+            Provenance::Release(release) => {
+                format!("GitHub: {}/{}", release.owner, release.repository)
+            }
+            Provenance::Local(_) => LOCAL_SOURCE_LABEL.into(),
+        }
+    }
+
+    /// The settings and switch key of this identity, the same string as
+    /// `ManagedIdentity::key` for a valid receipt.
+    pub fn key(&self) -> String {
+        match &self.origin {
+            Provenance::Release(release) => {
+                format!("github:{}/{}", release.repository_id, self.plugin_id)
+            }
+            Provenance::Local(_) => {
+                format!("{}/{}", manifest::DEVELOPMENT_NAMESPACE, self.plugin_id)
+            }
+        }
+    }
+
+    /// The directory below `generations/` that holds this plugin's
+    /// generations: the decimal repository ID or the development namespace.
+    pub fn namespace_component(&self) -> String {
+        match &self.origin {
+            Provenance::Release(release) => release.repository_id.to_string(),
+            Provenance::Local(_) => manifest::DEVELOPMENT_NAMESPACE.into(),
+        }
     }
 }
 
@@ -245,23 +491,14 @@ impl Entry {
         self._lease.clone()
     }
     pub fn key(&self) -> String {
-        format!(
-            "github:{}/{}",
-            self.receipt.repository_id, self.receipt.plugin_id
-        )
+        self.receipt.key()
     }
 
     pub fn executable_files(&self) -> Result<(std::fs::File, std::fs::File), Problem> {
         use std::os::unix::fs::MetadataExt;
         let inspected = self.inspected.as_ref().map_err(|problem| *problem)?;
         let root = super::install::store::open_existing_root(&self.store)?;
-        let directory = data::contained_directory(
-            &root,
-            &format!(
-                "generations/{}/{}/{}",
-                self.receipt.repository_id, self.receipt.plugin_id, self.receipt.generation
-            ),
-        )?;
+        let directory = data::contained_directory(&root, &self.receipt.generation_directory())?;
         let bytes = data::read_bounded(
             &data::contained_file(&directory, "among-plugin.json")?,
             manifest::MAX_MANIFEST_BYTES,
@@ -324,10 +561,7 @@ pub fn read(root: &Path) -> Result<Vec<Entry>, Problem> {
         if !identities.insert(identity.key()) {
             return Err(Problem("duplicate committed plugin identity"));
         }
-        let relative = format!(
-            "generations/{}/{}/{}",
-            receipt.repository_id, receipt.plugin_id, receipt.generation
-        );
+        let relative = receipt.generation_directory();
         let inspected = (|| {
             let package = data::contained_directory(&directory, &relative)?;
             let manifest = data::read_bounded(
@@ -368,12 +602,22 @@ pub(crate) mod tests {
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
 
+    /// The release part of a release-fixture receipt.
+    pub(crate) fn release_of(receipt: &mut Receipt) -> &mut ReleaseOrigin {
+        receipt
+            .release_mut()
+            .expect("fixture receipts come from a release")
+    }
+
     pub(crate) fn source_receipt(receipt: &Receipt) -> SourceReceipt {
+        let release = receipt
+            .release()
+            .expect("fixture receipts come from a release");
         // synthetic publication facts for inventory/origin controls, never API evidence.
         let snapshot = release::ReleaseSnapshot::from_value(&json!({
-            "id":receipt.release_id,"tag_name":"releases/v1.0","draft":false,"prerelease":false,"immutable":true,
-            "assets":[{"id":receipt.asset_id,"name":"sample.tar.gz","size":123,"state":"uploaded","digest":format!("sha256:{}",receipt.package_sha256)},
-                {"id":receipt.asset_id+1,"name":"among-plugins.json","size":1,"state":"uploaded","digest":format!("sha256:{}","b".repeat(64))}]
+            "id":release.release_id,"tag_name":"releases/v1.0","draft":false,"prerelease":false,"immutable":true,
+            "assets":[{"id":release.asset_id,"name":"sample.tar.gz","size":123,"state":"uploaded","digest":format!("sha256:{}",receipt.package_sha256)},
+                {"id":release.asset_id+1,"name":"among-plugins.json","size":1,"state":"uploaded","digest":format!("sha256:{}","b".repeat(64))}]
         })).unwrap();
         SourceReceipt {
             publisher_id: 34,
@@ -395,19 +639,46 @@ pub(crate) mod tests {
                 {"key":"label","label":"Label","kind":"string","default":"default"}]}})
         .to_string();
         let receipt = Receipt {
-            repository_id: 12,
-            owner: "example".into(),
-            repository: "sample".into(),
+            origin: Provenance::Release(ReleaseOrigin {
+                repository_id: 12,
+                owner: "example".into(),
+                repository: "sample".into(),
+                release_id: 1,
+                asset_id: 2,
+                source: None,
+            }),
             plugin_id: "sample".into(),
             revision: "a".repeat(40),
             manifest_sha256: checksum(manifest.as_bytes()).unwrap(),
             package_sha256: "b".repeat(64),
-            release_id: 1,
-            asset_id: 2,
             generation: "c".repeat(64),
             installation: None,
-            source: None,
         };
+        write_fixture(root, receipt, &manifest)
+    }
+
+    /// A receipt like `fixture`, from a local development catalogue.
+    pub fn development_fixture(root: &Path) -> Receipt {
+        let manifest = json!({"schema_version":1,"id":"sample","version":"1","name":"Sample",
+            "description":"No probe","entrypoint":"plugin","api":{"major":1,"minor":2},
+            "required_features":["status"]})
+        .to_string();
+        let receipt = Receipt {
+            origin: Provenance::Local(LocalOrigin {
+                catalogue_sha256: "d".repeat(64),
+                asset: "sample.tar.gz".into(),
+            }),
+            plugin_id: "sample".into(),
+            revision: "a".repeat(40),
+            manifest_sha256: checksum(manifest.as_bytes()).unwrap(),
+            package_sha256: "b".repeat(64),
+            generation: "e".repeat(64),
+            installation: Some("f".repeat(64)),
+        };
+        write_fixture(root, receipt, &manifest)
+    }
+
+    fn write_fixture(root: &Path, receipt: Receipt, manifest: &str) -> Receipt {
         let package = receipt.package_path(root);
         std::fs::create_dir_all(&package).unwrap();
         // test environments may use a group-writable umask; package ownership is
@@ -450,6 +721,84 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn release_and_local_records_keep_their_exact_stored_shapes() {
+        let root = std::env::temp_dir().join(format!(
+            "among-receipt-shape-{}",
+            glib::uuid_string_random()
+        ));
+        let mut release = fixture(&root);
+        release_of(&mut release).source = Some(source_receipt(&release));
+        // A release receipt is stored with exactly the fields it had before
+        // local installs existed, so existing stores and tools still read it.
+        let stored = serde_json::to_value(&release).unwrap();
+        let mut keys = stored
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "asset_id",
+                "generation",
+                "manifest_sha256",
+                "owner",
+                "package_sha256",
+                "plugin_id",
+                "release_id",
+                "repository",
+                "repository_id",
+                "revision",
+                "source"
+            ]
+        );
+        assert_eq!(
+            serde_json::from_value::<Receipt>(stored.clone()).unwrap(),
+            release
+        );
+        let local = development_fixture(&root.join("development"));
+        let stored_local = serde_json::to_value(&local).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Receipt>(stored_local.clone()).unwrap(),
+            local
+        );
+        assert_eq!(local.key(), "development/sample");
+        assert!(local
+            .package_path(&root)
+            .starts_with(root.join("generations/development/sample")));
+        // A record is either one or the other; a half-release local record and a
+        // release record without its repository are both refused.
+        let mut mixed = stored_local.clone();
+        mixed["repository_id"] = json!(12);
+        assert!(serde_json::from_value::<Receipt>(mixed).is_err());
+        let mut incomplete = stored.clone();
+        incomplete.as_object_mut().unwrap().remove("repository_id");
+        assert!(serde_json::from_value::<Receipt>(incomplete).is_err());
+        // A local record always carries its own consent token.
+        let mut tokenless = local.clone();
+        tokenless.installation = None;
+        assert!(tokenless.validate().is_err());
+        let mut unsafe_asset = local.clone();
+        unsafe_asset.origin = Provenance::Local(LocalOrigin {
+            catalogue_sha256: "d".repeat(64),
+            asset: "../sample.tar.gz".into(),
+        });
+        assert!(unsafe_asset.validate().is_err());
+        // Approval of a local install is bound to its consent token, never to
+        // the plugin ID alone.
+        let review = local.review(vec!["status".into()]);
+        assert!(local.matches_review(&review));
+        let mut replaced = local.clone();
+        replaced.installation = Some("9".repeat(64));
+        assert!(!replaced.matches_review(&review));
+        assert!(!release.matches_review(&review));
+        assert!(!local.matches_review(&release.review(vec!["status".into()])));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn committed_records_select_inert_metadata_and_keep_invalid_packages_visible() {
         let root = std::env::temp_dir().join(format!("among-inventory-{}", std::process::id()));
         let receipt = fixture(&root);
@@ -484,10 +833,14 @@ pub(crate) mod tests {
             glib::uuid_string_random()
         ));
         let mut receipt = fixture(&root);
-        receipt.source = Some(source_receipt(&receipt));
+        release_of(&mut receipt).source = Some(source_receipt(&receipt));
         for invalid in ["commit", "object", "tag"] {
             let mut candidate = receipt.clone();
-            let binding = &mut candidate.source.as_mut().unwrap().release_binding;
+            let binding = &mut release_of(&mut candidate)
+                .source
+                .as_mut()
+                .unwrap()
+                .release_binding;
             match invalid {
                 "commit" => binding.commit = "e".repeat(40),
                 "object" => binding.object = "invalid".into(),
@@ -511,7 +864,7 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(read(&root).unwrap()[0].receipt, receipt);
         let legacy = fixture(&root);
-        assert!(legacy.source.is_none());
+        assert!(legacy.release().unwrap().source.is_none());
         assert_eq!(read(&root).unwrap()[0].receipt, legacy);
         for tag in [
             "",
@@ -546,7 +899,7 @@ pub(crate) mod tests {
             glib::uuid_string_random()
         ));
         let mut receipt = fixture(&root);
-        receipt.source = Some(source_receipt(&receipt));
+        release_of(&mut receipt).source = Some(source_receipt(&receipt));
         let original = json!({"version":1,"installations":[receipt]});
         let settings = root.join("retained-settings");
         std::fs::write(&settings, b"unrelated user bytes").unwrap();

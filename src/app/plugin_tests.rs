@@ -321,8 +321,9 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
     crate::test_isolation::assert_below_check_root(&root);
     let first = crate::plugin::inventory::tests::fixture(&root);
     let mut second = first.clone();
-    second.repository_id = 13;
-    second.owner = "another".into();
+    let release = crate::plugin::inventory::tests::release_of(&mut second);
+    release.repository_id = 13;
+    release.owner = "another".into();
     let package = second.package_path(&root);
     std::fs::DirBuilder::new()
         .recursive(true)

@@ -3763,12 +3763,11 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
         return;
     }
     let controls = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    let origin = gtk::Label::new(Some(&format!(
-        "{}/{} · {}",
-        entry.receipt.owner,
-        entry.receipt.repository,
-        entry.key()
-    )));
+    let source = entry.receipt.release().map_or_else(
+        || crate::plugin::inventory::LOCAL_SOURCE_LABEL.to_string(),
+        |release| format!("{}/{}", release.owner, release.repository),
+    );
+    let origin = gtk::Label::new(Some(&format!("{source} · {}", entry.key())));
     origin.set_wrap(true);
     controls.append(&origin);
     let mut features = Vec::new();
@@ -5617,18 +5616,22 @@ mod tests {
                 // Persistence fixture only: real published executable/resource
                 // bytes, synthetic local receipts, never installation acceptance.
                 let receipt = crate::plugin::inventory::Receipt {
-                    repository_id: 1431055733,
-                    owner: "fixture".into(),
-                    repository: "preferences".into(),
+                    origin: crate::plugin::inventory::Provenance::Release(
+                        crate::plugin::inventory::ReleaseOrigin {
+                            repository_id: 1431055733,
+                            owner: "fixture".into(),
+                            repository: "preferences".into(),
+                            release_id: 1,
+                            asset_id: 2,
+                            source: None,
+                        },
+                    ),
                     plugin_id: plugin.id.clone(),
                     revision: version.revision.clone(),
                     manifest_sha256: version.manifest_sha256.clone(),
                     package_sha256: artifact.sha256.clone(),
-                    release_id: 1,
-                    asset_id: 2,
                     generation: format!("{:064x}", index + 1),
                     installation: None,
-                    source: None,
                 };
                 let package = receipt.package_path(&root);
                 for member in &artifact.members {
