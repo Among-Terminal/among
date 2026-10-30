@@ -1242,6 +1242,9 @@ fn selfcheck(ctx: &Window, label: &str) {
     let mut hit_rows = Vec::new();
     let mut drop_indicators = Vec::new();
     let mut pane_indicators = Vec::new();
+    // What each row actually draws as its plugin summary, as opposed to what the
+    // slot store holds: a held rebuild shows the two disagreeing.
+    let mut rendered_summaries = Vec::new();
     let mut row = ctx.workspace_list.first_child();
     let mut row_index = 0usize;
     while let Some(node) = row {
@@ -1265,6 +1268,14 @@ fn selfcheck(ctx: &Window, label: &str) {
             }
             if list_row.has_css_class("workspace-pane-target") {
                 pane_indicators.push(row_index.to_string());
+            }
+            if let Some(text) = list_row
+                .child()
+                .and_then(|content| find_with_class(&content, "workspace-summary"))
+                .and_then(|widget| widget.downcast::<gtk::Label>().ok())
+                .map(|label| label.text().to_string())
+            {
+                rendered_summaries.push(format!("{row_index}:{text}"));
             }
             if let Some(rect) = list_row.compute_bounds(&ctx.workspace_list) {
                 rows.push(format!(
@@ -1369,6 +1380,22 @@ fn selfcheck(ctx: &Window, label: &str) {
             .map(|reference| reference.to_string())
             .unwrap_or_else(|| "none".into()),
         pane_indicators.join(",")
+    );
+    let stored_summaries: Vec<String> = (0..state.workspaces.len())
+        .flat_map(|index| {
+            state
+                .store
+                .summaries(index)
+                .into_iter()
+                .filter_map(move |summary| {
+                    summary.text.as_ref().map(|text| format!("{index}:{text}"))
+                })
+        })
+        .collect();
+    eprintln!(
+        "among[{label}]: rendered_summaries=[{}] stored_summaries=[{}]",
+        rendered_summaries.join(","),
+        stored_summaries.join(",")
     );
 
     // The pane area's position in window coordinates. A drag test needs pixel

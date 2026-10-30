@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-fn require(condition: bool, message: &str) -> Result<()> {
+pub(crate) fn require(condition: bool, message: &str) -> Result<()> {
     if condition {
         Ok(())
     } else {
@@ -44,13 +44,13 @@ pub(crate) fn settle(h: &mut Harness) -> Result<()> {
     h.wait(10, |h| Ok(last_tick(&h.text()?) > before + 2))
 }
 
-fn field(text: &str, key: &str) -> Option<String> {
+pub(crate) fn field(text: &str, key: &str) -> Option<String> {
     let marker = format!(" {key}=");
     let (_, value) = text.rsplit_once(&marker)?;
     Some(value.split_whitespace().next()?.to_string())
 }
 
-fn order(h: &Harness) -> Result<Vec<u64>> {
+pub(crate) fn order(h: &Harness) -> Result<Vec<u64>> {
     let text = field(&h.text()?, "workspace_order").ok_or("workspace order observation missing")?;
     text.trim_matches(['[', ']'])
         .split(',')
@@ -59,7 +59,7 @@ fn order(h: &Harness) -> Result<Vec<u64>> {
         .collect()
 }
 
-fn row(h: &Harness, index: usize) -> Result<[f64; 4]> {
+pub(crate) fn row(h: &Harness, index: usize) -> Result<[f64; 4]> {
     let text = h.text()?;
     let line = text
         .lines()
@@ -88,7 +88,7 @@ fn tree_boxes(h: &Harness) -> Result<String> {
     Ok(line[start..=end].to_string())
 }
 
-fn pane_counts(h: &Harness) -> Result<Vec<usize>> {
+pub(crate) fn pane_counts(h: &Harness) -> Result<Vec<usize>> {
     let text = h.text()?;
     let line = text
         .lines()
@@ -176,7 +176,7 @@ fn pane_scroll(h: &Harness, pane: u64) -> Option<f64> {
     })
 }
 
-fn move_to(h: &Harness, rect: [f64; 4], fraction: f64) -> Result<()> {
+pub(crate) fn move_to(h: &Harness, rect: [f64; 4], fraction: f64) -> Result<()> {
     h.move_mouse(
         (rect[0] + rect[2] * 0.4) as i64,
         (rect[1] + rect[3] * fraction) as i64,
@@ -230,7 +230,7 @@ fn expanded_start(h: &Harness) -> Result<(i64, i64)> {
     Ok((origin[0] + left as i64 + 120, origin[1] + top as i64 + 10))
 }
 
-fn begin_pane_drag(h: &mut Harness, pane: &str) -> Result<()> {
+pub(crate) fn begin_pane_drag(h: &mut Harness, pane: &str) -> Result<()> {
     let start = pane_start(h, pane)?;
     begin_drag_at(h, start)
 }
@@ -247,7 +247,7 @@ fn begin_drag_at(h: &mut Harness, (x, y): (i64, i64)) -> Result<()> {
     })
 }
 
-fn hover_pane(h: &mut Harness, destination: usize) -> Result<()> {
+pub(crate) fn hover_pane(h: &mut Harness, destination: usize) -> Result<()> {
     move_to(h, row(h, destination)?, 0.5)?;
     let reference = order(h)?
         .get(destination)
@@ -263,7 +263,7 @@ fn hover_pane(h: &mut Harness, destination: usize) -> Result<()> {
     })
 }
 
-fn wait_no_pane_drag(h: &mut Harness) -> Result<()> {
+pub(crate) fn wait_no_pane_drag(h: &mut Harness) -> Result<()> {
     h.wait(10, |h| {
         let text = h.text()?;
         Ok(field(&text, "pane_drag").as_deref() == Some("none")
