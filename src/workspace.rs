@@ -86,7 +86,14 @@ impl Workspace {
     ///
     /// The orientation comes from the focused pane's current pixel shape, so a
     /// wide pane divides side by side and a tall one into a stack.
+    ///
+    /// While a pane is expanded the window shows only that pane, so a split is
+    /// refused instead of creating a pane the user cannot see and moving focus
+    /// to it. The caller restores the layout first.
     pub fn split_focused(&mut self, width: i32, height: i32, new_pane: PaneId) -> Option<PaneId> {
+        if self.zoomed.is_some() {
+            return None;
+        }
         let orientation = tree::auto_orientation(width, height);
         let focused = self.focused;
         self.nodes = self.nodes.split_pane(focused, orientation, new_pane)?;
@@ -211,7 +218,17 @@ impl Workspace {
     }
 
     /// Move focus one step in `direction`, if a neighbour exists.
+    ///
+    /// An expanded pane is the only pane on screen and therefore the only focus
+    /// target. A directional request must not select a sibling hidden behind the
+    /// expansion: that would drop the visible pane's focus treatment and grab
+    /// keyboard focus for a widget the user cannot see. Returning `false` says
+    /// "focus did not move", which is what the caller already does for a
+    /// direction with no neighbour.
     pub fn focus_direction(&mut self, direction: tree::Direction) -> bool {
+        if self.zoomed.is_some() {
+            return false;
+        }
         match tree::neighbour_in_direction(&self.nodes, self.focused, direction) {
             Some(next) => {
                 self.focused = next;
@@ -1229,6 +1246,83 @@ mod tests {
         let mut ws = workspace();
         assert!(!ws.focus_direction(Direction::Right));
         assert_eq!(ws.focused, PaneId(1));
+    }
+
+    #[test]
+    fn directional_focus_is_held_by_the_expanded_pane_in_every_direction() {
+        let mut ws = workspace();
+        ws.split_focused(400, 200, PaneId(2));
+        ws.focused = PaneId(2);
+        assert_eq!(ws.toggle_zoom(), Some(PaneId(2)));
+        let layout = ws.nodes.clone();
+
+        // Left and Right do have neighbours in the stored tree, so a suppression
+        // that only covered missing neighbours would fail here.
+        for direction in [
+            Direction::Up,
+            Direction::Down,
+            Direction::Left,
+            Direction::Right,
+        ] {
+            assert!(!ws.focus_direction(direction));
+            assert_eq!(ws.focused, PaneId(2));
+            assert_eq!(ws.zoomed, Some(PaneId(2)));
+            assert_eq!(ws.visible_panes(), vec![PaneId(2)]);
+            assert_eq!(ws.nodes, layout);
+        }
+    }
+
+    #[test]
+    fn directional_focus_resumes_after_restore() {
+        let mut ws = workspace();
+        ws.split_focused(400, 200, PaneId(2));
+        ws.focused = PaneId(2);
+        ws.toggle_zoom();
+        assert!(!ws.focus_direction(Direction::Left));
+        assert_eq!(ws.focused, PaneId(2));
+
+        assert_eq!(ws.toggle_zoom(), None);
+        assert!(ws.focus_direction(Direction::Left));
+        assert_eq!(ws.focused, PaneId(1));
+    }
+
+    #[test]
+    fn a_hidden_pane_exiting_leaves_the_expanded_pane_focused() {
+        let mut ws = workspace();
+        ws.split_focused(400, 200, PaneId(2));
+        ws.focused = PaneId(2);
+        ws.toggle_zoom();
+
+        // Pane 1 is behind the expansion; its process ending must not move
+        // focus off the visible pane or end the expansion.
+        assert_eq!(ws.close(PaneId(1)), Some(()));
+        assert_eq!(ws.zoomed, Some(PaneId(2)));
+        assert_eq!(ws.focused, PaneId(2));
+        assert_eq!(ws.visible_panes(), vec![PaneId(2)]);
+    }
+
+    #[test]
+    fn split_is_refused_while_a_pane_is_expanded() {
+        let mut ws = workspace();
+        ws.split_focused(400, 200, PaneId(2));
+        ws.focused = PaneId(2);
+        ws.toggle_zoom();
+        let layout = ws.nodes.clone();
+        let directories = ws.cwd.clone();
+
+        assert!(ws.split_focused(400, 200, PaneId(3)).is_none());
+        assert_eq!(ws.panes(), vec![PaneId(1), PaneId(2)]);
+        assert_eq!(ws.nodes, layout);
+        assert_eq!(ws.cwd, directories);
+        assert_eq!(ws.running, 2);
+        assert_eq!(ws.focused, PaneId(2));
+        assert_eq!(ws.zoomed, Some(PaneId(2)));
+
+        // Restoring makes the same request possible again.
+        assert_eq!(ws.toggle_zoom(), None);
+        assert_eq!(ws.split_focused(400, 200, PaneId(3)), Some(PaneId(3)));
+        assert_eq!(ws.focused, PaneId(3));
+        assert!(ws.panes().contains(&PaneId(3)));
     }
 
     fn set_of_three() -> WorkspaceSet {

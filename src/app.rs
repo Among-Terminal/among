@@ -3159,16 +3159,7 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                         crate::context_menu::Command::Zoom => toggle_zoom(&ctx),
                         crate::context_menu::Command::Close => close_pane(&ctx, id),
                         crate::context_menu::Command::OpenLink(uri) => {
-                            let launcher = gtk::UriLauncher::new(&uri);
-                            launcher.launch(
-                                Some(&ctx.window),
-                                None::<&gio::Cancellable>,
-                                move |result| {
-                                    if let Err(error) = result {
-                                        eprintln!("among: Could not open link: {error}");
-                                    }
-                                },
-                            );
+                            open_uri(&ctx.window, &uri);
                         }
                     }
                 }
@@ -3190,7 +3181,10 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
             move |pane: PaneId| {
                 let known = {
                     let mut borrowed = state.borrow_mut();
-                    if !borrowed.workspaces.active().panes().contains(&pane)
+                    // Only a rendered pane may take focus. A pane hidden behind an
+                    // expansion is detached from the window, but the rule must not
+                    // depend on the toolkit never delivering its focus event.
+                    if !borrowed.workspaces.active().visible_panes().contains(&pane)
                         || borrowed.workspaces.active().focused == pane
                     {
                         return;
@@ -3238,6 +3232,18 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                     }
                 };
                 state.borrow_mut().pane_drag = drag;
+            }
+        })),
+        on_open_link: Some(Rc::new({
+            let ctx = ctx.handle();
+            move |id, uri| {
+                // The same liveness rule as the context menu: only a live,
+                // visible pane in a ready session that is not closing may
+                // launch. A press can still arrive while its pane is closing
+                // or after its process exited.
+                if menu_target_valid(&ctx, id) {
+                    open_uri(&ctx.window, &uri);
+                }
             }
         })),
         on_drag_end: Some(Rc::new({
@@ -3638,6 +3644,20 @@ fn run_action(ctx: &Window, action: Action) {
         Action::ToggleFullscreen => toggle_fullscreen(ctx),
         Action::ToggleZoom => toggle_zoom(ctx),
     }
+}
+
+/// Ask the desktop to open a URI, reporting a refused launch.
+///
+/// The context menu and the Ctrl+click gesture both come through here, so a
+/// failure reads the same way whichever asked for the target and there is one
+/// place that owns the asynchronous launcher call.
+fn open_uri(window: &adw::ApplicationWindow, uri: &str) {
+    let launcher = gtk::UriLauncher::new(uri);
+    launcher.launch(Some(window), None::<&gio::Cancellable>, move |result| {
+        if let Err(error) = result {
+            eprintln!("among: Could not open link: {error}");
+        }
+    });
 }
 
 fn menu_target_valid(ctx: &Window, id: PaneId) -> bool {
@@ -4439,6 +4459,13 @@ fn new_workspace(ctx: &Window) {
 }
 
 fn split_focused(ctx: &Window) {
+    // An expanded pane is the only pane on screen. Splitting it would create and
+    // focus a pane hidden behind the expansion, so the request waits until the
+    // layout is restored. Checking here also keeps a refused request from
+    // consuming a pane id.
+    if ctx.state.borrow().workspaces.active().is_zoomed() {
+        return;
+    }
     let focused = ctx.state.borrow().workspaces.active().focused;
     let new_id = ctx.state.borrow_mut().allocate();
     let Some(new_id) = new_id else {
@@ -4466,7 +4493,9 @@ fn split_focused(ctx: &Window) {
         .split_focused(width, height, new_id);
 
     if created.is_none() {
-        // Cannot happen: splitting always finds the focused pane.
+        // The model refuses a split while a pane is expanded; the guard above
+        // answers that request before an id is allocated. Reaching this branch
+        // means the tree could not find the focused pane.
         return;
     }
     rebuild(ctx);

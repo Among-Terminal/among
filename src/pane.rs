@@ -50,6 +50,12 @@ pub struct PaneSignals {
     /// The gesture is refused before GTK creates its native drag, so a sidebar
     /// rename or shutdown cannot leave a half-live drag behind.
     pub on_drag_prepare: Option<DragPrepareCallback>,
+    /// A Ctrl+click asked for a link target to be opened.
+    ///
+    /// The pane owns the gesture but not the window the launch would be
+    /// parented to, so the host performs the launch and can refuse a pane that
+    /// is no longer live.
+    pub on_open_link: Option<Rc<dyn Fn(PaneId, String)>>,
     /// A drag of this pane began.
     ///
     /// Shared rather than boxed because each rebuild attaches fresh handlers,
@@ -161,6 +167,9 @@ impl Pane {
             .enable_bidi(true)
             .enable_shaping(true)
             .build();
+        // Links belong to the terminal, not to the optional context menu: a
+        // pane without a menu still offers Ctrl+click and link detection.
+        crate::links::install(&terminal);
         // Started after the terminal exists, so the terminal can be told to
         // watch the child and therefore report its exit.
         let state = Rc::new(RefCell::new(PaneState {
@@ -380,6 +389,7 @@ impl Pane {
         let PaneSignals {
             menu: _,
             on_focus,
+            on_open_link,
             on_title,
             on_exit,
             on_cwd: _,
@@ -429,6 +439,10 @@ impl Pane {
             self.terminal.add_controller(focus);
         }
 
+        if let Some(callback) = on_open_link {
+            self.attach_link_gesture(callback);
+        }
+
         let state = self.state.clone();
         self.terminal.connect_map(move |terminal| {
             // Reconciliation is driven by the terminal being mapped, which
@@ -440,6 +454,47 @@ impl Pane {
         });
 
         self.attach_scroll();
+    }
+
+    /// Open a link on Ctrl+primary-click.
+    ///
+    /// Installed once, on the terminal itself: the terminal is created once and
+    /// survives every container rebuild, so one controller serves every layout.
+    /// It runs in the capture phase because the library's own click gesture
+    /// runs in the bubble phase and claims a primary press for selection or for
+    /// the child; a bubble-phase link handler would never see the press that is
+    /// supposed to open a link.
+    ///
+    /// The sequence is claimed only when it will actually open something. Every
+    /// other press is denied so the library handles it exactly as before: plain
+    /// clicks, drags, other modifiers and clicks on text that is not an
+    /// openable link never become the gesture's.
+    fn attach_link_gesture(&self, callback: Rc<dyn Fn(PaneId, String)>) {
+        let id = self.id;
+        let terminal = self.terminal.downgrade();
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(gdk::BUTTON_PRIMARY);
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        gesture.connect_pressed(move |gesture, presses, x, y| {
+            let Some(terminal) = terminal.upgrade() else {
+                return;
+            };
+            let ctrl = gesture
+                .current_event_state()
+                .contains(gdk::ModifierType::CONTROL_MASK);
+            let link = crate::links::at(&terminal, x, y);
+            if !crate::links::activates(ctrl, gesture.current_button(), presses, link.as_ref()) {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            // Claiming the press is what keeps it from reaching the terminal
+            // program and from clearing an existing selection.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(link) = link {
+                callback(id, link.uri);
+            }
+        });
+        self.terminal.add_controller(gesture);
     }
 
     /// Take over touch surface scrolling on this terminal.

@@ -26,6 +26,56 @@ fn focus(h: &mut Harness, pane: u64, offset: usize) -> Result<()> {
     Ok(())
 }
 
+/// The number of the newest periodic self-check report in the log.
+fn last_tick(text: &str) -> u64 {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("among[tick"))
+        .filter_map(|rest| rest.split(']').next())
+        .filter_map(|number| number.parse().ok())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The lines of one complete periodic report, waiting until it has been
+/// followed by the next one so that none of its lines are still to come.
+fn report(h: &mut Harness, tick: u64) -> Result<String> {
+    h.wait(12, |this| Ok(last_tick(&this.text()?) > tick))?;
+    let prefix = format!("among[tick{tick}]:");
+    Ok(h.text()?
+        .lines()
+        .filter(|line| line.starts_with(&prefix))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Press `key` and require the expanded state in a report taken after it.
+///
+/// A held key changes nothing, so waiting for the expected state alone would
+/// also accept a report printed before the key was handled. One more report
+/// can be printed between reading the newest tick and sending the key, and the
+/// next one can fall right after the key is sent, so the third report after the
+/// one seen before the press is the one checked. It must show three things at
+/// once: only `pane` is rendered, it owns the model focus, and it is the one
+/// pane holding native keyboard focus. The pane count is part of the assertion
+/// because a split that slipped through would grow it.
+fn key_keeps_expanded(h: &mut Harness, key: &str, pane: u64) -> Result<()> {
+    let before = last_tick(&h.text()?);
+    h.key(key)?;
+    let text = report(h, before + 3)?;
+    let states = text
+        .split_once("pane_focus_states=[")
+        .and_then(|(_, tail)| tail.split(']').next())
+        .ok_or("pane focus states missing")?;
+    if !text.contains("visible=1 panes=2")
+        || !text.contains(&format!("focused=PaneId({pane})"))
+        || !states.contains(&format!("\"{pane}:true:true\""))
+        || states.matches(":true\"").count() != 1
+    {
+        return Err(format!("{key} changed the expanded pane state: {text}").into());
+    }
+    Ok(())
+}
+
 fn marker(h: &mut Harness, pane: u64, name: &str) -> Result<()> {
     let offset = h.text()?.len();
     h.command(&format!("printf \"\\033]0;{name}\\007\""))?;
@@ -63,11 +113,54 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
     h.start("app")?;
     h.wait(12, |this| Ok(this.text()?.contains("has_focus=true")))?;
     std::thread::sleep(Duration::from_millis(500));
+    // Pane 1 changes its title a moment after focus has moved to pane 2, so it
+    // carries an unacknowledged title marker. Focusing pane 1 clears that
+    // marker, which makes it a witness: if a held Alt+arrow focused the hidden
+    // pane even briefly, the marker would be gone after restore.
+    h.command("sleep 2; printf \"\\033]0;hidden-witness\\007\"")?;
     h.key("ctrl+shift+n")?;
     h.wait(12, |this| {
         let text = this.text()?;
         Ok(text.contains("panes=2") && text.contains("2:true:true"))
     })?;
+    h.wait(12, |this| {
+        Ok(this.text()?.contains("1|hidden-witness|true"))
+    })?;
+    let offset = h.text()?.len();
+    h.key("ctrl+shift+x")?;
+    h.wait(12, |this| {
+        let text = this.text()?;
+        let text = text.get(offset..).ok_or("zoom log shrank")?;
+        Ok(text.contains("visible=1 panes=2") && text.contains("2:true:true"))
+    })?;
+    focus(&mut h, 2, offset)?;
+    println!("PASS zoom renders only the focused pane");
+    for key in ["alt+Left", "alt+Right", "alt+Up", "alt+Down"] {
+        key_keeps_expanded(&mut h, key, 2)?;
+        println!("PASS {key} leaves focus on the expanded pane");
+    }
+    key_keeps_expanded(&mut h, "ctrl+shift+n", 2)?;
+    println!("PASS split is refused while a pane is expanded");
+    marker(&mut h, 2, "expanded-typing")?;
+    println!("PASS typing reaches the expanded terminal");
+    let offset = h.text()?.len();
+    h.key("ctrl+shift+x")?;
+    h.wait(12, |this| {
+        let text = this.text()?;
+        let text = text.get(offset..).ok_or("restore log shrank")?;
+        Ok(text.contains("visible=2 panes=2")
+            && text.contains("focused=PaneId(2)")
+            && text.contains("2:true:true"))
+    })?;
+    let restored = last_tick(&h.text()?);
+    if !report(&mut h, restored)?.contains("1|hidden-witness|true") {
+        return Err("a held action acknowledged the hidden pane's title marker".into());
+    }
+    println!("PASS restore keeps focus on the formerly expanded pane");
+    let offset = h.text()?.len();
+    h.key("alt+Left")?;
+    focus(&mut h, 1, offset)?;
+    println!("PASS directional focus resumes after restore");
     let offset = h.text()?.len();
     click(&h, 1, false)?;
     focus(&mut h, 1, offset)?;

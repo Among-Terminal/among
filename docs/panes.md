@@ -125,6 +125,30 @@ their shortcuts. The menu remains available when those shortcuts are unbound;
 its hints follow the current bindings. Closing the last terminal still asks for
 confirmation rather than silently exiting.
 
+## Following a link
+
+**Ctrl+left-click** a link to open it with the desktop's handler. An explicit
+hyperlink opens its target even when its cells show different text; a plain
+absolute http, https or mailto URL is taken from the text, without the sentence
+punctuation that follows it.
+
+Only http, https and mailto targets launch. A valid hyperlink with another scheme
+opens nothing and the click stays with the terminal. Clicks and drags without Ctrl
+are unchanged, and opening a link leaves the selection and the scrollback where
+they were. A drag that starts on an openable link while Ctrl is held opens
+the link instead of selecting text. A target that cannot be parsed, contains a
+control character or exceeds the size limit is treated like any other refused
+target: nothing opens.
+
+A program that has enabled mouse reporting receives every click as before, except
+a Ctrl+click on an openable link: that click opens the link and the program is not
+told about it. VTE does not expose whether a program is reporting mice, so the
+gesture cannot be narrowed further; GNOME Terminal makes the same choice.
+
+A launch the desktop refuses is reported on stderr and the terminal stays usable;
+no dialog appears. A Ctrl+click in an unfocused pane focuses that pane before the
+link opens.
+
 ## Closing and exiting
 
 Closing the focused pane focuses the sibling that expands into its space. If
@@ -157,12 +181,18 @@ again restores the layout.
 An expanded pane also shows a **Restore pane** button at the right edge of its
 header. Click it or focus it and press Enter/Space to return to the stored
 layout. An ordinary single-pane workspace has no Restore button unless it was
-explicitly expanded. The existing shortcut and context-menu actions still work.
+explicitly expanded.
 
-Restore returns keyboard focus to its originating terminal. Rebuilding the
-layout preserves independently managed header content rather than treating it
-as part of expansion state. Focus-driven indicators follow their usual
-per-terminal lifecycle; restoring a sibling does not acknowledge them.
+An expanded pane is the only pane on screen and therefore the only focus target:
+`Alt`+arrow directions leave focus on it, and Split is refused until the layout
+is restored. The context menu still lists Split Pane, but the entry is inactive in
+that state. Close and restore keep working.
+
+Restore returns keyboard focus to its originating terminal; focus never moves to
+another pane during the expansion. Rebuilding the layout preserves independently
+managed header content rather than treating it as part of expansion state. Focus-driven
+indicators follow their usual per-terminal lifecycle; restoring a sibling does not
+acknowledge them.
 
 Only the rendering changes. The layout tree is untouched, so restoring brings
 back every pane at exactly the size and position it had, nested dividers

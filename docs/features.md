@@ -40,9 +40,11 @@ dragging inside terminal text still selects text.
 
 ## Focus, zoom and fullscreen
 
-- Click a terminal or its header to focus it; **Alt+Arrow** moves between panes.
+- Click a terminal or its header to focus it; **Alt+Arrow** moves between panes
+  while no pane is expanded.
 - **Ctrl+Shift+X** expands the focused pane to fill its workspace. Press again to
-  recover the same nested layout; hidden panes keep running.
+  recover the same nested layout; hidden panes keep running. While it is
+  expanded, `Alt`+Arrow and splitting leave it in place; restore first.
 - **F11** enters or leaves fullscreen. Normal startup is maximized, not fullscreen.
 
 [![Zooming a pane while preserving the workspace layout](media/features/04b-zoom.png)](media/features/04b-zoom.mp4)
@@ -127,6 +129,17 @@ are copy-only; malformed, control-containing or oversized targets are not offere
 Keyboard-opened menus omit link entries rather than reuse an old pointer target.
 Open Link requests the desktop handler asynchronously, never a shell command;
 handler failure shows an error while the terminal remains usable.
+
+**Ctrl+left-click** follows a link without opening the menu: an explicit hyperlink
+opens its target rather than its displayed text, and a plain absolute **http**,
+**https** or **mailto** URL opens as written, without trailing sentence
+punctuation. Only those three schemes launch; another explicit scheme opens
+nothing and keeps the click, and a target that cannot be parsed is refused the
+same way. Clicks and drags without Ctrl still select, scroll and reach the
+program as before, and opening a link leaves the selection and scrollback
+unchanged. A program that enabled mouse reporting receives every click except a
+Ctrl+click on an openable link. A refused launch is reported on stderr and the
+terminal stays usable.
 
 **Split Pane**, **Expand/Restore Pane** and **Close Terminal** reuse the existing
 pane controls. Their shortcut hints follow Settings, and removing a shortcut does
