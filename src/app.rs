@@ -2875,7 +2875,10 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
             move |pane: PaneId| {
                 let known = {
                     let mut borrowed = state.borrow_mut();
-                    if !borrowed.workspaces.active().panes().contains(&pane)
+                    // Only a rendered pane may take focus. A pane hidden behind an
+                    // expansion is detached from the window, but the rule must not
+                    // depend on the toolkit never delivering its focus event.
+                    if !borrowed.workspaces.active().visible_panes().contains(&pane)
                         || borrowed.workspaces.active().focused == pane
                     {
                         return;
@@ -4113,6 +4116,13 @@ fn new_workspace(ctx: &Window) {
 }
 
 fn split_focused(ctx: &Window) {
+    // An expanded pane is the only pane on screen. Splitting it would create and
+    // focus a pane hidden behind the expansion, so the request waits until the
+    // layout is restored. Checking here also keeps a refused request from
+    // consuming a pane id.
+    if ctx.state.borrow().workspaces.active().is_zoomed() {
+        return;
+    }
     let focused = ctx.state.borrow().workspaces.active().focused;
     let new_id = ctx.state.borrow_mut().allocate();
     let Some(new_id) = new_id else {
@@ -4140,7 +4150,9 @@ fn split_focused(ctx: &Window) {
         .split_focused(width, height, new_id);
 
     if created.is_none() {
-        // Cannot happen: splitting always finds the focused pane.
+        // The model refuses a split while a pane is expanded; the guard above
+        // answers that request before an id is allocated. Reaching this branch
+        // means the tree could not find the focused pane.
         return;
     }
     rebuild(ctx);
