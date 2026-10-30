@@ -343,6 +343,11 @@ jobs:
       - name: Install display tools, FUSE and the host libraries AppImages expect
         run: |
           if command -v apt-get > /dev/null; then
+            # pulseaudio pulls in libgstreamer, whose package also installs
+            # native GStreamer plugins. The AppImage audio check refuses to run
+            # while such plugins are visible, since the payload could borrow
+            # them; only the plugin files are withheld.
+            printf 'path-exclude=/usr/lib/*/gstreamer-1.0/*.so\n' > /etc/dpkg/dpkg.cfg.d/among-no-native-gstreamer-plugins
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates \
               fuse3 xvfb xauth openbox dbus-x11 xdotool x11-utils procps imagemagick \
