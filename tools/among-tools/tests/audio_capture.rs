@@ -140,3 +140,17 @@ fn private_server_socket_must_fit_the_unix_path_limit() -> Result<()> {
     assert!(audio_capture::owned_socket(historical).is_err());
     Ok(())
 }
+
+// A decoder that negotiated shared memory with PulseAudio maps libpulse's
+// memfd ("pulseaudio") or POSIX ("/pulse-shm-N") pool; that client can make a
+// PulseAudio server recording the sink monitor abort when it disconnects.
+#[test]
+fn decoder_maps_reveal_a_shared_memory_pulse_connection() -> Result<()> {
+    let copied = "7f00-7f10 r-xp 0 00:1 2 /payload/usr/lib/libpulse.so.0\n7f20-7f30 rw-s 0 00:1 3 /memfd:among-sound (deleted)\n";
+    audio_package::shared_pulse_memory_absent(copied)?;
+    let memfd = format!("{copied}7f40-8f40 rw-s 0 00:1 4 /memfd:pulseaudio (deleted)\n");
+    assert!(audio_package::shared_pulse_memory_absent(&memfd).is_err());
+    let posix = format!("{copied}7f40-8f40 rw-s 0 00:1 4 /dev/shm/pulse-shm-1234\n");
+    assert!(audio_package::shared_pulse_memory_absent(&posix).is_err());
+    Ok(())
+}

@@ -600,6 +600,12 @@ fn supervise_decoder(job: &Job, temporary: &Path) -> Outcome {
             }
         }
         command.env("TMPDIR", temporary);
+        // The helper reaches PulseAudio without shared memory; see audio::pulse
+        // for the server race this avoids. Without the file there is no output.
+        command.env(
+            "PULSE_CLIENTCONFIG",
+            super::pulse::write_client_config(temporary, &super::pulse::Lookup::current())?,
+        );
         let parent = unsafe { libc::getpid() };
         let authority_fd = job.operation.authority.fd();
         // only async-signal-safe syscalls run between fork/exec. A crashing host

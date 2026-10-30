@@ -144,6 +144,34 @@ to the operation object and cannot cancel or finish a newer owner's playback.
 `Requested`/`DecoderEnded` report lifecycle, not proven audible output. Decoder
 errors win over ended/prepared state; there is no VTE-beep fallback.
 
+### PulseAudio connection without shared memory
+
+The helper plays through GStreamer's `pulsesink`, so it reaches PulseAudio or
+pipewire-pulse. It must not use client shared memory there. PulseAudio 16.1
+and 17.0 have a race in `memblock.c`: when a shared-memory client disconnects
+while another client records the sink monitor, the server can abort at
+`memblock.c:780`, and every application loses sound. The helper disconnects
+after each sound and immediately on cancellation.
+
+`pulsesink` creates its context without a property list, and `PULSE_PROP` is
+applied too late to change the memory pool. The supervisor therefore writes a
+private `pulse-client.conf` into the helper's temporary directory and sets
+`PULSE_CLIENTCONFIG` to it. The file first `.include`s the client.conf libpulse
+itself would read, followed by that file's `.d/*.conf` drop-ins in byte order.
+The lookup order is `PULSE_CLIENTCONFIG`, then `PULSE_CONFIG_PATH/client.conf`,
+otherwise `~/.pulse/client.conf`, `~/.config/pulse/client.conf` and finally
+`/etc/pulse/client.conf`. The last line of the file is `enable-shm = no`, and
+the last assignment wins. The user's default server, cookie and sink settings
+therefore keep working. A path containing `#`, `;` or a line break cannot be
+written after `.include` and is skipped. If the file cannot be written, the
+operation fails rather than playing over shared memory.
+
+Packaged-output checks reject a decoder whose maps show a libpulse
+shared-memory pool (`/memfd:pulseaudio` or `/pulse-shm-N`). The
+`libpulse_reads_user_settings_through_the_private_file` test runs real `pactl`
+and confirms that an included `default-server` takes effect. Direct output
+through `pipewiresink` is not implemented.
+
 ## Packaging and evidence boundaries
 
 Debian/Ubuntu explicitly require `libgtk-4-media-gstreamer` and

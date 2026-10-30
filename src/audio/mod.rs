@@ -3,6 +3,7 @@
 mod authorization;
 mod execution;
 mod player;
+mod pulse;
 pub mod runtime;
 mod wav;
 
