@@ -152,8 +152,27 @@ impl Node {
         // Detaching uses the same collapse rules as closing, so a split that is
         // left with one child becomes that child rather than an empty divider.
         let without = self.close_pane(moved)?;
-        let mut next = without;
-        if next.insert_beside(target, orientation, moved, placement) {
+        without.insert_pane(target, orientation, moved, placement)
+    }
+
+    /// Insert a pane that is not already in this tree beside `target`.
+    ///
+    /// This is the cross-tree counterpart of [`Self::move_pane`]: the caller has
+    /// detached `pane` from another workspace and needs to place it here without
+    /// creating a second leaf for an id that already exists.
+    pub fn insert_pane(
+        &self,
+        target: PaneId,
+        orientation: Orientation,
+        pane: PaneId,
+        placement: Placement,
+    ) -> Option<Node> {
+        let panes = self.panes();
+        if !panes.contains(&target) || panes.contains(&pane) {
+            return None;
+        }
+        let mut next = self.clone();
+        if next.insert_beside(target, orientation, pane, placement) {
             Some(next)
         } else {
             None
@@ -1046,6 +1065,47 @@ mod tests {
             .move_pane(id(2), id(1), Orientation::Horizontal, Placement::After)
             .unwrap();
         assert!(moved.panes().contains(&id(2)));
+    }
+
+    #[test]
+    fn insert_pane_places_a_detached_pane_on_either_side() {
+        let tree = two_panes();
+        let after = tree
+            .insert_pane(id(1), Orientation::Vertical, id(3), Placement::After)
+            .unwrap();
+        assert_eq!(after.panes(), vec![id(1), id(3), id(2)]);
+        let before = tree
+            .insert_pane(id(2), Orientation::Horizontal, id(3), Placement::Before)
+            .unwrap();
+        assert_eq!(before.panes(), vec![id(1), id(3), id(2)]);
+        // The original tree is a value, not a buffer the insertion mutates.
+        assert_eq!(tree.panes(), vec![id(1), id(2)]);
+    }
+
+    #[test]
+    fn insert_pane_reaches_a_nested_target_without_disturbing_outsiders() {
+        let tree = three_panes();
+        let inserted = tree
+            .insert_pane(id(3), Orientation::Horizontal, id(4), Placement::After)
+            .unwrap();
+        assert_eq!(inserted.panes(), vec![id(1), id(2), id(3), id(4)]);
+        // Pane 1 is still the root's first leaf, and the nested split for 2/3
+        // only gained a sibling around 3.
+        assert_eq!(inserted.panes().first(), Some(&id(1)));
+    }
+
+    #[test]
+    fn insert_pane_refuses_an_existing_id_or_unknown_target() {
+        let tree = two_panes();
+        assert!(tree
+            .insert_pane(id(1), Orientation::Vertical, id(2), Placement::After)
+            .is_none());
+        assert!(tree
+            .insert_pane(id(9), Orientation::Vertical, id(3), Placement::After)
+            .is_none());
+        assert!(tree
+            .insert_pane(id(1), Orientation::Vertical, id(1), Placement::After)
+            .is_none());
     }
 
     // --- drop zone geometry (task 3.1) ---

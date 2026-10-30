@@ -13,6 +13,9 @@ The saved sidebar sequence includes manual drag-and-drop ordering. Restore bring
 back that order, with the same workspace active at its new position; Alt+1 through
 Alt+9 then use those restored positions. Ordering is part of the session, not a
 separate preference, and does not bypass the Restore/Start new decision.
+A pane moved to another workspace by dragging its header is saved as part of the
+destination workspace, with its own directory; a workspace that lost its last
+pane this way is not restored. The format is unchanged.
 It does not resume old processes, repeat commands, restore scrollback or retain
 temporary pane zoom. The window opens maximized as usual.
 

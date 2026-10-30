@@ -27,6 +27,8 @@ Usage:
   among-tools check-scroll-calibration <among-binary>
   among-tools check-sidebar-rename <among-binary>
   among-tools check-workspace-reorder <among-binary>
+  among-tools check-pane-workspace-move <among-binary>
+  among-tools check-pane-drag-guards <among-binary> <prebuilt-drag-source> <prebuilt-summary-plugin>
   among-tools check-window-controls <among-binary> <prebuilt-notice-plugin>
   among-tools check-live-focus <among-binary>
   among-tools check-live-resize <among-binary>
@@ -744,6 +746,20 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, binary] if command == "check-workspace-reorder" => {
             among_tools::workspace_reorder::run(Path::new(binary), &among_tools::scratch::root()?)?;
+        }
+        [command, binary] if command == "check-pane-workspace-move" => {
+            among_tools::pane_workspace_move::run(
+                Path::new(binary),
+                &among_tools::scratch::root()?,
+            )?;
+        }
+        [command, binary, source, plugin] if command == "check-pane-drag-guards" => {
+            among_tools::pane_drag_guards::run(
+                Path::new(binary),
+                Path::new(source),
+                Path::new(plugin),
+                &among_tools::scratch::root()?,
+            )?;
         }
         [command, binary, notifier] if command == "check-window-controls" => {
             among_tools::window_controls::run(

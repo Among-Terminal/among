@@ -111,6 +111,42 @@ impl Workspace {
         Some(new_pane)
     }
 
+    /// Adopt a pane that was detached from another workspace.
+    ///
+    /// The pane is placed after this workspace's last pane in tree order, so a
+    /// drop adds it where a split of the last pane would put it. The directory
+    /// travels with the pane rather than being inherited from the target: the
+    /// terminal is the same terminal and already runs where it was.
+    pub fn adopt(
+        &mut self,
+        pane: PaneId,
+        cwd: Option<String>,
+        orientation: tree::Orientation,
+    ) -> bool {
+        let Some(last) = self.nodes.panes().last().copied() else {
+            return false;
+        };
+        let Some(nodes) = self
+            .nodes
+            .insert_pane(last, orientation, pane, tree::Placement::After)
+        else {
+            return false;
+        };
+        self.commit_adopted(nodes, pane, cwd);
+        true
+    }
+
+    /// Record an adopted pane in a tree that `adopt` has already built.
+    fn commit_adopted(&mut self, nodes: Node, pane: PaneId, cwd: Option<String>) {
+        self.nodes = nodes;
+        self.cwd.push((pane, cwd));
+        self.running += 1;
+        self.focused = pane;
+        // A drop reveals the new split; leaving the old expansion in place
+        // would hide the pane the user just moved here.
+        self.zoomed = None;
+    }
+
     /// Close a pane.
     ///
     /// Returns `None` when the pane was the workspace's last one, because the
@@ -257,6 +293,15 @@ impl WorkspaceMove {
     }
 }
 
+/// Where a pane landed after moving to another workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspacePaneMove {
+    /// Index of the destination workspace after the move.
+    pub target: usize,
+    /// Whether the source workspace was removed because its last pane left.
+    pub source_closed: bool,
+}
+
 impl WorkspaceSet {
     pub fn from_restored(workspaces: Vec<Workspace>, active: usize) -> Option<Self> {
         if workspaces.is_empty() || active >= workspaces.len() {
@@ -365,6 +410,80 @@ impl WorkspaceSet {
         Some(movement)
     }
 
+    /// Move a pane to another workspace, activating the destination.
+    ///
+    /// Workspaces are addressed by reference rather than by position so a drag
+    /// cannot land in a different project after the sidebar changed underneath
+    /// it. The pane keeps its identity and directory; the destination adopts it
+    /// after its last pane in tree order. If the pane was the source's only
+    /// pane, the source workspace is removed rather than left empty.
+    pub fn move_pane_between(
+        &mut self,
+        source: u64,
+        target: u64,
+        pane: PaneId,
+        orientation: tree::Orientation,
+    ) -> Option<WorkspacePaneMove> {
+        if source == target {
+            return None;
+        }
+        let source_index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.reference == source)?;
+        let target_index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.reference == target)?;
+        if source_index == target_index {
+            return None;
+        }
+
+        let source_panes = self.workspaces[source_index].panes();
+        if !source_panes.contains(&pane) {
+            return None;
+        }
+        let target_panes = self.workspaces[target_index].panes();
+        if target_panes.contains(&pane) || target_panes.last().is_none() {
+            return None;
+        }
+        let moved_cwd = self.workspaces[source_index]
+            .cwd_of(pane)
+            .map(str::to_owned);
+        let source_closed = source_panes.len() == 1;
+        // The destination and a source that keeps other panes are prepared on
+        // copies, so a refusal there returns before anything is changed. A
+        // source that closes is removed from the live set, which the checks
+        // above guarantee cannot be refused because two distinct workspaces
+        // exist.
+        let mut target_after = self.workspaces[target_index].clone();
+        if !target_after.adopt(pane, moved_cwd, orientation) {
+            return None;
+        }
+        if source_closed {
+            // Source and target are distinct entries, so there are at least two
+            // workspaces and removing the source cannot be refused.
+            self.remove(source_index)?;
+        } else {
+            let mut source_after = self.workspaces[source_index].clone();
+            source_after.close(pane)?;
+            self.workspaces[source_index] = source_after;
+        }
+
+        // Removing the source may shift the target's position, so resolve it by
+        // reference again instead of carrying an index across the removal.
+        let target_index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.reference == target)?;
+        self.workspaces[target_index] = target_after;
+        self.active = target_index;
+        Some(WorkspacePaneMove {
+            target: target_index,
+            source_closed,
+        })
+    }
+
     /// Activate a workspace by its position in the list.
     ///
     /// Out-of-range positions are ignored, so a digit beyond the workspace
@@ -450,6 +569,209 @@ mod tests {
             .workspaces()
             .iter()
             .all(|workspace| workspace.reference != reference));
+    }
+
+    #[test]
+    fn adopting_a_pane_appends_it_after_the_last_pane_and_keeps_its_directory() {
+        let mut target = workspace();
+        target
+            .split_focused(600, 300, PaneId(2))
+            .expect("the focused pane is split");
+        target.set_cwd(PaneId(2), Some("/target".into()));
+        target.toggle_zoom();
+        assert_eq!(target.zoomed, Some(PaneId(2)));
+
+        assert!(target.adopt(PaneId(3), Some("/moved".into()), Orientation::Vertical));
+        assert_eq!(target.panes(), vec![PaneId(1), PaneId(2), PaneId(3)]);
+        assert_eq!(target.focused, PaneId(3));
+        assert_eq!(target.cwd_of(PaneId(2)), Some("/target"));
+        assert_eq!(target.cwd_of(PaneId(3)), Some("/moved"));
+        assert_eq!(target.running, 3);
+        assert_eq!(target.zoomed, None);
+    }
+
+    #[test]
+    fn adopting_refuses_a_pane_already_in_the_workspace() {
+        let mut target = workspace();
+        assert!(!target.adopt(PaneId(1), None, Orientation::Vertical));
+        assert_eq!(target.panes(), vec![PaneId(1)]);
+        assert_eq!(target.focused, PaneId(1));
+        assert_eq!(target.running, 1);
+        assert_eq!(target.cwd.len(), 1);
+    }
+
+    #[test]
+    fn adopting_a_pane_with_unknown_directory_keeps_the_entry_unknown() {
+        let mut target = workspace();
+        assert!(target.adopt(PaneId(2), None, Orientation::Horizontal));
+        assert_eq!(target.cwd_of(PaneId(2)), None);
+        assert!(target.cwd.iter().any(|(id, _)| *id == PaneId(2)));
+    }
+
+    #[test]
+    fn moving_a_pane_between_workspaces_adopts_it_and_reclaims_the_source_space() {
+        let mut set = three();
+        set.get_mut(0)
+            .expect("first workspace")
+            .split_focused(600, 300, PaneId(4))
+            .expect("source split");
+        set.get_mut(1)
+            .expect("second workspace")
+            .split_focused(600, 300, PaneId(5))
+            .expect("target split");
+        set.get_mut(0)
+            .expect("first workspace")
+            .set_cwd(PaneId(4), Some("/moved".into()));
+        set.get_mut(1)
+            .expect("second workspace")
+            .set_cwd(PaneId(5), Some("/target".into()));
+        set.get_mut(0).expect("first workspace").toggle_zoom();
+        set.get_mut(1).expect("second workspace").toggle_zoom();
+        set.activate(0);
+
+        let source = set.workspaces()[0].reference;
+        let target = set.workspaces()[1].reference;
+        let before_names = names(&set);
+        let before_colours: Vec<_> = set
+            .workspaces()
+            .iter()
+            .map(|workspace| workspace.colour)
+            .collect();
+
+        let movement = set
+            .move_pane_between(source, target, PaneId(4), Orientation::Vertical)
+            .expect("the pane moves");
+        assert_eq!(
+            movement,
+            WorkspacePaneMove {
+                target: 1,
+                source_closed: false
+            }
+        );
+        assert_eq!(set.active_index(), 1);
+        assert_eq!(set.workspaces()[0].panes(), vec![PaneId(1)]);
+        assert_eq!(set.workspaces()[0].focused, PaneId(1));
+        assert_eq!(set.workspaces()[0].zoomed, None);
+        assert_eq!(
+            set.workspaces()[1].panes(),
+            vec![PaneId(2), PaneId(5), PaneId(4)]
+        );
+        assert_eq!(set.workspaces()[1].focused, PaneId(4));
+        assert_eq!(set.workspaces()[1].zoomed, None);
+        assert_eq!(set.workspaces()[1].cwd_of(PaneId(4)), Some("/moved"));
+        assert_eq!(set.workspaces()[1].cwd_of(PaneId(5)), Some("/target"));
+        assert_eq!(set.workspaces()[0].running, 1);
+        assert_eq!(set.workspaces()[1].running, 3);
+        assert_eq!(names(&set), before_names);
+        assert_eq!(
+            set.workspaces()
+                .iter()
+                .map(|workspace| workspace.colour)
+                .collect::<Vec<_>>(),
+            before_colours
+        );
+    }
+
+    #[test]
+    fn moving_an_unfocused_pane_leaves_the_source_focus_alone() {
+        let mut set = three();
+        set.get_mut(0)
+            .expect("first workspace")
+            .split_focused(600, 300, PaneId(4))
+            .expect("source split");
+        // The new pane is focused; move the older pane instead.
+        let source = set.workspaces()[0].reference;
+        let target = set.workspaces()[1].reference;
+        set.move_pane_between(source, target, PaneId(1), Orientation::Vertical)
+            .expect("the pane moves");
+        assert_eq!(set.workspaces()[0].focused, PaneId(4));
+        assert_eq!(set.workspaces()[0].panes(), vec![PaneId(4)]);
+        assert_eq!(set.workspaces()[1].panes(), vec![PaneId(2), PaneId(1)]);
+    }
+
+    #[test]
+    fn moving_a_workspaces_last_pane_removes_the_source_and_activates_the_target() {
+        let mut set = three();
+        set.activate(1);
+        let source = set.workspaces()[1].reference;
+        let target = set.workspaces()[2].reference;
+        let movement = set
+            .move_pane_between(source, target, PaneId(2), Orientation::Vertical)
+            .expect("the pane moves");
+        assert_eq!(
+            movement,
+            WorkspacePaneMove {
+                target: 1,
+                source_closed: true
+            }
+        );
+        assert_eq!(set.len(), 2);
+        assert_eq!(names(&set), ["first", "third"]);
+        assert_eq!(set.active_index(), 1);
+        assert_eq!(set.workspaces()[1].panes(), vec![PaneId(3), PaneId(2)]);
+        assert_eq!(set.workspaces()[1].focused, PaneId(2));
+        assert_eq!(set.workspaces()[0].panes(), vec![PaneId(1)]);
+        assert_eq!(set.workspaces()[0].colour, 0);
+    }
+
+    #[test]
+    fn moving_a_pane_into_an_earlier_workspace_keeps_its_index() {
+        let mut set = three();
+        set.activate(2);
+        let source = set.workspaces()[2].reference;
+        let target = set.workspaces()[0].reference;
+        let movement = set
+            .move_pane_between(source, target, PaneId(3), Orientation::Horizontal)
+            .expect("the pane moves");
+        assert_eq!(movement.target, 0);
+        assert!(movement.source_closed);
+        assert_eq!(set.active_index(), 0);
+        assert_eq!(names(&set), ["first", "second"]);
+        assert_eq!(set.workspaces()[0].panes(), vec![PaneId(1), PaneId(3)]);
+        assert_eq!(set.workspaces()[1].panes(), vec![PaneId(2)]);
+    }
+
+    #[test]
+    fn a_pane_move_finds_its_target_by_reference_when_names_repeat() {
+        let mut set = WorkspaceSet::new(Workspace::new("same".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("same".into(), PaneId(2), 1));
+        set.push_active(Workspace::new("same".into(), PaneId(3), 2));
+        set.get_mut(0)
+            .expect("first workspace")
+            .split_focused(600, 300, PaneId(4))
+            .expect("source split");
+        let source = set.workspaces()[0].reference;
+        let target = set.workspaces()[2].reference;
+
+        let movement = set
+            .move_pane_between(source, target, PaneId(4), Orientation::Vertical)
+            .expect("the pane moves");
+        // Three entries share one name; only the reference picks the third.
+        assert_eq!(movement.target, 2);
+        assert_eq!(set.workspaces()[0].panes(), vec![PaneId(1)]);
+        assert_eq!(set.workspaces()[1].panes(), vec![PaneId(2)]);
+        assert_eq!(set.workspaces()[2].panes(), vec![PaneId(3), PaneId(4)]);
+    }
+
+    #[test]
+    fn invalid_cross_workspace_moves_leave_the_set_untouched() {
+        let mut set = three();
+        let first = set.workspaces()[0].reference;
+        let second = set.workspaces()[1].reference;
+        let before = format!("{set:?}");
+        assert!(set
+            .move_pane_between(first, first, PaneId(1), Orientation::Vertical)
+            .is_none());
+        assert!(set
+            .move_pane_between(first, 999, PaneId(1), Orientation::Vertical)
+            .is_none());
+        assert!(set
+            .move_pane_between(first, second, PaneId(999), Orientation::Vertical)
+            .is_none());
+        assert!(set
+            .move_pane_between(first, second, PaneId(2), Orientation::Vertical)
+            .is_none());
+        assert_eq!(format!("{set:?}"), before);
     }
 
     /// A set of three workspaces named `first`, `second`, `third`.

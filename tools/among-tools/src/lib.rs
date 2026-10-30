@@ -38,6 +38,8 @@ pub mod native_unpack;
 pub mod nightly;
 pub mod notices;
 pub mod package_version;
+pub mod pane_drag_guards;
+pub mod pane_workspace_move;
 pub mod platform;
 pub mod plugin_install;
 pub mod preferences;
