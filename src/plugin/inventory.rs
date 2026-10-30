@@ -262,9 +262,16 @@ impl Receipt {
 
     /// Whether this generation may start only in a primary started with
     /// `--plugin-development`. A local catalogue has no publication behind it
-    /// at all, so its generation never runs in an ordinary instance.
+    /// at all, and a prerelease is not an ordinary release, so neither
+    /// generation runs in an ordinary instance.
     pub fn requires_development(&self) -> bool {
-        matches!(self.origin, Provenance::Local(_))
+        match &self.origin {
+            Provenance::Local(_) => true,
+            Provenance::Release(release) => release
+                .source
+                .as_ref()
+                .is_some_and(|source| source.release_snapshot.is_prerelease()),
+        }
     }
 
     /// The relative directory of this generation below the store root.

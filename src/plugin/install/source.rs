@@ -294,6 +294,14 @@ impl Selection {
                 "selected update belongs to a different authoritative identity",
             ));
         }
+        // An update keeps the installation's switch and grants. A prerelease
+        // may replace an install only after its own confirmation and without
+        // them, so it can never travel this path.
+        if self.is_prerelease() {
+            return Err(Problem(
+                "a prerelease replaces an installed plugin only through a confirmed replacement, never as an update",
+            ));
+        }
         if let Some(schema) = &self.version.manifest.settings {
             schema.effective(stored)?;
         }
