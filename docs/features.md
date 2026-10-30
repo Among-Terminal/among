@@ -71,6 +71,11 @@ Inactive workspaces keep their terminals and processes running. The sidebar
 collapse button reduces the list to a strip: colours and counts remain visible,
 and every workspace remains reachable.
 
+Drag a pane header onto a workspace entry to move that live terminal to another
+project. The destination is outlined before release, receives the pane after its
+last pane, becomes active and takes keyboard focus. A project that loses its only
+pane closes, so a drag never leaves an empty entry behind.
+
 Drag the expanded sidebar's right edge to change its width. The chosen width
 returns after expanding the strip and after restarting the application. Resizing
 the sidebar leaves the workspace's panes and running processes intact.

@@ -26,6 +26,10 @@ follow that same order immediately. There is no Alt+0 default for position ten.
 Moving an entry does not activate it or restart its terminals. Single-click still
 switches workspaces, and double-click still edits an expanded entry's name.
 
+Dragging a pane header onto an entry is a different gesture: it moves that live
+terminal into the workspace and activates the destination. It never reorders the
+workspace list.
+
 ## Defaults
 
 | Action | Binding | Notes |
