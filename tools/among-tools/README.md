@@ -176,11 +176,18 @@ installed runner; the legacy release workflow remains until that work is exercis
 http/https/mailto desktop associations, replaces XDG_DATA_DIRS to exclude host
 fallbacks and records exact URI argument arrays with the native Rust receipt
 helper. It exercises supported/unsupported OSC8 and missing-handler failure with
-actual menu clicks and continued terminal input. Menu actions wait for two complete
-equal samples from the current invocation, never historical global bounds. This
-URI checker is observed. Full source clipboard/TUI/light/dark menu coverage uses
-the selected application and prebuilt GTK clipboard fixture, built separately so
-the headless tools package stays independent of GTK:
+actual menu clicks and continued terminal input. It also drives real
+**Ctrl+left-click** in a second pane: a plain URL, an explicit hyperlink whose
+text differs, trailing sentence punctuation, a plain click, ordinary text, a
+`custom:` hyperlink, an existing selection, a Ctrl+drag, and a click in an
+unfocused pane. A `raw-menu-pty mouse-link` fixture enables mouse reporting and
+records the bytes its program receives, so the check proves that the link click
+never reaches it while every other click does, and that the missing-handler
+failure is also reported from the pointer gesture. Menu actions wait for two
+complete equal samples from the current invocation, never historical global
+bounds. This URI checker is observed. Full source clipboard/TUI/light/dark menu
+coverage uses the selected application and prebuilt GTK clipboard fixture, built
+separately so the headless tools package stays independent of GTK:
 
 ```sh
 cargo build --release --locked --example check-clipboard

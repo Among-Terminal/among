@@ -133,6 +133,14 @@
   box-shadow: inset 0 -3px @accent_bg_color;
 }
 
+/* A pane dropped on an entry joins the whole workspace, so the destination is
+ * outlined as an entry rather than marked with an insertion edge. The inset
+ * shadow leaves the row allocation unchanged while the drag is previewed. */
+.workspace-sidebar > .workspace-entry.workspace-pane-target {
+  background: alpha(@accent_bg_color, 0.14);
+  box-shadow: inset 0 0 0 2px @accent_bg_color;
+}
+
 .workspace-row {
   padding: 2px 0;
 }

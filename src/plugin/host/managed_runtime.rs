@@ -1757,6 +1757,49 @@ mod tests {
     }
 
     #[test]
+    fn a_destination_summary_stays_with_it_when_a_pane_move_closes_the_source() {
+        use crate::tree::{Orientation, PaneId};
+        use crate::workspace::{Workspace, WorkspaceSet};
+        let mut fixture = fixture("managed-echo", &[], None);
+        let mut set = WorkspaceSet::new(Workspace::new("source".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("destination".into(), PaneId(2), 1));
+        set.activate(0);
+        let references = |set: &WorkspaceSet| -> Vec<u64> {
+            set.workspaces()
+                .iter()
+                .map(|workspace| workspace.reference)
+                .collect()
+        };
+        let before = references(&set);
+        let mut context = fixture.host.world.legacy.clone();
+        context.active_workspace = 0;
+        fixture.host.update_context(before.clone(), context);
+        let mut store = SlotStore::new();
+        store.set_summary(0, Summary::text(KEY, "source"));
+        store.set_summary(1, Summary::text(KEY, "destination"));
+
+        // The source's only pane moves away, so the source closes and the
+        // destination shifts from index 1 to index 0.
+        let movement = set
+            .move_pane_between(before[0], before[1], PaneId(1), Orientation::Vertical)
+            .expect("the pane moves");
+        assert!(movement.source_closed);
+        assert_eq!(movement.target, 0);
+
+        // The same order the window applies after the drop: reconcile managed
+        // content against the new references, then drop what no workspace owns.
+        let after = references(&set);
+        fixture
+            .host
+            .reconcile_workspace_content(&mut store, &after, set.active_index());
+        store.retain_workspaces(set.len());
+        let summaries = store.summaries(0);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].text.as_deref(), Some("destination"));
+        assert!(store.summaries(1).is_empty());
+    }
+
+    #[test]
     fn cached_managed_summaries_follow_surviving_targets_without_remapping_legacy_sources() {
         let fixture = fixture("managed-echo", &[], None);
         let mut store = SlotStore::new();

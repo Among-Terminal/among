@@ -13,7 +13,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use vte::prelude::*;
 
-use crate::pane::{Pane, PaneSignals};
+use crate::pane::{Pane, PaneDrag, PaneSignals};
 use crate::plugin::host::PluginHost;
 #[cfg(test)]
 use crate::plugin::host::PluginSpec;
@@ -96,6 +96,7 @@ pub struct AppState {
     workspace_order_revision: u64,
     workspace_order: Vec<u64>,
     workspace_drag: Option<WorkspaceDrag>,
+    pane_drag: Option<PaneDragState>,
 }
 
 #[derive(Clone, Debug, glib::Boxed)]
@@ -139,6 +140,73 @@ impl WorkspaceDrag {
                 .workspaces()
                 .get(self.source)
                 .is_some_and(|workspace| workspace.reference == self.reference)
+    }
+}
+
+/// A pane-header drag that this window is currently carrying.
+///
+/// A payload alone is not enough to accept a drop: a drag can be cancelled, its
+/// source can close, or the sidebar can change underneath it. The transaction
+/// ties the payload to the workspace it came from and to the sidebar state the
+/// user started from.
+#[derive(Clone, Debug)]
+struct PaneDragState {
+    pane: PaneId,
+    source: u64,
+    revision: u64,
+    collapsed: bool,
+    /// Workspace reference currently under the pointer, if any.
+    target: Option<u64>,
+}
+
+/// Whether a pane drag may start at all.
+///
+/// Kept separate from the model so the interaction guards are testable without
+/// a window: a rename owns the sidebar, and a closing session must not carry a
+/// half-live gesture into teardown.
+fn pane_drag_allowed(ready: bool, closing: bool, exiting: bool, renaming: bool) -> bool {
+    ready && !closing && !exiting && !renaming
+}
+
+impl PaneDragState {
+    fn new(set: &WorkspaceSet, revision: u64, pane: PaneId, collapsed: bool) -> Option<Self> {
+        let source = set
+            .workspaces()
+            .iter()
+            .find(|workspace| workspace.panes().contains(&pane))?
+            .reference;
+        Some(Self {
+            pane,
+            source,
+            revision,
+            collapsed,
+            target: None,
+        })
+    }
+
+    fn accepts(&self, payload: &PaneDrag) -> bool {
+        self.pane.0 == payload.pane
+    }
+
+    /// Whether the gesture still describes a pane that can be moved.
+    ///
+    /// A pane whose process has exited stays in the model until its deferred
+    /// close runs. Moving it in that window would activate the target and could
+    /// remove the source workspace only for the close to take the pane away
+    /// again, so such a pane is no longer a valid source.
+    fn valid(
+        &self,
+        set: &WorkspaceSet,
+        revision: u64,
+        collapsed: bool,
+        exited: &std::collections::HashMap<PaneId, i32>,
+    ) -> bool {
+        self.revision == revision
+            && self.collapsed == collapsed
+            && !exited.contains_key(&self.pane)
+            && set.workspaces().iter().any(|workspace| {
+                workspace.reference == self.source && workspace.panes().contains(&self.pane)
+            })
     }
 }
 
@@ -193,6 +261,7 @@ impl AppState {
             workspace_order_revision: 0,
             workspace_order: vec![1],
             workspace_drag: None,
+            pane_drag: None,
         }
     }
 
@@ -271,21 +340,29 @@ fn slot_area(class: &str) -> gtk::Box {
     box_
 }
 
-/// The terminal list handed to plugins on every request.
-fn plugin_context(state: &AppState) -> Context {
-    let terminals = state
-        .workspaces
-        .workspaces()
+/// Every pane with the index of the workspace that now contains it.
+///
+/// Derived from the model on each request rather than cached in a pane widget,
+/// so a pane moved between workspaces is reported under its destination without
+/// restarting the plugin that observes it.
+fn workspace_pane_indices(set: &WorkspaceSet) -> Vec<(PaneId, usize)> {
+    set.workspaces()
         .iter()
         .enumerate()
-        .flat_map(|(index, workspace)| {
-            workspace.panes().into_iter().map(move |pane| TerminalInfo {
-                pane: pane.0,
-                workspace: index,
-                cwd: state.pane(pane).and_then(|p| p.cwd()),
-                title: state.pane(pane).and_then(|pane| pane.title()),
-                running: !state.exited.contains_key(&pane),
-            })
+        .flat_map(|(index, workspace)| workspace.panes().into_iter().map(move |pane| (pane, index)))
+        .collect()
+}
+
+/// The terminal list handed to plugins on every request.
+fn plugin_context(state: &AppState) -> Context {
+    let terminals = workspace_pane_indices(&state.workspaces)
+        .into_iter()
+        .map(|(pane, workspace)| TerminalInfo {
+            pane: pane.0,
+            workspace,
+            cwd: state.pane(pane).and_then(|p| p.cwd()),
+            title: state.pane(pane).and_then(|pane| pane.title()),
+            running: !state.exited.contains_key(&pane),
         })
         .collect();
     Context {
@@ -308,6 +385,7 @@ fn update_plugin_context(state: &mut AppState) {
         state.workspace_order_revision = state.workspace_order_revision.wrapping_add(1);
         state.workspace_order.clone_from(&workspaces);
         state.workspace_drag = None;
+        state.pane_drag = None;
     }
     state.plugins.reconcile_workspace_content(
         &mut state.store,
@@ -662,6 +740,7 @@ fn build_with_writer(
     };
 
     install_workspace_drop_target(&ctx);
+    install_pane_drop_target(&ctx);
     let drag_keys = gtk::EventControllerKey::new();
     drag_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     drag_keys.connect_key_pressed({
@@ -674,6 +753,14 @@ fn build_with_writer(
                     source.drag_cancel();
                 }
                 refresh_after_workspace_drag(&target);
+                glib::Propagation::Stop
+            } else if key == gtk::gdk::Key::Escape && target.state.borrow().pane_drag.is_some() {
+                // The native source is not stored for panes, so the drag itself
+                // is not cancelled here. Clearing the transaction stops a later
+                // release on a workspace entry from moving the pane; a release
+                // over another pane is still the existing pane-to-pane move.
+                // The indicator is removed now so Escape visibly takes effect.
+                finish_pane_drag(&target, true);
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -1058,6 +1145,10 @@ fn selfcheck(ctx: &Window, label: &str) {
     let mut name_rects: Vec<String> = Vec::new();
     let mut hit_rows = Vec::new();
     let mut drop_indicators = Vec::new();
+    let mut pane_indicators = Vec::new();
+    // What each row actually draws as its plugin summary, as opposed to what the
+    // slot store holds: a held rebuild shows the two disagreeing.
+    let mut rendered_summaries = Vec::new();
     let mut row = ctx.workspace_list.first_child();
     let mut row_index = 0usize;
     while let Some(node) = row {
@@ -1078,6 +1169,17 @@ fn selfcheck(ctx: &Window, label: &str) {
                 if list_row.has_css_class(class) {
                     drop_indicators.push(format!("{row_index}:{edge}"));
                 }
+            }
+            if list_row.has_css_class("workspace-pane-target") {
+                pane_indicators.push(row_index.to_string());
+            }
+            if let Some(text) = list_row
+                .child()
+                .and_then(|content| find_with_class(&content, "workspace-summary"))
+                .and_then(|widget| widget.downcast::<gtk::Label>().ok())
+                .map(|label| label.text().to_string())
+            {
+                rendered_summaries.push(format!("{row_index}:{text}"));
             }
             if let Some(rect) = list_row.compute_bounds(&ctx.workspace_list) {
                 rows.push(format!(
@@ -1168,6 +1270,37 @@ fn selfcheck(ctx: &Window, label: &str) {
         state.workspace_drag.as_ref().map(|drag| drag.reference.to_string()).unwrap_or_else(|| "none".into()),
         state.workspace_drag.as_ref().and_then(|drag| drag.target).map(|gap| gap.to_string()).unwrap_or_else(|| "none".into()),
         drop_indicators.join(","), hit_rows.join(" "), viewport, ctx.sidebar_scroller.vadjustment().value());
+    eprintln!(
+        "among[{label}]: pane_drag={} pane_target={} pane_indicators=[{}]",
+        state
+            .pane_drag
+            .as_ref()
+            .map(|drag| drag.pane.0.to_string())
+            .unwrap_or_else(|| "none".into()),
+        state
+            .pane_drag
+            .as_ref()
+            .and_then(|drag| drag.target)
+            .map(|reference| reference.to_string())
+            .unwrap_or_else(|| "none".into()),
+        pane_indicators.join(",")
+    );
+    let stored_summaries: Vec<String> = (0..state.workspaces.len())
+        .flat_map(|index| {
+            state
+                .store
+                .summaries(index)
+                .into_iter()
+                .filter_map(move |summary| {
+                    summary.text.as_ref().map(|text| format!("{index}:{text}"))
+                })
+        })
+        .collect();
+    eprintln!(
+        "among[{label}]: rendered_summaries=[{}] stored_summaries=[{}]",
+        rendered_summaries.join(","),
+        stored_summaries.join(",")
+    );
 
     // The pane area's position in window coordinates. A drag test needs pixel
     // coordinates, and deriving them from the layout avoids guessing at where
@@ -1851,7 +1984,26 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
         }
         invalid
     };
-    let force = force || cancelled;
+    let pane_cancelled = {
+        let mut state = ctx.state.borrow_mut();
+        let invalid = state.pane_drag.as_ref().is_some_and(|drag| {
+            !drag.valid(
+                &state.workspaces,
+                state.workspace_order_revision,
+                state.sidebar_collapsed,
+                &state.exited,
+            ) || state.session_closing
+                || state.exiting
+        });
+        if invalid {
+            state.pane_drag = None;
+        }
+        invalid
+    };
+    let force = force || cancelled || pane_cancelled;
+    if pane_cancelled {
+        clear_pane_drop_indicator(ctx);
+    }
     if ctx.state.borrow().workspace_drag.is_none() {
         let source = ctx.workspace_drag_source.borrow_mut().take();
         if let Some(source) = source {
@@ -1861,6 +2013,11 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
     {
         let state = ctx.state.borrow();
         if state.workspace_drag.is_some() {
+            return;
+        }
+        // A live pane drag owns the rows until it ends, so a plugin refresh
+        // cannot take away the entry the pointer is over.
+        if state.pane_drag.is_some() {
             return;
         }
         // An in-progress rename owns the sidebar's widgets until it finishes.
@@ -2061,6 +2218,29 @@ fn clear_workspace_drop_indicator(ctx: &Window) {
         row.remove_css_class("workspace-drop-before");
         row.remove_css_class("workspace-drop-after");
         child = row.next_sibling();
+    }
+}
+
+fn clear_pane_drop_indicator(ctx: &Window) {
+    let mut child = ctx.workspace_list.first_child();
+    while let Some(row) = child {
+        row.remove_css_class("workspace-pane-target");
+        child = row.next_sibling();
+    }
+}
+
+/// Release a pane drag and flush the sidebar work it held back.
+fn finish_pane_drag(ctx: &Window, refresh: bool) {
+    let active = ctx.state.borrow_mut().pane_drag.take().is_some();
+    clear_pane_drop_indicator(ctx);
+    if active && refresh {
+        let target = ctx.handle();
+        // The native drag may still be unwinding inside GTK; rebuilding rows
+        // here would remove the widgets it is finishing with.
+        glib::idle_add_local_once(move || {
+            rebuild_sidebar(&target, false);
+            apply_focus(&target);
+        });
     }
 }
 
@@ -2327,6 +2507,187 @@ fn install_workspace_drop_target(ctx: &Window) {
             } else {
                 finish_workspace_drag(&target, &payload.token);
             }
+            true
+        }
+    });
+    ctx.sidebar_scroller.add_controller(drop);
+}
+
+/// The orientation a pane would use when inserted after a workspace's last pane.
+///
+/// This is the same rule a manual split uses: the destination pane's own shape,
+/// not the window's. A background workspace has no live widget allocation, so
+/// the tree and pane area are enough to answer.
+fn pane_drop_orientation(
+    workspaces: &WorkspaceSet,
+    target: u64,
+    area: (i32, i32),
+) -> Option<crate::tree::Orientation> {
+    let workspace = workspaces
+        .workspaces()
+        .iter()
+        .find(|workspace| workspace.reference == target)?;
+    let last = *workspace.panes().last()?;
+    let (width, height) =
+        crate::size::pane_box(&workspace.nodes, area.0, area.1, last).unwrap_or((0, 0));
+    Some(crate::tree::auto_orientation(width, height))
+}
+
+/// Resolve the workspace row under a pane drag and show it as the destination.
+///
+/// The source workspace is not a destination: dropping there would either split
+/// a pane with itself or silently reorder the workspace's own layout, and the
+/// gesture is defined as a move between projects.
+fn preview_pane_drop(ctx: &Window, x: f64, y: f64) -> Option<u64> {
+    clear_pane_drop_indicator(ctx);
+    let source = {
+        let state = ctx.state.borrow();
+        let drag = state.pane_drag.as_ref()?;
+        if !drag.valid(
+            &state.workspaces,
+            state.workspace_order_revision,
+            state.sidebar_collapsed,
+            &state.exited,
+        ) || state.session_closing
+            || state.exiting
+        {
+            return None;
+        }
+        drag.source
+    };
+    let point = ctx.sidebar_scroller.compute_point(
+        &ctx.workspace_list,
+        &gtk::graphene::Point::new(x as f32, y as f32),
+    )?;
+    let Some(row) = ctx.workspace_list.row_at_y(point.y() as i32) else {
+        if let Some(drag) = ctx.state.borrow_mut().pane_drag.as_mut() {
+            drag.target = None;
+        }
+        return None;
+    };
+    // A row that is not attached to the list reports -1; it names no workspace,
+    // and clamping it would silently target the first one.
+    let Ok(index) = usize::try_from(row.index()) else {
+        if let Some(drag) = ctx.state.borrow_mut().pane_drag.as_mut() {
+            drag.target = None;
+        }
+        return None;
+    };
+    let reference = {
+        let state = ctx.state.borrow();
+        state.workspaces.workspaces().get(index)?.reference
+    };
+    if reference == source {
+        if let Some(drag) = ctx.state.borrow_mut().pane_drag.as_mut() {
+            drag.target = None;
+        }
+        return None;
+    }
+    row.add_css_class("workspace-pane-target");
+    if let Some(drag) = ctx.state.borrow_mut().pane_drag.as_mut() {
+        drag.target = Some(reference);
+    }
+    Some(reference)
+}
+
+fn install_pane_drop_target(ctx: &Window) {
+    let drop = gtk::DropTarget::new(PaneDrag::static_type(), gtk::gdk::DragAction::MOVE);
+    drop.set_preload(true);
+    drop.connect_enter({
+        let target = ctx.handle();
+        move |_, x, y| {
+            if preview_pane_drop(&target, x, y).is_some() {
+                gtk::gdk::DragAction::MOVE
+            } else {
+                gtk::gdk::DragAction::empty()
+            }
+        }
+    });
+    drop.connect_motion({
+        let target = ctx.handle();
+        move |_, x, y| {
+            if preview_pane_drop(&target, x, y).is_some() {
+                gtk::gdk::DragAction::MOVE
+            } else {
+                gtk::gdk::DragAction::empty()
+            }
+        }
+    });
+    drop.connect_leave({
+        let target = ctx.handle();
+        move |_| {
+            clear_pane_drop_indicator(&target);
+            if let Some(drag) = target.state.borrow_mut().pane_drag.as_mut() {
+                drag.target = None;
+            }
+        }
+    });
+    drop.connect_drop({
+        let target = ctx.handle();
+        move |_, value, x, y| {
+            let Ok(payload) = value.get::<PaneDrag>() else {
+                finish_pane_drag(&target, true);
+                return false;
+            };
+            let Some(destination) = preview_pane_drop(&target, x, y) else {
+                finish_pane_drag(&target, true);
+                return false;
+            };
+            let prepared = {
+                let state = target.state.borrow();
+                state
+                    .pane_drag
+                    .as_ref()
+                    .filter(|drag| drag.accepts(&payload) && drag.target == Some(destination))
+                    .and_then(|drag| {
+                        pane_drop_orientation(
+                            &state.workspaces,
+                            destination,
+                            (target.pane_area.width(), target.pane_area.height()),
+                        )
+                        .map(|orientation| (drag.source, drag.pane, orientation))
+                    })
+            };
+            let Some((source, pane, orientation)) = prepared else {
+                finish_pane_drag(&target, true);
+                return false;
+            };
+            let movement = {
+                let mut state = target.state.borrow_mut();
+                // The drop is committed now; on_drag_end must not treat this as
+                // a cancelled gesture and flush a second rebuild.
+                state.pane_drag = None;
+                state
+                    .workspaces
+                    .move_pane_between(source, destination, pane, orientation)
+            };
+            let Some(movement) = movement else {
+                finish_pane_drag(&target, true);
+                return false;
+            };
+            clear_pane_drop_indicator(&target);
+            if movement.source_closed {
+                // Summary request clocks are keyed by workspace index, and the
+                // closed source shifts every later index; stale clocks would
+                // delay the summary of whichever workspace took its place.
+                target.summary_requested.borrow_mut().clear();
+                prune_panes(&target);
+            } else {
+                update_plugin_context(&mut target.state.borrow_mut());
+            }
+            let refresh = target.handle();
+            // GTK still owns the source pane's header inside this signal. The
+            // model has moved, but rebuilding the pane area now would destroy
+            // the widget GTK is finishing with.
+            glib::idle_add_local_once(move || {
+                update_plugin_context(&mut refresh.state.borrow_mut());
+                rebuild_sidebar(&refresh, true);
+                rebuild_panes(&refresh);
+                apply_focus(&refresh);
+                refresh_slots(&refresh);
+                let focused = refresh.handle();
+                glib::idle_add_local_once(move || apply_focus(&focused));
+            });
             true
         }
     });
@@ -2757,16 +3118,7 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                         crate::context_menu::Command::Zoom => toggle_zoom(&ctx),
                         crate::context_menu::Command::Close => close_pane(&ctx, id),
                         crate::context_menu::Command::OpenLink(uri) => {
-                            let launcher = gtk::UriLauncher::new(&uri);
-                            launcher.launch(
-                                Some(&ctx.window),
-                                None::<&gio::Cancellable>,
-                                move |result| {
-                                    if let Err(error) = result {
-                                        eprintln!("among: Could not open link: {error}");
-                                    }
-                                },
-                            );
+                            open_uri(&ctx.window, &uri);
                         }
                     }
                 }
@@ -2788,7 +3140,10 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
             move |pane: PaneId| {
                 let known = {
                     let mut borrowed = state.borrow_mut();
-                    if !borrowed.workspaces.active().panes().contains(&pane)
+                    // Only a rendered pane may take focus. A pane hidden behind an
+                    // expansion is detached from the window, but the rule must not
+                    // depend on the toolkit never delivering its focus event.
+                    if !borrowed.workspaces.active().visible_panes().contains(&pane)
                         || borrowed.workspaces.active().focused == pane
                     {
                         return;
@@ -2802,7 +3157,54 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                 }
             }
         })),
-        on_drag_begin: None,
+        on_drag_prepare: Some(Rc::new({
+            let state = ctx.state.clone();
+            move |pane: PaneId| {
+                let state = state.borrow();
+                pane_drag_allowed(
+                    state.session_ready,
+                    state.session_closing,
+                    state.exiting,
+                    state.renaming.is_some(),
+                ) && state.workspaces.active().panes().contains(&pane)
+            }
+        })),
+        on_drag_begin: Some(Rc::new({
+            let state = ctx.state.clone();
+            move |pane: PaneId| {
+                let drag = {
+                    let state = state.borrow();
+                    if !pane_drag_allowed(
+                        state.session_ready,
+                        state.session_closing,
+                        state.exiting,
+                        state.renaming.is_some(),
+                    ) {
+                        None
+                    } else {
+                        PaneDragState::new(
+                            &state.workspaces,
+                            state.workspace_order_revision,
+                            pane,
+                            state.sidebar_collapsed,
+                        )
+                    }
+                };
+                state.borrow_mut().pane_drag = drag;
+            }
+        })),
+        on_open_link: Some(Rc::new({
+            let ctx = ctx.handle();
+            move |id, uri| {
+                // The same liveness rule as the context menu: only a live,
+                // visible pane in a ready session that is not closing may
+                // launch. A press can still arrive while its pane is closing
+                // or after its process exited.
+                if menu_target_valid(&ctx, id) {
+                    open_uri(&ctx.window, &uri);
+                }
+            }
+        })),
         on_drag_end: Some(Rc::new({
             let refresh = ctx.handle();
             move || {
@@ -2812,6 +3214,8 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
                 for pane in state.panes.values() {
                     pane.clear_drop_indication();
                 }
+                drop(state);
+                finish_pane_drag(&refresh, true);
             }
         })),
         on_drop: Some(Rc::new({
@@ -3199,6 +3603,20 @@ fn run_action(ctx: &Window, action: Action) {
         Action::ToggleFullscreen => toggle_fullscreen(ctx),
         Action::ToggleZoom => toggle_zoom(ctx),
     }
+}
+
+/// Ask the desktop to open a URI, reporting a refused launch.
+///
+/// The context menu and the Ctrl+click gesture both come through here, so a
+/// failure reads the same way whichever asked for the target and there is one
+/// place that owns the asynchronous launcher call.
+fn open_uri(window: &adw::ApplicationWindow, uri: &str) {
+    let launcher = gtk::UriLauncher::new(uri);
+    launcher.launch(Some(window), None::<&gio::Cancellable>, move |result| {
+        if let Err(error) = result {
+            eprintln!("among: Could not open link: {error}");
+        }
+    });
 }
 
 fn menu_target_valid(ctx: &Window, id: PaneId) -> bool {
@@ -3999,6 +4417,13 @@ fn new_workspace(ctx: &Window) {
 }
 
 fn split_focused(ctx: &Window) {
+    // An expanded pane is the only pane on screen. Splitting it would create and
+    // focus a pane hidden behind the expansion, so the request waits until the
+    // layout is restored. Checking here also keeps a refused request from
+    // consuming a pane id.
+    if ctx.state.borrow().workspaces.active().is_zoomed() {
+        return;
+    }
     let focused = ctx.state.borrow().workspaces.active().focused;
     let new_id = ctx.state.borrow_mut().allocate();
     let Some(new_id) = new_id else {
@@ -4026,7 +4451,9 @@ fn split_focused(ctx: &Window) {
         .split_focused(width, height, new_id);
 
     if created.is_none() {
-        // Cannot happen: splitting always finds the focused pane.
+        // The model refuses a split while a pane is expanded; the guard above
+        // answers that request before an id is allocated. Reaching this branch
+        // means the tree could not find the focused pane.
         return;
     }
     rebuild(ctx);
@@ -4924,6 +5351,99 @@ mod tests {
             clocks,
             std::collections::BTreeMap::from([((1, "alpha".into()), 0), ((0, "beta".into()), 0),])
         );
+    }
+
+    #[test]
+    fn plugin_context_follows_a_moved_pane_without_touching_its_identity() {
+        use super::*;
+        let mut set = WorkspaceSet::new(Workspace::new("one".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("two".into(), PaneId(2), 1));
+        let source = set.workspaces()[0].reference;
+        let target = set.workspaces()[1].reference;
+        set.move_pane_between(source, target, PaneId(1), Orientation::Vertical)
+            .unwrap();
+        let indices = workspace_pane_indices(&set);
+        assert!(indices.contains(&(PaneId(1), 0)));
+        assert!(indices.contains(&(PaneId(2), 0)));
+        assert!(!indices.contains(&(PaneId(1), 1)));
+        assert_eq!(set.active_index(), 0);
+    }
+
+    #[test]
+    fn pane_drop_orientation_uses_the_destinations_last_pane() {
+        use super::*;
+        let mut set = WorkspaceSet::new(Workspace::new("one".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("two".into(), PaneId(2), 1));
+        let first = set.workspaces()[0].reference;
+        let second = set.workspaces()[1].reference;
+        assert_eq!(
+            pane_drop_orientation(&set, first, (1000, 500)),
+            Some(Orientation::Vertical)
+        );
+        assert_eq!(
+            pane_drop_orientation(&set, second, (500, 1000)),
+            Some(Orientation::Horizontal)
+        );
+        set.get_mut(0)
+            .unwrap()
+            .split_focused(600, 300, PaneId(3))
+            .unwrap();
+        // The last pane is the newly created one; in a side-by-side split it is
+        // narrow and tall even though the workspace is wide.
+        assert_eq!(
+            pane_drop_orientation(&set, first, (1000, 500)),
+            Some(Orientation::Horizontal)
+        );
+        assert_eq!(pane_drop_orientation(&set, 999, (1000, 500)), None);
+    }
+
+    #[test]
+    fn pane_drag_rejects_other_panes_stale_sources_exited_processes_and_blocked_interactions() {
+        use super::*;
+        let none = std::collections::HashMap::new();
+        let mut set = WorkspaceSet::new(Workspace::new("one".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("two".into(), PaneId(2), 1));
+        set.get_mut(0)
+            .unwrap()
+            .split_focused(600, 300, PaneId(3))
+            .unwrap();
+        let drag = PaneDragState::new(&set, 7, PaneId(3), false).unwrap();
+        assert!(drag.accepts(&PaneDrag { pane: 3 }));
+        assert!(!drag.accepts(&PaneDrag { pane: 1 }));
+        assert!(drag.valid(&set, 7, false, &none));
+        assert!(!drag.valid(&set, 7, true, &none));
+        assert!(!drag.valid(&set, 8, false, &none));
+        // The dragged pane's process exited but its deferred close has not run:
+        // the pane is still in the model, yet it must not be moved.
+        let exited = std::collections::HashMap::from([(PaneId(3), 0)]);
+        assert!(!drag.valid(&set, 7, false, &exited));
+        // Another pane exiting does not invalidate this gesture.
+        let other = std::collections::HashMap::from([(PaneId(1), 0)]);
+        assert!(drag.valid(&set, 7, false, &other));
+        assert!(PaneDragState::new(&set, 7, PaneId(99), false).is_none());
+        assert!(!pane_drag_allowed(false, false, false, false));
+        assert!(!pane_drag_allowed(true, true, false, false));
+        assert!(!pane_drag_allowed(true, false, true, false));
+        assert!(!pane_drag_allowed(true, false, false, true));
+        assert!(pane_drag_allowed(true, false, false, false));
+        let source = set.workspaces()[0].reference;
+        let target = set.workspaces()[1].reference;
+        set.move_pane_between(source, target, PaneId(3), Orientation::Vertical)
+            .unwrap();
+        assert!(!drag.valid(&set, 7, false, &none));
+
+        let mut set = WorkspaceSet::new(Workspace::new("one".into(), PaneId(1), 0));
+        set.push_active(Workspace::new("two".into(), PaneId(2), 1));
+        set.get_mut(0)
+            .unwrap()
+            .split_focused(600, 300, PaneId(3))
+            .unwrap();
+        let drag = PaneDragState::new(&set, 7, PaneId(3), false).unwrap();
+        set.get_mut(0).unwrap().close(PaneId(3)).unwrap();
+        assert!(!drag.valid(&set, 7, false, &none));
+        let drag = PaneDragState::new(&set, 8, PaneId(1), false).unwrap();
+        set.remove(0).unwrap();
+        assert!(!drag.valid(&set, 8, false, &none));
     }
 
     #[test]
