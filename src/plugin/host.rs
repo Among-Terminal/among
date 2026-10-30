@@ -23,6 +23,7 @@ mod managed_runtime;
 pub use managed_runtime::Configuration;
 mod overview;
 pub use overview::Overview;
+mod notification_backend;
 
 /// How long a plugin has to answer before it is treated as faulted.
 ///
@@ -91,6 +92,7 @@ struct PluginIo {
     /// Set once the plugin has announced a compatible version.
     handshake_done: bool,
     generation: String,
+    notification_live: Option<among::plugin_notifications::OriginLease>,
     package_version: Option<String>,
 }
 
@@ -135,6 +137,8 @@ pub struct PluginHost {
     starts_allowed: Rc<Cell<bool>>,
     admission: Admission,
     world: managed::World,
+    notifications: Option<Rc<std::cell::RefCell<among::plugin_notifications::Backend>>>,
+    pending_notification_registrations: BTreeSet<String>,
     workspace_revision: u64,
 }
 
@@ -158,6 +162,9 @@ pub struct PluginResult {
 
 fn stop_io(plugin: &mut PluginEntry) {
     if let Some(io) = plugin.io.as_ref() {
+        if let Some(live) = &io.notification_live {
+            live.revoke();
+        }
         io.process.stop();
     }
     plugin.inflight.clear();
@@ -170,6 +177,12 @@ fn stop_io(plugin: &mut PluginEntry) {
 impl Default for PluginHost {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for PluginHost {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -186,7 +199,14 @@ impl PluginHost {
     }
 
     pub fn with_admission(admission: Admission) -> Self {
-        Self {
+        Self::with_notification_backend(admission, None)
+    }
+
+    pub fn with_notification_backend(
+        admission: Admission,
+        notifications: Option<Rc<std::cell::RefCell<among::plugin_notifications::Backend>>>,
+    ) -> Self {
+        let mut host = Self {
             plugins: Vec::new(),
             last_rejections: Vec::new(),
             results: Vec::new(),
@@ -199,8 +219,16 @@ impl PluginHost {
                 session: glib::uuid_string_random().to_string(),
                 ..Default::default()
             },
+            notifications: None,
+            pending_notification_registrations: Default::default(),
             workspace_revision: 0,
-        }
+        };
+        host.notifications = notifications.filter(|backend| {
+            backend
+                .try_borrow_mut()
+                .is_ok_and(|mut backend| backend.bind(&host.world.session))
+        });
+        host
     }
 
     pub fn drain_invalidated_sources(&mut self) -> Vec<String> {
@@ -305,6 +333,7 @@ impl PluginHost {
                 local.and_then(|local| local.get("review")).cloned(),
             ));
             self.plugins[index].spec.enabled = desired;
+            self.declare_notification_channels(index);
             self.start_by_name(name);
         }
     }
@@ -365,6 +394,7 @@ impl PluginHost {
             self.invalidated_sources.insert(key.clone());
         }
         self.plugins[index].managed = Some(entry);
+        self.declare_notification_channels(index);
         self.plugins[index].observed = None;
         self.plugins[index].restart_at = None;
         self.plugins[index].restart_attempts = 0;
@@ -425,6 +455,7 @@ impl PluginHost {
             if let Some(index) = self.find(&key) {
                 self.plugins[index].removing = true;
                 self.plugins[index].removed = true;
+                self.declare_notification_channels(index);
             }
         }
         self.plugins
@@ -465,6 +496,7 @@ impl PluginHost {
             .terminals
             .sort_by_key(|terminal| terminal.pane);
         self.revoke_stale_targets();
+        self.reconcile_notifications();
         if previous.is_some()
             && previous
                 != self
@@ -589,6 +621,10 @@ impl PluginHost {
             return false;
         }
         if self.plugins[index].managed.is_some() {
+            if self.pending_notification_registrations.contains(&name) {
+                self.plugins[index].state = PluginState::Waiting;
+                return false;
+            }
             if self.plugins[index]
                 .managed
                 .as_ref()
@@ -679,6 +715,7 @@ impl PluginHost {
                     started: Instant::now(),
                     handshake_done: false,
                     generation: glib::uuid_string_random().to_string(),
+                    notification_live: None,
                     package_version: self.plugins[index]
                         .managed
                         .as_ref()
@@ -732,7 +769,12 @@ impl PluginHost {
     }
 
     fn stop_as(&mut self, index: usize, final_state: PluginState, reason: &str) {
+        self.revoke_notifications(index);
         stop_io(&mut self.plugins[index]);
+        if self.plugins[index].managed.is_some() {
+            self.invalidated_sources
+                .insert(self.plugins[index].spec.name.clone());
+        }
         let name = &self.plugins[index].spec.name;
         self.results.retain(|result| &result.plugin != name);
         self.notices.retain(|(source, _, _)| source != name);
@@ -849,6 +891,7 @@ impl PluginHost {
     /// [`PluginHost::faulted_sources`].
     pub fn poll(&mut self) {
         self.last_rejections.clear();
+        self.reconcile_notifications();
 
         let now = Instant::now();
         let count = self.plugins.len();
@@ -1001,6 +1044,7 @@ impl PluginHost {
             self.configure_if_due(index);
             self.enumerate_if_due(index);
         }
+        self.poll_notifications();
         self.plugins
             .retain(|plugin| !plugin.removed || plugin.io.is_some());
     }

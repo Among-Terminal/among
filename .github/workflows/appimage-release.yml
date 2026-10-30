@@ -7,6 +7,11 @@ name: AppImage candidates
 #   appimage-sources-<amd64|arm64>  Debian source packages of every bundled library
 on:
   workflow_dispatch:
+    inputs:
+      audio_context_drain_control:
+        description: Run only the matched producer command-boundary experiment (not package acceptance)
+        type: boolean
+        default: false
   workflow_call:
   pull_request:
 
@@ -15,6 +20,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ inputs.audio_context_drain_control != true }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -33,7 +39,7 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
       CARGO_HOME: /opt/among-cargo
       RUSTUP_HOME: /opt/among-rustup
-      CARGO_BUILD_JOBS: '2'
+      CARGO_BUILD_JOBS: '1'
       RUST_HOST: ${{ matrix.rust_host }}
       BUILD_ARCH: ${{ matrix.architecture }}
       REF_TYPE: ${{ github.ref_type }}
@@ -41,13 +47,18 @@ jobs:
     steps:
       - name: Install the Ubuntu 24.04 build image packages
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates curl file build-essential \
+            apt-get update
+            # Refresh base runtimes too: an old SONAME-compatible dependency can
+            # satisfy installation while its exact source has left the index.
+            apt-get upgrade -y --no-install-recommends
+            apt-get install -y --no-install-recommends git ca-certificates curl file build-essential \
             pkg-config libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev desktop-file-utils \
-            libglib2.0-bin librsvg2-common adwaita-icon-theme gsettings-desktop-schemas shared-mime-info
+              libglib2.0-bin librsvg2-common adwaita-icon-theme gsettings-desktop-schemas shared-mime-info \
+              libgtk-4-media-gstreamer gstreamer1.0-plugins-base gstreamer1.0-plugins-good
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install pinned Rust toolchain in the build container
         run: |
           base="https://static.rust-lang.org/rustup/archive/1.28.2/${RUST_HOST}"
@@ -61,6 +72,7 @@ jobs:
       - name: Build the application, plugins and tooling
         run: |
           cargo build --release --locked
+          cargo build --release --locked --example audio-probe --example audio-retirement-probe
           cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Name the candidate after the tag or the package version
@@ -102,11 +114,21 @@ jobs:
           tools/among-tools/target/release/among-tools collect-appimage-sources \
             "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.audit.json" appimage-sources
       - name: Bind the checker for the clean hosts
+        env:
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir appimage-checker
           cp tools/among-tools/target/release/among-tools appimage-checker/among-tools
+          source="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+            GIT_CONFIG_VALUE_0="$(pwd -P)" git rev-parse HEAD^{commit})"
+          test "$source" = "$EXPECTED_SOURCE"
+          tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-probe \
+            "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/audio
+          tools/among-tools/target/release/among-tools bind-audio-probe target/release/examples/audio-retirement-probe \
+            "appimage-candidate/among-$APPIMAGE_VERSION-$BUILD_ARCH.AppImage" "$source" "$BUILD_ARCH" appimage-checker/retirement
+          printf '%s\n' "$source" > appimage-checker/source-sha
           cd appimage-checker
-          sha256sum among-tools > SHA256SUMS
+          sha256sum among-tools audio/audio-probe audio/audio-receipt.json retirement/audio-probe retirement/audio-receipt.json source-sha > SHA256SUMS
       - name: Retain build logs after a failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -134,6 +156,130 @@ jobs:
           path: appimage-checker/
           if-no-files-found: error
           retention-days: 5
+
+  audio-context-drain-control:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.audio_context_drain_control == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CARGO_HOME: /opt/among-cargo
+      RUSTUP_HOME: /opt/among-rustup
+      CARGO_BUILD_JOBS: '1'
+      DEB_BUILD_OPTIONS: parallel=1
+    steps:
+      - name: Install container-only input verification tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates curl dpkg-dev patch build-essential pkg-config
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Install the pinned native Rust toolchain before fixture preflight
+        run: |
+          base=https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu
+          curl --fail --silent --show-error --location "$base/rustup-init" -o /tmp/rustup-init
+          curl --fail --silent --show-error --location "$base/rustup-init.sha256" -o /tmp/rustup-init.sha256
+          (cd /tmp && sha256sum --check rustup-init.sha256)
+          chmod 755 /tmp/rustup-init
+          /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.1
+          /opt/among-cargo/bin/rustup component add rustfmt --toolchain 1.98.1
+          echo '/opt/among-cargo/bin' >> "$GITHUB_PATH"
+      - name: Verify accessible source, exact fixture and native inputs before full builds
+        run: |
+          set -euo pipefail
+          mkdir audio-drain-inputs audio-drain-build audio-drain-evidence
+          mkdir audio-drain-build/baseline audio-drain-build/candidate
+          git -c safe.directory="$(pwd -P)" rev-parse HEAD > audio-drain-evidence/source-sha
+          test "$(cat audio-drain-evidence/source-sha)" = "$GITHUB_SHA"
+          cargo fmt --check
+          cargo fmt --check --manifest-path tools/among-tools/Cargo.toml
+          git -c safe.directory="$(pwd -P)" ls-files -z examples/audio-shipped-control.rs examples/audio-control-fixtures.rs examples/audio-drain-capture.rs examples/audio-effect-capture.rs tests/audio-context-drain tools/among-tools/examples/audio-drain-control.rs | xargs -0 sha256sum > audio-drain-evidence/control-sources.sha256
+          rustc --edition=2024 -D warnings examples/audio-control-fixtures.rs -o audio-drain-inputs/audio-control-fixtures
+          audio-drain-inputs/audio-control-fixtures "$PWD/audio-drain-fixtures"
+          for name in tone-eight.wav tone-recovery.wav; do
+            printf '%s  %s\n' 64bada62d3a4e674af1d4af818c9517ab51cfff7927422cff3ea6b0de82a9874 "audio-drain-fixtures/$name" | sha256sum --check
+            test "$(stat -c %s "audio-drain-fixtures/$name")" -eq 768044
+          done
+          sha256sum audio-drain-fixtures/*.wav > audio-drain-evidence/verified-fixtures.sha256
+          while read -r hash filename; do
+            curl --fail --silent --show-error --location "https://archive.ubuntu.com/ubuntu/pool/main/g/gst-plugins-good1.0/$filename" -o "audio-drain-inputs/$filename"
+            printf '%s  %s\n' "$hash" "audio-drain-inputs/$filename" | sha256sum --check
+          done < tests/audio-context-drain/source-inputs.sha256
+          apt-get install -y --no-install-recommends pulseaudio=1:16.1+dfsg1-2ubuntu10.1 pulseaudio-utils=1:16.1+dfsg1-2ubuntu10.1 libpulse0=1:16.1+dfsg1-2ubuntu10.1 libpulse-dev=1:16.1+dfsg1-2ubuntu10.1
+          printf '%s\n' '4d77c5d7d37a389a0a309101c73b79e596ecbfe3f42bb0e14ede71be1a96d48d  /usr/bin/pulseaudio' '00ab68a64ecbb5d6e0d4b5b35707a83a9040cdb373008e487176e49d184cf22f  /usr/lib/x86_64-linux-gnu/pulseaudio/libpulsecommon-16.1.so' | sha256sum --check > audio-drain-evidence/native-inputs-check.txt
+          apt-mark hold pulseaudio pulseaudio-utils libpulse0 libpulse-dev
+          dpkg-source -x audio-drain-inputs/gst-plugins-good1.0_1.24.2-1ubuntu1.8.dsc audio-drain-build/baseline/source
+          dpkg-source -x audio-drain-inputs/gst-plugins-good1.0_1.24.2-1ubuntu1.8.dsc audio-drain-build/candidate/source
+          patch --fuzz=0 --directory=audio-drain-build/candidate/source --strip=1 < tests/audio-context-drain/pulsesink-context-drain-candidate.patch
+          set +e
+          diff -ru audio-drain-build/baseline/source audio-drain-build/candidate/source > audio-drain-evidence/sole-third-party-change.diff
+          difference=$?
+          set -e
+          test "$difference" -eq 1
+      - name: Resolve matched native build dependencies in this CI container
+        run: |
+          apt-get build-dep -y ./audio-drain-build/baseline/source
+          apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtk-4-media-gstreamer=4.14.5+ds-0ubuntu0.10 gstreamer1.0-plugins-base gstreamer1.0-plugins-good xvfb xauth
+          dpkg-query -W > audio-drain-evidence/native-installed-packages.txt
+          cc --version > audio-drain-evidence/native-compiler.txt
+          sha256sum "$(readlink -f "$(command -v cc)")" > audio-drain-evidence/native-compiler.sha256
+          dpkg-buildflags > audio-drain-evidence/native-build-flags.txt
+          pkg-config --modversion gstreamer-1.0 gstreamer-base-1.0 gstreamer-audio-1.0 gstreamer-pbutils-1.0 libpulse > audio-drain-evidence/native-dependency-versions.txt
+          printf '%s\n' '4d77c5d7d37a389a0a309101c73b79e596ecbfe3f42bb0e14ede71be1a96d48d  /usr/bin/pulseaudio' '00ab68a64ecbb5d6e0d4b5b35707a83a9040cdb373008e487176e49d184cf22f  /usr/lib/x86_64-linux-gnu/pulseaudio/libpulsecommon-16.1.so' | sha256sum --check > audio-drain-evidence/native-inputs-after-dependencies.txt
+      - name: Build the current source-bound producer and Rust controls
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo build --release --locked --bin among --example audio-shipped-control --example audio-control-fixtures --example audio-effect-capture --example audio-drain-capture
+          cargo fmt --check --manifest-path tools/among-tools/Cargo.toml
+          cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example audio-drain-control
+          tools/among-tools/target/release/examples/audio-drain-control fixtures "$PWD/audio-drain-fixtures"
+          sha256sum audio-drain-fixtures/*.wav target/release/among target/release/examples/audio-shipped-control target/release/examples/audio-effect-capture target/release/examples/audio-drain-capture > audio-drain-evidence/actual-rust-inputs.sha256
+      - name: Preflight real native payload paths before matched native rebuilds
+        run: |
+          tools/among-tools/target/release/examples/audio-drain-control preflight "$PWD" "$PWD/audio-drain-inputs/native-preflight"
+          cp audio-drain-inputs/native-preflight/preflight-receipt.json audio-drain-evidence/native-payload-preflight.json
+      - name: Build the same distribution source baseline and one-patch candidate
+        run: |
+          set -euo pipefail
+          for build in baseline candidate; do
+            (cd "audio-drain-build/$build/source" && dpkg-buildpackage -b -uc -us -j1) > "audio-drain-evidence/$build-build.log" 2>&1
+            find "audio-drain-build/$build/source/debian" -type f -path '*/gstreamer-1.0/libgstpulseaudio.so' > "audio-drain-evidence/$build-modules.txt"
+            test -s "audio-drain-evidence/$build-modules.txt"
+          done
+      - name: Stage explicitly new matched experimental payloads
+        run: |
+          set -euo pipefail
+          for build in baseline candidate; do
+            module="$(find "audio-drain-build/$build/source/debian" -type f -path '*/gstreamer-1.0/libgstpulseaudio.so' ! -path '*/debian/tmp/*' -print)"
+            test -n "$module"
+            test "$(printf '%s\n' "$module" | wc -l)" -eq 1
+            printf '%s\n' "$module" > "audio-drain-evidence/$build-selected-module.txt"
+            sha256sum "$module" > "audio-drain-evidence/$build-module.sha256"
+            readelf -n "$module" > "audio-drain-evidence/$build-module-build-id.txt"
+          done
+          tools/among-tools/target/release/examples/audio-drain-control stage "$PWD/audio-drain-payloads" "$PWD" "$(cat audio-drain-evidence/baseline-selected-module.txt)" "$(cat audio-drain-evidence/candidate-selected-module.txt)"
+          cp audio-drain-payloads/control-scope.json audio-drain-evidence/payload-scope.json
+          useradd --create-home --shell /bin/bash among-audio
+          chown among-audio:among-audio audio-drain-evidence
+      - name: Execute each matched diagnostic and uninstrumented cell once
+        run: |
+          runuser -u among-audio -- tools/among-tools/target/release/examples/audio-drain-control run "$PWD" "$PWD/audio-drain-payloads" "$PWD/audio-drain-fixtures" "$PWD/audio-drain-evidence/captures"
+      - name: Retain exact controls and all raw failures without acceptance claims
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: audio-context-drain-control-amd64
+          path: audio-drain-evidence/
+          if-no-files-found: error
+          retention-days: 14
 
   checksums:
     needs: build
@@ -197,16 +343,23 @@ jobs:
       - name: Install display tools, FUSE and the host libraries AppImages expect
         run: |
           if command -v apt-get > /dev/null; then
+            # pulseaudio pulls in libgstreamer, whose package also installs
+            # native GStreamer plugins. The AppImage audio check refuses to run
+            # while such plugins are visible, since the payload could borrow
+            # them; only the plugin files are withheld.
+            printf 'path-exclude=/usr/lib/*/gstreamer-1.0/*.so\n' > /etc/dpkg/dpkg.cfg.d/among-no-native-gstreamer-plugins
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates \
               fuse3 xvfb xauth openbox dbus-x11 xdotool x11-utils procps imagemagick \
               libwayland-client0 libx11-6 libxcb1 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
-              libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core
+              libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core \
+              libgl1 libegl1 libgles2 libgbm1 libdrm2 libx11-xcb1 pulseaudio pulseaudio-utils patchelf
           else
             dnf install -y git ca-certificates fuse3 xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo \
               xwininfo openbox dbus-x11 xdotool procps-ng ImageMagick util-linux shadow-utils glibc-common \
               libwayland-client libX11 libxcb fontconfig freetype harfbuzz fribidi expat gmp libgpg-error \
-              libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts
+              libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts \
+              libglvnd-glx libglvnd-egl libglvnd-gles mesa-libgbm libdrm libX11-xcb pulseaudio pulseaudio-utils patchelf
           fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -228,6 +381,43 @@ jobs:
           chmod 755 appimage-checker/among-tools
           appimage-checker/among-tools ci-appimage-install . "$HOST" "$BUILD_ARCH" \
             appimage-candidate appimage-runtime-evidence
+      - name: Capture actual packaged backend output and missing-member failures
+        id: audio_capture
+        if: ${{ !cancelled() }}
+        env:
+          BUILD_ARCH: ${{ matrix.architecture }}
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(cat appimage-checker/source-sha)" = "$EXPECTED_SOURCE"
+          (cd appimage-checker && sha256sum --check SHA256SUMS)
+          chmod 755 appimage-checker/among-tools appimage-checker/audio/audio-probe
+          useradd --create-home --shell /bin/bash among-audio
+          mkdir audio-package-evidence
+          chown among-audio:among-audio audio-package-evidence
+          set -- appimage-candidate/*.AppImage
+          test "$#" -eq 1
+          runuser -u among-audio -- env RUNNER_ARCH="$RUNNER_ARCH" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            "$PWD/appimage-checker/among-tools" check-audio-package appimage "$PWD/$1" \
+            "$PWD/appimage-checker/audio" "$EXPECTED_SOURCE" "$BUILD_ARCH" "$PWD/audio-package-evidence/run"
+      - name: Stall native decoder construction and retirement without blocking GTK
+        if: ${{ !cancelled() && steps.audio_capture.outcome == 'success' }}
+        env:
+          BUILD_ARCH: ${{ matrix.architecture }}
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -- appimage-candidate/*.AppImage
+          test "$#" -eq 1
+          runuser -u among-audio -- "$PWD/appimage-checker/among-tools" check-audio-retirement \
+            "$PWD/audio-package-evidence/run" "$PWD/$1" "$PWD/appimage-checker/retirement" \
+            "$EXPECTED_SOURCE" "$BUILD_ARCH" "$PWD/audio-package-evidence/retirement"
+      - name: Retain audio capture and module maps even on failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: appimage-audio-${{ matrix.host }}-${{ matrix.architecture }}
+          path: audio-package-evidence/
+          if-no-files-found: error
+          retention-days: 14
       - name: Retain display check evidence after a failure
         # The job log names the failed check; its application log, helper
         # output and screenshots live only under the check root.

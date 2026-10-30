@@ -22,6 +22,9 @@ use crate::slots::{self, Scope, SlotStore};
 use crate::tree::{Node, Orientation, PaneId};
 use crate::workspace::{PaneAllocator, Workspace, WorkspaceSet};
 
+mod bell;
+mod notification_ui;
+
 /// How often the main loop pumps plugins and re-derives pane sizes.
 ///
 /// A single shared tick keeps GTK out of the hot path: plugin pipes are drained
@@ -39,6 +42,7 @@ const SLOT_MAX_CHARS: usize = 120;
 pub struct AppState {
     pub workspaces: WorkspaceSet,
     pub panes: std::collections::BTreeMap<PaneId, Pane>,
+    bells: Option<Rc<bell::Backend>>,
     /// Exit status of every process that has finished, per pane.
     ///
     /// Recorded rather than inferred, because a process that exited while its
@@ -231,6 +235,7 @@ impl AppState {
         Self {
             workspaces: WorkspaceSet::new(Workspace::new("project".into(), first, 0)),
             panes: std::collections::BTreeMap::new(),
+            bells: None,
             exited: std::collections::HashMap::new(),
             sidebar_collapsed: false,
             sidebar_width: None,
@@ -488,6 +493,22 @@ fn update_plugin_context(state: &mut AppState) {
         state.workspace_drag = None;
         state.pane_drag = None;
     }
+    if let Some(bells) = &state.bells {
+        bells.set_workspaces(
+            state
+                .workspaces
+                .workspaces()
+                .iter()
+                .flat_map(|workspace| {
+                    workspace
+                        .panes()
+                        .into_iter()
+                        .map(move |pane| (pane.0, workspace.reference))
+                })
+                .collect(),
+        );
+        bells.sync_provider_policies();
+    }
     state.plugins.reconcile_workspace_content(
         &mut state.store,
         &workspaces,
@@ -529,6 +550,7 @@ struct Window {
     /// Per-source clocks keep one accepted summary from suppressing a sibling.
     summary_requested: Rc<RefCell<std::collections::BTreeMap<(usize, String), u64>>>,
     collection_cursor: Rc<Cell<usize>>,
+    notification_renderer: Rc<RefCell<notification_ui::Renderer>>,
 }
 
 struct SplitWidget {
@@ -651,9 +673,31 @@ fn build_with_writer(
     let admission = application_plugins(app);
     let state = Rc::new(RefCell::new(AppState::new(admission.admission.clone())));
     admission.current.replace(Rc::downgrade(&state));
+    match bell::Backend::new(&window) {
+        Ok(backend) => {
+            let mut state = state.borrow_mut();
+            state.plugins = PluginHost::with_notification_backend(
+                admission.admission.clone(),
+                Some(backend.notification_backend()),
+            );
+            state.bells = Some(backend);
+        }
+        Err(_) => eprintln!("among: bell session identity exhausted; backend unavailable"),
+    }
     {
         let mut state = state.borrow_mut();
         state.settings.load(crate::settings::Document::Plugins);
+        if let Some(document) = state.settings.load(crate::settings::Document::General) {
+            if let Ok(preferences) =
+                among::notifications::preferences::Preferences::parse(&document)
+            {
+                if let Some(bells) = &state.bells {
+                    let source = preferences.sound.clone();
+                    bells.configure(preferences);
+                    bells.restore_sound(source);
+                }
+            }
+        }
         state.sidebar_width = state
             .settings
             .load(crate::settings::Document::Window)
@@ -838,6 +882,7 @@ fn build_with_writer(
         paneds: Rc::new(RefCell::new(Vec::new())),
         summary_requested: Rc::new(RefCell::new(std::collections::BTreeMap::new())),
         collection_cursor: Rc::new(Cell::new(0)),
+        notification_renderer: Rc::new(RefCell::new(notification_ui::Renderer::default())),
     };
 
     install_workspace_drop_target(&ctx);
@@ -889,16 +934,30 @@ fn build_with_writer(
             // overlap its predecessor, but unrelated identities may use free
             // slots even if one old group cannot yet be proven retired.
             state.borrow_mut().exiting = true;
+            if let Some(bells) = &state.borrow().bells {
+                bells.shutdown();
+            }
             state.borrow_mut().plugins.shutdown();
             // destroying the last window would otherwise end the process before
             // its detached supervisors could signal/reap the owned children.
             let hold = app.hold();
             let state = state.clone();
+            let retirement_started = std::time::Instant::now();
+            let reported_cleanup = Cell::new(false);
             glib::timeout_add_local(Duration::from_millis(20), move || {
                 let _keep_application_alive = &hold;
                 let mut state = state.borrow_mut();
                 state.plugins.poll();
-                if state.plugins.is_stopped() {
+                if let Some(bells) = &state.bells {
+                    bells.poll();
+                    if !bells.is_stopped() && retirement_started.elapsed() >= Duration::from_secs(15)
+                        && !reported_cleanup.replace(true) {
+                        eprintln!("among: command cleanup is not confirmed; application hold remains active. No retry, rollback or forced exit is implied.");
+                    }
+                }
+                if state.plugins.is_stopped()
+                    && state.bells.as_ref().is_none_or(|bells| bells.is_stopped())
+                {
                     glib::ControlFlow::Break
                 } else {
                     glib::ControlFlow::Continue
@@ -1142,6 +1201,22 @@ fn selfcheck(ctx: &Window, label: &str) {
     );
     eprintln!("among[{label}]: session_buttons={responses:?}");
     let state = ctx.state.borrow();
+    if let Some(bells) = &state.bells {
+        let focus = bells.focus();
+        let panes: Vec<_> = state
+            .panes
+            .keys()
+            .map(|id| (id.0, bells.attention(id.0)))
+            .collect();
+        let workspaces: Vec<_> = state
+            .workspaces
+            .workspaces()
+            .iter()
+            .map(|workspace| bells.aggregate(workspace.panes().into_iter().map(|id| id.0)))
+            .collect();
+        eprintln!("among[{label}]: bell_events={} bell_application_active={} bell_viewed={:?} bell_panes={panes:?} bell_workspaces={workspaces:?} bell_diagnostics={:?}",
+            bells.event_count(), focus.application_active, focus.viewed.map(|source| source.pane()), bells.diagnostics());
+    }
     // X11 pointer input is surface-relative, including the client-side shadow.
     let (surface_x, surface_y) = ctx.window.surface_transform();
     let toggle = find_with_class(ctx.header_bar.upcast_ref(), "sidebar-toggle")
@@ -2186,6 +2261,14 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
         stripe.add_css_class(&colour_class(row_plan.colour));
         content.append(&stripe);
 
+        let unread = gtk::Label::new(Some("!"));
+        unread.add_css_class("notification-unread");
+        unread.set_visible(false);
+        let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        badge.set_size_request(10, -1);
+        badge.append(&unread);
+        content.append(&badge);
+
         if collapsed {
             let icon = terminal_icon();
             content.append(&icon);
@@ -2212,7 +2295,13 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
             entry_click.connect_pressed({
                 let content = content.clone();
                 let target = ctx.handle();
-                move |gesture, presses, _, _| {
+                move |gesture, presses, x, y| {
+                    if gesture
+                        .widget()
+                        .is_some_and(|widget| crate::pane::button_at(&widget, x, y))
+                    {
+                        return;
+                    }
                     if presses < 2 {
                         // The first press of a sequence is the click that switches
                         // workspaces. Any press after it is a further click in the
@@ -2306,6 +2395,56 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
     let mut state = ctx.state.borrow_mut();
     state.sidebar_signature = signature;
     state.sidebar_shape = shape;
+}
+
+// attention changes in place, including during rename; rebuilding a row here
+// would cancel a pointer/key sequence and could falsely focus a terminal.
+fn present_attention(ctx: &Window) {
+    let state = ctx.state.borrow();
+    let Some(bells) = &state.bells else {
+        return;
+    };
+    let motion =
+        gtk::Settings::default().is_some_and(|settings| settings.is_gtk_enable_animations());
+    for (id, pane) in &state.panes {
+        pane.present_attention(bells.attention(id.0), motion);
+    }
+    for (index, workspace) in state.workspaces.workspaces().iter().enumerate() {
+        let Some(row) = ctx.workspace_list.row_at_index(index as i32) else {
+            continue;
+        };
+        let aggregate = bells.aggregate(workspace.panes().into_iter().map(|id| id.0));
+        let label = format!(
+            "{}, {} terminals, {} unread bells",
+            workspace.name,
+            workspace.panes().len(),
+            aggregate.unread_panes
+        );
+        row.update_property(&[gtk::accessible::Property::Label(&label)]);
+        row.set_tooltip_text(Some(&label));
+        fn update(widget: &gtk::Widget, unread: bool, pulse: bool) {
+            if widget.has_css_class("notification-unread") {
+                widget.set_visible(unread);
+            }
+            if widget.has_css_class("workspace-stripe") {
+                if pulse {
+                    widget.add_css_class("notification-pulse");
+                } else {
+                    widget.remove_css_class("notification-pulse");
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                update(&widget, unread, pulse);
+                child = widget.next_sibling();
+            }
+        }
+        update(
+            row.upcast_ref(),
+            aggregate.unread_panes != 0,
+            aggregate.pulsing && motion,
+        );
+    }
 }
 
 fn clear_workspace_drop_indicator(ctx: &Window) {
@@ -3430,6 +3569,9 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
         }
     };
     let mut state = ctx.state.borrow_mut();
+    if let Some(bells) = &state.bells {
+        bells.attach(id.0, pane.terminal());
+    }
     state.panes.insert(id, pane);
     broadcast_plugin_event(&mut state, EventKind::PaneOpened, id.0, None);
 }
@@ -3590,6 +3732,8 @@ fn refresh_slots(ctx: &Window) {
         }
     }
     let _ = &ctx.split_view;
+    drop(state);
+    notification_ui::refresh(ctx);
 }
 
 /// Install the shortcut controller.
@@ -3811,6 +3955,7 @@ fn open_preferences(ctx: &Window) {
     let bindings = Rc::new(RefCell::new(ctx.state.borrow().bindings.clone()));
 
     let preferences = prefs::PreferencesContext {
+        general: general_context(ctx),
         on_closed: Rc::new({
             let window = ctx.handle();
             move || {
@@ -3978,7 +4123,7 @@ fn open_preferences(ctx: &Window) {
                 if state.borrow().plugins.managed_details(name).is_some()
                     && state.borrow().plugins.access_review(name).is_err()
                 {
-                    review_managed_access(&window, name, parent.as_ref());
+                    review_managed_access(&window, name, parent.as_ref(), true);
                     return;
                 }
                 state.borrow_mut().plugins.enable(name);
@@ -4033,6 +4178,105 @@ fn open_preferences(ctx: &Window) {
     };
 
     prefs::present(&ctx.window, preferences);
+}
+
+fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
+    let backend = ctx.state.borrow().bells.clone()?;
+    Some(prefs::general::Context {
+        query: Rc::new({
+            let backend = backend.clone();
+            move || backend.preferences()
+        }),
+        edit: Rc::new({
+            let backend = backend.clone();
+            let ctx = ctx.handle();
+            move |edit| {
+                backend.edit(&edit).map_err(str::to_owned)?;
+                present_attention(&ctx);
+                Ok(persist_general(&ctx, edit))
+            }
+        }),
+        select: Rc::new({
+            let backend = backend.clone();
+            let ctx = ctx.handle();
+            move |source, finished| {
+                let ctx = ctx.handle();
+                let accepted = source.clone();
+                backend.select_sound(
+                    source,
+                    Box::new(move |result| {
+                        finished(result.map(|()| {
+                            persist_general(
+                                &ctx,
+                                among::notifications::preferences::Edit::Sound(accepted),
+                            )
+                        }));
+                    }),
+                );
+            }
+        }),
+        preview: Rc::new({
+            let backend = backend.clone();
+            move || backend.preview()
+        }),
+        cancel_audio: Rc::new({
+            let backend = backend.clone();
+            move || backend.cancel_audio()
+        }),
+        audio_state: Rc::new({
+            let backend = backend.clone();
+            move || backend.audio_state()
+        }),
+        providers: Rc::new({
+            let backend = backend.clone();
+            move || backend.provider_inventory()
+        }),
+        roles: Rc::new({
+            let state = ctx.state.clone();
+            move || {
+                let state = state.borrow();
+                state
+                    .plugins
+                    .overview()
+                    .into_iter()
+                    .filter(|entry| {
+                        state
+                            .plugins
+                            .managed_details(&entry.key)
+                            .is_some_and(|(entry, _)| {
+                                entry.inspected.as_ref().is_ok_and(|inspected| {
+                                    inspected
+                                        .manifest
+                                        .required_features
+                                        .iter()
+                                        .chain(&inspected.manifest.optional_features)
+                                        .any(|feature| prefs::notification_role::is_role(feature))
+                                })
+                            })
+                    })
+                    .collect()
+            }
+        }),
+        review_role: Rc::new({
+            let window = ctx.handle();
+            move |name, parent| review_managed_access(&window, name, parent.as_ref(), false)
+        }),
+        status: Rc::new(move || (backend.audio_status(), backend.command_status())),
+    })
+}
+
+fn persist_general(
+    ctx: &Window,
+    edit: among::notifications::preferences::Edit,
+) -> crate::settings::Durability {
+    let result = ctx.state.borrow_mut().settings.general_changed(edit);
+    let durability = match &result {
+        Ok(()) => crate::settings::Durability::Durable,
+        Err(error) if error.replaced => crate::settings::Durability::Uncertain,
+        Err(_) => crate::settings::Durability::SessionOnly,
+    };
+    report_settings_save(ctx, result);
+    durability
 }
 
 fn installation_observer(ctx: &Window) -> Rc<dyn Fn()> {
@@ -4251,7 +4495,7 @@ fn confirm_managed_restart(
     dialog.present(Some(&parent));
 }
 
-fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>) {
+fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>, enable: bool) {
     let Some((entry, _)) = ctx.state.borrow().plugins.managed_details(name) else {
         return;
     };
@@ -4262,15 +4506,81 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
         .body("This executable runs as your user, not in an OS sandbox. These controls limit only data and actions supplied by Among. Required access must be accepted; optional access starts off.").build();
     dialog.add_response("cancel", "Cancel");
     dialog.set_close_response("cancel");
+    dialog.set_default_response(Some("cancel"));
+    let busy = ctx
+        .state
+        .borrow()
+        .plugins
+        .overview()
+        .into_iter()
+        .find(|entry| entry.key == name)
+        .filter(|entry| {
+            entry.enabled
+                || matches!(
+                    entry.state,
+                    crate::plugin::host::PluginState::Starting
+                        | crate::plugin::host::PluginState::Running
+                        | crate::plugin::host::PluginState::Stopping { .. }
+                )
+        });
+    if let Some(busy) = busy {
+        dialog.set_body("Stop this plugin before changing its reviewed access. This revokes its current notification authority and disables automatic restart. After retirement, open Review role / access again. Channels and other plugins are not changed.");
+        if busy.enabled {
+            dialog.add_response("stop", "Stop and disable plugin");
+            dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+            let window = ctx.handle();
+            let key = name.to_string();
+            let receipt = entry.receipt.clone();
+            let parent = parent.downgrade();
+            dialog.connect_response(None, move |_, response| {
+                if response != "stop"
+                    || window.state.borrow().exiting
+                    || !parent.upgrade().is_some_and(|parent| parent.is_visible())
+                    || !window
+                        .state
+                        .borrow()
+                        .plugins
+                        .managed_details(&key)
+                        .is_some_and(|(entry, _)| entry.receipt == receipt)
+                {
+                    return;
+                }
+                let mut state = window.state.borrow_mut();
+                state.plugins.disable(&key);
+                let changed = state.store.remove_source(&key);
+                let result = state.settings.managed_enable_changed(
+                    &key,
+                    false,
+                    receipt.installation.as_deref(),
+                );
+                drop(state);
+                report_settings_save(&window, result);
+                if changed {
+                    refresh_slots(&window);
+                    rebuild_sidebar(&window, false);
+                }
+            });
+        }
+        dialog.present(Some(&parent));
+        return;
+    }
     let Ok(inspected) = entry.inspected.as_ref() else {
         dialog.set_body("The selected package is invalid or unavailable. No code will run.");
         dialog.present(Some(&parent));
         return;
     };
+    let supported = ctx.state.borrow().plugins.supported_features();
+    if let Err(problem) = crate::plugin::managed::required_notification_role(&inspected.manifest)
+        .map_err(crate::plugin::managed::NotificationRoleConflict::problem)
+    {
+        dialog.set_body(&problem.to_string());
+        dialog.present(Some(&parent));
+        return;
+    }
     if let Err(problem) = inspected.manifest.compatibility(
         crate::plugin::managed::MAJOR,
         crate::plugin::managed::MINOR,
-        crate::plugin::managed::FEATURES,
+        &supported,
     ) {
         dialog.set_body(&problem.to_string());
         dialog.present(Some(&parent));
@@ -4285,7 +4595,33 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
     )));
     origin.set_wrap(true);
     controls.append(&origin);
+    let reviewed = ctx.state.borrow().plugins.reviewed_notification_role(name);
+    let admitted = ctx.state.borrow().plugins.admitted_notification_role(name);
+    let status = gtk::Label::new(Some(&format!("Reviewed role: {} · Admitted role: {}. Stop the current generation before changing access; no restart is automatic.",
+        reviewed.as_ref().map(|role| prefs::notification_role::label(*role)).unwrap_or("Not accepted"),
+        prefs::notification_role::label(admitted))));
+    status.set_wrap(true);
+    status.set_widget_name("notification-reviewed-admitted-role");
+    controls.append(&status);
+    let role_picker =
+        match prefs::notification_role::Picker::new(&inspected.manifest, reviewed, &supported) {
+            Ok(picker) => picker,
+            Err(problem) => {
+                dialog.set_body(&problem.to_string());
+                dialog.present(Some(&parent));
+                return;
+            }
+        };
+    if let Some(picker) = &role_picker {
+        controls.append(&picker.group);
+    }
     let mut features = Vec::new();
+    let retained = ctx
+        .state
+        .borrow()
+        .plugins
+        .reviewed_features(name)
+        .unwrap_or_default();
     for (feature, required) in inspected
         .manifest
         .required_features
@@ -4299,7 +4635,10 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
                 .map(|feature| (feature, false)),
         )
     {
-        let available = crate::plugin::managed::FEATURES.contains(&feature.as_str());
+        if prefs::notification_role::is_role(feature) {
+            continue;
+        }
+        let available = supported.contains(&feature.as_str());
         let label = if required {
             format!("{feature} (required)")
         } else if available {
@@ -4308,13 +4647,32 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
             format!("{feature} (unavailable)")
         };
         let control = gtk::CheckButton::with_label(&label);
-        control.set_active(required);
+        control.set_active(required || (available && retained.contains(feature)));
         control.set_sensitive(available && !required);
         controls.append(&control);
         features.push((feature.clone(), control));
     }
     dialog.set_extra_child(Some(&controls));
-    dialog.add_response("enable", "Accept and enable");
+    dialog.add_response(
+        "enable",
+        if enable {
+            "Accept and enable"
+        } else {
+            "Save reviewed access"
+        },
+    );
+    if let Some(picker) = &role_picker {
+        dialog.set_response_enabled("enable", picker.selected().is_ok());
+        picker.row.connect_selected_notify({
+            let dialog = dialog.downgrade();
+            let picker = Rc::downgrade(picker);
+            move |_| {
+                if let (Some(dialog), Some(picker)) = (dialog.upgrade(), picker.upgrade()) {
+                    dialog.set_response_enabled("enable", picker.selected().is_ok());
+                }
+            }
+        });
+    }
     dialog.set_response_appearance("enable", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("cancel"));
     let window = ctx.handle();
@@ -4340,22 +4698,29 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
                     && current.receipt == entry.receipt
             });
         let Some((current, _)) = current else { return };
-        let review = current.receipt.review(
-            features
-                .iter()
-                .filter(|(_, control)| control.is_active())
-                .map(|(feature, _)| feature.clone())
-                .collect::<Vec<_>>(),
-        );
+        let mut selected: Vec<_> = features
+            .iter()
+            .filter(|(_, control)| control.is_active())
+            .map(|(feature, _)| feature.clone())
+            .collect();
+        if let Some(picker) = &role_picker {
+            match picker.selected() {
+                Ok(Some(role)) => selected.push(prefs::notification_role::feature(role).into()),
+                Ok(None) => {}
+                Err(_) => return,
+            }
+        }
+        let review = current.receipt.review(selected);
         let valid = current
             .inspected
             .as_ref()
             .map_err(|problem| *problem)
             .and_then(|inspected| {
-                crate::plugin::managed::granted_features(
+                crate::plugin::managed::granted_features_with(
                     &inspected.manifest,
                     &current.receipt,
                     Some(&serde_json::json!({"review":review})),
+                    &window.state.borrow().plugins.supported_features(),
                 )
             })
             .and_then(|_| {
@@ -4374,15 +4739,33 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>)
             explanation.present(Some(&parent));
             return;
         }
-        let result = window
-            .state
-            .borrow_mut()
-            .settings
-            .managed_review_for_installation(&key, review, current.receipt.installation.as_deref());
+        let result = if enable {
+            window
+                .state
+                .borrow_mut()
+                .settings
+                .managed_review_for_installation(
+                    &key,
+                    review,
+                    current.receipt.installation.as_deref(),
+                )
+        } else {
+            window
+                .state
+                .borrow_mut()
+                .settings
+                .managed_access_review_for_installation(
+                    &key,
+                    review,
+                    current.receipt.installation.as_deref(),
+                )
+        };
         // consent was accepted by the stopped runtime above; a persistence
         // failure is reported separately without revoking this session's consent.
         report_settings_save(&window, result);
-        window.state.borrow_mut().plugins.enable(&key);
+        if enable {
+            window.state.borrow_mut().plugins.enable(&key);
+        }
     });
     dialog.present(Some(&parent));
 }
@@ -4645,6 +5028,9 @@ fn prune_panes(ctx: &Window) {
             .collect()
     };
     let mut state = ctx.state.borrow_mut();
+    if let Some(bells) = &state.bells {
+        bells.retain(&live);
+    }
     state.panes.retain(|id, _| live.contains(id));
     update_plugin_context(&mut state);
     let count = state.workspaces.len();
@@ -5182,6 +5568,7 @@ impl Window {
             paneds: self.paneds.clone(),
             summary_requested: self.summary_requested.clone(),
             collection_cursor: self.collection_cursor.clone(),
+            notification_renderer: self.notification_renderer.clone(),
         }
     }
 
@@ -5205,8 +5592,15 @@ impl Window {
         if self.state.borrow().exiting {
             return;
         }
+        if let Some(bells) = &self.state.borrow().bells {
+            bells.observe_focus();
+        }
+        present_attention(self);
         apply_sidebar_width(self);
         if !self.state.borrow().session_ready || self.state.borrow().session_closing {
+            if let Some(bells) = self.state.borrow().bells.clone() {
+                bells.poll();
+            }
             return;
         }
         // 1. Read whatever plugins wrote, then ask for whatever is missing.
@@ -5217,6 +5611,10 @@ impl Window {
             update_plugin_context(&mut state);
             state.plugins.poll();
         }
+        if let Some(bells) = self.state.borrow().bells.clone() {
+            bells.poll();
+        }
+        notification_ui::refresh(self);
         log_plugin_notices(self);
         collect_plugin_results(self);
         request_plugin_status(self);
@@ -5439,6 +5837,11 @@ fn reconcile_panes(ctx: &Window) {
 
 #[cfg(test)]
 mod plugin_tests;
+
+#[cfg(test)]
+mod bell_tests;
+#[cfg(test)]
+mod notification_ui_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6060,6 +6463,10 @@ mod tests {
             .into_iter()
             .find_map(|widget| widget.downcast::<adw::PreferencesWindow>().ok())
             .unwrap();
+        // Preferences opens on General; shortcut rows on the hidden Keyboard
+        // page take focus but never receive the typed key sequence.
+        prefs.set_visible_page_name("keyboard");
+        pump();
         focus(&prefs);
         for (action, sequence) in [
             (Action::SplitPane, "F9"),
@@ -6288,7 +6695,10 @@ mod tests {
             .into_iter()
             .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
             .unwrap();
+        assert_eq!(prefs.visible_page_name().as_deref(), Some("general"));
         if phase.starts_with("invalid-") {
+            prefs.set_visible_page_name("keyboard");
+            pump();
             let broken_path = if phase == "invalid-plugins" {
                 path.clone()
             } else {
@@ -6840,6 +7250,7 @@ mod tests {
         prefs::present(
             &window,
             prefs::PreferencesContext {
+                general: None,
                 installations_changed: Rc::new(|| {}),
                 on_closed: Rc::new(|| {}),
                 storage_status: gtk::StringList::new(&[""]),
@@ -6880,7 +7291,12 @@ mod tests {
         );
         pump();
         let prefs = editor();
-        let switch = descendants(prefs.upcast_ref())
+        let plugin_row = descendants(prefs.upcast_ref())
+            .into_iter()
+            .filter_map(|node| node.downcast::<adw::ActionRow>().ok())
+            .find(|row| row.title() == "test-plugin")
+            .expect("identity-scoped test plugin row");
+        let switch = descendants(plugin_row.upcast_ref())
             .into_iter()
             .find_map(|node| node.downcast::<gtk::Switch>().ok())
             .expect("plugin switch");

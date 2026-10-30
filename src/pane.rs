@@ -134,6 +134,8 @@ struct Container {
     frame: gtk::Box,
     /// The header strip, which is also the drag handle.
     header: gtk::Box,
+    marker: gtk::Box,
+    unread: gtk::Label,
     /// Where plugin content for this pane's header goes, beside the title.
     header_slot: gtk::Box,
     /// The terminal's own title, as reported through OSC escapes.
@@ -142,7 +144,7 @@ struct Container {
     footer: gtk::Box,
 }
 
-fn button_at(widget: &gtk::Widget, x: f64, y: f64) -> bool {
+pub(crate) fn button_at(widget: &gtk::Widget, x: f64, y: f64) -> bool {
     widget
         .pick(x, y, gtk::PickFlags::DEFAULT)
         .is_some_and(|target| {
@@ -240,7 +242,11 @@ impl Pane {
         // The header is always present: it carries the terminal's title, which
         // is how programs announce what they are doing, and it is the handle a
         // pane is dragged by.
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .accessible_role(gtk::AccessibleRole::Group)
+            .build();
         header.add_css_class("pane-header");
         // The workspace's colour, as a marker on the header. It is a stripe
         // rather than a tint because terminal programs use colour to mean
@@ -253,6 +259,15 @@ impl Pane {
             colour % crate::workspace::PALETTE_SIZE
         ));
         header.append(&marker);
+        let unread = gtk::Label::new(Some("!"));
+        unread.add_css_class("notification-unread");
+        unread.set_tooltip_text(Some("Unread terminal bell"));
+        unread.update_property(&[gtk::accessible::Property::Label("Unread terminal bell")]);
+        unread.set_visible(false);
+        let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        badge.set_size_request(10, -1);
+        badge.append(&unread);
+        header.append(&badge);
         let identity = gtk::Label::new(Some(&format!("#{}", self.id.0)));
         identity.add_css_class("pane-number");
         header.append(&identity);
@@ -313,6 +328,8 @@ impl Pane {
         *self.container.borrow_mut() = Some(Container {
             frame: frame.clone(),
             header,
+            marker,
+            unread,
             header_slot,
             title,
             footer,
@@ -348,6 +365,35 @@ impl Pane {
         } else {
             container.header.remove_css_class("title-changed");
         }
+    }
+
+    pub(crate) fn present_attention(
+        &self,
+        attention: among::notifications::Attention,
+        motion: bool,
+    ) {
+        let container = self.container.borrow();
+        let Some(container) = container.as_ref() else {
+            return;
+        };
+        container.unread.set_visible(attention.unread);
+        if attention.pulsing && motion {
+            container.marker.add_css_class("notification-pulse");
+        } else {
+            container.marker.remove_css_class("notification-pulse");
+        }
+        let label = format!(
+            "Terminal {}{}",
+            self.id.0,
+            if attention.unread {
+                ", unread bell"
+            } else {
+                ""
+            }
+        );
+        container
+            .header
+            .update_property(&[gtk::accessible::Property::Label(&label)]);
     }
 
     fn wire(&self, signals: PaneSignals) {
@@ -846,6 +892,12 @@ impl Pane {
     }
 
     /// Refresh both slot areas from the store.
+    pub(crate) fn notification_slots(&self) -> Option<(gtk::Box, gtk::Box)> {
+        let container = self.container.borrow();
+        let container = container.as_ref()?;
+        Some((container.header_slot.clone(), container.footer.clone()))
+    }
+
     pub fn refresh_slots(&self, store: &SlotStore) {
         let container = self.container.borrow();
         let Some(container) = container.as_ref() else {

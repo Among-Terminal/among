@@ -8,7 +8,7 @@ Rules-Requires-Root: no
 
 Package: among-terminal
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.5), libvte-2.91-gtk4-0 (>= 0.76), librsvg2-common
+Depends: ${shlibs:Depends}, ${misc:Depends}, libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.5), libvte-2.91-gtk4-0 (>= 0.76), librsvg2-common, libgtk-4-media-gstreamer, gstreamer1.0-plugins-good
 Description: GNOME terminal multiplexer with project workspaces
  Organize host terminals in resizable panes and persistent project workspaces.
  Optional external-process plugins provide clock, resource and directory status.

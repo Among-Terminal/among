@@ -142,6 +142,63 @@ pub(crate) fn managed_fixture(
     (metadata, bytes)
 }
 
+pub(crate) fn notification_fixture(version: &str) -> (Value, Vec<u8>) {
+    let (mut metadata, _) = fixture();
+    metadata["manifest"]["version"] = json!(version);
+    metadata["manifest"]["required_features"] = json!(["status", "settings"]);
+    metadata["manifest"]["optional_features"] = json!([
+        "notifications.ui",
+        "notifications.deliver",
+        "context.terminals"
+    ]);
+    metadata["manifest"]["delivery_channels"] = json!([
+        {"id":"first","name":"Lifecycle provider","description":"Retained independent policy"},
+        {"id":"second","name":"Removed after update","description":"Static declaration withdrawal"}
+    ]);
+    if version != "1.0" {
+        metadata["manifest"]["delivery_channels"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+    }
+    metadata["artifacts"][0]["runtime"] = json!({"kind":"native","libc":"glibc","minimum":"2.35"});
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/notification-plugin");
+    let files = [
+        (
+            "among-plugin.json",
+            metadata["manifest"].to_string().into_bytes(),
+            false,
+        ),
+        ("bin/plugin", std::fs::read(binary).unwrap(), true),
+    ];
+    metadata["manifest_sha256"] = json!(inventory::checksum(&files[0].1).unwrap());
+    let mut archive = Vec::new();
+    let mut members = Vec::new();
+    for (path, bytes, executable) in files {
+        members.push(json!({"path":path,"size":bytes.len(),"sha256":inventory::checksum(&bytes).unwrap(),"executable":executable}));
+        if !archive.is_empty() {
+            archive.truncate(archive.len() - 1024);
+        }
+        archive.extend(raw(
+            path,
+            b'0',
+            if executable { 0o755 } else { 0o644 },
+            &bytes,
+        ));
+    }
+    let archive = compressed(&archive);
+    metadata["artifacts"][0]["members"] = json!(members);
+    metadata["artifacts"][0]["size"] = json!(archive.len());
+    metadata["artifacts"][0]["sha256"] = json!(inventory::checksum(&archive).unwrap());
+    (metadata, archive)
+}
+
 pub(crate) fn extract_bytes(
     metadata: &Value,
     bytes: &[u8],
