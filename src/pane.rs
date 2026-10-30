@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::gdk;
+use gtk::glib;
 use gtk::glib::prelude::ToValue;
 use gtk::prelude::*;
 use vte::prelude::*;
@@ -20,9 +21,22 @@ use crate::tree::PaneId;
 /// How much text a slot shows before eliding.
 const PANE_SLOT_MAX_CHARS: usize = 80;
 
+/// The payload of a pane-header drag.
+///
+/// A dedicated boxed type keeps a pane drag structurally distinct from
+/// workspace reordering, terminal text and file drops. Without it an arbitrary
+/// `u64` could be accepted as a pane id by any drop target that happens to
+/// listen for numbers.
+#[derive(Clone, Debug, glib::Boxed)]
+#[boxed_type(name = "AmongPaneDrag")]
+pub struct PaneDrag {
+    pub pane: u64,
+}
+
 type CwdCallback = Box<dyn Fn(PaneId, Option<String>)>;
 type FocusCallback = Rc<dyn Fn(PaneId)>;
 type DropCallback = Rc<dyn Fn(PaneId, PaneId, crate::tree::DropSide)>;
+type DragPrepareCallback = Rc<dyn Fn(PaneId) -> bool>;
 
 /// Callbacks the host uses to observe a pane's terminal.
 pub struct PaneSignals {
@@ -31,6 +45,11 @@ pub struct PaneSignals {
     pub on_title: Option<Box<dyn Fn(PaneId, String)>>,
     pub on_exit: Option<Box<dyn Fn(PaneId, i32)>>,
     pub on_cwd: Option<CwdCallback>,
+    /// Whether a pane drag may start at all.
+    ///
+    /// The gesture is refused before GTK creates its native drag, so a sidebar
+    /// rename or shutdown cannot leave a half-live drag behind.
+    pub on_drag_prepare: Option<DragPrepareCallback>,
     /// A Ctrl+click asked for a link target to be opened.
     ///
     /// The pane owns the gesture but not the window the launch would be
@@ -103,6 +122,7 @@ pub struct Pane {
 
 /// The drag handlers a pane applies to each container it builds.
 struct DragHandlers {
+    on_drag_prepare: Option<DragPrepareCallback>,
     on_drag_begin: Option<Rc<dyn Fn(PaneId)>>,
     on_drag_end: Option<Rc<dyn Fn()>>,
     on_drop: Option<DropCallback>,
@@ -373,11 +393,13 @@ impl Pane {
             on_title,
             on_exit,
             on_cwd: _,
+            on_drag_prepare,
             on_drag_begin,
             on_drag_end,
             on_drop,
         } = signals;
         *self.drag.borrow_mut() = Some(DragHandlers {
+            on_drag_prepare,
             on_drag_begin,
             on_drag_end,
             on_drop,
@@ -540,6 +562,7 @@ impl Pane {
         let source = gtk::DragSource::new();
         source.set_actions(gdk::DragAction::MOVE);
         let id = self.id;
+        let prepare = handlers.on_drag_prepare.clone();
         source.connect_prepare(move |source, x, y| {
             if source
                 .widget()
@@ -547,9 +570,13 @@ impl Pane {
             {
                 return None;
             }
-            // The dragged pane's identity travels with the drag, so the target
-            // does not need the application to remember what is in flight.
-            let value = (id.0).to_value();
+            if prepare.as_ref().is_some_and(|allowed| !allowed(id)) {
+                return None;
+            }
+            // The pane's identity travels inside a pane-specific value, so a
+            // generic number or another application's payload cannot be
+            // mistaken for a pane move.
+            let value = PaneDrag { pane: id.0 }.to_value();
             Some(gdk::ContentProvider::for_value(&value))
         });
         if let Some(callback) = handlers.on_drag_begin.as_ref() {
@@ -560,9 +587,19 @@ impl Pane {
             let callback = callback.clone();
             source.connect_drag_end(move |_, _, _| callback());
         }
+        if let Some(callback) = handlers.on_drag_end.as_ref() {
+            let callback = callback.clone();
+            // The transaction is also ended on cancel, so it cannot outlive the
+            // source whichever of the two signals GTK delivers last; ending it
+            // twice is harmless.
+            source.connect_drag_cancel(move |_, _, _| {
+                callback();
+                false
+            });
+        }
         header.add_controller(source);
 
-        let target = gtk::DropTarget::new(gtk::glib::Type::U64, gdk::DragAction::MOVE);
+        let target = gtk::DropTarget::new(PaneDrag::static_type(), gdk::DragAction::MOVE);
         // The pending drop is shown on the pane itself, and the label is
         // removed as soon as the pointer leaves.
         let side = Rc::new(RefCell::new(None));
@@ -606,7 +643,7 @@ impl Pane {
             let side_for_drop = side.clone();
             target.connect_drop(move |_, value, x, y| {
                 apply_drop_side(&frame_for_drop, None, id);
-                let Ok(source_id) = value.get::<u64>() else {
+                let Ok(payload) = value.get::<PaneDrag>() else {
                     return false;
                 };
                 // The side is taken from the last motion when available, and
@@ -619,7 +656,7 @@ impl Pane {
                         frame_for_drop.height(),
                     )
                 });
-                callback(crate::tree::PaneId(source_id), id, side);
+                callback(crate::tree::PaneId(payload.pane), id, side);
                 true
             });
         }

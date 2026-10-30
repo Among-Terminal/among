@@ -597,6 +597,101 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_moved_between_workspaces_round_trips_with_its_directory() {
+        let mut first = Workspace::new("one".into(), PaneId(1), 0);
+        first.split_focused(800, 300, PaneId(2)).unwrap();
+        first.set_cwd(PaneId(2), Some("/moved/directory".into()));
+        let mut set = WorkspaceSet::new(first);
+        set.push_active(Workspace::new("two".into(), PaneId(10), 1));
+        let source = set.workspaces()[0].reference;
+        let target = set.workspaces()[1].reference;
+
+        let movement = set
+            .move_pane_between(source, target, PaneId(2), Orientation::Vertical)
+            .expect("the pane moves");
+        assert!(!movement.source_closed);
+
+        let snapshot = Snapshot::capture(&set, |id| {
+            set.workspaces()
+                .iter()
+                .find(|workspace| workspace.panes().contains(&id))
+                .and_then(|workspace| workspace.cwd_of(id).map(str::to_owned))
+        })
+        .expect("the moved session is capturable");
+        assert_eq!(snapshot.version, 1);
+        assert_eq!(snapshot.active, 1);
+        assert_eq!(
+            snapshot.workspaces[0].layout.restore().panes(),
+            vec![PaneId(1)]
+        );
+        assert_eq!(
+            snapshot.workspaces[1].layout.restore().panes(),
+            vec![PaneId(10), PaneId(2)]
+        );
+        assert_eq!(snapshot.workspaces[1].focused, 2);
+
+        let (restored, _) = Snapshot::parse(&serde_json::to_vec(&snapshot).unwrap())
+            .unwrap()
+            .restore()
+            .unwrap();
+        assert_eq!(restored.active_index(), 1);
+        assert_eq!(restored.active().name, "two");
+        assert_eq!(restored.active().focused, PaneId(2));
+        assert_eq!(
+            restored.workspaces()[1].cwd_of(PaneId(2)),
+            Some("/moved/directory")
+        );
+        assert_eq!(restored.workspaces()[0].panes(), vec![PaneId(1)]);
+    }
+
+    #[test]
+    fn a_move_that_empties_the_source_does_not_restore_an_empty_workspace() {
+        let mut first = Workspace::new("one".into(), PaneId(1), 0);
+        first.set_cwd(PaneId(1), Some("/from/one".into()));
+        let mut set = WorkspaceSet::new(first);
+        set.push_active(Workspace::new("two".into(), PaneId(10), 1));
+        let source = set.workspaces()[0].reference;
+        let target = set.workspaces()[1].reference;
+
+        let movement = set
+            .move_pane_between(source, target, PaneId(1), Orientation::Horizontal)
+            .expect("the pane moves");
+        assert!(movement.source_closed);
+        assert_eq!(movement.target, 0);
+
+        let snapshot = Snapshot::capture(&set, |id| {
+            set.workspaces()
+                .iter()
+                .find(|workspace| workspace.panes().contains(&id))
+                .and_then(|workspace| workspace.cwd_of(id).map(str::to_owned))
+        })
+        .expect("the moved session is capturable");
+        assert_eq!(snapshot.workspaces.len(), 1);
+        assert_eq!(snapshot.workspaces[0].name, "two");
+        assert_eq!(snapshot.workspaces[0].focused, 1);
+        assert_eq!(
+            snapshot.workspaces[0].layout.restore().panes(),
+            vec![PaneId(10), PaneId(1)]
+        );
+
+        let (restored, _) = Snapshot::parse(&serde_json::to_vec(&snapshot).unwrap())
+            .unwrap()
+            .restore()
+            .unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored.active().name, "two");
+        assert_eq!(restored.active().focused, PaneId(1));
+        assert_eq!(
+            restored.workspaces()[0].cwd_of(PaneId(1)),
+            Some("/from/one")
+        );
+        assert!(restored
+            .workspaces()
+            .iter()
+            .all(|workspace| workspace.name != "one"));
+    }
+
+    #[test]
     fn exhausted_identifiers_never_overflow_or_repeat() {
         let mut allocator = PaneAllocator::after(PaneId(u64::MAX - 1));
         assert_eq!(allocator.try_next(), Some(PaneId(u64::MAX)));

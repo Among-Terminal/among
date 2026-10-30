@@ -9,6 +9,42 @@ application's actual session file. Use the built tools executable's path in both
 positions, as with the other contributor checks. The check leaves logs and
 screenshots below `AMONG_CHECK_ROOT`; it never targets personal terminals.
 
+`among-tools ci-x11 among-tools check-pane-workspace-move <among-binary>` drives
+a pane header onto workspace entries in both sidebar presentations. It checks the
+destination indication, moved shell process, directory, scrollback, header colour,
+source closure, rejection and Escape cancellation, then relaunches from the
+application's checkpoint and verifies the inserted pane after Restore. A second
+window covers drops into and out of an expanded workspace and a dragged pane
+whose shell is killed during the drag.
+
+`among-tools ci-x11 among-tools check-pane-drag-guards <among-binary>
+<check-drag-source> <summary-plugin>` needs two prebuilt fixtures:
+`cargo build --release --locked --example check-drag-source` and
+`cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
+--example summary-plugin`. `check-drag-source` is a separate X11 client that
+drags terminal text, a file or a number in a private format onto a workspace
+entry; it runs only on a display the check owns. Over the entry no pane
+destination, pane drag or workspace reorder may be reported, and the release
+must leave every workspace unchanged. A private format that no drop target
+lists is never delivered to Among by GTK, so that case shows that the payload
+changes nothing rather than that a guard refused it. `summary-plugin` reports
+every workspace summary from `summary.txt` beside its executable; the check
+rewrites that file while a pane header is held over another entry and requires
+the shown destination and the old drawn summary to survive until the drop, and
+the new summary to be drawn after it. It repeats the refresh during a drag that
+is cancelled with Escape: the old summary must stay drawn while the drag lasts
+and the new one must appear after the cancel. A later plugin answer may be what
+draws it, so this case shows that the hold ends with the gesture, not which
+rebuild ends it. The drag source writes
+markers when its native drag begins and ends, and the check requires both, so a
+drag that never started cannot pass as a rejected one.
+
+A self-check line after the pane drag observations reports `rendered_summaries`
+(the first plugin summary label each sidebar row draws, as `row:text`) and
+`stored_summaries` (every summary text the slot store holds, as `index:text`).
+Texts are not escaped, so the fields suit fixtures with plain one-word
+summaries. A held sidebar rebuild shows up as the two disagreeing.
+
 Workspace drag observations include `workspace_order` (runtime references in
 display order), `active_reference`, `workspace_revision`, `workspace_drag` (source
 reference or `none`), and `workspace_target` (insertion gap in the pre-drop order).
@@ -19,6 +55,11 @@ not an alternate API for injecting a successful drag.
 `workspace_native_drag` and `workspace_native_action` report the actual GDK drag
 object and selected action, separating native gesture recognition from a prepared
 application transaction.
+
+Pane drag observations include `pane_drag` (the source pane id or `none`),
+`pane_target` (the workspace reference under the pointer or `none`), and
+`pane_indicators` (row indices currently showing the pane-destination style).
+They are live observations, not a way to inject a successful pane drop.
 
 With self-checks enabled, `among[session-write]` reports
 `checkpoint_submitted=true` when a changed periodic snapshot is queued and
