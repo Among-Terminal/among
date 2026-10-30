@@ -93,6 +93,19 @@ impl Inspection {
         }
     }
 
+    /// Whether this inspection observed the newest development prerelease
+    /// rather than the latest stable release. The channel lives in the
+    /// observed snapshot itself, so a cached inspection keeps it as well.
+    // `expect` rather than `allow`: once the Preferences development action
+    // uses this, the unfulfilled expectation fails the build and is removed.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the development-mode Preferences action reads it")
+    )]
+    pub fn is_prerelease(&self) -> bool {
+        self.release.snapshot.is_prerelease()
+    }
+
     pub(super) fn from_release(
         origin: Origin,
         release: release::ResolvedRelease,
@@ -292,6 +305,12 @@ impl Selection {
         self.previous.is_some()
     }
 
+    /// Whether the selected package comes from a development prerelease. The
+    /// pre-commit re-observation repeats this same channel.
+    pub fn is_prerelease(&self) -> bool {
+        self.release.snapshot.is_prerelease()
+    }
+
     pub fn identity(&self) -> String {
         format!("github:{}/{}", self.repository_id, self.version.manifest.id)
     }
@@ -343,9 +362,11 @@ impl Permit {
     }
 }
 
+// A repository typed by address is always inspected through its latest stable
+// release; only an already registered source can be asked for a prerelease.
 enum Target {
     Address(Repository),
-    Registered(u64),
+    Registered(u64, release::Channel),
 }
 
 impl Drop for Permit {
@@ -364,7 +385,31 @@ impl Job {
     }
 
     pub fn refresh(repository_id: u64) -> Result<Self, Problem> {
-        Self::start_target(Target::Registered(repository_id), None)
+        Self::start_target(
+            Target::Registered(repository_id, release::Channel::Latest),
+            None,
+        )
+    }
+
+    /// Inspect a registered source through its newest prerelease instead of
+    /// `releases/latest`, with the same identity, inventory, catalogue and tag
+    /// checks. An ordinary instance refuses before any thread, worker slot or
+    /// request exists.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the development-mode Preferences action starts it"
+        )
+    )]
+    pub fn refresh_prerelease(repository_id: u64) -> Result<Self, Problem> {
+        if !crate::plugin::development::enabled() {
+            return Err(Problem(release::DEVELOPMENT_ONLY));
+        }
+        Self::start_target(
+            Target::Registered(repository_id, release::Channel::Prerelease),
+            None,
+        )
     }
 
     fn start_target(target: Target, client: Option<Client>) -> Result<Self, Problem> {
@@ -446,6 +491,11 @@ pub struct InstallJob {
 
 impl InstallJob {
     pub fn start(selection: Selection, root: PathBuf) -> Result<Self, Problem> {
+        // A prerelease selection can still come from a cached inspection made
+        // in an earlier development run; an ordinary instance must not commit it.
+        if selection.is_prerelease() && !crate::plugin::development::enabled() {
+            return Err(Problem(release::DEVELOPMENT_ONLY));
+        }
         Self::start_with(selection, root, None)
     }
 
@@ -931,16 +981,18 @@ impl Operation {
     }
 
     async fn inspect_target(&self, target: Target) -> Result<Inspection, Problem> {
-        let expected_id = match &target {
-            Target::Registered(id) if *id > 0 => Some(*id),
-            Target::Registered(_) => return Err(Problem("invalid registered repository identity")),
-            _ => None,
+        let (expected_id, channel) = match &target {
+            Target::Registered(id, channel) if *id > 0 => (Some(*id), *channel),
+            Target::Registered(..) => {
+                return Err(Problem("invalid registered repository identity"))
+            }
+            Target::Address(_) => (None, release::Channel::Latest),
         };
         let repository_url = match target {
             Target::Address(input) => {
                 github_url("api.github.com", &["repos", &input.owner, &input.name])?
             }
-            Target::Registered(id) => {
+            Target::Registered(id, _) => {
                 github_url("api.github.com", &["repositories", &id.to_string()])?
             }
         };
@@ -994,7 +1046,7 @@ impl Operation {
             repository: repository.name,
         };
         official::validate(&origin)?;
-        let snapshot = self.latest_release(id).await?;
+        let snapshot = self.observe(id, channel).await?;
         let catalogue_asset = snapshot.asset("among-plugins.json")?;
         if catalogue_asset.size == 0
             || catalogue_asset.size > super::metadata::MAX_CATALOGUE_BYTES as u64

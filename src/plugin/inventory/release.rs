@@ -23,17 +23,42 @@ pub struct ReleaseSnapshot {
     pub id: u64,
     pub tag: String,
     assets: Vec<ReleaseAsset>,
+    // A stable snapshot never writes this key, so receipts and caches of
+    // ordinary releases keep their exact earlier JSON. The flag also decides
+    // which constructor re-admits the stored snapshot: a prerelease can never
+    // be reopened as an ordinary release, nor the other way round.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    prerelease: bool,
 }
 
 impl ReleaseSnapshot {
+    /// Admit an ordinary release: published, stable and immutable.
     pub fn from_value(value: &Value) -> Result<Self, Problem> {
+        Self::admit(value, false)
+    }
+
+    /// Admit a development prerelease. Only the publication channel differs
+    /// from `from_value`; every identity, tag and asset check, and the text of
+    /// every asset refusal, is the same code.
+    pub fn from_prerelease_value(value: &Value) -> Result<Self, Problem> {
+        Self::admit(value, true)
+    }
+
+    /// Whether this snapshot was admitted as a development prerelease.
+    pub fn is_prerelease(&self) -> bool {
+        self.prerelease
+    }
+
+    fn admit(value: &Value, prerelease: bool) -> Result<Self, Problem> {
         if value["draft"].as_bool() != Some(false)
-            || value["prerelease"].as_bool() != Some(false)
+            || value["prerelease"].as_bool() != Some(prerelease)
             || value["immutable"].as_bool() != Some(true)
         {
-            return Err(Problem(
-                "ordinary installation requires a published stable immutable release",
-            ));
+            return Err(Problem(if prerelease {
+                "development installation requires a published immutable prerelease"
+            } else {
+                "ordinary installation requires a published stable immutable release"
+            }));
         }
         let id = value["id"]
             .as_u64()
@@ -106,6 +131,7 @@ impl ReleaseSnapshot {
             id,
             tag: tag.into(),
             assets,
+            prerelease,
         })
     }
 
@@ -125,10 +151,13 @@ impl ReleaseSnapshot {
                 })
             })
             .collect::<Vec<_>>();
-        let canonical = Self::from_value(&serde_json::json!({
-            "id":self.id,"tag_name":self.tag,"draft":false,"prerelease":false,
-            "immutable":true,"assets":assets
-        }))?;
+        let canonical = Self::admit(
+            &serde_json::json!({
+                "id":self.id,"tag_name":self.tag,"draft":false,"prerelease":self.prerelease,
+                "immutable":true,"assets":assets
+            }),
+            self.prerelease,
+        )?;
         if &canonical != self {
             return Err(Problem("stored release inventory is not canonical"));
         }
