@@ -40,9 +40,11 @@ dragging inside terminal text still selects text.
 
 ## Focus, zoom and fullscreen
 
-- Click a terminal or its header to focus it; **Alt+Arrow** moves between panes.
+- Click a terminal or its header to focus it; **Alt+Arrow** moves between panes
+  while no pane is expanded.
 - **Ctrl+Shift+X** expands the focused pane to fill its workspace. Press again to
-  recover the same nested layout; hidden panes keep running.
+  recover the same nested layout; hidden panes keep running. While it is
+  expanded, `Alt`+Arrow and splitting leave it in place; restore first.
 - **F11** enters or leaves fullscreen. Normal startup is maximized, not fullscreen.
 
 [![Zooming a pane while preserving the workspace layout](media/features/04b-zoom.png)](media/features/04b-zoom.mp4)

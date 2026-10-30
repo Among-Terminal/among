@@ -258,6 +258,11 @@ impl Inner {
             if name == "copy-link" {
                 action.set_enabled(link.is_some());
             }
+            // An expanded pane refuses to split, so the entry is shown but
+            // inactive instead of offering a click that does nothing.
+            if name == "split" {
+                action.set_enabled(!presentation.zoomed);
+            }
             let weak = Rc::downgrade(self);
             let link = link.clone();
             action.connect_activate(move |_, _| {
