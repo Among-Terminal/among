@@ -256,7 +256,13 @@ fn refresh_phase(binary: &Path, plugin: &Path, scratch: &Path) -> Result<()> {
 }
 
 pub fn run(binary: &Path, source: &Path, plugin: &Path, scratch: &Path) -> Result<PathBuf> {
-    foreign_phase(binary, source, scratch)?;
-    refresh_phase(binary, plugin, scratch)?;
+    // The fixtures are started from each check's own directory, so a path
+    // given relative to the caller's directory would no longer resolve.
+    let source = fs::canonicalize(source)
+        .map_err(|error| format!("drag source {}: {error}", source.display()))?;
+    let plugin = fs::canonicalize(plugin)
+        .map_err(|error| format!("summary plugin {}: {error}", plugin.display()))?;
+    foreign_phase(binary, &source, scratch)?;
+    refresh_phase(binary, &plugin, scratch)?;
     Ok(scratch.to_path_buf())
 }
