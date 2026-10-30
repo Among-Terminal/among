@@ -15,6 +15,28 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Size of `sockaddr_un.sun_path` on Linux, terminating NUL included.
+const SUN_PATH_LEN: usize = 108;
+
+/// The private server's socket inside an evidence directory.
+///
+/// sockaddr_un holds 108 bytes including the terminating NUL. PulseAudio
+/// silently truncates a longer path, so the expected socket never appears and
+/// the readiness wait could only time out; such a directory is refused here.
+pub fn owned_socket(base: &Path) -> Result<PathBuf> {
+    let path = base.join("runtime/pulse.sock");
+    let length = path.as_os_str().len();
+    if length >= SUN_PATH_LEN {
+        return Err(format!(
+            "audio server socket path is {length} bytes, over the {}-byte Unix socket limit: {}",
+            SUN_PATH_LEN - 1,
+            path.display()
+        )
+        .into());
+    }
+    Ok(path)
+}
+
 pub fn require_container() -> Result<()> {
     if !Path::new("/.dockerenv").is_file()
         || ["/dev/snd", "/dev/dsp", "/dev/audio"]
@@ -180,7 +202,7 @@ pub fn run(request: &Invocation<'_>, output: &Path) -> Result<Value> {
         fs::DirBuilder::new().mode(0o700).create(&path)?;
         env.insert(key.into(), path.into_os_string());
     }
-    let socket = format!("unix:{}/runtime/pulse.sock", base.display());
+    let socket = format!("unix:{}", owned_socket(&base)?.display());
     env.insert("PULSE_SERVER".into(), socket.clone().into());
     let conf = base.join("pulse.conf");
     fs::write(&conf, format!("load-module module-native-protocol-unix socket={}/runtime/pulse.sock auth-anonymous=1\nload-module module-null-sink sink_name=among_audit rate=48000 channels=1 channel_map=mono\nset-default-sink among_audit\nset-default-source among_audit.monitor\n",base.display()))?;
@@ -193,6 +215,9 @@ pub fn run(request: &Invocation<'_>, output: &Path) -> Result<Value> {
             "--use-pid-file=no",
             "--exit-idle-time=-1",
             "--log-level=info",
+            // Timestamps show where a slow startup spent its time when the
+            // readiness bound below is exceeded.
+            "--log-time=yes",
             "--file",
             utf8(&conf)?,
         ],

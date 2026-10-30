@@ -628,8 +628,12 @@ pub fn retirement(
             ]
         }))
         .collect();
-    for (scenario, expected_signal) in cases {
-        let evidence = base.join(&scenario);
+    for (index, (scenario, expected_signal)) in cases.into_iter().enumerate() {
+        // Scenario names are long enough to push the private server socket
+        // past the Unix socket path limit under a CI checkout, so each case
+        // gets a short numbered directory; result.json maps it to its name.
+        let directory = format!("{index:02}");
+        let evidence = base.join(&directory);
         let signal = audio_capture::run(
             &Invocation {
                 probe: &probe,
@@ -666,7 +670,7 @@ pub fn retirement(
         } else {
             None
         };
-        results.push(json!({"scenario":scenario,"capture":signal,"measurements":measurements,"separated_output":separated_output}));
+        results.push(json!({"scenario":scenario,"evidence":directory,"capture":signal,"measurements":measurements,"separated_output":separated_output}));
     }
     if digest(artifact)? != receipt.artifact_sha256 {
         return Err("actual package changed during retirement tests".into());
