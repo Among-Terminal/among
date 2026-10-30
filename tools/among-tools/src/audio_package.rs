@@ -151,6 +151,22 @@ fn manifest(root: &Path, directory: &Path, entries: &mut BTreeMap<String, String
     Ok(())
 }
 
+/// The decoder maps, taken after output ended but before the stream closed,
+/// must show no PulseAudio shared-memory pool. libpulse names its memfd pool
+/// "pulseaudio" and its POSIX pool "/pulse-shm-N"; a client that negotiated
+/// shared memory maps its own pool and the server's. Such a client exposes a
+/// PulseAudio server that records the sink monitor to an abort on disconnect,
+/// so the helper must talk to the server by copying instead.
+pub fn shared_pulse_memory_absent(maps: &str) -> Result<()> {
+    if let Some(line) = maps
+        .lines()
+        .find(|line| line.contains("/memfd:pulseaudio") || line.contains("/pulse-shm-"))
+    {
+        return Err(format!("audio decoder mapped PulseAudio shared memory: {line}").into());
+    }
+    Ok(())
+}
+
 fn maps(root: &Path, evidence: &Path) -> Result<()> {
     let decoder = evidence.join("consumer/decoder-maps.txt");
     let text = fs::read_to_string(if decoder.is_file() {
@@ -158,6 +174,7 @@ fn maps(root: &Path, evidence: &Path) -> Result<()> {
     } else {
         evidence.join("consumer/maps.txt")
     })?;
+    shared_pulse_memory_absent(&text)?;
     for name in [
         "libgtk-4.so",
         "libgstreamer-1.0.so",
