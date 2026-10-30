@@ -141,3 +141,104 @@ fn inventory_requires_one_catalogue_and_enforces_the_complete_asset_bound() {
         .push(asset(65, "file-64"));
     assert!(ReleaseSnapshot::from_value(&value).is_err());
 }
+
+fn prerelease() -> Value {
+    let mut value = release();
+    value["prerelease"] = json!(true);
+    value
+}
+
+#[test]
+fn a_prerelease_is_admitted_only_by_its_own_constructor() {
+    let snapshot = ReleaseSnapshot::from_prerelease_value(&prerelease()).unwrap();
+    assert!(snapshot.is_prerelease());
+    assert!(ReleaseSnapshot::from_value(&prerelease()).is_err());
+    let stable = ReleaseSnapshot::from_value(&release()).unwrap();
+    assert!(!stable.is_prerelease());
+    assert!(ReleaseSnapshot::from_prerelease_value(&release()).is_err());
+    // Same id, tag and assets still differ by channel, so a pre-commit
+    // comparison cannot take one for the other.
+    assert_ne!(snapshot, stable);
+    for (key, bad) in [
+        ("draft", json!(true)),
+        ("draft", Value::Null),
+        ("prerelease", Value::Null),
+        ("immutable", json!(false)),
+        ("immutable", Value::Null),
+    ] {
+        let mut value = prerelease();
+        value[key] = bad;
+        assert_eq!(
+            ReleaseSnapshot::from_prerelease_value(&value).unwrap_err(),
+            Problem("development installation requires a published immutable prerelease"),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn a_prerelease_inventory_defect_is_refused_with_the_ordinary_reason() {
+    type Defect = fn(&mut Value);
+    let defects: [(&str, Defect); 7] = [
+        ("tag", |value| value["tag_name"] = json!("../heads/main")),
+        ("no assets", |value| value["assets"] = json!([])),
+        ("not uploaded", |value| {
+            value["assets"][2]["state"] = json!("starter")
+        }),
+        ("uppercase digest", |value| {
+            value["assets"][0]["digest"] = json!(format!("sha256:{}", "A".repeat(64)))
+        }),
+        ("duplicate name", |value| {
+            value["assets"][2]["name"] = json!("sample-amd64.tar.gz")
+        }),
+        ("no catalogue", |value| {
+            value["assets"][1]["name"] = json!("other.json")
+        }),
+        ("too many assets", |value| {
+            for id in 14..80 {
+                value["assets"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(asset(id, &format!("extra-{id}")));
+            }
+        }),
+    ];
+    for (name, defect) in defects {
+        let mut stable = release();
+        defect(&mut stable);
+        let mut development = prerelease();
+        defect(&mut development);
+        let ordinary = ReleaseSnapshot::from_value(&stable).unwrap_err();
+        assert_eq!(
+            ReleaseSnapshot::from_prerelease_value(&development).unwrap_err(),
+            ordinary,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_stored_prerelease_is_readmitted_as_a_prerelease_and_stable_json_is_unchanged() {
+    let stable = ReleaseSnapshot::from_value(&release()).unwrap();
+    let stored = serde_json::to_value(&stable).unwrap();
+    assert!(
+        stored.get("prerelease").is_none(),
+        "ordinary snapshots keep their earlier stored form"
+    );
+    let reopened: ReleaseSnapshot = serde_json::from_value(stored).unwrap();
+    reopened.validate().unwrap();
+    assert!(!reopened.is_prerelease());
+
+    let snapshot = ReleaseSnapshot::from_prerelease_value(&prerelease()).unwrap();
+    let stored = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(stored["prerelease"], json!(true));
+    let reopened: ReleaseSnapshot = serde_json::from_value(stored.clone()).unwrap();
+    reopened.validate().unwrap();
+    assert!(reopened.is_prerelease());
+    assert_eq!(reopened, snapshot);
+    // A stored prerelease is still bound by every inventory rule on reopening.
+    let mut broken = stored;
+    broken["assets"][0]["sha256"] = json!("A".repeat(64));
+    let broken: ReleaseSnapshot = serde_json::from_value(broken).unwrap();
+    assert!(broken.validate().is_err());
+}
