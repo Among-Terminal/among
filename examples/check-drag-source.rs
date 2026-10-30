@@ -62,6 +62,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let source = gtk::DragSource::new();
     source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
     source.connect_prepare(move |_, _, _| Some(content.clone()));
+    // Markers beside the ready file prove that a native drag really started and
+    // finished; checks that only look for the absence of an effect would
+    // otherwise pass when no drag happened at all.
+    let began = PathBuf::from(format!("{ready}.began"));
+    source.connect_drag_begin(move |_, _| {
+        let _ = std::fs::write(&began, b"began");
+    });
+    let ended = PathBuf::from(format!("{ready}.ended"));
+    let cancelled = ended.clone();
+    source.connect_drag_end(move |_, _, _| {
+        let _ = std::fs::write(&ended, b"ended");
+    });
+    source.connect_drag_cancel(move |_, _, _| {
+        let _ = std::fs::write(&cancelled, b"cancelled");
+        false
+    });
     label.add_controller(source);
     let window = gtk::Window::builder()
         .title(TITLE)

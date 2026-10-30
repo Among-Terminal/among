@@ -31,11 +31,16 @@ changes nothing rather than that a guard refused it. `summary-plugin` reports
 every workspace summary from `summary.txt` beside its executable; the check
 rewrites that file while a pane header is held over another entry and requires
 the shown destination and the old drawn summary to survive until the drop, and
-the new summary to be drawn after it.
+the new summary to be drawn after it. It repeats the refresh during a drag that
+is cancelled with Escape, where no move forces a rebuild. The drag source writes
+markers when its native drag begins and ends, and the check requires both, so a
+drag that never started cannot pass as a rejected one.
 
-A self-check line after the pane drag observations reports `rendered_summaries` (the summary each sidebar
-row draws) and `stored_summaries` (what the slot store holds), so a held
-sidebar rebuild is visible as the two disagreeing.
+A self-check line after the pane drag observations reports `rendered_summaries`
+(the first plugin summary label each sidebar row draws, as `row:text`) and
+`stored_summaries` (every summary text the slot store holds, as `index:text`).
+Texts are not escaped, so the fields suit fixtures with plain one-word
+summaries. A held sidebar rebuild shows up as the two disagreeing.
 
 Workspace drag observations include `workspace_order` (runtime references in
 display order), `active_reference`, `workspace_revision`, `workspace_drag` (source

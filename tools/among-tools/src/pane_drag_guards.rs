@@ -85,6 +85,16 @@ fn foreign_drop(
         h.move_mouse(start_x + offset, start_y)?;
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Every later assertion is about something not happening, so the native
+    // drag itself must be shown to have started; otherwise a fixture that never
+    // dragged would pass.
+    let began = PathBuf::from(format!("{}.began", ready.display()));
+    let ended = PathBuf::from(format!("{}.ended", ready.display()));
+    if h.wait(10, |_| Ok(began.exists())).is_err() {
+        h.xdo(&["mouseup", "1"])?;
+        process.cleanup()?;
+        return Err(format!("the foreign {kind} drag never started").into());
+    }
     move_to(h, row(h, destination)?, 0.5)?;
     std::thread::sleep(Duration::from_millis(300));
     // Small movements over the entry deliver motion events to its drop targets.
@@ -114,6 +124,11 @@ fn foreign_drop(
     // The release and the source's exit happen whatever was seen, so one
     // failing payload does not leave the pointer held for the next.
     h.xdo(&["mouseup", "1"])?;
+    if h.wait(10, |_| Ok(ended.exists())).is_err() {
+        failures.push(format!(
+            "the foreign {kind} drag did not finish after release"
+        ));
+    }
     settle(h)?;
     if order(h)? != before
         || pane_counts(h)? != counts
@@ -212,6 +227,29 @@ fn refresh_phase(binary: &Path, plugin: &Path, scratch: &Path) -> Result<()> {
     // The held refresh is drawn once the drag is over.
     h.wait(15, |h| Ok(rendered(h)?.contains("during-drag")))?;
     println!("PASS a plugin refresh during a pane drag keeps the destination and is drawn after the drop");
+
+    // The same hold must be released when the drag is cancelled instead of
+    // dropped: no move happens, so nothing else forces the sidebar to rebuild.
+    let counts = pane_counts(&h)?;
+    begin_pane_drag(&mut h, "2")?;
+    hover_pane(&mut h, 0)?;
+    fs::write(&summary, b"cancelled-drag")?;
+    h.wait(15, |h| Ok(stored(h)?.contains("0:cancelled-drag")))?;
+    settle(&mut h)?;
+    require(
+        !rendered(&h)?.contains("cancelled-drag"),
+        "a plugin refresh rebuilt the sidebar during the cancelled drag",
+    )?;
+    h.xdo(&["key", "Escape"])?;
+    wait_no_pane_drag(&mut h)?;
+    h.xdo(&["mouseup", "1"])?;
+    settle(&mut h)?;
+    require(
+        pane_counts(&h)? == counts,
+        "the cancelled pane drag moved a pane",
+    )?;
+    h.wait(15, |h| Ok(rendered(h)?.contains("cancelled-drag")))?;
+    println!("PASS a plugin refresh held during a cancelled pane drag is drawn after the cancel");
     h.clean_log(&h.log)?;
     h.stop(false)?;
     Ok(())
