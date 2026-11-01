@@ -64,18 +64,20 @@ impl Fixture {
         // receipt IDs other than the identity/source commit are synthetic. this
         // assembles a locally inspected fixture, never an authenticated release.
         let receipt = Receipt {
-            repository_id: 1431055733,
-            owner: "Among-Terminal".into(),
-            repository: "among-plugins".into(),
+            origin: inventory::Provenance::Release(inventory::ReleaseOrigin {
+                repository_id: 1431055733,
+                owner: "Among-Terminal".into(),
+                repository: "among-plugins".into(),
+                release_id: 1,
+                asset_id: 2,
+                source: None,
+            }),
             plugin_id: plugin.into(),
             revision: CLIENT_REVISION.into(),
             manifest_sha256: inventory::checksum(manifest.as_bytes()).unwrap(),
             package_sha256: checksum.clone(),
-            release_id: 1,
-            asset_id: 2,
             generation: "a".repeat(64),
             installation: None,
-            source: None,
         };
         let package = receipt.package_path(&root);
         std::fs::create_dir_all(&package).unwrap();

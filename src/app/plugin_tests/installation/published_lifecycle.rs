@@ -570,9 +570,16 @@ pub(super) fn run() {
             .into_iter()
             .filter_map(|widget| widget.downcast::<gtk::CheckButton>().ok())
             .collect::<Vec<_>>();
+        let labels = widgets(dialog.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+            .map(|label| label.text().to_string())
+            .collect::<Vec<_>>();
         assert_eq!(
             controls.len(),
-            version.manifest.required_features.len() + version.manifest.optional_features.len()
+            version.manifest.required_features.len() + version.manifest.optional_features.len(),
+            "review of {}: {labels:?}",
+            plugin.id
         );
         for control in &controls {
             let required = control.label().unwrap().ends_with(" (required)");

@@ -15,7 +15,12 @@ pub(crate) fn bounded(path: &Path, maximum: u64) -> Result<Vec<u8>> {
         .open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > maximum {
-        return Err("runtime replay input exceeds its regular-file bound".into());
+        return Err(format!(
+            "runtime replay input exceeds its regular-file bound: {} is {} bytes, limit {maximum}",
+            path.display(),
+            metadata.len()
+        )
+        .into());
     }
     let mut bytes = Vec::new();
     file.take(maximum + 1).read_to_end(&mut bytes)?;

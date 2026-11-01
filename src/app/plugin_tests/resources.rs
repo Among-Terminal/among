@@ -87,18 +87,22 @@ fn prepare_source_bound_fixture(root: &Path) {
         "entrypoint":"plugin","api":{"major":1,"minor":2},"required_features":["status"]})
         .to_string();
     let receipt = crate::plugin::inventory::Receipt {
-        repository_id: 1431055733,
-        owner: "Among-Terminal".into(),
-        repository: "among-plugins".into(),
+        origin: crate::plugin::inventory::Provenance::Release(
+            crate::plugin::inventory::ReleaseOrigin {
+                repository_id: 1431055733,
+                owner: "Among-Terminal".into(),
+                repository: "among-plugins".into(),
+                release_id: 1,
+                asset_id: 2,
+                source: None,
+            },
+        ),
         plugin_id: "system-status".into(),
         revision: CLIENT.into(),
         manifest_sha256: crate::plugin::inventory::checksum(manifest.as_bytes()).unwrap(),
         package_sha256: digest.clone(),
-        release_id: 1,
-        asset_id: 2,
         generation: "a".repeat(64),
         installation: None,
-        source: None,
     };
     let package = receipt.package_path(root);
     std::fs::create_dir_all(&package).unwrap();
