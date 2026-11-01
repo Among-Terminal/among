@@ -41,6 +41,7 @@ Usage:
   among-tools check-snap-runtime [--github-hosted]
   among-tools bind-audio-probe <probe> <artifact> <source-sha> <architecture> <new-directory>
   among-tools check-audio-package <appimage|snap-core24|snap-installed> <artifact> <probe-directory> <source-sha> <architecture> <new-output>
+  among-tools check-audio-native <audio-probe> <new-output>
   among-tools check-audio-retirement <checked-package-run> <artifact> <retirement-probe-directory> <source-sha> <architecture> <new-output>
   among-tools deb-release-inputs <source-root> <stable-tag> <debian13|ubuntu24.04> <amd64|arm64>
   among-tools stage-deb <source-root> <binaries> <new-destination>
@@ -129,6 +130,9 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 architecture,
                 Path::new(output),
             )?;
+        }
+        [command, probe, output] if command == "check-audio-native" => {
+            among_tools::audio_package::run_native(Path::new(probe), Path::new(output))?;
         }
         [command, source, version, output] if command == "package-metainfo" => {
             among_tools::release_metadata::write_package_metainfo(

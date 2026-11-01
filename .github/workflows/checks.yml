@@ -205,3 +205,26 @@ jobs:
           tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/tool-tests.jsonl"
           cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/test-executables.jsonl"
           tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/test-executables.jsonl"
+      - name: Real audio through each distribution's declared packages
+        run: |
+          cargo build --locked --example audio-probe
+          input="$RUNNER_TEMP/native-audio-input"
+          mkdir "$input"
+          cp target/debug/examples/audio-probe tools/among-tools/target/release/among-tools "$input/"
+          status=0
+          for image in \
+            debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f \
+            ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 \
+            fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42; do
+            name="${image%%@*}"
+            output="$RUNNER_TEMP/native-audio-$name"
+            mkdir -m 777 "$output"
+            echo "::group::$name"
+            docker run --rm \
+              --mount "type=bind,source=$PWD/packaging/ci/native-audio,target=/ci,readonly" \
+              --mount "type=bind,source=$input,target=/input,readonly" \
+              --mount "type=bind,source=$output,target=/output" \
+              "$image" sh /ci/check.sh || { echo "::error::$name system audio route failed"; status=1; }
+            echo "::endgroup::"
+          done
+          exit "$status"

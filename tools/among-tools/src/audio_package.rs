@@ -704,3 +704,75 @@ pub fn retirement(
     );
     Ok(())
 }
+
+/// Captures real output through the system GStreamer route that a DEB or RPM
+/// depends on, in an owned device-free container with those packages installed.
+/// Unlike a bundled payload, the media module, pulsesink and libpulse here must
+/// come from the system, so there is no private root and no missing-member
+/// fixture; the probe runs with the same "no packaged root" the native
+/// application uses.
+pub fn run_native(probe: &Path, output: &Path) -> Result<()> {
+    audio_capture::require_container()?;
+    fs::create_dir(output)?;
+    let base = output.canonicalize()?;
+    let fixtures = audio_capture::fixtures(&base.join("fixtures"))?;
+    let no_root = Path::new("-");
+    let mut results = Vec::new();
+    for fixture in &fixtures {
+        let label = fixture
+            .file_stem()
+            .ok_or("fixture name missing")?
+            .to_str()
+            .ok_or("fixture encoding")?;
+        let evidence = base.join(format!("preview-{label}"));
+        let analysis = audio_capture::run(
+            &Invocation {
+                probe,
+                scenario: "preview-off",
+                input: fixture,
+                payload: no_root,
+                installed: false,
+                expected_failure: None,
+                signal: true,
+            },
+            &evidence,
+        )?;
+        let maps = fs::read_to_string(evidence.join("consumer/decoder-maps.txt"))?;
+        shared_pulse_memory_absent(&maps)?;
+        // Fedora builds the GTK media backend into libgtk, so no separate
+        // media module is required here.
+        for name in ["libgstwavparse.so", "libgstpulseaudio.so", "libpulse"] {
+            if !maps
+                .lines()
+                .filter_map(|line| line.split_whitespace().nth(5))
+                .any(|path| path.contains(name) && path.starts_with("/usr/"))
+            {
+                return Err(format!("decoder did not map system {name}").into());
+            }
+        }
+        results.push(json!({"case":label,"analysis":analysis}));
+    }
+    audio_capture::run(
+        &Invocation {
+            probe,
+            scenario: "event-disabled",
+            input: &fixtures[1],
+            payload: no_root,
+            installed: false,
+            expected_failure: None,
+            signal: false,
+        },
+        &base.join("disabled"),
+    )?;
+    fs::write(
+        base.join("result.json"),
+        serde_json::to_vec_pretty(
+            &json!({"scope":"system GStreamer route","positive":results,"silent_disabled":true,"general_controls":false}),
+        )?,
+    )?;
+    println!(
+        "Captured system-route audio: {}. This is not an installed-package receipt.",
+        base.display()
+    );
+    Ok(())
+}

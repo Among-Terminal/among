@@ -1956,6 +1956,34 @@ fn slot_summary(store: &SlotStore, scope: Scope) -> Vec<String> {
 
 /// Run one scripted action, for verification runs.
 fn run_script_step(ctx: &Window, step: &str) {
+    // `activate:` presses a named widget in any open window. Test binaries
+    // cannot host the audio decoder helper, so a real Preview button press can
+    // only be proven from the shipped executable.
+    if let Some(name) = step.strip_prefix("activate:") {
+        fn find(widget: gtk::Widget, name: &str) -> Option<gtk::Widget> {
+            if widget.widget_name() == name {
+                return Some(widget);
+            }
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                if let Some(found) = find(current, name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let target = gtk::Window::list_toplevels()
+            .into_iter()
+            .find_map(|window| find(window, name));
+        match target {
+            Some(widget) => {
+                widget.activate();
+            }
+            None => eprintln!("among: script widget {name} not found"),
+        }
+        return;
+    }
     // `type:` is a script-only form; everything else is a real action name, so
     // the script can drive anything the keyboard can.
     if let Some(command) = step.strip_prefix("type:") {

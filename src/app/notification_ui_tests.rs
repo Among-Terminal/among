@@ -975,6 +975,21 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
 #[test]
 #[ignore = "requires an owned X11 display/WM with GTK_A11Y=test and private XDG roots"]
 fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
+    // Each state is kept as a picture of the real window, so what the
+    // assertions accept can be looked at afterwards.
+    let shots = crate::test_isolation::check_root().join("attention-screenshots");
+    std::fs::create_dir_all(&shots).unwrap();
+    let shot = |name: &str| {
+        pump_for(Duration::from_millis(100));
+        let path = shots.join(format!("{name}.png"));
+        assert!(std::process::Command::new("import")
+            .args(["-window", "root"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        println!("screenshot {name}: {}", path.display());
+    };
     let (_app, ctx) = app();
     let backend = ctx.state.borrow().bells.clone().unwrap();
     let first = ctx.state.borrow().workspaces.active().focused;
@@ -1008,6 +1023,7 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         "header stripe pulse",
     );
     assert!(badge.is_visible());
+    shot("pulse-expanded");
     accessible_label(&header, &format!("Terminal {}, unread bell", first.0));
     accessible_property(
         &term,
@@ -1036,6 +1052,7 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
     for class in colour.iter() {
         assert!(stripe.has_css_class(class));
     }
+    shot("static-reduced-motion");
     ctx.state.borrow_mut().sidebar_collapsed = true;
     rebuild_sidebar(&ctx, true);
     present_attention(&ctx);
@@ -1044,6 +1061,7 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         .unwrap()
         .is_visible());
     accessible_label(&row, "project, 2 terminals, 1 unread bells");
+    shot("collapsed-sidebar");
     ctx.state.borrow_mut().sidebar_collapsed = false;
     rebuild_sidebar(&ctx, true);
     let row = ctx.workspace_list.row_at_index(0).unwrap();
@@ -1074,10 +1092,12 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         "real rename keyboard input",
     );
     assert!(backend.attention(first.0).unread);
+    shot("after-rename");
     toggle_zoom(&ctx);
     pump_for(Duration::from_millis(100));
     assert!(!term.is_mapped());
     real_bell(&ctx, &backend, first);
+    shot("zoomed-hidden-sibling-bell");
     let restore = find_with_class(ctx.pane_area.upcast_ref(), "pane-restore")
         .unwrap()
         .downcast::<gtk::Button>()
@@ -1085,6 +1105,7 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
     key_button(&restore);
     wait(|| term.is_mapped(), "Restore hidden unread sibling");
     assert!(backend.attention(first.0).unread);
+    shot("restored-unread-sibling");
     assert_eq!(
         backend.focus().viewed.map(|source| source.pane()),
         Some(second.0)

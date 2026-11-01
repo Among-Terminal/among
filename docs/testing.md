@@ -83,7 +83,10 @@ Script actions include `split_pane`, `close_pane`, `new_workspace`, `focus_left`
 `preferences` and `next_workspace`.
 `workspace_N` activates workspace N, counting from 1. `type:<command>` sends text
 to the focused terminal; `feed:<pane>:<command>` targets a numbered pane.
-In these commands, `~` represents a space.
+In these commands, `~` represents a space. `activate:<widget-name>` presses a
+named widget in any open window, such as `notification-audio-preview`. Only the
+application executable can do this for audio: a test binary cannot host the
+decoder helper, so its Preview produces no sound.
 `collapse-sidebar`, `expand-sidebar` and `request-close` exercise window controls.
 
 `scroll:<pane>:<delta>` hands one touch surface delta to the same handler a real

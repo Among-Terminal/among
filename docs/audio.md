@@ -201,6 +201,17 @@ General controls, an installed DEB/RPM, Snap/core24 or another architecture.
 Every new artifact still needs exact-payload source/notices/replacement checks
 and its own live-output run. See `docs/licensing.md` for native obligations.
 
+## System route through distribution packages
+
+`among-tools check-audio-native <audio-probe> <new-output>` captures real output
+with no packaged root, through the GStreamer, pulsesink and libpulse a DEB or RPM
+takes from the system. The CI `native` job runs it in fresh Debian 13, Ubuntu
+24.04 and Fedora 43 containers on amd64 and arm64
+(`packaging/ci/native-audio/check.sh`), installing only the packages those formats
+declare for audio plus the capture tools. The check uses a probe built by the job,
+not an installed DEB or RPM: `deb-release.yml` and `rpm-release.yml` run only for a
+`v*` tag, and audio from an installed package is not yet captured there.
+
 ## Reusable packaged-output checks
 
 The headless tooling binds an external probe to an actual artifact digest,
