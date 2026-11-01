@@ -782,9 +782,7 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 &among_tools::scratch::root()?,
             )?;
         }
-        [command, root, records, output, assets]
-            if command == "capture-package-plugin-profile" =>
-        {
+        [command, root, records, output, assets] if command == "capture-package-plugin-profile" => {
             among_tools::plugin_install::package::capture(
                 Path::new(root),
                 Path::new(records),

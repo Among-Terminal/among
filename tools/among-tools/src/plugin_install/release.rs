@@ -499,14 +499,21 @@ pub fn prepare_candidate(assets: &Path, destination: &Path) -> Result<PathBuf> {
     let assets = assets.canonicalize()?;
     let architecture = crate::platform::discover()?.architecture;
     let mut names = fs::read_dir(&assets)?
-        .map(|entry| Ok(entry?.file_name().into_string().map_err(|_| "non-UTF8 asset name")?))
+        .map(|entry| {
+            Ok(entry?
+                .file_name()
+                .into_string()
+                .map_err(|_| "non-UTF8 asset name")?)
+        })
         .collect::<Result<Vec<_>>>()?;
     names.sort();
     let mut entries = Vec::new();
     for (index, name) in names.iter().enumerate() {
         let bytes = regular_bytes(&assets.join(name), 64 * 1024 * 1024)?;
-        entries.push(json!({"id":CANDIDATE_RELEASE + 1 + index as u64,"name":name,"size":bytes.len(),
-            "state":"uploaded","digest":format!("sha256:{}",storage::sha256(bytes.as_slice())?)}));
+        entries.push(
+            json!({"id":CANDIDATE_RELEASE + 1 + index as u64,"name":name,"size":bytes.len(),
+            "state":"uploaded","digest":format!("sha256:{}",storage::sha256(bytes.as_slice())?)}),
+        );
     }
     let document = json!({"id":CANDIDATE_RELEASE,"tag_name":CANDIDATE_TAG,"draft":false,
         "prerelease":false,"immutable":true,"created_at":"2026-10-30T00:00:00Z","assets":entries});

@@ -153,7 +153,31 @@ Development installs are listed in every run, but outside development mode
 they do not start, even if their switch was left on; the row says that the
 install starts only with `--plugin-development`.
 
-Installing the newest GitHub prerelease of a source is not available yet.
+#### Use the latest prerelease of a source
+
+In development mode every row of Registered sources also has **Use latest
+prerelease**. Among reads up to three pages of 100 releases and picks the
+non-draft prerelease with the greatest creation time, the greater numeric ID
+deciding a tie. A list that ends without a prerelease, and three full pages
+without one, are refused with their own reasons. The chosen prerelease passes
+the same identity, immutability, digest, schema 2 and tag checks as a latest
+release, and installation repeats the selection before it commits. The result
+is shown for review and is not saved as source metadata.
+
+A prerelease install keeps the identity `github:<repository>/<plugin-id>` and
+its local settings. Over an existing install the action is **Replace with
+prerelease…**: it needs the confirmation, starts disabled and receives no access
+granted to the replaced install, which stays available as the previous
+generation. A generation from a prerelease starts only with
+`--plugin-development`.
+
+A newer stable release is an ordinary update of it. A stable release of the
+same version is offered as an update only with the same manifest digest,
+package digest and tag commit; applying it rebinds the install to the stable
+release, and it then starts without the flag. The same version with other
+bytes or another commit is refused as publisher inconsistency, and no update
+is offered. This holds for every installed version: a release never updates
+an install to the same version with different content.
 
 ### Native inventory
 

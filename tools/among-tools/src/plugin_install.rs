@@ -152,9 +152,7 @@ pub fn development(executable: &Path, inputs: &Path, assets: &Path, scratch: &Pa
                 "Development installation refusal (last at most 16384 bytes of native-install.log):\n{}",
                 diagnostic_tail(&output)
             );
-            return Err(
-                format!("{test} not accepted; evidence: {}", base.display()).into(),
-            );
+            return Err(format!("{test} not accepted; evidence: {}", base.display()).into());
         }
         println!("{marker}; candidate acceptance, not published bytes");
     }

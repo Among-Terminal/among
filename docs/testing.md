@@ -179,6 +179,24 @@ supervised admission, stale-reply, paging, timezone, resource and keyboard contr
 remain mandatory. Transport fixture receipts remain synthetic and do not prove
 repository installation.
 
+Until a release is published, CI checks candidate bytes.
+`plugin-candidate.yml` builds the plugins from one pinned among-plugins commit on
+amd64 and arm64 with the catalogue, and
+`among-tools prepare-candidate-plugin-inputs <assets> <new-directory>` makes the
+same input directory as `prepare-official-plugin-inputs`, marked `candidate`, with
+synthetic release documents that still pass the stable observation. The host
+tests then answer from a controlled HTTPS server; UI, client, installer and
+packages are real. This is candidate acceptance, because CI builds differ from
+the approved preparation. `capture-package-plugin-profile` takes the same assets
+as an optional last argument.
+
+`among-tools check-development-install <among-test-executable> <inputs> <assets>`
+runs two native tests in their own processes: a stable install replaced by the
+prerelease and rebound by the stable release of the same bytes, and installation
+of the same packages from a local catalogue. Both start the package under the
+flag. `prepare-official-plugin-inputs --prerelease` observes a real published
+prerelease; its manual job is not required before publication.
+
 `among-tools check-plugin-install <among-test-executable> <input-directory>` requires
 an owned X11 display and an isolated check root. It runs the exact ignored host test
 `app::plugin_tests::installation::real_published_official_packages_install_review_enable_disable_uninstall`.
