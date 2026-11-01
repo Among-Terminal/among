@@ -59,7 +59,9 @@ jobs:
           set -euo pipefail
           test "$(git -C author rev-parse HEAD)" = "$PLUGINS_REVISION"
           test "$(git -C tool rev-parse HEAD)" = "$TOOL_REVISION"
-          rustup toolchain install 1.98.1 --profile minimal
+          # The packaging tool collects standard-library licence evidence from
+          # these two components.
+          rustup toolchain install 1.98.1 --profile minimal --component rust-docs --component rust-src
           cargo +1.98.1 build --release --locked --manifest-path tool/tools/among-tools/Cargo.toml
           cargo +1.98.1 build --release --locked --manifest-path author/Cargo.toml --bins
       - name: Package
