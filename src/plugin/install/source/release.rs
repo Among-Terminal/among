@@ -220,6 +220,7 @@ impl Operation {
     ) -> Result<ReleaseSnapshot, Problem> {
         let mut seen = std::collections::BTreeSet::new();
         let mut newest: Option<(CreatedAt, u64, String)> = None;
+        let mut list_ended = false;
         for page in 1..=MAX_RELEASE_PAGES {
             self.check()?;
             let listed = self.release_page(repository, page).await?;
@@ -263,12 +264,17 @@ impl Operation {
                 }
             }
             if entries.len() < RELEASE_PAGE {
+                list_ended = true;
                 break;
             }
         }
-        let (_, id, listed_at) = newest.ok_or(Problem(
-            "no published prerelease within the first 300 releases; nothing was changed",
-        ))?;
+        let (_, id, listed_at) = newest.ok_or(if list_ended {
+            Problem("no published prerelease in this repository; nothing was changed")
+        } else {
+            Problem(
+                "the release list is longer than the 300 releases read and they hold no prerelease; nothing was changed",
+            )
+        })?;
         // The chosen release is read again as one document. GitHub does not
         // document that list entries carry a complete asset inventory, and this
         // way the admitted document has the same single-release byte budget

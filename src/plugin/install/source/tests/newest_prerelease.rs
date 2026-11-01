@@ -201,7 +201,9 @@ fn every_page_up_to_the_third_is_read_and_a_fourth_is_never_requested() {
     ]);
     assert_eq!(
         server.inspect_prerelease().unwrap_err(),
-        Problem("no published prerelease within the first 300 releases; nothing was changed")
+        Problem(
+            "the release list is longer than the 300 releases read and they hold no prerelease; nothing was changed"
+        )
     );
     assert_eq!(list_requests(&server).len(), 3);
     assert!(server
@@ -250,7 +252,7 @@ fn a_short_page_ends_the_list_before_the_bound() {
     let server = prerelease_server(vec![Vec::new()]);
     assert_eq!(
         server.inspect_prerelease().unwrap_err(),
-        Problem("no published prerelease within the first 300 releases; nothing was changed")
+        Problem("no published prerelease in this repository; nothing was changed")
     );
     assert_eq!(list_requests(&server).len(), 1);
     assert_eq!(
@@ -728,4 +730,80 @@ fn a_cached_source_reopens_with_the_channel_of_its_newest_stored_inspection() {
     let reopened = cached();
     assert!(!reopened.is_prerelease());
     assert_eq!(reopened.release.snapshot.id, 7);
+}
+
+#[test]
+fn a_prerelease_replaces_an_install_only_when_confirmed_and_a_stable_release_of_its_bytes_rebinds_it(
+) {
+    let root = super::super::super::package::tests::OwnedRoot::new();
+    let server = prerelease_server(vec![vec![listed(30, true, false, "2026-10-01T00:00:00Z")]]);
+    let ordinary = install_at(
+        &server,
+        server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap(),
+        &root.0,
+    )
+    .unwrap()
+    .receipt;
+    let granted = ordinary.review(vec!["status".into()]);
+    assert!(ordinary.matches_review(&granted));
+    let prerelease = || {
+        server
+            .inspect_prerelease()
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap()
+    };
+
+    let unconfirmed = install_at(&server, prerelease(), &root.0).unwrap_err();
+    assert!(unconfirmed.0.contains("already installed"), "{unconfirmed}");
+    let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
+    assert_eq!(entry.receipt, ordinary);
+
+    let confirmed = prerelease().for_installed(&entry, None).unwrap();
+    assert!(confirmed.fresh_consent && !confirmed.is_update());
+    assert!(confirmed.review_description().contains("not carried over"));
+    let replaced = install_at(&server, confirmed, &root.0).unwrap().receipt;
+    assert_eq!(replaced.key(), ordinary.key());
+    assert_ne!(replaced.installation, ordinary.installation);
+    assert!(replaced.requires_development());
+    assert!(
+        !replaced.matches_review(&granted),
+        "the same identity must not carry the ordinary install's approval over"
+    );
+    let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
+    assert_eq!(entry.previous.as_ref(), Some(&ordinary));
+
+    // The same version under another commit or with other bytes is no update.
+    let stable = || {
+        server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0")
+            .unwrap()
+    };
+    for field in ["revision", "manifest", "package"] {
+        let mut different = stable();
+        match field {
+            "revision" => different.version.revision = "b".repeat(40),
+            "manifest" => different.version.manifest_sha256 = "b".repeat(64),
+            _ => different.artifact.sha256 = "b".repeat(64),
+        }
+        let refused = different.for_update(&entry, None).unwrap_err();
+        assert!(refused.0.contains("publisher inconsistency"), "{field}");
+    }
+
+    let approved = replaced.review(vec!["status".into()]);
+    let rebinding = stable().for_update(&entry, None).unwrap();
+    assert!(rebinding.review_description().contains("ordinary install"));
+    let rebound = install_at(&server, rebinding, &root.0).unwrap().receipt;
+    assert_eq!(rebound.key(), replaced.key());
+    assert_eq!(rebound.installation, replaced.installation);
+    assert_eq!(rebound.package_sha256, replaced.package_sha256);
+    assert_eq!(rebound.release().unwrap().release_id, 7);
+    assert!(!rebound.requires_development());
+    assert!(rebound.matches_review(&approved));
 }

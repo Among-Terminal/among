@@ -98,10 +98,6 @@ impl Inspection {
     /// observed snapshot itself, so a cached inspection keeps it as well.
     // `expect` rather than `allow`: once the Preferences development action
     // uses this, the unfulfilled expectation fails the build and is removed.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the development-mode Preferences action reads it")
-    )]
     pub fn is_prerelease(&self) -> bool {
         self.release.snapshot.is_prerelease()
     }
@@ -173,6 +169,12 @@ impl Inspection {
     pub fn summary(&self, check: impl Fn() -> Result<(), Problem>) -> Result<String, Problem> {
         let mut lines = vec![format!("{}/{} (repository {}, publisher {}) at {}", self.repository.owner, self.repository.name,
             self.repository_id, self.publisher_id, self.catalogue_revision), "Metadata snapshot only; inspection does not install or enable plugins. Hashes establish content consistency, not publisher authentication.".into()];
+        if self.is_prerelease() {
+            lines.push(format!(
+                "Development prerelease {}, not the latest stable release. Its packages start only with --plugin-development.",
+                self.release.snapshot.tag
+            ));
+        }
         for plugin in &self.catalogue.plugins {
             for version in &plugin.versions {
                 check()?;
@@ -243,6 +245,7 @@ impl Inspection {
             artifact,
             release: self.release.clone(),
             previous: None,
+            fresh_consent: false,
             source: SourceReceipt {
                 publisher_id: self.publisher_id,
                 catalogue_revision: self.catalogue_revision.clone(),
@@ -270,6 +273,7 @@ pub struct Selection {
     release: release::ResolvedRelease,
     source: SourceReceipt,
     previous: Option<Receipt>,
+    fresh_consent: bool,
 }
 
 impl Selection {
@@ -302,6 +306,7 @@ impl Selection {
                 "a prerelease replaces an installed plugin only through a confirmed replacement, never as an update",
             ));
         }
+        self.consistent_with(entry)?;
         if let Some(schema) = &self.version.manifest.settings {
             schema.effective(stored)?;
         }
@@ -309,9 +314,69 @@ impl Selection {
         Ok(self)
     }
 
-    pub fn is_update(&self) -> bool {
-        self.previous.is_some()
+    // A published version names one content. The same version may differ from
+    // the installed one only in where it was published: the stable release of
+    // the prerelease bytes, whose update rebinds the provenance.
+    fn consistent_with(&self, entry: &crate::plugin::inventory::Entry) -> Result<(), Problem> {
+        let installed = entry.inspected.as_ref().map_err(|problem| *problem)?;
+        if installed.manifest.version != self.version.manifest.version {
+            return Ok(());
+        }
+        if entry.receipt.manifest_sha256 != self.version.manifest_sha256
+            || entry.receipt.package_sha256 != self.artifact.sha256
+            || entry.receipt.revision != self.version.revision
+        {
+            return Err(Problem(
+                "publisher inconsistency: this version is already installed with different bytes or another commit; no update is offered",
+            ));
+        }
+        Ok(())
     }
+
+    /// Confirms that this prerelease replaces the installed generation of the
+    /// same identity. It keeps the identity and its settings but starts
+    /// disabled and without the replaced installation's grants.
+    pub fn replacing(
+        mut self,
+        entry: &crate::plugin::inventory::Entry,
+        stored: Option<&Value>,
+    ) -> Result<Self, Problem> {
+        if !self.is_prerelease()
+            || entry.receipt.release().map(|release| release.repository_id)
+                != Some(self.repository_id)
+            || entry.receipt.plugin_id != self.version.manifest.id
+        {
+            return Err(Problem(
+                "only a prerelease of the same plugin identity can replace an install",
+            ));
+        }
+        if let Some(schema) = &self.version.manifest.settings {
+            schema.effective(stored)?;
+        }
+        self.previous = Some(entry.receipt.clone());
+        self.fresh_consent = true;
+        Ok(self)
+    }
+
+    /// The action this selection offers over an installed generation: a
+    /// prerelease replaces it, any other release updates it.
+    pub fn for_installed(
+        self,
+        entry: &crate::plugin::inventory::Entry,
+        stored: Option<&Value>,
+    ) -> Result<Self, Problem> {
+        if self.is_prerelease() {
+            self.replacing(entry, stored)
+        } else {
+            self.for_update(entry, stored)
+        }
+    }
+
+    /// An update keeps the switch and grants; a replacement does not.
+    pub fn is_update(&self) -> bool {
+        self.previous.is_some() && !self.fresh_consent
+    }
+
 
     /// Whether the selected package comes from a development prerelease. The
     /// pre-commit re-observation repeats this same channel.
@@ -335,7 +400,20 @@ impl Selection {
                 &self.version.manifest.id,
             )
         });
-        format!("{}\nSelected version {} · catalogue-declared version commit {}\n{}\nRequired access: {}\nOptional access: {}\nThe exact release tag must resolve to this commit and remain consistent through the pre-commit recheck. This is content consistency, not build reproducibility or independent publisher authentication. Only this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "))
+        let base = format!("{}\nSelected version {} · catalogue-declared version commit {}\n{}\nRequired access: {}\nOptional access: {}\nThe exact release tag must resolve to this commit and remain consistent through the pre-commit recheck. This is content consistency, not build reproducibility or independent publisher authentication. Only this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "));
+        if self.fresh_consent {
+            format!("{base}\nThis prerelease replaces the installed generation under the same identity and keeps its local settings. It starts disabled, and access granted to the replaced installation is not carried over. It starts only with --plugin-development.")
+        } else if self.is_prerelease() {
+            format!("{base}\nThis prerelease starts only with --plugin-development.")
+        } else if self
+            .previous
+            .as_ref()
+            .is_some_and(Receipt::requires_development)
+        {
+            format!("{base}\nThis stable release replaces a development generation; after it the plugin is an ordinary install that starts without --plugin-development.")
+        } else {
+            base
+        }
     }
     pub fn description(&self) -> String {
         let architecture = match self.artifact.architecture {
@@ -343,14 +421,19 @@ impl Selection {
             super::metadata::Architecture::Arm64 => "arm64",
         };
         format!(
-            "github:{}/{} · version {} · {}/{} · asset {} · {} bytes",
+            "github:{}/{} · version {} · {}/{} · asset {} · {} bytes{}",
             self.repository_id,
             self.version.manifest.id,
             self.version.manifest.version,
             self.artifact.os,
             architecture,
             self.artifact.asset,
-            self.artifact.size
+            self.artifact.size,
+            if self.is_prerelease() {
+                " · prerelease"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -403,13 +486,6 @@ impl Job {
     /// `releases/latest`, with the same identity, inventory, catalogue and tag
     /// checks. An ordinary instance refuses before any thread, worker slot or
     /// request exists.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the development-mode Preferences action starts it"
-        )
-    )]
     pub fn refresh_prerelease(repository_id: u64) -> Result<Self, Problem> {
         if !crate::plugin::development::enabled() {
             return Err(Problem(release::DEVELOPMENT_ONLY));
@@ -730,10 +806,10 @@ impl Operation {
             manifest_sha256: version.manifest_sha256.clone(),
             package_sha256: artifact.sha256.clone(),
             generation: store::token(),
-            installation: selected.previous.as_ref().map_or_else(
-                || Some(store::token()),
-                |previous| previous.installation.clone(),
-            ),
+            installation: match &selected.previous {
+                Some(previous) if !selected.fresh_consent => previous.installation.clone(),
+                _ => Some(store::token()),
+            },
         };
         let anticipated = artifact
             .members
@@ -781,6 +857,12 @@ impl Operation {
         }
         self.check_selection_identity(&selected).await?;
         match &selected.previous {
+            Some(previous) if selected.fresh_consent => transaction.commit_replacement(
+                receipt,
+                previous,
+                || self.check(),
+                || self.progress(state, STAGING, COMMITTING),
+            ),
             Some(previous) => transaction.commit_update(
                 receipt,
                 previous,

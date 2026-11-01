@@ -356,6 +356,11 @@ impl Receipt {
                     review["repository_id"] = release.repository_id.into();
                     review["publisher_id"] = source.publisher_id.into();
                 }
+                // A prerelease shares its identity with the ordinary install,
+                // so its approval also names this installation.
+                if self.requires_development() {
+                    review["installation"] = self.installation.clone().into();
+                }
                 review
             }
             // Without a publisher the only thing an approval can be bound to is
@@ -375,6 +380,9 @@ impl Receipt {
                 Some(source) => {
                     review["repository_id"].as_u64() == Some(release.repository_id)
                         && review["publisher_id"].as_u64() == Some(source.publisher_id)
+                        && (!self.requires_development()
+                            || (self.installation.is_some()
+                                && review["installation"].as_str() == self.installation.as_deref()))
                 }
                 None => {
                     review["owner"].as_str() == Some(&release.owner)
