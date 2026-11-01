@@ -46,6 +46,20 @@ fn preparation_refuses_occupied_output_without_network_or_overwriting_evidence()
 }
 
 #[test]
+fn a_candidate_needs_its_complete_assets_and_never_overwrites_existing_output() -> Result<()> {
+    let root = fixture()?;
+    let assets = root.join("assets");
+    fs::create_dir(&assets)?;
+    assert!(release::prepare_candidate(&assets, &root.join("empty")).is_err());
+    fs::write(assets.join("among-plugins.json"), b"{}")?;
+    assert!(release::prepare_candidate(&assets, &root.join("incomplete")).is_err());
+    fs::write(root.join("preserve"), b"existing evidence")?;
+    assert!(release::prepare_candidate(&assets, &root).is_err());
+    assert_eq!(fs::read(root.join("preserve"))?, b"existing evidence");
+    Ok(())
+}
+
+#[test]
 fn both_native_workflow_jobs_use_release_binaries_and_keep_required_behaviour_controls(
 ) -> Result<()> {
     let bytes = include_str!("../../../.github/workflows/managed-transport.yml");
@@ -67,7 +81,7 @@ fn both_native_workflow_jobs_use_release_binaries_and_keep_required_behaviour_co
     assert_eq!(matrix[0]["runner"].as_str(), Some("ubuntu-24.04"));
     assert_eq!(matrix[1]["runner"].as_str(), Some("ubuntu-24.04-arm"));
     for control in [
-        "prepare-official-plugin-inputs",
+        "prepare-candidate-plugin-inputs",
         "check-plugin-install",
         "--example managed-status --example managed-pages",
         "real_companion_admits_only_after_review_and_publishes_correlated_status",

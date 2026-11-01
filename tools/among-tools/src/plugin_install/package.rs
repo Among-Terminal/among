@@ -84,7 +84,16 @@ fn host_test(root: &Path, records: &str) -> Result<PathBuf> {
     Ok(executable)
 }
 
-pub fn capture(root: &Path, records: &Path, output: &Path, scratch: &Path) -> Result<()> {
+/// Observes a native installation for the package checks. `candidate` names
+/// CI-built release assets to use until a release is published; without it
+/// the inputs come from the published release.
+pub fn capture(
+    root: &Path,
+    records: &Path,
+    output: &Path,
+    candidate: Option<&Path>,
+    scratch: &Path,
+) -> Result<()> {
     crate::preferences::owned_display()?;
     let source = clean_source(root)?;
     let record_bytes = profile::bounded(records, 8 * 1024 * 1024)?;
@@ -93,7 +102,10 @@ pub fn capture(root: &Path, records: &Path, output: &Path, scratch: &Path) -> Re
     let test_sha = storage::sha256(profile::bounded(&executable, 256 * 1024 * 1024)?.as_slice())?;
     let inputs =
         storage::private_directory(scratch, "among-package-profile-inputs")?.join("release");
-    super::release::prepare(&inputs)?;
+    match candidate {
+        Some(assets) => super::release::prepare_candidate(assets, &inputs)?,
+        None => super::release::prepare(&inputs)?,
+    };
     let observed = super::run(&executable, &inputs, scratch)?;
     let lifecycle = storage::parse_json(&profile::bounded(
         &observed.join("published-release-lifecycle.json"),

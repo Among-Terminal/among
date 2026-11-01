@@ -177,7 +177,7 @@ fn local_catalogue_installs_and_replaces_only_with_explicit_review_in_developmen
     println!("PASS development-mode Preferences showed the mode and the local catalogue action, installed a local schema2 package disabled into development/sample through review, refused nothing silently, and replaced it only after a separate confirmation with a new consent token.");
 }
 
-fn local_window() -> adw::PreferencesWindow {
+pub(super) fn local_window() -> adw::PreferencesWindow {
     let title = "Install from local catalogue";
     wait_for(
         || {

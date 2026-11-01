@@ -174,11 +174,14 @@ fn capture_live_profile(
 }
 
 pub(super) fn inspect(
+    ctx: &Window,
     preferences: &adw::PreferencesWindow,
     revision: &str,
 ) -> adw::PreferencesWindow {
     focus(preferences);
-    press(&button(preferences, "Inspect repository…"));
+    if !super::candidate::present_inspector(ctx, preferences) {
+        press(&button(preferences, "Inspect repository…"));
+    }
     let view = inspector();
     focus(&view);
     let address = widgets(view.upcast_ref())
@@ -468,7 +471,7 @@ pub(super) fn run() {
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
-    let view = inspect(&preferences, revision);
+    let view = inspect(&ctx, &preferences, revision);
     let mut receipts = Vec::new();
     for plugin in &catalogue.plugins {
         let version = &plugin.versions[0];

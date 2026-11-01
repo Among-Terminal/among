@@ -117,6 +117,7 @@ pub(crate) fn present_sources_for_test(
 #[cfg(test)]
 pub(crate) fn present_prerelease_for_test(
     parent: &gtk::Window,
+    latest: Rc<super::repository_sources::Refresh>,
     prerelease: Rc<super::repository_sources::Refresh>,
     install: Rc<Install>,
     changed: Rc<dyn Fn()>,
@@ -130,7 +131,7 @@ pub(crate) fn present_prerelease_for_test(
         changed,
         Some(root),
         SourceRefresh {
-            latest: Rc::new(Job::refresh),
+            latest,
             prerelease: Some(prerelease),
         },
         details,

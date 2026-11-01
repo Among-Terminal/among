@@ -26,6 +26,13 @@ impl Reply {
     pub(crate) fn set_json(&mut self, value: Value) {
         self.body = value.to_string().into_bytes();
     }
+    pub(crate) fn bytes(body: Vec<u8>) -> Self {
+        Self {
+            body,
+            ..Self::json(Value::Null)
+        }
+    }
+
     pub(crate) fn json(value: Value) -> Self {
         Self {
             status: 200,
@@ -194,6 +201,13 @@ impl Server {
     pub(crate) fn refresh(&self, repository_id: u64) -> Result<Job, Problem> {
         Job::start_target(
             Target::Registered(repository_id, release::Channel::Latest),
+            Some(self.client(true)),
+        )
+    }
+
+    pub(crate) fn refresh_prerelease(&self, repository_id: u64) -> Result<Job, Problem> {
+        Job::start_target(
+            Target::Registered(repository_id, release::Channel::Prerelease),
             Some(self.client(true)),
         )
     }

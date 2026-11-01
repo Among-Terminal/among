@@ -17,6 +17,9 @@ pub use observation::select;
 
 pub const REPOSITORY: u64 = 1431055733;
 pub const PUBLISHER: u64 = 339567100;
+// Synthetic facts of a CI-built candidate; no such release exists.
+const CANDIDATE_RELEASE: u64 = 900_000;
+const CANDIDATE_TAG: &str = "v0.2.0";
 
 fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
@@ -398,12 +401,61 @@ fn download(root: &Path, asset: &Value, name: &str, maximum: u64) -> Result<Path
     Ok(path)
 }
 
+/// Which published release to observe.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Latest,
+    Prerelease,
+}
+
+// The newest non-draft prerelease by creation time, then numeric ID, within
+// three pages. GitHub's timestamps share one fixed format, so they sort as text.
+fn newest_prerelease(root: &Path, name: &str) -> Result<Value> {
+    let mut newest: Option<(String, u64)> = None;
+    for page in 1..=3 {
+        let listed = metadata(
+            root,
+            &format!("repositories/{REPOSITORY}/releases?per_page=100&page={page}"),
+            &format!("{name}-page-{page}.json"),
+        )?;
+        let entries = listed.as_array().ok_or("release list is not an array")?;
+        for entry in entries {
+            if entry["prerelease"] == true && entry["draft"] == false {
+                let candidate = (text(entry, "created_at")?.to_owned(), number(entry, "id")?);
+                if newest.as_ref().is_none_or(|best| candidate > *best) {
+                    newest = Some(candidate);
+                }
+            }
+        }
+        if entries.len() < 100 {
+            break;
+        }
+    }
+    let (_, id) = newest.ok_or("no published prerelease was found within three pages")?;
+    observation::prerelease_snapshot(&metadata(
+        root,
+        &format!("repositories/{REPOSITORY}/releases/{id}"),
+        name,
+    )?)
+}
+
+fn observe(root: &Path, name: &str, channel: Channel) -> Result<Value> {
+    match channel {
+        Channel::Latest => latest(root, name),
+        Channel::Prerelease => newest_prerelease(root, name),
+    }
+}
+
 pub fn prepare(destination: &Path) -> Result<PathBuf> {
+    prepare_channel(destination, Channel::Latest)
+}
+
+pub fn prepare_channel(destination: &Path, channel: Channel) -> Result<PathBuf> {
     fs::DirBuilder::new().mode(0o700).create(destination)?;
     let root = destination.canonicalize()?;
     let architecture = crate::platform::discover()?.architecture;
     repository(&root, "repository.json")?;
-    let snapshot = latest(&root, "latest.json")?;
+    let snapshot = observe(&root, "latest.json", channel)?;
     let catalogue_asset = observation::asset(&snapshot, "among-plugins.json")?;
     let catalogue_path = download(&root, catalogue_asset, "among-plugins.json", 1024 * 1024)?;
     let catalogue = storage::parse_json(&checked_bytes(
@@ -412,17 +464,138 @@ pub fn prepare(destination: &Path) -> Result<PathBuf> {
         text(catalogue_asset, "sha256")?,
     )?)?;
     let (binding, chain) = resolve(&root, &snapshot, "initial")?;
-    let revision = text(&binding, "commit")?;
+    let (inputs, catalogue) = assemble(
+        &root,
+        &architecture,
+        &snapshot,
+        catalogue,
+        (&binding, &chain),
+        |asset, name, maximum| download(&root, asset, name, maximum),
+    )?;
+    observation::validate(&inputs, &catalogue, &architecture)?;
+    repository(&root, "repository-final.json")?;
+    let final_snapshot = observe(&root, "latest-final.json", channel)?;
+    let (final_binding, final_chain) = resolve(&root, &final_snapshot, "final")?;
+    if inputs["release_snapshot"] != final_snapshot
+        || inputs["release_binding"] != final_binding
+        || inputs["tag_chain"] != final_chain
+    {
+        return Err(
+            "official source/latest/assets/tag changed during preparation; review again".into(),
+        );
+    }
+    seal(&root, &inputs)
+}
+
+/// The same input directory as `prepare`, from a complete release candidate
+/// built in CI instead of a published release. The release documents are
+/// synthetic and marked `candidate`; they still pass the ordinary stable
+/// observation, so nothing downstream is relaxed. Host tests serve them over
+/// their controlled HTTPS server. This is candidate acceptance, not acceptance
+/// of published bytes.
+pub fn prepare_candidate(assets: &Path, destination: &Path) -> Result<PathBuf> {
+    fs::DirBuilder::new().mode(0o700).create(destination)?;
+    let root = destination.canonicalize()?;
+    let assets = assets.canonicalize()?;
+    let architecture = crate::platform::discover()?.architecture;
+    let mut names = fs::read_dir(&assets)?
+        .map(|entry| Ok(entry?.file_name().into_string().map_err(|_| "non-UTF8 asset name")?))
+        .collect::<Result<Vec<_>>>()?;
+    names.sort();
+    let mut entries = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        let bytes = regular_bytes(&assets.join(name), 64 * 1024 * 1024)?;
+        entries.push(json!({"id":CANDIDATE_RELEASE + 1 + index as u64,"name":name,"size":bytes.len(),
+            "state":"uploaded","digest":format!("sha256:{}",storage::sha256(bytes.as_slice())?)}));
+    }
+    let document = json!({"id":CANDIDATE_RELEASE,"tag_name":CANDIDATE_TAG,"draft":false,
+        "prerelease":false,"immutable":true,"created_at":"2026-10-30T00:00:00Z","assets":entries});
+    let snapshot = observation::snapshot(&document)?;
+    let catalogue_asset = observation::asset(&snapshot, "among-plugins.json")?;
+    let catalogue = storage::parse_json(&checked_bytes(
+        &assets.join("among-plugins.json"),
+        number(catalogue_asset, "size")?,
+        text(catalogue_asset, "sha256")?,
+    )?)?;
+    let revision = catalogue["plugins"][0]["versions"][0]["revision"]
+        .as_str()
+        .ok_or("candidate catalogue names no revision")?
+        .to_owned();
+    let binding = json!({"tag":CANDIDATE_TAG,"object":revision,"commit":revision});
+    let chain = json!([["commit", revision]]);
+    fs::copy(
+        assets.join("among-plugins.json"),
+        root.join("among-plugins.json"),
+    )?;
+    let (mut inputs, catalogue) = assemble(
+        &root,
+        &architecture,
+        &snapshot,
+        catalogue,
+        (&binding, &chain),
+        |asset, name, _| {
+            let target = storage::safe_path(&root, Path::new(name))?;
+            fs::copy(assets.join(text(asset, "name")?), &target)?;
+            checked_bytes(&target, number(asset, "size")?, text(asset, "sha256")?)?;
+            Ok(target)
+        },
+    )?;
+    inputs["candidate"] = json!(true);
+    observation::validate(&inputs, &catalogue, &architecture)?;
+    for (name, value) in [
+        ("latest.json", document),
+        (
+            "repository.json",
+            json!({"id":REPOSITORY,"private":false,"name":"among-plugins",
+                "full_name":"Among-Terminal/among-plugins",
+                "owner":{"id":PUBLISHER,"login":"Among-Terminal"}}),
+        ),
+        (
+            "initial-ref.json",
+            json!({"ref":format!("refs/tags/{CANDIDATE_TAG}"),"object":{"type":"commit","sha":revision}}),
+        ),
+        ("initial-commit.json", json!({"sha":revision})),
+    ] {
+        storage::atomic_write(&root, Path::new(name), &serde_json::to_vec(&value)?, 0o600)?;
+    }
+    seal(&root, &inputs)
+}
+
+fn seal(root: &Path, inputs: &Value) -> Result<PathBuf> {
+    let bytes = serde_json::to_vec_pretty(inputs)?;
+    if bytes.len() > 256 * 1024 {
+        return Err("prepared release observation exceeds its byte bound".into());
+    }
+    storage::atomic_write(root, Path::new("inputs.json"), &bytes, 0o600)?;
+    verify(root)?;
+    println!(
+        "Release inputs: {} (not installation or runtime acceptance)",
+        root.display()
+    );
+    Ok(root.to_path_buf())
+}
+
+// Everything derived from one observed release; `transfer` supplies its bytes.
+fn assemble(
+    root: &Path,
+    architecture: &str,
+    snapshot: &Value,
+    catalogue: Value,
+    (binding, chain): (&Value, &Value),
+    transfer: impl Fn(&Value, &str, u64) -> Result<PathBuf>,
+) -> Result<(Value, Value)> {
+    let catalogue_asset = observation::asset(snapshot, "among-plugins.json")?;
+    let revision = text(binding, "commit")?;
     let source_name = format!("source-{revision}.tar.gz");
-    let source = observation::asset(&snapshot, &source_name)?;
-    let selections = select(&catalogue, &architecture)?;
+    let source = observation::asset(snapshot, &source_name)?;
+    let selections = select(&catalogue, architecture)?;
     // Both native declarations must bind even though this runner transfers one.
     for (version, _) in &selections {
         if version["revision"] != revision {
             return Err("catalogue source differs from the resolved release tag".into());
         }
         for artifact in version["artifacts"].as_array().ok_or("artifacts absent")? {
-            let observed = observation::asset(&snapshot, text(artifact, "asset")?)?;
+            let observed = observation::asset(snapshot, text(artifact, "asset")?)?;
             if observed["size"] != artifact["size"] || observed["sha256"] != artifact["sha256"] {
                 return Err("catalogue package differs from the observed release asset".into());
             }
@@ -431,9 +604,9 @@ pub fn prepare(destination: &Path) -> Result<PathBuf> {
     let mut plugins = Vec::new();
     for (version, artifact) in selections {
         let id = text(&version["manifest"], "id")?;
-        let selected = observation::asset(&snapshot, text(artifact, "asset")?)?;
-        let package = download(&root, selected, &format!("{id}.tar.gz"), 64 * 1024 * 1024)?;
-        let directory = unpack(&root, &package, id, artifact)?;
+        let selected = observation::asset(snapshot, text(artifact, "asset")?)?;
+        let package = transfer(selected, &format!("{id}.tar.gz"), 64 * 1024 * 1024)?;
+        let directory = unpack(root, &package, id, artifact)?;
         let members = artifact["members"].as_array().ok_or("members absent")?;
         let manifest_member = members
             .iter()
@@ -471,34 +644,12 @@ pub fn prepare(destination: &Path) -> Result<PathBuf> {
             "sha256":artifact["sha256"],"manifest_sha256":version["manifest_sha256"],
             "entrypoint":entrypoint,"binary":binary,"binary_sha256":member["sha256"],"architecture":architecture}));
     }
-    download(&root, source, "source.tar.gz", 32 * 1024 * 1024)?;
+    transfer(source, "source.tar.gz", 32 * 1024 * 1024)?;
     let inputs = json!({"schema_version":2,"kind":"published_release_inputs_not_installed",
         "repository_id":REPOSITORY,"publisher_id":PUBLISHER,"catalogue_revision":revision,
         "catalogue_sha256":catalogue_asset["sha256"],"catalogue_size":catalogue_asset["size"],
         "source_revision":revision,"release_id":snapshot["id"],"release_snapshot":snapshot,
         "release_binding":binding,"tag_chain":chain,"architecture":architecture,"plugins":plugins,
         "source_archive":source_name,"source_asset_id":source["id"],"source_size":source["size"],"source_sha256":source["sha256"]});
-    observation::validate(&inputs, &catalogue, &architecture)?;
-    repository(&root, "repository-final.json")?;
-    let final_snapshot = latest(&root, "latest-final.json")?;
-    let (final_binding, final_chain) = resolve(&root, &final_snapshot, "final")?;
-    if inputs["release_snapshot"] != final_snapshot
-        || inputs["release_binding"] != final_binding
-        || inputs["tag_chain"] != final_chain
-    {
-        return Err(
-            "official source/latest/assets/tag changed during preparation; review again".into(),
-        );
-    }
-    let bytes = serde_json::to_vec_pretty(&inputs)?;
-    if bytes.len() > 256 * 1024 {
-        return Err("prepared release observation exceeds its byte bound".into());
-    }
-    storage::atomic_write(&root, Path::new("inputs.json"), &bytes, 0o600)?;
-    verify(&root)?;
-    println!(
-        "Release inputs: {} (not installation or runtime acceptance)",
-        root.display()
-    );
-    Ok(root)
+    Ok((inputs, catalogue))
 }

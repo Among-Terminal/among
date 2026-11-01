@@ -377,7 +377,6 @@ impl Selection {
         self.previous.is_some() && !self.fresh_consent
     }
 
-
     /// Whether the selected package comes from a development prerelease. The
     /// pre-commit re-observation repeats this same channel.
     pub fn is_prerelease(&self) -> bool {

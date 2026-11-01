@@ -6122,9 +6122,12 @@ mod tests {
             let inputs =
                 std::path::PathBuf::from(std::env::var_os("AMONG_OFFICIAL_PLUGIN_INPUTS").unwrap());
             let catalogue_bytes = std::fs::read(inputs.join("among-plugins.json")).unwrap();
+            let prepared: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(inputs.join("inputs.json")).unwrap())
+                    .unwrap();
             assert_eq!(
                 crate::plugin::inventory::checksum(&catalogue_bytes).unwrap(),
-                "510bdef3b532ed266d10fd925bf15a0d7d536c1889f2454e8d9a7cb446cf8a5b"
+                prepared["catalogue_sha256"].as_str().unwrap()
             );
             let catalogue =
                 crate::plugin::install::metadata::Catalogue::parse(&catalogue_bytes).unwrap();

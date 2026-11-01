@@ -76,7 +76,27 @@ pub(super) fn snapshot(release: &Value) -> Result<Value> {
     Ok(json!({"id":release["id"],"tag":release["tag_name"],"assets":assets}))
 }
 
+/// The optional prerelease job's observation: every check of `snapshot` except
+/// the stable state, and the result stays marked so it cannot pass as stable.
+pub(super) fn prerelease_snapshot(release: &Value) -> Result<Value> {
+    if release["prerelease"] != true {
+        return Err("selected release is not a prerelease".into());
+    }
+    let mut stable = release.clone();
+    stable["prerelease"] = json!(false);
+    let mut observed = snapshot(&stable)?;
+    observed["prerelease"] = json!(true);
+    Ok(observed)
+}
+
 pub(super) fn validate_snapshot(value: &Value) -> Result<()> {
+    let mut value = value.clone();
+    if value["prerelease"] == true {
+        if let Some(fields) = value.as_object_mut() {
+            fields.remove("prerelease");
+        }
+    }
+    let value = &value;
     let entries = value["assets"].as_array().ok_or("stored assets absent")?;
     if entries.is_empty() || entries.len() > 64 {
         return Err("stored release inventory exceeds its bounds".into());

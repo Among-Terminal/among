@@ -14,7 +14,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plugin-candidate:
+    uses: ./.github/workflows/plugin-candidate.yml
+    with:
+      artifact: plugin-candidate-checks
+
+  # Runs only by hand once the prerelease exists, and its failure fails nothing.
+  # It becomes a required release-candidate condition after publication.
+  published-prerelease:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Observe the published prerelease
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          cargo +1.98.1 build --release --locked --manifest-path tools/among-tools/Cargo.toml
+          tools/among-tools/target/release/among-tools prepare-official-plugin-inputs --prerelease "$RUNNER_TEMP/official-prerelease"
+
   native:
+    needs: plugin-candidate
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +53,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: plugin-candidate-checks
+          path: ${{ runner.temp }}/plugin-candidate
       - name: Native and isolated-display prerequisites
         run: |
           sudo apt-get update
@@ -123,7 +153,11 @@ jobs:
             tools/among-tools/target/release/among-tools check-live-resize target/release/among
           cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/preferences-tests.jsonl"
           host_tests="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one actual among test executable") end' "$RUNNER_TEMP/preferences-tests.jsonl")"
-          tools/among-tools/target/release/among-tools prepare-official-plugin-inputs "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          tools/among-tools/target/release/among-tools prepare-candidate-plugin-inputs \
+            "$RUNNER_TEMP/plugin-candidate" "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          tools/among-tools/target/release/among-tools ci-x11 \
+            tools/among-tools/target/release/among-tools check-development-install "$host_tests" \
+            "$AMONG_CHECK_ROOT/official-plugin-inputs" "$RUNNER_TEMP/plugin-candidate"
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-plugin-install "$host_tests" \
             "$AMONG_CHECK_ROOT/official-plugin-inputs" | tee "$AMONG_CHECK_ROOT/published-install.log"

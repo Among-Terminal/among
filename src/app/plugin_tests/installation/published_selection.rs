@@ -85,7 +85,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
 
     // Use the production manager action, network client and installer. No test
     // TLS roots, archive substitution, receipt injection or executable build.
-    let view = inspect(&preferences, &revision);
+    let view = inspect(&ctx, &preferences, &revision);
     for (_, _, _, expected) in &rows {
         let row = selected_row(&view, expected);
         let install = button(&row, "Install disabled");
@@ -151,7 +151,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     }
     view.destroy();
 
-    let view = inspect(&preferences, &revision);
+    let view = inspect(&ctx, &preferences, &revision);
     let row = selected_row(&view, &clock_description);
     press(&button(&row, "Apply update…"));
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));

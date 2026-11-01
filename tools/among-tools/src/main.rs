@@ -21,8 +21,10 @@ Usage:
   among-tools check-preferences-from-cargo <cargo-test-executables.jsonl> <prebuilt-plugins-directory>
   among-tools install-prebuilt <source-root> <among-binary> <native-uninstaller>
   among-tools install <source-root> [--binary PATH | --install-deps | --uninstall]
-  among-tools prepare-official-plugin-inputs <new-output-directory>
-  among-tools capture-package-plugin-profile <source-root> <cargo-host-test-records> <new-directory>
+  among-tools prepare-official-plugin-inputs [--prerelease] <new-output-directory>
+  among-tools prepare-candidate-plugin-inputs <candidate-assets> <new-output-directory>
+  among-tools check-development-install <host-test-executable> <prepared-inputs> <candidate-assets>
+  among-tools capture-package-plugin-profile <source-root> <cargo-host-test-records> <new-directory> [<candidate-assets>]
   among-tools check-package-plugin-profile <profile-directory> <host-source-sha>
   among-tools check-plugin-install <among-test-executable> <official-plugin-inputs>
   among-tools check-sessions <among-binary>
@@ -749,11 +751,45 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         [command, destination] if command == "prepare-official-plugin-inputs" => {
             among_tools::plugin_install::release::prepare(Path::new(destination))?;
         }
+        [command, flag, destination]
+            if command == "prepare-official-plugin-inputs" && flag == "--prerelease" =>
+        {
+            among_tools::plugin_install::release::prepare_channel(
+                Path::new(destination),
+                among_tools::plugin_install::release::Channel::Prerelease,
+            )?;
+        }
+        [command, assets, destination] if command == "prepare-candidate-plugin-inputs" => {
+            among_tools::plugin_install::release::prepare_candidate(
+                Path::new(assets),
+                Path::new(destination),
+            )?;
+        }
+        [command, executable, inputs, assets] if command == "check-development-install" => {
+            among_tools::plugin_install::development(
+                Path::new(executable),
+                Path::new(inputs),
+                Path::new(assets),
+                &among_tools::scratch::root()?,
+            )?;
+        }
         [command, root, records, output] if command == "capture-package-plugin-profile" => {
             among_tools::plugin_install::package::capture(
                 Path::new(root),
                 Path::new(records),
                 Path::new(output),
+                None,
+                &among_tools::scratch::root()?,
+            )?;
+        }
+        [command, root, records, output, assets]
+            if command == "capture-package-plugin-profile" =>
+        {
+            among_tools::plugin_install::package::capture(
+                Path::new(root),
+                Path::new(records),
+                Path::new(output),
+                Some(Path::new(assets)),
                 &among_tools::scratch::root()?,
             )?;
         }

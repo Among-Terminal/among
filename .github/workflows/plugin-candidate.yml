@@ -1,0 +1,117 @@
+name: Plugin candidate
+
+# Builds the official plugins from one pinned among-plugins commit on native
+# amd64 and arm64 and uploads the complete release asset set. Host checks
+# consume these bytes until a release is published: they are built in CI, not
+# the approved preparation, so what they prove is candidate acceptance.
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        description: Artifact name, unique within the calling run.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  PLUGINS_REVISION: ac16a298b42022d9d62017e5d668e72458ba3b69
+  TOOL_REVISION: 783c9b07d3a307e89260ae875987945d0885070a
+  REPOSITORY_ID: '1431055733'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            kernel: x86_64
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            kernel: aarch64
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      CARGO_BUILD_JOBS: '1'
+      RUSTUP_TOOLCHAIN: 1.98.1
+      RUSTFLAGS: ''
+      CARGO_ENCODED_RUSTFLAGS: ''
+    steps:
+      - name: Require the native build architecture
+        run: test "$(uname -m)" = "${{ matrix.kernel }}"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          repository: Among-Terminal/among-plugins
+          ref: ${{ env.PLUGINS_REVISION }}
+          path: author
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          repository: Among-Terminal/among-plugins
+          ref: ${{ env.TOOL_REVISION }}
+          path: tool
+      - name: Build the packaging tool and the plugins
+        run: |
+          set -euo pipefail
+          test "$(git -C author rev-parse HEAD)" = "$PLUGINS_REVISION"
+          test "$(git -C tool rev-parse HEAD)" = "$TOOL_REVISION"
+          rustup toolchain install 1.98.1 --profile minimal
+          cargo +1.98.1 build --release --locked --manifest-path tool/tools/among-tools/Cargo.toml
+          cargo +1.98.1 build --release --locked --manifest-path author/Cargo.toml --bins
+      - name: Package
+        run: |
+          set -euo pipefail
+          cd author
+          mkdir vendor
+          cargo +1.98.1 vendor --locked --versioned-dirs vendor > /dev/null
+          ../tool/tools/among-tools/target/release/among-tools author-packages \
+            "$PWD" "$PWD/target/release" "$PWD/vendor" "$REPOSITORY_ID" \
+            "$RUNNER_TEMP/build-${{ matrix.architecture }}"
+          mkdir "$RUNNER_TEMP/tool-${{ matrix.architecture }}"
+          cp ../tool/tools/among-tools/target/release/among-tools "$RUNNER_TEMP/tool-${{ matrix.architecture }}/"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.artifact }}-build-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/build-${{ matrix.architecture }}/
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.artifact }}-tool-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/tool-${{ matrix.architecture }}/
+          if-no-files-found: error
+          retention-days: 1
+
+  catalogue:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.artifact }}-tool-amd64
+          path: tool
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.artifact }}-build-amd64
+          path: build/amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.artifact }}-build-arm64
+          path: build/arm64
+      - name: Catalogue the candidate
+        run: |
+          set -euo pipefail
+          chmod 755 tool/among-tools
+          tool/among-tools author-catalogue build/amd64 build/arm64 "$REPOSITORY_ID" v0.2.0 "$PLUGINS_REVISION" release
+          (cd release/assets && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.artifact }}
+          path: release/assets/
+          if-no-files-found: error
+          retention-days: 2
