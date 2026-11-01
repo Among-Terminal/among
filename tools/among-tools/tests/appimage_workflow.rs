@@ -41,7 +41,7 @@ fn appimage_workflow_is_callable_read_only_and_keeps_the_artifact_contract() -> 
     let mut scripts = String::new();
     let mut artifacts = BTreeSet::new();
     for job in jobs.values() {
-        for step in job["steps"].as_array().ok_or("steps absent")? {
+        for step in job["steps"].as_array().into_iter().flatten() {
             if let Some(action) = step["uses"].as_str() {
                 let (_, sha) = action.split_once('@').ok_or("action pin absent")?;
                 assert!(
