@@ -67,6 +67,13 @@ jobs:
           path: snap-native-audit/
           if-no-files-found: error
           retention-days: 14
+      - name: Exact native sources of the staged packages
+        run: |
+          docker run --rm \
+            --mount "type=bind,source=$PWD/parts/among/build/among-tools-target/release/among-tools,target=/input/among-tools,readonly" \
+            --mount "type=bind,source=$PWD/snap-native-audit,target=/input/native,readonly" \
+            --mount "type=bind,source=$PWD/packaging/ci/snap-sources/check.sh,target=/input/check.sh,readonly" \
+            ubuntu:24.04 sh /input/check.sh
       - name: Inspect and install exact bytes
         id: install
         env:
