@@ -131,7 +131,7 @@ Opening it reads metadata only. Each compatible version has its own
 
 The catalogue supplies the expected manifest digest, package size and SHA-256,
 and the complete member list, and the package then goes through the same
-archive, ELF, member, digest, grant and sandbox checks as a release package.
+archive, ELF, member, digest and grant checks as a release package.
 The directory, the catalogue and the package must be owned by you, not
 writable by group or others, and not symbolic links; a package with another
 size or digest is refused before it is unpacked. If the catalogue changes
@@ -150,8 +150,9 @@ and receives no access granted to the replaced install; the replaced
 generation stays available as the previous one.
 
 Development installs are listed in every run, but outside development mode
-they do not start, even if their switch was left on; the row says that the
-install starts only with `--plugin-development`.
+they do not start, even if their switch was left on: an enabled row then says
+that the install starts only with `--plugin-development`, and the details
+always do.
 
 #### Use the latest prerelease of a source
 

@@ -152,28 +152,20 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     view.destroy();
 
     let view = inspect(&ctx, &preferences, &revision);
-    let row = selected_row(&view, &clock_description);
-    press(&button(&row, "Apply update…"));
-    wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
-    let dialog = view
-        .visible_dialog()
-        .unwrap()
-        .downcast::<adw::AlertDialog>()
-        .unwrap();
-    assert!(dialog.body().starts_with(&format!("{clock_description}\n")));
-    assert!(!dialog.is_body_use_markup());
-    let body = widgets(dialog.upcast_ref())
+    // An installed version is not an update of itself, and the row says why.
+    let installed_row = widgets(view.upcast_ref())
         .into_iter()
-        .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
-        .find(|label| label.text().starts_with(&clock_description))
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| {
+            row.subtitle()
+                .is_some_and(|text| text.starts_with(&clock_description))
+        })
         .unwrap();
-    wait_for(
-        || body.is_mapped() && body.width() > 0,
-        Duration::from_secs(2),
-    );
-    screenshot_dialog(dialog.upcast_ref(), "published-native-selection-review");
-    press(&button(&dialog, "Cancel"));
-    wait_for(|| view.visible_dialog().is_none(), Duration::from_secs(2));
+    assert!(installed_row
+        .subtitle()
+        .unwrap()
+        .ends_with("this version is already installed"));
+    assert!(!button(&installed_row, "Apply update…").is_sensitive());
     assert_eq!(
         crate::plugin::inventory::read(&root).unwrap()[0].receipt,
         *receipt

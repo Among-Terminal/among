@@ -248,6 +248,20 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     );
     let ordinary = selected(&ctx);
     assert!(!ordinary.requires_development());
+    ctx.state
+        .borrow_mut()
+        .settings
+        .managed_review_for_installation(
+            KEY,
+            ordinary.review(vec!["status".into()]),
+            ordinary.installation.as_deref(),
+        )
+        .unwrap();
+    ctx.state
+        .borrow_mut()
+        .settings
+        .plugin_changed(KEY, false)
+        .unwrap();
 
     // The prerelease replaces it only through its confirmation.
     press(&button(&view, "Use latest prerelease"));
@@ -267,6 +281,13 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     assert_ne!(replaced.installation, ordinary.installation);
     assert!(!replaced.matches_review(&ordinary.review(vec!["status".into()])));
     assert!(!ctx.state.borrow().plugins.desired_enabled(KEY));
+    // The replaced approval must not wait in the settings for the stable
+    // update of this generation, which keeps its token.
+    let config = crate::settings::directory()
+        .unwrap()
+        .join("managed-plugins.json");
+    let saved: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+    assert!(saved["plugins"][KEY].get("review").is_none());
     starts_under_the_flag(&ctx, KEY);
 
     // The stable release of the same bytes and commit rebinds it.

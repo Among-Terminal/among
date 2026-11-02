@@ -192,10 +192,10 @@ the approved preparation. `capture-package-plugin-profile` takes the same assets
 as an optional last argument.
 
 `among-tools check-development-install <among-test-executable> <inputs> <assets>`
-runs two native tests in their own processes: a stable install replaced by the
-prerelease and rebound by the stable release of the same bytes, and installation
-of the same packages from a local catalogue. Both start the package under the
-flag. `prepare-official-plugin-inputs --prerelease` observes a real published
+runs three native tests in their own processes: selection of the release in the
+inspector; a stable install replaced by the prerelease and rebound by the stable
+release of the same bytes; and installation of the same packages from a local
+catalogue. The last two start the package under the flag. `prepare-official-plugin-inputs --prerelease` observes a real published
 prerelease; its manual job is not required before publication.
 
 `among-tools check-plugin-install <among-test-executable> <input-directory>` requires

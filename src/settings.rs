@@ -108,17 +108,7 @@ impl PreferencesStorage {
     }
 
     pub fn plugin_changed(&mut self, name: &str, enabled: bool) -> Result<(), StorageError> {
-        let identity = name
-            .strip_prefix("github:")
-            .and_then(|key| key.split_once('/'))
-            .and_then(|(repository, plugin)| {
-                crate::plugin::manifest::ManagedIdentity::new(
-                    repository.parse().ok()?,
-                    plugin.into(),
-                )
-                .ok()
-            });
-        if identity.is_none_or(|identity| identity.key() != name) {
+        if crate::plugin::manifest::ManagedIdentity::from_key(name).is_none() {
             return Err(invalid(
                 Path::new(Document::ManagedPlugins.filename()),
                 "plugin enablement requires an authoritative managed identity",
@@ -207,6 +197,13 @@ impl PreferencesStorage {
         self.flush_managed().map(|_| ())
     }
 
+    /// Forgets the access approved for an installation that was replaced, so
+    /// it cannot come back through a later update of the replacement.
+    pub fn retire_review(&mut self, key: &str) -> Result<(), StorageError> {
+        self.pending_managed.entry(key.into()).or_default().review = Some(Value::Null);
+        self.flush_managed().map(|_| ())
+    }
+
     pub fn retained_settings(&mut self) -> Result<Vec<RetainedSettings>, StorageError> {
         let result = self.path(Document::ManagedPlugins).and_then(|path| {
             let document = load(&path, Document::ManagedPlugins)?;
@@ -218,15 +215,7 @@ impl PreferencesStorage {
             Ok(keys
                 .into_iter()
                 .filter_map(|key| {
-                    let (repository, plugin) = key.strip_prefix("github:")?.split_once('/')?;
-                    let identity = crate::plugin::manifest::ManagedIdentity::new(
-                        repository.parse().ok()?,
-                        plugin.into(),
-                    )
-                    .ok()?;
-                    if identity.key() != *key {
-                        return None;
-                    }
+                    let identity = crate::plugin::manifest::ManagedIdentity::from_key(key)?;
                     let saved = entries
                         .get(key)
                         .and_then(|entry| entry.get("settings"))
@@ -383,8 +372,14 @@ impl PreferencesStorage {
                     if let Some(installation) = &pending.installation {
                         entry["installation"] = json!(installation);
                     }
-                    if let Some(review) = &pending.review {
-                        entry["review"] = review.clone();
+                    match &pending.review {
+                        Some(Value::Null) => {
+                            if let Some(fields) = entry.as_object_mut() {
+                                fields.remove("review");
+                            }
+                        }
+                        Some(review) => entry["review"] = review.clone(),
+                        None => {}
                     }
                     if let Some((schema, changes)) = &pending.settings {
                         entry["settings"] = schema
@@ -898,6 +893,37 @@ mod tests {
                 assert_eq!(load(&path, Document::ManagedPlugins).unwrap(), edited);
             }
         }
+    }
+
+    #[test]
+    fn a_development_identity_saves_its_switch_and_loses_a_retired_review() {
+        let temp = Temp::new();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut storage = PreferencesStorage::new(Some(temp.0.clone()));
+        let key = "development/sample";
+        storage
+            .managed_review_changed(key, json!({"features":["status"]}))
+            .unwrap();
+        // Disabling must reach the disk, or the plugin starts again next run.
+        storage.plugin_changed(key, false).unwrap();
+        let path = temp.0.join("managed-plugins.json");
+        let saved = load(&path, Document::ManagedPlugins).unwrap();
+        assert_eq!(saved["plugins"][key]["enabled"], false);
+        assert_eq!(saved["plugins"][key]["review"]["features"][0], "status");
+        storage.retire_review(key).unwrap();
+        let saved = load(&path, Document::ManagedPlugins).unwrap();
+        assert!(saved["plugins"][key].get("review").is_none());
+        assert_eq!(saved["plugins"][key]["enabled"], false);
+        update(&path, Document::ManagedPlugins, |document| {
+            document["plugins"][key]["settings"] = json!({"version":1,"values":{}});
+            Ok(())
+        })
+        .unwrap();
+        // Retained settings of a development install can be seen and deleted.
+        assert_eq!(
+            storage.retained_settings().unwrap()[0].identity().key(),
+            key
+        );
     }
 
     #[test]

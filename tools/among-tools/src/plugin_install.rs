@@ -129,7 +129,7 @@ fn native_test(
     Ok((status, fs::read_to_string(&log_path)?))
 }
 
-/// The two required development paths over the same candidate bytes.
+/// The required acceptance cases over the same candidate bytes.
 pub fn development(executable: &Path, inputs: &Path, assets: &Path, scratch: &Path) -> Result<()> {
     crate::preferences::owned_display()?;
     let executable = executable.canonicalize()?;
@@ -209,7 +209,12 @@ pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> 
     }
     println!("Published profile: {}", profile.display());
     println!(
-        "PASS actual published-package native installation; evidence: {}",
+        "PASS native installation of {}; evidence: {}",
+        if prepared["candidate"] == true {
+            "CI-built candidate packages, not published bytes"
+        } else {
+            "actual published packages"
+        },
         base.display()
     );
     Ok(base)

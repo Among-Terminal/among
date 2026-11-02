@@ -56,6 +56,18 @@ impl ManagedIdentity {
         })
     }
 
+    /// The identity a settings key names, if it is exactly such a key.
+    pub fn from_key(key: &str) -> Option<Self> {
+        let identity = match key.strip_prefix(&format!("{DEVELOPMENT_NAMESPACE}/")) {
+            Some(plugin) => Self::development(plugin.into()).ok()?,
+            None => {
+                let (repository, plugin) = key.strip_prefix("github:")?.split_once('/')?;
+                Self::new(repository.parse().ok()?, plugin.into()).ok()?
+            }
+        };
+        (identity.key() == key).then_some(identity)
+    }
+
     pub fn local_id(&self) -> &str {
         &self.plugin
     }
@@ -455,6 +467,22 @@ mod tests {
             ManagedIdentity::new(1, "sample".into()).unwrap()
         );
         assert!(ManagedIdentity::development("../sample".into()).is_err());
+        assert_eq!(
+            ManagedIdentity::from_key("development/sample"),
+            Some(development)
+        );
+        assert_eq!(
+            ManagedIdentity::from_key("github:1/sample"),
+            ManagedIdentity::new(1, "sample".into()).ok()
+        );
+        for key in [
+            "github:01/sample",
+            "github:0/sample",
+            "development/../x",
+            "x",
+        ] {
+            assert_eq!(ManagedIdentity::from_key(key), None, "{key}");
+        }
         let mut value = sample();
         value["delivery_channels"] = json!([{"id":"one","name":"One","description":"Delivery"},{"id":"one","name":"Two","description":"Duplicate"}]);
         assert!(Manifest::parse(value.to_string().as_bytes()).is_err());

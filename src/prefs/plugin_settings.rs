@@ -94,6 +94,9 @@ pub(super) fn add_actions(
                 detail_row(&source, "Development mode", "This installation starts only when Among is started with --plugin-development.");
             }
         }
+        if current.receipt.requires_development() && current.receipt.release().is_some() {
+            detail_row(&source, "Development mode", "This generation comes from a prerelease and starts only when Among is started with --plugin-development.");
+        }
         if let Ok(inspected) = &current.inspected {
             let manifest = &inspected.manifest;
             detail_row(&source, "Version", &manifest.version);

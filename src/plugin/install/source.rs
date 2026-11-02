@@ -96,8 +96,6 @@ impl Inspection {
     /// Whether this inspection observed the newest development prerelease
     /// rather than the latest stable release. The channel lives in the
     /// observed snapshot itself, so a cached inspection keeps it as well.
-    // `expect` rather than `allow`: once the Preferences development action
-    // uses this, the unfulfilled expectation fails the build and is removed.
     pub fn is_prerelease(&self) -> bool {
         self.release.snapshot.is_prerelease()
     }
@@ -329,6 +327,9 @@ impl Selection {
             return Err(Problem(
                 "publisher inconsistency: this version is already installed with different bytes or another commit; no update is offered",
             ));
+        }
+        if !entry.receipt.requires_development() {
+            return Err(Problem("this version is already installed"));
         }
         Ok(())
     }

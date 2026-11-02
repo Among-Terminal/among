@@ -723,7 +723,7 @@ pub(super) fn run() {
     assert!(ctx.state.borrow().plugins.listing().is_empty());
     input_proof(&ctx, &terminal, &pty, "after-uninstall");
     let evidence = crate::test_isolation::check_root().join("published-release-lifecycle.json");
-    std::fs::write(&evidence, serde_json::to_vec_pretty(&json!({"catalogue_revision":revision,"source_revision":revision,"release_snapshot":snapshot,"release_binding":binding,"architecture":architecture,"installed_receipts":receipts,"actual_public_install":true,"explicit_review_cancel_accept":true,"three_mapped_outputs":true,"disabled_then_uninstalled":true,"same_pty_real_input":true,"scope":"native installed lifecycle, not package/source/legal or whole RC acceptance"})).unwrap()).unwrap();
+    std::fs::write(&evidence, serde_json::to_vec_pretty(&json!({"catalogue_revision":revision,"source_revision":revision,"release_snapshot":snapshot,"release_binding":binding,"architecture":architecture,"installed_receipts":receipts,"actual_public_install":true,"candidate_bytes":observed().inputs["candidate"] == true,"explicit_review_cancel_accept":true,"three_mapped_outputs":true,"disabled_then_uninstalled":true,"same_pty_real_input":true,"scope":"native installed lifecycle, not package/source/legal or whole RC acceptance"})).unwrap()).unwrap();
     preferences.destroy();
     ctx.window.destroy();
     println!("PASS published_release_ui install_review_enable_disable_uninstall=true terminal_input=true");

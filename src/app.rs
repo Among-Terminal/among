@@ -607,10 +607,7 @@ fn build_with_writer(
     if let Some(root) = crate::plugin::inventory::root() {
         match crate::plugin::inventory::read(&root) {
             Ok(entries) => {
-                let document = state
-                    .borrow_mut()
-                    .settings
-                    .load(crate::settings::Document::ManagedPlugins);
+                let document = settings_after_replacements(&state, &entries);
                 for entry in entries {
                     let local = document.as_ref().and_then(|document| {
                         crate::plugin::inventory::local(document, &entry.key())
@@ -3964,6 +3961,38 @@ fn installation_observer(ctx: &Window) -> Rc<dyn Fn()> {
     })
 }
 
+/// Loads the plugin settings after dropping any approval that belongs to an
+/// installation a development generation replaced. Left in place, it would
+/// return with the stable update of that generation, which keeps its token.
+fn settings_after_replacements(
+    state: &Rc<RefCell<AppState>>,
+    entries: &[crate::plugin::inventory::Entry],
+) -> Option<serde_json::Value> {
+    let mut state = state.borrow_mut();
+    let kind = crate::settings::Document::ManagedPlugins;
+    let document = state.settings.load(kind);
+    let stale = entries.iter().filter(|entry| {
+        entry.receipt.requires_development()
+            && document
+                .as_ref()
+                .and_then(|document| crate::plugin::inventory::local(document, &entry.key()))
+                .and_then(|local| local.get("review"))
+                .is_some_and(|review| !entry.receipt.matches_review(review))
+    });
+    let mut retired = false;
+    for entry in stale {
+        if let Err(error) = state.settings.retire_review(&entry.key()) {
+            eprintln!("among: settings save failed: {error}");
+        }
+        retired = true;
+    }
+    if retired {
+        state.settings.load(kind)
+    } else {
+        document
+    }
+}
+
 fn reconcile_managed_installations(state: &Rc<RefCell<AppState>>) {
     if state.borrow().exiting {
         return;
@@ -3975,10 +4004,7 @@ fn reconcile_managed_installations(state: &Rc<RefCell<AppState>>) {
         Ok(entries) => {
             let selected = entries.iter().map(|entry| entry.key()).collect();
             state.borrow_mut().plugins.reconcile_removed(&selected);
-            let document = state
-                .borrow_mut()
-                .settings
-                .load(crate::settings::Document::ManagedPlugins);
+            let document = settings_after_replacements(state, &entries);
             for entry in entries {
                 let local = document
                     .as_ref()

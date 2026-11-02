@@ -2,8 +2,8 @@
 //!
 //! The author chooses an `among-plugins.json` with the package files next to
 //! it. The catalogue supplies the expected manifest, members and digests,
-//! and the package then passes the same archive, ELF, member, digest, grant
-//! and sandbox checks as a release package. What a release would add cannot
+//! and the package then passes the same archive, ELF, member, digest and
+//! grant checks as a release package. What a release would add cannot
 //! be checked and is not invented: there is no repository or publisher
 //! identity, no release, no immutability and no tag-to-commit binding. The
 //! installation lives in the `development/<plugin-id>` namespace and runs only

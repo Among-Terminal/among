@@ -952,13 +952,14 @@ fn actual_update_format_rejection_preserves_previous_selected_bytes_and_consent(
     );
     let update =
         Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
-    let selected = update
+    // The fixture keeps the version and digests, which review would not offer;
+    // this case is about the package check inside an update already underway.
+    let mut selected = update
         .inspect(true)
         .unwrap()
         .select("sample", "1.0")
-        .unwrap()
-        .for_update(&entry, None)
         .unwrap();
+    selected.previous = Some(entry.receipt.clone());
     assert!(install_at(&update, selected, &root.0).is_err());
     assert_eq!(
         std::fs::read(root.0.join("installed.json")).unwrap(),
