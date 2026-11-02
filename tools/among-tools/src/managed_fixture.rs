@@ -49,7 +49,11 @@ pub(crate) fn install(base: &Path, id: &str, program: &[u8], features: &[&str]) 
         .recursive(true)
         .mode(0o700)
         .create(&package)?;
-    let source = json!({"publisher_id":34,"catalogue_revision":"a".repeat(40),"catalogue_sha256":"b".repeat(64)});
+    let source = json!({"publisher_id":34,"catalogue_revision":"a".repeat(40),"catalogue_sha256":"b".repeat(64),
+        "release_snapshot":{"id":1,"tag":"v1","assets":[
+            {"id":3,"name":"among-plugins.json","size":1,"sha256":"b".repeat(64)},
+            {"id":2,"name":"plugin.tar.gz","size":1,"sha256":generation}]},
+        "release_binding":{"tag":"v1","object":"c".repeat(40),"commit":"a".repeat(40)}});
     let receipt = json!({"repository_id":12,"owner":"example","repository":"runtime-fixtures","plugin_id":id,
         "revision":"a".repeat(40),"manifest_sha256":storage::sha256(manifest.as_slice())?,"package_sha256":generation,
         "release_id":1,"asset_id":2,"generation":generation,"installation":token,"source":source});

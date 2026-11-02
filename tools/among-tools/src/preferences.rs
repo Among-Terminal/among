@@ -261,6 +261,14 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
             &log,
         )?;
         if !child.wait(Duration::from_secs(90))?.success() {
+            // Native logs are not uploaded by every caller; keep the refusal
+            // visible in the job log.
+            let log = fs::read_to_string(base.join(format!("{index}-{phase}.log")))?;
+            let tail = log.lines().rev().take(40).collect::<Vec<_>>();
+            eprintln!(
+                "Preferences phase log tail:\n{}",
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            );
             return Err(format!(
                 "Preferences phase {phase} failed; evidence: {}",
                 base.display()
