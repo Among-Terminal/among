@@ -165,7 +165,9 @@ Upstream addresses change in place, and a change there would stop every AppImage
 build. That repository's README records the origin of each file.
 
 To update a helper, follow the README there: publish a new release with the new
-bytes, then in a separate pull request here change `HELPER_RELEASE` and the
-SHA-256 pins in `tools/among-tools/src/appimage_tools.rs`. The AppImage build in
+bytes, then in a separate pull request here change `HELPER_RELEASE`,
+`HELPER_RELEASE_PAGE` and the SHA-256 pins in
+`tools/among-tools/src/appimage_tools.rs`. A new runtime also needs its versions
+updated in `packaging/appimage/runtime-notice.txt`. The AppImage build in
 that pull request's CI is the test of the new version. A published release is
 never changed.

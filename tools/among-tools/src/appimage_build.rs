@@ -522,6 +522,35 @@ fn install_notices(appdir: &Path, packages: &BTreeSet<String>) -> Result<()> {
         let bytes = fs::read(entry.path())?;
         storage::atomic_write(&licenses, Path::new(&entry.file_name()), &bytes, 0o644)?;
     }
+    let notice = appdir.join(appimage_tools::RUNTIME_NOTICE_PATH);
+    let directory = notice.parent().ok_or("runtime notice has no parent")?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(directory)?;
+    storage::atomic_write(
+        directory,
+        Path::new("copyright"),
+        appimage_tools::runtime_notice().as_bytes(),
+        0o644,
+    )
+}
+
+/// Refuses an image without the notice of the runtime at its head. The runtime
+/// comes from no package, so no package attribution would catch its absence;
+/// the check reads the image's own files because libfuse's license text is
+/// referenced there rather than repeated.
+pub fn require_runtime_notice(root: &Path) -> Result<()> {
+    let notice = fs::read(root.join(appimage_tools::RUNTIME_NOTICE_PATH))
+        .map_err(|_| "AppImage lacks the notice of its runtime")?;
+    if notice != appimage_tools::runtime_notice().into_bytes() {
+        return Err("AppImage runtime notice differs from the pinned text".into());
+    }
+    let license = fs::read(root.join("usr/share/common-licenses/LGPL-2.1"))
+        .map_err(|_| "AppImage lacks the LGPL-2.1 text its runtime notice refers to")?;
+    if license.is_empty() {
+        return Err("AppImage has an empty LGPL-2.1 text".into());
+    }
     Ok(())
 }
 
@@ -654,6 +683,7 @@ pub fn build(
         .chain(data.iter().map(|owner| owner.package.clone()))
         .collect::<BTreeSet<_>>();
     install_notices(&appdir, &packages)?;
+    require_runtime_notice(&appdir)?;
     let hosted = host_libraries(&deployment);
     let product = base.join("product");
     fs::DirBuilder::new().mode(0o755).create(&product)?;
@@ -717,6 +747,7 @@ pub fn build(
             return Err(format!("final AppImage lacks the notice of {package}").into());
         }
     }
+    require_runtime_notice(&final_root)?;
     let digest = storage::sha256(File::open(&image)?)?;
     let runtime_help = commands.run(
         "runtime-version",
