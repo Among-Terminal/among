@@ -31,7 +31,7 @@ fn exact_source_versions_payload_changes_and_verbatim_notices_are_observed_witho
     let name = "usr/share/doc/synthetic-library/copyright";
     fs::write(prime.join(name), NOTICE)?;
     let archive = storage::deterministic_tar(&BTreeMap::from([(name.into(), NOTICE.to_vec())]))?;
-    let (files, notices, references) =
+    let (files, notices, references, _) =
         inventory::payload(archive.as_slice(), &prime, &output, "synthetic-library")?;
     assert_eq!(
         inventory::source_identity(
@@ -62,7 +62,7 @@ fn exact_source_versions_payload_changes_and_verbatim_notices_are_observed_witho
     std::os::unix::fs::symlink(f.0.join("foreign"), &license)?;
     assert!(native_notices::check(&document, &prime).is_err());
     fs::write(prime.join(name), b"changed copyright")?;
-    let (changed, _, _) =
+    let (changed, _, _, _) =
         inventory::payload(archive.as_slice(), &prime, &output, "synthetic-library")?;
     assert_eq!(changed[0]["modified"], true);
     assert!(native_notices::check(&document, &prime).is_err());
