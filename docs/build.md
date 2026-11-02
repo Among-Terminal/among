@@ -170,3 +170,15 @@ left the current source index. The workflow upgrades those container packages;
 the audit still records every actual binary/source version. This is not a
 hermetic base-image rebuild, and source collection must still fail rather than
 substitute a different version when an exact source is unavailable.
+
+`fetch-appimage-tools` downloads `linuxdeploy`, `appimagetool`, `runtime` and
+`linuxdeploy-plugin-gtk.sh` only from one immutable release of
+[Among-Terminal/appimage-tools](https://github.com/Among-Terminal/appimage-tools).
+Upstream addresses change in place, and a change there would stop every AppImage
+build. That repository's README records the origin of each file.
+
+To update a helper, follow the README there: publish a new release with the new
+bytes, then in a separate pull request here change `HELPER_RELEASE` and the
+SHA-256 pins in `tools/among-tools/src/appimage_tools.rs`. The AppImage build in
+that pull request's CI is the test of the new version. A published release is
+never changed.

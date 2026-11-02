@@ -199,3 +199,14 @@ Full matching source archives, packaging patches/build instructions, notices,
 common texts and applicable replacement/debugging checks remain per-artifact
 requirements. An unavailable exact source version fails source collection;
 silently substituting a newer archive is not an acceptable repair.
+
+## AppImage build helpers
+
+`linuxdeploy`, `appimagetool`, `runtime` and `linuxdeploy-plugin-gtk.sh` are
+downloaded from releases of
+[Among-Terminal/appimage-tools](https://github.com/Among-Terminal/appimage-tools).
+Those programs carry GPL and LGPL components, so every such release also holds
+the corresponding source, the license texts and a component list (`NOTICE.md`).
+Only `runtime` becomes part of an Among AppImage: it stays at the head of the
+image, with libfuse (LGPL-2.1) statically linked. The sources of `runtime` and
+libfuse are in the helper release, not in `appimage-sources-<arch>`.
