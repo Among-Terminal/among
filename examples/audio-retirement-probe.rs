@@ -27,15 +27,34 @@ fn pump(duration: Duration) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
+#[track_caller]
 fn wait(mut condition: impl FnMut() -> bool, limit: Duration) -> Result<(), Box<dyn Error>> {
+    let caller = std::panic::Location::caller();
     let started = Instant::now();
     while !condition() {
         if started.elapsed() >= limit {
-            return Err("retirement observation exceeded its bound".into());
+            return Err(format!("retirement observation exceeded its bound at {caller}").into());
         }
         pump(Duration::from_millis(5));
     }
     Ok(())
+}
+
+/// Collects notices until this operation has ended. A fixed pump would turn a
+/// slow start under disk load into a false report that the sound never retired;
+/// the limit is above the operation's own deadline, so a hung decoder still fails.
+fn wait_for_end(audio: &Audio, id: u64) -> Result<Vec<Notice>, Box<dyn Error>> {
+    let mut notices = Vec::new();
+    wait(
+        || {
+            notices.extend(audio.drain_notices());
+            notices
+                .iter()
+                .any(|notice| matches!(notice, Notice::DecoderEnded { id: ended } if *ended == id))
+        },
+        Duration::from_secs(20),
+    )?;
+    Ok(notices)
 }
 fn save(audio: &Audio, output: &Path) -> Result<(), Box<dyn Error>> {
     if let Some(snapshot) = audio.decoder_snapshot() {
@@ -367,15 +386,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     audio.cancel_event(old);
     assert!(audio.is_active());
     mark("recovery-preview-started");
-    pump(Duration::from_secs(3));
-    mark("recovery-pumped");
-    let recovery = audio.drain_notices();
-    assert!(
-        recovery
-            .iter()
-            .any(|notice| matches!(notice,Notice::DecoderEnded{id} if *id==current)),
-        "real output operation did not retire successfully after recovery"
-    );
+    let recovery = wait_for_end(&audio, current)?;
+    mark("recovery-ended");
     assert!(!recovery
         .iter()
         .any(|notice| matches!(notice, Notice::Failed { .. })));

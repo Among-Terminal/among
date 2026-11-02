@@ -323,20 +323,30 @@ pub(super) fn run(
         if event {
             audio.set_event_admitted(true);
         }
-        let Request::Started(current) = (if event {
-            audio.event()?
-        } else {
-            audio.preview()?
-        }) else {
-            return Err("explicit recovery was not admitted after confirmed retirement".into());
+        // A dropped owner's worker keeps the slot until it has gone, which is
+        // just after the child it reaped, so Busy is correct for that moment.
+        let admission = Instant::now();
+        let current = loop {
+            let request = if event {
+                audio.event()?
+            } else {
+                audio.preview()?
+            };
+            match request {
+                Request::Started(current) => break current,
+                Request::Busy if admission.elapsed() < Duration::from_secs(2) => {
+                    pump(Duration::from_millis(10));
+                }
+                _ => {
+                    return Err(
+                        "explicit recovery was not admitted after confirmed retirement".into(),
+                    )
+                }
+            }
         };
         assert_ne!(old, current);
         audio.cancel_event(old);
-        pump(Duration::from_secs(3));
-        recovery_notices = audio.drain_notices();
-        assert!(recovery_notices
-            .iter()
-            .any(|notice| matches!(notice,Notice::DecoderEnded{id} if *id==current)));
+        recovery_notices = super::wait_for_end(&audio, current)?;
         assert!(!recovery_notices
             .iter()
             .any(|notice| matches!(notice, Notice::Failed { .. })));
