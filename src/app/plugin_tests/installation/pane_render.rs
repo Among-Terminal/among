@@ -7,7 +7,12 @@ fn long_unicode_pane_status_preserves_admitted_text_and_tooltip_in_a_narrow_wind
     let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
     ctx.window.unmaximize();
-    ctx.window.set_default_size(640, 480);
+    wait_for(|| !ctx.window.is_maximized(), Duration::from_secs(3));
+    // GTK ignores a default size once the window is mapped, so the window
+    // manager has to resize it.
+    ctx.window.set_title(Some("Pane status fixture terminal"));
+    let id = focus(&ctx.window);
+    xdo(&["windowsize", "--sync", &id, "640", "480"]);
     wait_for(
         || !ctx.window.is_maximized() && ctx.window.width() <= 700,
         Duration::from_secs(3),
