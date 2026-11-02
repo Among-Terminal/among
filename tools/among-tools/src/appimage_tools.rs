@@ -15,35 +15,57 @@ struct Tool<'a> {
     elf: bool,
 }
 
+/// Upstream addresses change in place: `continuous` assets are replaced by every
+/// upstream build and the assets of a plain tag can be overwritten too, so a
+/// pinned hash stops matching with no change on our side and every AppImage
+/// build is refused at once. CI must not depend on them. Each helper is
+/// therefore served from an immutable release of our own repository, whose
+/// assets and tag cannot change. A new helper version means a new release there
+/// and a separate pull request here, as `docs/build.md` describes.
+const HELPER_RELEASE: &str =
+    "https://github.com/Among-Terminal/appimage-tools/releases/download/2026.11.02";
+
 fn tools(architecture: &str) -> Result<Vec<Tool<'static>>> {
-    // runtime source fedfad51acc2860b2916a1eef32ba4a500ff31ef only normalizes
-    // dependency debug paths; continuous labels still grant no byte authority.
     let (suffix, linuxdeploy, appimagetool, runtime) = match architecture {
         "amd64" => (
             "x86_64",
-            "8aea8da0f7f7039d2a2cecb14657d752a222a5e1d3825caeef186c82f751cdd1",
+            "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d",
             "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
             "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46",
         ),
         "arm64" => (
             "aarch64",
-            "5c1fddf96066891e829831cac0d84424690f3b22846c7f8f1bb9990a5c6c73f4",
+            "620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff",
             "f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158",
             "9a72a744d221576c9347ec074243acc5c3c7568896b12714e0e82e9f0bf47900",
         ),
         _ => return Err("unsupported AppImage helper architecture".into()),
     };
     Ok(vec![
-        Tool { filename: "linuxdeploy.AppImage", url: format!("https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-{suffix}.AppImage"), sha256: linuxdeploy, elf: true },
-        // appimagetool comes from the tagged 1.9.1 release, not from continuous.
-        // Continuous assets are replaced in place on every upstream build, so a
-        // pinned hash stops matching without any change on our side and every
-        // AppImage build is refused until someone re-reviews new bytes. A tagged
-        // release is not rebuilt that way, but its assets are not immutable
-        // either: the hash, not the tag, still decides what may run.
-        Tool { filename: "appimagetool.AppImage", url: format!("https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-{suffix}.AppImage"), sha256: appimagetool, elf: true },
-        Tool { filename: "runtime", url: format!("https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-{suffix}"), sha256: runtime, elf: true },
-        Tool { filename: "linuxdeploy-plugin-gtk.sh", url: "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/7a3fbc31a9e5075073ff8790f26effbac5f84453/linuxdeploy-plugin-gtk.sh".into(), sha256: "b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171", elf: false },
+        Tool {
+            filename: "linuxdeploy.AppImage",
+            url: format!("{HELPER_RELEASE}/linuxdeploy-{suffix}.AppImage"),
+            sha256: linuxdeploy,
+            elf: true,
+        },
+        Tool {
+            filename: "appimagetool.AppImage",
+            url: format!("{HELPER_RELEASE}/appimagetool-{suffix}.AppImage"),
+            sha256: appimagetool,
+            elf: true,
+        },
+        Tool {
+            filename: "runtime",
+            url: format!("{HELPER_RELEASE}/runtime-{suffix}"),
+            sha256: runtime,
+            elf: true,
+        },
+        Tool {
+            filename: "linuxdeploy-plugin-gtk.sh",
+            url: format!("{HELPER_RELEASE}/linuxdeploy-plugin-gtk.sh"),
+            sha256: "b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171",
+            elf: false,
+        },
     ])
 }
 
@@ -61,7 +83,7 @@ fn validate(path: &Path, tool: &Tool<'_>, architecture: &str) -> Result<String> 
     let digest = storage::sha256(File::open(path)?)?;
     if digest != tool.sha256 {
         return Err(format!(
-            "AppImage helper {} changed upstream; refusing unreviewed bytes",
+            "AppImage helper {} does not match its pin; refusing unreviewed bytes",
             tool.filename
         )
         .into());
@@ -72,9 +94,11 @@ fn validate(path: &Path, tool: &Tool<'_>, architecture: &str) -> Result<String> 
     Ok(digest)
 }
 
-/// Continuous URLs are mutable: the reviewed byte hashes, not their labels,
-/// grant execution authority. No helper is executed by this download command.
-/// Runtime source/licence delivery is a separate gate, not implied by a pin.
+/// The reviewed byte hashes, not the release address, grant execution
+/// authority. No helper is executed by this download command. Source and
+/// licence delivery for the helpers themselves is the helper release's job;
+/// what a built AppImage must carry for its embedded runtime is a separate
+/// release gate, not implied by a pin.
 pub fn fetch(architecture: &str, destination: &Path) -> Result<()> {
     let tools = tools(architecture)?;
     if destination.symlink_metadata().is_ok() {
@@ -191,9 +215,38 @@ mod tests {
                     .sha256
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
-                assert!(tool.url.starts_with("https://"));
+                // Any other host would bring back a dependency on addresses
+                // whose bytes can change under a pinned hash.
+                assert!(tool.url.starts_with(&format!("{HELPER_RELEASE}/")));
+                assert_eq!(tool.url.matches("https://").count(), 1);
             }
         }
+        // The asset names are the release's public layout: a mismatch here is a
+        // failed download in CI rather than a pin mismatch.
+        let assets = |architecture| -> Result<Vec<String>> {
+            Ok(tools(architecture)?
+                .into_iter()
+                .map(|tool| tool.url[HELPER_RELEASE.len() + 1..].to_string())
+                .collect())
+        };
+        assert_eq!(
+            assets("amd64")?,
+            [
+                "linuxdeploy-x86_64.AppImage",
+                "appimagetool-x86_64.AppImage",
+                "runtime-x86_64",
+                "linuxdeploy-plugin-gtk.sh",
+            ]
+        );
+        assert_eq!(
+            assets("arm64")?,
+            [
+                "linuxdeploy-aarch64.AppImage",
+                "appimagetool-aarch64.AppImage",
+                "runtime-aarch64",
+                "linuxdeploy-plugin-gtk.sh",
+            ]
+        );
         assert!(tools("universal").is_err());
         let root = Scratch(storage::private_directory(
             &std::env::temp_dir(),

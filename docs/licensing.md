@@ -175,3 +175,14 @@ against its descriptor. The AppImage workflow keeps the result as the
 attach these sources with it. Libraries the AppImage takes from the host
 (listed in the audit record as `host_libraries`) are not bundled and need no
 source delivery from this project.
+
+## AppImage build helpers
+
+`linuxdeploy`, `appimagetool`, `runtime` and `linuxdeploy-plugin-gtk.sh` are
+downloaded from releases of
+[Among-Terminal/appimage-tools](https://github.com/Among-Terminal/appimage-tools).
+Those programs carry GPL and LGPL components, so every such release also holds
+the corresponding source, the license texts and a component list (`NOTICE.md`).
+Only `runtime` becomes part of an Among AppImage: it stays at the head of the
+image, with libfuse (LGPL-2.1) statically linked. The sources of `runtime` and
+libfuse are in the helper release, not in `appimage-sources-<arch>`.
