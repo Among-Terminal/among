@@ -2,6 +2,7 @@ use super::bell_tests::{activate, pump_for, real_bell, terminal, wait, xdo};
 use super::*;
 use std::path::PathBuf;
 
+mod combined;
 mod installation;
 
 fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {

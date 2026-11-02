@@ -23,6 +23,43 @@ impl Drop for Release {
     }
 }
 
+/// Fixture and evidence files written by this probe on the GTK thread. Under
+/// writeback pressure such a write blocks in the kernel, and the heartbeat would
+/// charge that delay to Among. The time is measured here so the bound applies to
+/// the application alone, and the raw gap stays on record beside it.
+#[derive(Default)]
+struct OwnWork {
+    total: Rc<Cell<Duration>>,
+    longest: Cell<Duration>,
+    longest_end: Cell<Option<Instant>>,
+}
+
+impl OwnWork {
+    fn timed<T>(&self, work: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let result = work();
+        let took = started.elapsed();
+        self.total.set(self.total.get() + took);
+        if took > self.longest.get() {
+            self.longest.set(took);
+            self.longest_end.set(Some(Instant::now()));
+        }
+        result
+    }
+
+    fn write(&self, path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+        self.timed(|| fs::write(path, bytes))
+    }
+
+    fn copy(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<u64> {
+        self.timed(|| fs::copy(from, to))
+    }
+
+    fn remove_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        self.timed(|| fs::remove_file(path))
+    }
+}
+
 pub(super) fn run(
     scenario: &str,
     output: &Path,
@@ -67,6 +104,13 @@ pub(super) fn run(
     let gap = Rc::new(Cell::new(Duration::ZERO));
     let last = Rc::new(Cell::new(Instant::now()));
     let (count, maximum, previous) = (ticks.clone(), gap.clone(), last.clone());
+    let own = OwnWork::default();
+    let net_gap = Rc::new(Cell::new(Duration::ZERO));
+    let (spent, net_maximum, seen) = (
+        own.total.clone(),
+        net_gap.clone(),
+        Cell::new(Duration::ZERO),
+    );
     // The end of the largest gap, on this clock, places a failure against the
     // phase marks written next to the bound below.
     let beat_start = Instant::now();
@@ -79,6 +123,9 @@ pub(super) fn run(
             maximum.set(elapsed);
             worst.set(now.duration_since(beat_start));
         }
+        let work = spent.get();
+        let net = elapsed.saturating_sub(work.saturating_sub(seen.replace(work)));
+        net_maximum.set(net_maximum.get().max(net));
         count.set(count.get() + 1);
         glib::ControlFlow::Continue
     });
@@ -96,9 +143,9 @@ pub(super) fn run(
     let denied = case == "cancel-constructor";
     let event = case == "cancel-late-spawn-event-revoke";
     let owner_drop = case == "cancel-late-spawn-owner-drop";
-    fs::write(runtime.join("audio-native-stall"), b"late")?;
+    own.write(runtime.join("audio-native-stall"), b"late")?;
     if !denied {
-        fs::write(
+        own.write(
             runtime.join("audio-fork-stall"),
             if before_spawn { "before" } else { "after" },
         )?;
@@ -128,13 +175,13 @@ pub(super) fn run(
             || runtime.join("audio-native-stall-entered").exists(),
             Duration::from_secs(5),
         )?;
-        fs::copy(
+        own.copy(
             runtime.join("audio-native-stall-entered"),
             output.join("injected-call.txt"),
         )?;
     }
     if case == "cancel-pending-permit" {
-        fs::write(
+        own.write(
             runtime.join("audio-native-stall-release"),
             b"complete real construction before cancellation",
         )?;
@@ -147,13 +194,13 @@ pub(super) fn run(
             !runtime.join("audio-play-invocations").exists(),
             "helper played before spawn ownership/grant"
         );
-        fs::copy(
+        own.copy(
             runtime.join("audio-native-returned"),
             output.join("constructed-before-permit.txt"),
         )?;
     }
     if denied {
-        fs::write(runtime.join("audio-deny-kill"), b"trusted EPERM fixture")?;
+        own.write(runtime.join("audio-deny-kill"), b"trusted EPERM fixture")?;
     }
     let old_snapshot = audio.decoder_snapshot();
     let cancel = Instant::now();
@@ -187,12 +234,12 @@ pub(super) fn run(
         admitted.elapsed() < Duration::from_secs(8),
         "fixture did not release before the original deadline"
     );
-    fs::write(
+    own.write(
         runtime.join("audio-native-stall-release"),
         b"return real constructor before original expiry",
     )?;
     if before_spawn {
-        fs::write(
+        own.write(
             runtime.join("audio-fork-release"),
             b"execute the real fork after cancellation",
         )?;
@@ -202,19 +249,19 @@ pub(super) fn run(
     mark("expiry-window-pumped");
     let plays_before_recovery =
         fs::read_to_string(runtime.join("audio-play-invocations")).unwrap_or_default();
-    fs::write(output.join("before-recovery.txt"), format!("old={old} elapsed_ms={} plays={plays_before_recovery:?} old_snapshot={old_snapshot:?} current={:?}\n",admitted.elapsed().as_millis(),audio.decoder_snapshot()))?;
+    own.write(output.join("before-recovery.txt"), format!("old={old} elapsed_ms={} plays={plays_before_recovery:?} old_snapshot={old_snapshot:?} current={:?}\n",admitted.elapsed().as_millis(),audio.decoder_snapshot()))?;
     // This assertion precedes any second Preview and any recovery capture.
     assert!(
         plays_before_recovery.is_empty(),
         "cancelled request reached real play before expiry"
     );
     if !denied {
-        fs::write(
+        own.write(
             runtime.join("audio-fork-release"),
             b"return the real child handle",
         )?;
     } else {
-        fs::remove_file(runtime.join("audio-deny-kill"))?;
+        own.remove_file(runtime.join("audio-deny-kill"))?;
     }
     if owner_drop {
         wait(
@@ -241,7 +288,7 @@ pub(super) fn run(
         assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
     if !denied {
-        fs::copy(
+        own.copy(
             runtime.join("audio-fork-real"),
             output.join("actual-fork-pid.txt"),
         )?;
@@ -254,7 +301,7 @@ pub(super) fn run(
             .any(|notice| matches!(notice, Notice::DecoderEnded { .. })),
         "cancelled first operation falsely ended normally"
     );
-    fs::write(
+    own.write(
         output.join("cancelled-complete.txt"),
         format!("{retired:?}\n{first_notices:?}\n"),
     )?;
@@ -262,7 +309,7 @@ pub(super) fn run(
     let mut recovery_notices = Vec::new();
     if recovery {
         for name in ["audio-fork-stall", "audio-native-stall"] {
-            match fs::remove_file(runtime.join(name)) {
+            match own.remove_file(runtime.join(name)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
@@ -299,7 +346,7 @@ pub(super) fn run(
             1,
             "a cancelled operation played alongside recovery"
         );
-        fs::write(output.join("recovery-play-invocations.txt"), plays)?;
+        own.write(output.join("recovery-play-invocations.txt"), plays)?;
     } else {
         pump(Duration::from_millis(500));
         assert!(!runtime.join("audio-play-invocations").exists());
@@ -315,28 +362,33 @@ pub(super) fn run(
     let temporary = super::operation_directories()?;
     assert_eq!(temporary, 0);
     mark("finished");
-    fs::write(
+    own.write(
         output.join("heartbeat.txt"),
         format!(
-            "ticks={} max_gap_ms={} max_gap_end_ms={}\n{}",
+            "ticks={} max_gap_ms={} max_gap_end_ms={} net_gap_ms={} own_work_ms={} longest_own_ms={} longest_own_end_ms={}\n{}",
             ticks.get(),
             gap.get().as_millis(),
             worst_at.get().as_millis(),
+            net_gap.get().as_millis(),
+            own.total.get().as_millis(),
+            own.longest.get().as_millis(),
+            own.longest_end.get().map_or(0, |end| end.duration_since(beat_start).as_millis()),
             phases.borrow()
         ),
     )?;
     assert!(
-        gap.get() < Duration::from_millis(250),
-        "GTK heartbeat exceeded its bound: {} ms ending {} ms after start",
+        net_gap.get() < Duration::from_millis(250),
+        "GTK heartbeat exceeded its bound: {} ms net of the probe's own file work, largest raw gap {} ms ending {} ms after start",
+        net_gap.get().as_millis(),
         gap.get().as_millis(),
         worst_at.get().as_millis()
     );
     assert!(ticks.get() > 100);
     super::save(&audio, output)?;
-    fs::write(
+    own.write(
         output.join("retirement.json"),
         serde_json::to_vec_pretty(
-            &serde_json::json!({"scenario":scenario,"gui_latency_us":gui_latency.as_micros(),"max_gtk_gap_ms":gap.get().as_millis(),"gtk_ticks":ticks.get(),"supervisor_threads":supervisors,"operation_temp_dirs_after":temporary,"cancelled_plays":plays_before_recovery,"recovery":recovery,"first_notices":format!("{first_notices:?}"),"recovery_notices":format!("{recovery_notices:?}"),"injection":"real fork observation and real native-constructor call-site barriers; EPERM only in cancel-constructor"}),
+            &serde_json::json!({"scenario":scenario,"gui_latency_us":gui_latency.as_micros(),"max_gtk_gap_ms":net_gap.get().as_millis(),"raw_gtk_gap_ms":gap.get().as_millis(),"gtk_ticks":ticks.get(),"supervisor_threads":supervisors,"operation_temp_dirs_after":temporary,"cancelled_plays":plays_before_recovery,"recovery":recovery,"first_notices":format!("{first_notices:?}"),"recovery_notices":format!("{recovery_notices:?}"),"injection":"real fork observation and real native-constructor call-site barriers; EPERM only in cancel-constructor"}),
         )?,
     )?;
     audio.shutdown();

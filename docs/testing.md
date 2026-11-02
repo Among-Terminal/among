@@ -86,7 +86,9 @@ to the focused terminal; `feed:<pane>:<command>` targets a numbered pane.
 In these commands, `~` represents a space. `activate:<widget-name>` presses a
 named widget in any open window, such as `notification-audio-preview`. Only the
 application executable can do this for audio: a test binary cannot host the
-decoder helper, so its Preview produces no sound.
+decoder helper, so its Preview produces no sound. `focus:<widget-name>` hands a
+named control to the keyboard, and `await:<mark>` holds the script until the file
+`<script>.<mark>` exists, so a harness can send real keys at that point.
 `collapse-sidebar`, `expand-sidebar` and `request-close` exercise window controls.
 
 `scroll:<pane>:<delta>` hands one touch surface delta to the same handler a real

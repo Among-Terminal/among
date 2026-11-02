@@ -71,6 +71,7 @@ Usage:
   among-tools select-nightly <repository-dir> <owner/repo> <new-output.json> [--now ISO]
   among-tools package-version <source-root>
   among-tools check-native-source-unpack <sources> <new-output>
+  among-tools collect-snap-sources <native-inventory.json> <new-output>
   among-tools check-snap-sources <native-inventory.json> <sources>
   among-tools check-apt-provenance <metadata> <native-inventory.json> <sources>
   among-tools collect-apt-provenance <new-output>
@@ -414,6 +415,10 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                     &among_tools::scratch::root()?
                 )?)?
             );
+        }
+        [command, native, output] if command == "collect-snap-sources" => {
+            let native = among_tools::storage::parse_json(&std::fs::read(native)?)?;
+            among_tools::native_sources::collect(&native, Path::new(output))?;
         }
         [command, native, sources] if command == "check-snap-sources" => {
             let native = among_tools::storage::parse_json(&std::fs::read(native)?)?;

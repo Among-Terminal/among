@@ -23,6 +23,41 @@ fn identity(row: &Value) -> Result<(String, String)> {
             .into(),
     ))
 }
+/// Downloads the exact sources a Snap inventory names and writes the inventory
+/// `check` reads. Run it as root in a disposable Ubuntu 24.04 container.
+pub fn collect(native: &Value, output: &Path) -> Result<Value> {
+    let expected = native["packages"]
+        .as_array()
+        .ok_or("native package inventory absent")?
+        .iter()
+        .map(identity)
+        .collect::<Result<BTreeSet<_>>>()?;
+    if expected.is_empty() {
+        return Err("empty native inventory".into());
+    }
+    let download = crate::appimage_sources::download(&expected, output)?;
+    let mut rows = Vec::new();
+    for record in &download.records {
+        let mut files = Vec::new();
+        for file in record["files"].as_array().ok_or("source files absent")? {
+            let name = file["name"].as_str().ok_or("source file name absent")?;
+            let bytes = regular(&download.payload, name)?.metadata()?.len();
+            files.push(json!({"path":name,"bytes":bytes,"sha256":file["sha256"]}));
+        }
+        rows.push(json!({"source_package":record["source_package"],
+            "source_version":record["source_version"],"downloaded":true,"files":files}));
+    }
+    let document = json!({"schema":1,"sources":rows});
+    storage::atomic_write(
+        &download.payload,
+        Path::new("inventory.json"),
+        &serde_json::to_vec_pretty(&document)?,
+        0o644,
+    )?;
+    download.publish(output)?;
+    Ok(document)
+}
+
 pub fn check(native: &Value, sources: &Path) -> Result<Value> {
     let expected = native["packages"]
         .as_array()

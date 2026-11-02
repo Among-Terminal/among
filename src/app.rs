@@ -1097,9 +1097,23 @@ fn install_selfcheck(ctx: &Window) {
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .map(str::to_string)
             .collect();
+        let script = std::path::PathBuf::from(script);
         let mut index = 0usize;
+        let mut announced = false;
         let driver = ctx.handle();
         glib::timeout_add_local(Duration::from_millis(700), move || {
+            // `await:<mark>` holds the script until `<script>.<mark>` exists, so
+            // a harness can send real input or act on a process at this point.
+            if let Some(mark) = steps.get(index).and_then(|s| s.strip_prefix("await:")) {
+                if script.with_extension(mark).exists() {
+                    index += 1;
+                    announced = false;
+                } else if !announced {
+                    eprintln!("among: script awaits {mark}");
+                    announced = true;
+                }
+                return glib::ControlFlow::Continue;
+            }
             if index >= steps.len() {
                 // Stop driving but keep running: background processes need
                 // time to finish before a run is inspected.
@@ -1955,32 +1969,43 @@ fn slot_summary(store: &SlotStore, scope: Scope) -> Vec<String> {
 }
 
 /// Run one scripted action, for verification runs.
+fn script_widget(name: &str) -> Option<gtk::Widget> {
+    fn find(widget: gtk::Widget, name: &str) -> Option<gtk::Widget> {
+        if widget.widget_name() == name {
+            return Some(widget);
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            child = current.next_sibling();
+            if let Some(found) = find(current, name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|window| find(window, name))
+}
+
 fn run_script_step(ctx: &Window, step: &str) {
     // `activate:` presses a named widget in any open window. Test binaries
     // cannot host the audio decoder helper, so a real Preview button press can
     // only be proven from the shipped executable.
     if let Some(name) = step.strip_prefix("activate:") {
-        fn find(widget: gtk::Widget, name: &str) -> Option<gtk::Widget> {
-            if widget.widget_name() == name {
-                return Some(widget);
-            }
-            let mut child = widget.first_child();
-            while let Some(current) = child {
-                child = current.next_sibling();
-                if let Some(found) = find(current, name) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        let target = gtk::Window::list_toplevels()
-            .into_iter()
-            .find_map(|window| find(window, name));
-        match target {
+        match script_widget(name) {
             Some(widget) => {
                 widget.activate();
             }
             None => eprintln!("among: script widget {name} not found"),
+        }
+        return;
+    }
+    // `focus:` hands a named control to the keyboard, so a harness can operate
+    // it with real key events during an `await:` pause.
+    if let Some(name) = step.strip_prefix("focus:") {
+        if !script_widget(name).is_some_and(|widget| widget.grab_focus()) {
+            eprintln!("among: script widget {name} cannot take focus");
         }
         return;
     }

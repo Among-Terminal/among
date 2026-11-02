@@ -6,7 +6,10 @@
 //! private sink's monitor, and judges the waveform.
 
 use crate::{audio_capture, process::OwnedProcess, sessions, storage, Result};
-use nix::sys::signal::Signal;
+use nix::{
+    sys::signal::{kill, Signal},
+    unistd::Pid,
+};
 use serde_json::{json, Value};
 use std::{
     fs::{self, File},
@@ -17,6 +20,9 @@ use std::{
 
 const RATE: u32 = 48_000;
 const BELL: &str = "type:printf~'\\007'";
+const ENABLED: &str = "focus:notification-audio-enabled";
+const CONDITION: &str = "focus:notification-audio-condition";
+const DECODER_FLAG: &[u8] = b"--among-audio-decoder-v2";
 
 /// What a capture must show. The built-in alert carries 660 and 880 Hz; the
 /// local fixture carries only 880 Hz, so 660 Hz tells the two sources apart.
@@ -27,6 +33,9 @@ pub enum Expected {
     Builtin,
     /// The local fixture, cut short: less than this many seconds of it.
     LocalCutBelow(u32),
+    /// The local fixture cut short and then the built-in alert, all within this
+    /// many seconds.
+    LocalCutThenBuiltin(u32),
 }
 
 struct Scenario {
@@ -105,6 +114,9 @@ pub fn judge(bytes: &[u8], expected: Expected) -> Result<Value> {
                 && tone_660 < tone_880 * 0.1
                 && seconds < f64::from(limit)
         }
+        Expected::LocalCutThenBuiltin(limit) => {
+            active.len() > 1000 && tone_880 > 50.0 && tone_660 > 50.0 && seconds < f64::from(limit)
+        }
     };
     if !fine {
         return Err(format!("captured waveform differs from expectation: {result}").into());
@@ -125,22 +137,24 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
             steps: &["preferences", "activate:notification-audio-preview"],
             expected: Expected::Builtin,
         },
+        // The switch and condition below are operated from the keyboard. Only
+        // the source is saved ahead, because the file chooser is a portal.
         Scenario {
             name: "event",
-            audio: audio(true, "always", &local(short)),
-            steps: &[BELL],
+            audio: audio(false, "always", &local(short)),
+            steps: &["preferences", ENABLED, "keys:space", BELL],
             expected: Expected::Local,
         },
         Scenario {
             name: "event-disabled",
-            audio: audio(false, "always", &local(short)),
-            steps: &[BELL],
+            audio: audio(true, "always", &local(short)),
+            steps: &["preferences", ENABLED, "keys:space", BELL],
             expected: Expected::Silence,
         },
         Scenario {
             name: "event-ineligible",
-            audio: audio(true, "application-background", &local(short)),
-            steps: &[BELL],
+            audio: audio(true, "always", &local(short)),
+            steps: &["preferences", CONDITION, "keys:Return End Return", BELL],
             expected: Expected::Silence,
         },
         Scenario {
@@ -148,6 +162,20 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
             audio: audio(true, "always", &local(short)),
             steps: &["preferences", "activate:notification-audio-builtin", BELL],
             expected: Expected::Builtin,
+        },
+        // The bell rings behind Preferences, where its terminal is not viewed.
+        // Escape returns focus to that terminal, which ends the eligibility.
+        Scenario {
+            name: "focus-return",
+            audio: audio(true, "always", &local(long)),
+            steps: &[
+                "preferences",
+                CONDITION,
+                "keys:Return Home Down Return",
+                BELL,
+                "keys:Escape",
+            ],
+            expected: Expected::LocalCutBelow(4),
         },
         Scenario {
             name: "file-removed",
@@ -162,6 +190,20 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
             audio: audio(true, "always", &local(truncated)),
             steps: &[BELL],
             expected: Expected::Silence,
+        },
+        // A decoder that dies after admission must stop the sound, leave the
+        // application running and give its single slot back for the next sound.
+        Scenario {
+            name: "decoder-killed",
+            audio: audio(true, "always", &local(long)),
+            steps: &[
+                "preferences",
+                BELL,
+                "kill-decoder",
+                "activate:notification-audio-builtin",
+                "activate:notification-audio-preview",
+            ],
+            expected: Expected::LocalCutThenBuiltin(8),
         },
         Scenario {
             name: "pane-removed",
@@ -178,6 +220,84 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
             expected: Expected::LocalCutBelow(4),
         },
     ]
+}
+
+/// Writes the steps the application runs itself, and returns the ones only this
+/// harness can perform. Each of those becomes a pause the application holds
+/// until the harness has acted.
+fn script(steps: &[&'static str]) -> (String, Vec<&'static str>) {
+    let mut script = String::new();
+    let mut external = Vec::new();
+    for step in steps {
+        if step.starts_with("keys:") || *step == "kill-decoder" {
+            script.push_str(&format!("await:{}\n", external.len()));
+            external.push(*step);
+        } else {
+            script.push_str(step);
+            script.push('\n');
+        }
+    }
+    (script, external)
+}
+
+fn decoders(application: u32) -> Result<Vec<u32>> {
+    let (mut pending, mut found) = (vec![application], Vec::new());
+    while let Some(pid) = pending.pop() {
+        // A child belongs to the thread that spawned it, and the decoder comes
+        // from a supervisor thread, so every task of the process is read.
+        let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+            continue;
+        };
+        for task in tasks {
+            let Ok(children) = fs::read_to_string(task?.path().join("children")) else {
+                continue;
+            };
+            for child in children.split_whitespace() {
+                let child: u32 = child.parse()?;
+                pending.push(child);
+                if fs::read(format!("/proc/{child}/cmdline"))
+                    .is_ok_and(|line| line.split(|byte| *byte == 0).any(|arg| arg == DECODER_FLAG))
+                {
+                    found.push(child);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn kill_decoder(harness: &mut sessions::Harness, application: u32) -> Result<()> {
+    harness.wait(15, |_| Ok(!decoders(application)?.is_empty()))?;
+    // Let the sound reach the sink first, so the capture shows it being cut.
+    std::thread::sleep(Duration::from_secs(1));
+    for decoder in decoders(application)? {
+        kill(Pid::from_raw(decoder as i32), Signal::SIGKILL)?;
+    }
+    // Retirement needs a moment to be confirmed before the slot is free again.
+    std::thread::sleep(Duration::from_secs(2));
+    Ok(())
+}
+
+fn perform(
+    harness: &mut sessions::Harness,
+    steps: &Path,
+    application: u32,
+    external: &[&str],
+) -> Result<()> {
+    for (index, step) in external.iter().enumerate() {
+        let paused = format!("among: script awaits {index}\n");
+        harness.wait(30, |this| Ok(this.text()?.contains(&paused)))?;
+        if let Some(keys) = step.strip_prefix("keys:") {
+            for key in keys.split(' ') {
+                harness.xdo(&["key", "--clearmodifiers", key])?;
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        } else {
+            kill_decoder(harness, application)?;
+        }
+        fs::write(steps.with_extension(index.to_string()), b"")?;
+    }
+    Ok(())
 }
 
 fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> {
@@ -202,7 +322,8 @@ fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> 
             serde_json::to_vec(&json!({"version":1,"notifications":{"audio":audio}}))?,
         )?;
     }
-    fs::write(base.join("steps"), scenario.steps.join("\n") + "\n")?;
+    let (steps, external) = script(scenario.steps);
+    fs::write(base.join("steps"), steps)?;
     harness
         .env
         .insert("AMONG_SCRIPT".into(), base.join("steps").into_os_string());
@@ -225,7 +346,8 @@ fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> 
         &File::create(base.join("recorder.log"))?,
     )?;
     std::thread::sleep(Duration::from_millis(500));
-    harness.start(scenario.name)?;
+    let application = harness.start(scenario.name)?;
+    perform(&mut harness, &base.join("steps"), application, &external)?;
     harness.wait(30, |this| {
         Ok(this.text()?.contains("among: script finished after"))
     })?;
@@ -233,7 +355,9 @@ fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> 
         harness.stop(false)?;
         std::thread::sleep(Duration::from_secs(5));
     } else {
-        std::thread::sleep(Duration::from_secs(3));
+        // Longer than a cut sound's bound: stopping the application early would
+        // cut the sound itself and hide a cancellation that never happened.
+        std::thread::sleep(Duration::from_secs(6));
         harness.stop(false)?;
     }
     std::thread::sleep(Duration::from_millis(500));
@@ -257,15 +381,30 @@ fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> 
     if scenario.expected != Expected::Silence && copied == 0 {
         return Err(format!("{}: helper negotiated shared memory", scenario.name).into());
     }
+    let saved = written
+        .as_ref()
+        .map(|bytes| storage::parse_json(bytes))
+        .transpose()?
+        .map(|document| document["notifications"]["audio"].clone());
+    let saved = saved.as_ref().ok_or("General disappeared");
     match scenario.name {
         "preview-off" if written.is_some() => {
             return Err("Preview wrote General preferences".into())
         }
-        "source-change" => {
-            let saved = storage::parse_json(&written.ok_or("General disappeared")?)?;
-            if saved["notifications"]["audio"]["source"] != "builtin" {
-                return Err("source change was not saved".into());
-            }
+        "event" if saved?["enabled"] != true => {
+            return Err("the switch did not enable audio".into())
+        }
+        "event-disabled" if saved?["enabled"] != false => {
+            return Err("the switch did not disable audio".into())
+        }
+        "event-ineligible" if saved?["eligibility"] != "application-background" => {
+            return Err("the condition did not reach Among in background".into())
+        }
+        "focus-return" if saved?["eligibility"] != "originating-terminal-unfocused" => {
+            return Err("the condition did not reach Originating terminal unfocused".into())
+        }
+        "source-change" if saved?["source"] != "builtin" => {
+            return Err("source change was not saved".into())
         }
         _ => {}
     }
@@ -296,9 +435,6 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<()> {
         fixtures.join("result.json"),
         serde_json::to_vec_pretty(&json!({"cases":results}))?,
     )?;
-    println!(
-        "Captured General audio: {}. Focus-driven cancellation is not covered.",
-        fixtures.display()
-    );
+    println!("Captured General audio: {}.", fixtures.display());
     Ok(())
 }

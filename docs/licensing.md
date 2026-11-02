@@ -100,10 +100,12 @@ replacement/runtime compliance. It refuses missing inputs or an existing output
 directory rather than substituting installed-host metadata or overwriting evidence.
 Container fixtures: `cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test native_inventory --test native_notices`.
 
-Once exact source packages have been downloaded through authenticated Ubuntu APT
-metadata, check their preserved inventory against the binary input inventory:
+Download the exact source packages through authenticated Ubuntu APT metadata, as
+root in a disposable Ubuntu 24.04 container, then check their preserved inventory
+against the binary input inventory. None of this needs a tag:
 
 ```sh
+among-tools collect-snap-sources <native-audit>/inventory.json <new-source-directory>
 among-tools check-snap-sources <native-audit>/inventory.json <source-download-directory>
 cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test native_sources
 ```

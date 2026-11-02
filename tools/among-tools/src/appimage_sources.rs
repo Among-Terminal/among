@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fs::{self, File},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -84,6 +84,53 @@ pub fn verify_descriptor(directory: &Path, source: &str, version: &str) -> Resul
 /// from. APT checks each download against the signed source index; the result
 /// is re-checked against each descriptor before it is published.
 pub fn collect(audit: &Path, output: &Path) -> Result<Value> {
+    let record = storage::parse_json(&fs::read(audit)?)?;
+    let sources = source_set(&record)?;
+    let download = download(&sources, output)?;
+    let document = json!({"schema":1,
+        "appimage":record["appimage"],
+        "architecture":record["architecture"],
+        "scope":"Debian source packages (descriptor, upstream archives, packaging changes) of every bundled library and data package, downloaded through APT from the signed Ubuntu archive",
+        "sources":download.records});
+    storage::atomic_write(
+        &download.payload,
+        Path::new("sources.json"),
+        &serde_json::to_vec_pretty(&document)?,
+        0o644,
+    )?;
+    download.publish(output)?;
+    Ok(document)
+}
+
+/// Exact sources downloaded into a private directory, not yet published.
+pub struct Download {
+    pub payload: PathBuf,
+    pub records: Vec<Value>,
+    base: PathBuf,
+    parent: PathBuf,
+}
+
+impl Download {
+    pub fn publish(&self, output: &Path) -> Result<()> {
+        storage::publish_directory(
+            &self.payload,
+            &self
+                .parent
+                .join(output.file_name().ok_or("output has no name")?),
+        )?;
+        println!(
+            "Collected {} source packages; logs: {}",
+            self.records.len(),
+            self.base.display()
+        );
+        Ok(())
+    }
+}
+
+/// Fetches each exact source version through APT from the signed Ubuntu archive
+/// of this container. A version the archive no longer holds fails the download;
+/// a newer one is never taken in its place.
+pub fn download(sources: &BTreeSet<(String, String)>, output: &Path) -> Result<Download> {
     if !Path::new("/.dockerenv").is_file() || !nix::unistd::geteuid().is_root() {
         return Err(
             "source collection edits APT configuration; run it only as root in the disposable build container"
@@ -92,10 +139,8 @@ pub fn collect(audit: &Path, output: &Path) -> Result<Value> {
     }
     let actual = platform::discover()?;
     if actual.os != "ubuntu" || actual.version != "24.04" {
-        return Err("AppImage sources come from the Ubuntu 24.04 build image".into());
+        return Err("Bundled sources come from the Ubuntu 24.04 archive".into());
     }
-    let record = storage::parse_json(&fs::read(audit)?)?;
-    let sources = source_set(&record)?;
     if output.symlink_metadata().is_ok() {
         return Err("source output directory must be new".into());
     }
@@ -153,7 +198,7 @@ pub fn collect(audit: &Path, output: &Path) -> Result<Value> {
         600,
     )?;
     let mut records = Vec::new();
-    for (source, version) in &sources {
+    for (source, version) in sources {
         let request = format!("{source}={version}");
         run(
             &format!("source-{source}"),
@@ -163,27 +208,12 @@ pub fn collect(audit: &Path, output: &Path) -> Result<Value> {
         )?;
         records.push(verify_descriptor(&payload, source, version)?);
     }
-    let document = json!({"schema":1,
-        "appimage":record["appimage"],
-        "architecture":record["architecture"],
-        "scope":"Debian source packages (descriptor, upstream archives, packaging changes) of every bundled library and data package, downloaded through APT from the signed Ubuntu archive",
-        "sources":records});
-    storage::atomic_write(
-        &payload,
-        Path::new("sources.json"),
-        &serde_json::to_vec_pretty(&document)?,
-        0o644,
-    )?;
-    storage::publish_directory(
-        &payload,
-        &parent.join(output.file_name().ok_or("output has no name")?),
-    )?;
-    println!(
-        "Collected {} source packages; logs: {}",
-        sources.len(),
-        base.display()
-    );
-    Ok(document)
+    Ok(Download {
+        payload,
+        records,
+        base,
+        parent,
+    })
 }
 
 #[cfg(test)]

@@ -213,13 +213,17 @@ declare for audio plus the capture tools. The check uses a probe built by the jo
 `among-tools check-general-audio <among-binary>` runs the application itself on an
 owned display with a private null sink, because a test binary cannot host the
 decoder helper. It judges the captured waveform for: Preview with audio off;
-enabled, disabled and ineligible events; a saved source changed through General;
-a saved file that no longer exists; a source pane closed during a long sound; and
-SIGTERM to the application during a long sound.
+events after the General switch and condition are set from the keyboard (enabled,
+disabled, ineligible); a source changed through General; a long sound cancelled
+when closing Preferences returns focus to its terminal; a saved file that no longer
+exists; a truncated file; a decoder killed during a long sound, after which Preview
+still plays; a source pane closed during a long sound; and SIGTERM to the
+application during a long sound.
 The 660 Hz part of the built-in alert tells it apart from the local 880 Hz
-fixture. The same CI step runs this check on the job's build. `ci-deb-install` and
+fixture. Only the saved source is written ahead, because the file chooser is a
+portal. The same CI step runs this check on the job's build. `ci-deb-install` and
 `ci-rpm-install` run it on `/usr/bin/among` from the installed package, which
-happens only for a `v*` tag. Focus-driven cancellation is not covered.
+happens only for a `v*` tag.
 
 ## Reusable packaged-output checks
 
