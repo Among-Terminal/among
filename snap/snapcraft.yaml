@@ -52,6 +52,10 @@ parts:
       - adwaita-icon-theme
       - gsettings-desktop-schemas
       - librsvg2-common
+      # libncurses6, a media-plugin dependency, keeps its copyright in this
+      # package's doc directory. core24 provides the library, so only the
+      # notice is primed.
+      - libtinfo6
     # The GStreamer media route pulls Mesa's GL drivers in as dependencies.
     # Under `snap run` GTK's display setup then crashes inside the bundled
     # driver (SIGSEGV during GL context creation), so the window never opens.
@@ -71,6 +75,8 @@ parts:
       - -usr/lib/*/libdrm_intel.so*
       - -usr/share/glvnd/egl_vendor.d/50_mesa.json
       - -usr/share/drirc.d
+      - -usr/lib/*/libtinfo.so*
+      - -lib/*/libtinfo.so*
     build-environment:
       - LDFLAGS: >-
           -Wl,-rpath=\$ORIGIN/../usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:/snap/core24/current/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR
