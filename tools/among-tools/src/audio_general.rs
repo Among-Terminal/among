@@ -116,7 +116,7 @@ fn audio(enabled: bool, eligibility: &str, source: &Value) -> Option<Value> {
     Some(json!({"enabled":enabled,"eligibility":eligibility,"source":source}))
 }
 
-fn scenarios(short: &Path, long: &Path, missing: &Path) -> Vec<Scenario> {
+fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec<Scenario> {
     let local = |path: &Path| json!({"local":path});
     vec![
         Scenario {
@@ -152,6 +152,14 @@ fn scenarios(short: &Path, long: &Path, missing: &Path) -> Vec<Scenario> {
         Scenario {
             name: "file-removed",
             audio: audio(true, "always", &local(missing)),
+            steps: &[BELL],
+            expected: Expected::Silence,
+        },
+        // The header promises more samples than the file holds, so a partly
+        // copied sound must be refused rather than played cut short.
+        Scenario {
+            name: "file-truncated",
+            audio: audio(true, "always", &local(truncated)),
             steps: &[BELL],
             expected: Expected::Silence,
         },
@@ -277,8 +285,11 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<()> {
     fs::write(&short, sine_wav(1, 880.0))?;
     fs::write(&long, sine_wav(8, 880.0))?;
     let missing = fixtures.join("removed.wav");
+    let truncated = fixtures.join("truncated.wav");
+    let whole = sine_wav(1, 880.0);
+    fs::write(&truncated, &whole[..whole.len() / 2])?;
     let mut results = Vec::new();
-    for scenario in scenarios(&short, &long, &missing) {
+    for scenario in scenarios(&short, &long, &missing, &truncated) {
         results.push(run_one(binary, scratch, &scenario)?);
     }
     fs::write(
