@@ -133,7 +133,12 @@ fn an_image_without_the_runtime_notice_or_its_license_text_is_refused() -> Resul
     let root = scratch("among-appimage-runtime-notice")?;
     let notice = appimage_tools::RUNTIME_NOTICE_PATH;
     let text = appimage_tools::runtime_notice();
-    write(&root, "usr/share/common-licenses/LGPL-2.1", b"license text")?;
+    let license = "usr/share/common-licenses/LGPL-2.1";
+    write(
+        &root,
+        license,
+        b"GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999\n",
+    )?;
     let refusal = |root: &Path| match appimage_build::require_runtime_notice(root) {
         Ok(()) => String::from("accepted"),
         Err(error) => error.to_string(),
@@ -143,7 +148,9 @@ fn an_image_without_the_runtime_notice_or_its_license_text_is_refused() -> Resul
     assert!(refusal(&root).contains("differs"));
     write(&root, notice, text.as_bytes())?;
     assert_eq!(refusal(&root), "accepted");
-    fs::remove_file(root.join("usr/share/common-licenses/LGPL-2.1"))?;
+    write(&root, license, b"GNU GENERAL PUBLIC LICENSE\nVersion 3\n")?;
+    assert!(refusal(&root).contains("another text"));
+    fs::remove_file(root.join(license))?;
     assert!(refusal(&root).contains("LGPL-2.1"));
     fs::remove_dir_all(root)?;
     Ok(())

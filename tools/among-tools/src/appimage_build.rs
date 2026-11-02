@@ -548,8 +548,9 @@ pub fn require_runtime_notice(root: &Path) -> Result<()> {
     }
     let license = fs::read(root.join("usr/share/common-licenses/LGPL-2.1"))
         .map_err(|_| "AppImage lacks the LGPL-2.1 text its runtime notice refers to")?;
-    if license.is_empty() {
-        return Err("AppImage has an empty LGPL-2.1 text".into());
+    let license = String::from_utf8_lossy(&license);
+    if !license.contains("GNU LESSER GENERAL PUBLIC LICENSE") || !license.contains("Version 2.1") {
+        return Err("AppImage LGPL-2.1 file holds another text".into());
     }
     Ok(())
 }
@@ -763,6 +764,12 @@ pub fn build(
         .ok_or("pinned runtime did not report its version")?
         .trim()
         .to_string();
+    // The notice names the runtime it describes, so a new runtime pin cannot
+    // ship under the old notice unnoticed.
+    let runtime_commit = runtime_version.rsplit('/').next().unwrap_or_default();
+    if runtime_commit.is_empty() || !appimage_tools::runtime_notice().contains(runtime_commit) {
+        return Err(format!("runtime notice does not name runtime {runtime_version}").into());
+    }
     let audit = json!({
         "schema":1,
         "appimage":{"filename":name,"sha256":digest,"bytes":image.metadata()?.len()},

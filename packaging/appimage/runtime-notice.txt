@@ -26,8 +26,10 @@ rebuild the runtime from those sources, extract the image with
 --appimage-extract, and pack the result again with
 appimagetool --runtime-file <your-runtime>.
 
-The text of LGPL-2.1 is in usr/share/common-licenses/LGPL-2.1 of this image. The
-other license texts follow verbatim.
+The text of LGPL-2.1 is in usr/share/common-licenses/LGPL-2.1 of this image, and
+those of GPL-2.0 and GPL-3.0 in GPL-2 and GPL-3 next to it. The GCC Runtime
+Library Exception is in licenses.tar.gz of the release above. The other license
+texts follow verbatim.
 
 ----------------------------------------------------------------------
 type2-runtime
