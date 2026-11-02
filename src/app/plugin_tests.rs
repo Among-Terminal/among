@@ -544,14 +544,11 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
         || rows.iter().filter(|row| row.is_mapped()).count() == 2,
         Duration::from_secs(2),
     );
-    let missing = widgets(page.upcast_ref())
+    // Filename-based configuration supplies no inventory: it gets no card.
+    assert!(!widgets(page.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| row.title() == "Lost")
-        .unwrap();
-    assert!(missing
-        .subtitle()
-        .is_some_and(|text| text.contains("Files unavailable") && text.contains("Not installed")));
+        .any(|row| row.title() == "Lost"));
     assert!(!root.join("executed").exists());
     assert_eq!(
         std::fs::read_to_string(config.join("managed-plugins.json")).unwrap(),
@@ -565,27 +562,7 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
         ctx.state.borrow().pane(PaneId(1)).unwrap().terminal(),
         &terminal
     );
-    println!("PASS identity-scoped native search distinguishes two Sample origins; missing desired-on legacy entry remains visible; a real background process fault adds/updates its card without replacing the selected switch, stealing editor focus, losing unfinished text or writing inspected settings");
-    let missing_switch = widgets(missing.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
-        .unwrap();
-    assert!(missing_switch.is_active() && missing_switch.is_sensitive());
-    assert!(missing_switch.grab_focus());
-    xdo(&["key", "--clearmodifiers", "space"]);
-    wait_for(
-        || !ctx.state.borrow().plugins.desired_enabled("Lost"),
-        Duration::from_secs(2),
-    );
-    let saved: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(config.join("plugins.json")).unwrap()).unwrap();
-    assert_eq!(saved["plugins"][0]["enabled"], false);
-    assert_eq!(saved["future"], "keep");
-    assert_eq!(
-        std::fs::read_to_string(config.join("managed-plugins.json")).unwrap(),
-        local
-    );
-    println!("PASS real Space disables and durably saves the unavailable desired-on legacy entry without changing either equal-name managed identity or unrelated fields");
+    println!("PASS identity-scoped native search distinguishes two Sample origins; a legacy entry is neither listed nor rewritten; a real background process fault adds/updates its card without replacing the selected switch, stealing editor focus, losing unfinished text or writing inspected settings");
     preferences.destroy();
     ctx.window.destroy();
     wait_for(

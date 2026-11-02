@@ -1739,6 +1739,7 @@ fn screenshot(window: &impl IsA<gtk::Window>, name: &str) {
     println!("Screenshot: {}", path.display());
 }
 
+#[track_caller]
 fn contained(
     widget: &impl IsA<gtk::Widget>,
     window: &impl IsA<gtk::Window>,
@@ -1746,7 +1747,12 @@ fn contained(
     let bounds = widget.as_ref().compute_bounds(window.as_ref()).unwrap();
     assert!(bounds.x() >= 0.0 && bounds.y() >= 0.0);
     assert!(bounds.x() + bounds.width() <= window.as_ref().width() as f32);
-    assert!(bounds.y() + bounds.height() <= window.as_ref().height() as f32);
+    assert!(
+        bounds.y() + bounds.height() <= window.as_ref().height() as f32,
+        "bottom {} is outside window height {}",
+        bounds.y() + bounds.height(),
+        window.as_ref().height()
+    );
     assert!(bounds.width() >= 24.0 && bounds.height() >= 24.0);
     bounds
 }
@@ -1917,7 +1923,11 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         }),
     );
     let view = inspector();
-    focus(&view);
+    // The registered sources sit above the request status and this page
+    // scrolls too; give every section room before comparing bounds.
+    let id = focus(&view);
+    xdo(&["windowsize", "--sync", &id, "640", "900"]);
+    wait_for(|| view.height() >= 800, Duration::from_secs(3));
     let entry = widgets(view.upcast_ref())
         .into_iter()
         .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
