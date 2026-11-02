@@ -47,8 +47,9 @@ entry; it runs only on a display the check owns. Over the entry no pane
 destination, pane drag or workspace reorder may be reported, and the release
 must leave every workspace unchanged. A private format that no drop target
 lists is never delivered to Among by GTK, so that case shows that the payload
-changes nothing rather than that a guard refused it. `summary-plugin` is a managed fixture and reports
-every workspace summary from `summary.txt` beside its executable; the check
+changes nothing rather than that a guard refused it. `summary-plugin` is a
+managed fixture and reports
+every workspace summary from `summary.txt` in its home directory; the check
 rewrites that file while a pane header is held over another entry and requires
 the shown destination and the old drawn summary to survive until the drop, and
 the new summary to be drawn after it. It repeats the refresh during a drag that
