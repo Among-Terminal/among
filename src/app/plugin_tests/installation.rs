@@ -1775,6 +1775,11 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
+    // The page scrolls. The layout under test is its sections, so all of them
+    // must fit the window before their bounds are compared with it.
+    let id = focus(&preferences);
+    xdo(&["windowsize", "--sync", &id, "900", "1000"]);
+    wait_for(|| preferences.height() >= 900, Duration::from_secs(3));
     screenshot(&preferences, "plugins");
     let search = widgets(page.upcast_ref())
         .into_iter()
