@@ -38,12 +38,16 @@ pub fn source_identity(
     Ok((name.into(), version.into()))
 }
 
+/// Staged files, own notices, common-license references, and the package whose
+/// doc directory this one links to, if any.
+pub type Payload = (Vec<Value>, Vec<Value>, BTreeSet<String>, Option<String>);
+
 pub fn payload(
     stream: impl Read,
     prime: &Path,
     output: &Path,
     package: &str,
-) -> Result<(Vec<Value>, Vec<Value>, BTreeSet<String>)> {
+) -> Result<Payload> {
     if !package_name(package) {
         return Err("unsafe native package identity".into());
     }
@@ -53,6 +57,7 @@ pub fn payload(
     let mut notices = Vec::new();
     let mut references = BTreeSet::new();
     let mut members = BTreeSet::new();
+    let mut shared_notices = None;
     for entry in archive.entries()? {
         let mut entry = entry?;
         let name = entry.path()?.into_owned();
@@ -73,6 +78,15 @@ pub fn payload(
             &raw
         });
         storage::relative_path(relative)?;
+        // Debian lets a package point /usr/share/doc/PACKAGE at the directory of
+        // a package it depends on, so its copyright lives only there.
+        if entry.header().entry_type().is_symlink()
+            && relative == Path::new("usr/share/doc").join(package)
+        {
+            shared_notices = entry
+                .link_name()?
+                .and_then(|link| Some(link.file_name()?.to_str()?.to_string()));
+        }
         if !entry.header().entry_type().is_file() {
             continue;
         }
@@ -134,10 +148,15 @@ pub fn payload(
     if staged.is_empty() {
         return Err("Debian input has no observable regular files in prime".into());
     }
-    if notices.is_empty() {
-        return Err("missing authentic native notice evidence".into());
+    if notices.is_empty() && shared_notices.is_none() {
+        return Err(format!("{package}: missing authentic native notice evidence").into());
     }
-    Ok((staged.into_values().collect(), notices, references))
+    Ok((
+        staged.into_values().collect(),
+        notices,
+        references,
+        shared_notices,
+    ))
 }
 
 /// A prime that actually came from this recipe is identifiable by our own
@@ -219,6 +238,7 @@ fn write_inventory(
     ]);
     let mut records = Vec::new();
     let mut packages = BTreeSet::new();
+    let mut shared = Vec::new();
     for (index, deb) in inputs.iter().enumerate() {
         let metadata = base.join(format!("metadata-{index}"));
         let errors = File::create(base.join(format!("metadata-{index}.stderr")))?;
@@ -264,8 +284,18 @@ fn write_inventory(
         if !process.wait(Duration::from_secs(60))?.success() {
             return Err("cannot inspect exact Debian payload archive".into());
         }
-        let (staged, notices, references) = payload(File::open(data)?, prime, output, package)?;
-        records.push(json!({"package":package,"version":version,"architecture":deb822::required(&fields,"Architecture")?,"source_package":source,"source_version":source_version,"input":{"filename":deb.file_name().and_then(|name|name.to_str()).ok_or("Debian filename is not UTF-8")?,"sha256":storage::sha256(File::open(deb)?)?},"staged_files":staged,"notices":notices,"common_license_references":references}));
+        let (staged, notices, references, shared_notices) =
+            payload(File::open(data)?, prime, output, package)?;
+        if let Some(owner) = &shared_notices {
+            shared.push((package.to_string(), owner.clone()));
+        }
+        records.push(json!({"notices_shared_with":shared_notices,"package":package,"version":version,"architecture":deb822::required(&fields,"Architecture")?,"source_package":source,"source_version":source_version,"input":{"filename":deb.file_name().and_then(|name|name.to_str()).ok_or("Debian filename is not UTF-8")?,"sha256":storage::sha256(File::open(deb)?)?},"staged_files":staged,"notices":notices,"common_license_references":references}));
+    }
+    // A shared notice only counts if its owner is staged with this artifact.
+    for (package, owner) in &shared {
+        if !packages.contains(owner) {
+            return Err(format!("{package}: notices live in unstaged package {owner}").into());
+        }
     }
     let document = json!({"schema":1,"scope":"exact Debian stage inputs and their observed prime files","source_delivery":"not established; matching source archives/patches/build instructions still required","packages":records});
     storage::atomic_write(

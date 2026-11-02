@@ -320,3 +320,35 @@ fn actual_cli_refuses_duplicate_and_unstaged_real_packages() -> Result<()> {
     assert!(!f.0.join("audit").exists());
     Ok(())
 }
+
+// Debian packages from one source often replace /usr/share/doc/PACKAGE with a
+// link to a sibling's directory. Such a package has no copyright of its own, and
+// the audit must name the owner instead of refusing the whole staged set.
+#[test]
+fn a_linked_doc_directory_names_the_package_that_owns_the_notices() -> Result<()> {
+    let f = fixture()?;
+    fs::create_dir_all(f.0.join("prime/usr/lib"))?;
+    fs::write(f.0.join("prime/usr/lib/library.so"), b"library")?;
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut library = tar::Header::new_gnu();
+    library.set_size(7);
+    library.set_mode(0o644);
+    library.set_cksum();
+    builder.append_data(&mut library, "usr/lib/library.so", &b"library"[..])?;
+    let mut link = tar::Header::new_gnu();
+    link.set_entry_type(tar::EntryType::Symlink);
+    link.set_size(0);
+    link.set_cksum();
+    builder.append_link(&mut link, "usr/share/doc/libfixture1", "libfixture-common")?;
+    let archive = builder.into_inner()?;
+    let (staged, notices, _, shared) = inventory::payload(
+        archive.as_slice(),
+        &f.0.join("prime"),
+        &f.0.join("output"),
+        "libfixture1",
+    )?;
+    assert_eq!(staged.len(), 1);
+    assert!(notices.is_empty());
+    assert_eq!(shared.as_deref(), Some("libfixture-common"));
+    Ok(())
+}
