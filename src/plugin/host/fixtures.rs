@@ -122,6 +122,7 @@ impl PluginHost {
     }
 
     pub(crate) fn register_fixture(&mut self, spec: PluginSpec) {
+        self.test_registered.insert(spec.name.clone());
         let entry = fixture_entry(&spec);
         let local = json!({"enabled":spec.enabled,"review":{"owner":"example","repository":"sample","features":FEATURES}});
         if self.world.workspaces.is_empty() {

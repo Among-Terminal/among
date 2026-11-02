@@ -133,6 +133,8 @@ pub struct PluginHost {
     // What the self-check reports: it samples between polls, and `poll` clears
     // the list above, so a rejection could fall between two samples.
     seen_rejections: Vec<(String, Rejection)>,
+    #[cfg(test)]
+    test_registered: BTreeSet<String>,
     /// Answers collected during the last [`PluginHost::poll`], for the host to
     /// turn into slot content.
     results: Vec<PluginResult>,
@@ -200,6 +202,8 @@ impl PluginHost {
             plugins: Vec::new(),
             last_rejections: Vec::new(),
             seen_rejections: Vec::new(),
+            #[cfg(test)]
+            test_registered: BTreeSet::new(),
             results: Vec::new(),
             notices: Vec::new(),
             invalidated_sources: Default::default(),
@@ -403,6 +407,13 @@ impl PluginHost {
             .iter()
             .filter(|plugin| plugin.managed.is_some() && !selected.contains(&plugin.spec.name))
             .map(|plugin| plugin.spec.name.clone())
+            .collect::<Vec<_>>();
+        // A plugin registered directly by a test has no inventory record to be
+        // absent from; it stands for an unrelated install here.
+        #[cfg(test)]
+        let absent = absent
+            .into_iter()
+            .filter(|key| !self.test_registered.contains(key))
             .collect::<Vec<_>>();
         for key in absent {
             self.disable(&key);
