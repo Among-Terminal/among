@@ -164,8 +164,10 @@ fn general_audio_judgement_separates_sources_and_cut_playback() -> Result<()> {
     let silence = vec![0u8; 96_000];
     let local = pcm(1, 880.0);
     let builtin: Vec<u8> = local
-        .chunks_exact(2)
-        .zip(pcm(1, 660.0).chunks_exact(2))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(pcm(1, 660.0).as_chunks::<2>().0)
         .flat_map(|(a, b)| {
             let sum = i16::from_le_bytes([a[0], a[1]]) / 2 + i16::from_le_bytes([b[0], b[1]]) / 2;
             sum.to_le_bytes()
