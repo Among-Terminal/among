@@ -58,7 +58,7 @@ jobs:
         run: |
           sudo env AMONG_CHECK_ROOT="$AMONG_CHECK_ROOT" parts/among/build/among-tools-target/release/among-tools \
             inventory-snap-native prime parts/among/stage_packages snap-native-audit
-          sudo chown -R "$(id -u):$(id -g)" snap-native-audit
+          sudo chown -R "$(id -u):$(id -g)" snap-native-audit "$AMONG_CHECK_ROOT"
           # Every staged package must ship its notices with this artifact.
           jq -e 'has("unresolved_notices") | not' snap-native-audit/inventory.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

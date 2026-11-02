@@ -8,6 +8,7 @@ set -eu
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends dpkg-dev ca-certificates ubuntu-keyring gpgv
+mkdir /work
 tools=/input/among-tools
 native=/input/native/inventory.json
 "$tools" collect-snap-sources "$native" /work/native-sources
