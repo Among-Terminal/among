@@ -90,7 +90,7 @@ fn wait(mut condition: impl FnMut() -> bool, limit: Duration) -> Result<(), Box<
 /// the limit is above the operation's own deadline, so a hung decoder still fails.
 fn wait_for_end(audio: &Audio, id: u64) -> Result<Vec<Notice>, Box<dyn Error>> {
     let mut notices = Vec::new();
-    wait(
+    let ended = wait(
         || {
             notices.extend(audio.drain_notices());
             notices
@@ -98,7 +98,11 @@ fn wait_for_end(audio: &Audio, id: u64) -> Result<Vec<Notice>, Box<dyn Error>> {
                 .any(|notice| matches!(notice, Notice::DecoderEnded { id: ended } if *ended == id))
         },
         Duration::from_secs(20),
-    )?;
+    );
+    if let Err(error) = ended {
+        let state = audio.decoder_snapshot();
+        return Err(format!("{error}; notices {notices:?}; decoder {state:?}").into());
+    }
     Ok(notices)
 }
 fn save(audio: &Audio, output: &Path) -> Result<(), Box<dyn Error>> {
@@ -495,7 +499,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     own.write(
         output.join("retirement.json"),
         serde_json::to_vec_pretty(
-            &serde_json::json!({"scenario":scenario,"injection":"trusted native-call shim (plus kill EPERM for quarantine), not a discovered codec deadlock","gui_latency_us":gui_latency.as_micros(),"retirement_us":retirement.as_micros(),"elapsed_ms":started.elapsed().as_millis(),"gtk_ticks":ticks.get(),"max_gtk_gap_ms":max_gap.get().as_millis(),"supervisor_threads":supervisors,"operation_temp_dirs_after":operation_temp_dirs_after,"first_notices":format!("{first:?}"),"recovery_notices":format!("{recovery:?}")}),
+            &serde_json::json!({"scenario":scenario,"injection":"trusted native-call shim (plus kill EPERM for quarantine), not a discovered codec deadlock","gui_latency_us":gui_latency.as_micros(),"retirement_us":retirement.as_micros(),"elapsed_ms":started.elapsed().as_millis(),"gtk_ticks":ticks.get(),"max_gtk_gap_ms":net_gap.get().as_millis(),"raw_gtk_gap_ms":max_gap.get().as_millis(),"supervisor_threads":supervisors,"operation_temp_dirs_after":operation_temp_dirs_after,"first_notices":format!("{first:?}"),"recovery_notices":format!("{recovery:?}")}),
         )?,
     )?;
     audio.shutdown();
