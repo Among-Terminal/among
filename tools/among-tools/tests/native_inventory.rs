@@ -134,7 +134,7 @@ fn conventional_dpkg_root_and_directory_entries_are_not_unsafe_file_members() ->
         NOTICE,
     )?;
     let archive = archive.into_inner()?;
-    let (files, notices, _) = inventory::payload(
+    let (files, notices, _, _) = inventory::payload(
         archive.as_slice(),
         &prime,
         &f.0.join("output"),
