@@ -352,3 +352,17 @@ fn a_linked_doc_directory_names_the_package_that_owns_the_notices() -> Result<()
     assert_eq!(shared.as_deref(), Some("libfixture-common"));
     Ok(())
 }
+
+// A staged library whose copyright lives in an unstaged package ships without
+// that text. The inventory records it; accepting the notices must refuse.
+#[test]
+fn notices_owned_by_an_unstaged_package_block_the_notice_gate() -> Result<()> {
+    let f = fixture()?;
+    let document = json!({"schema":1,"packages":[{"package":"libfixture1","notices":[]}],
+        "unresolved_notices":[{"package":"libfixture1","notices_in_unstaged":"libbase"}]});
+    let error = native_notices::check(&document, &f.0.join("prime"))
+        .err()
+        .ok_or("unresolved notices were accepted")?;
+    assert!(error.to_string().contains("libbase"));
+    Ok(())
+}

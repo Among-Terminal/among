@@ -290,13 +290,18 @@ fn write_inventory(
         }
         records.push(record);
     }
-    // A shared notice only counts if its owner is staged with this artifact.
-    for (package, owner) in &shared {
-        if !packages.contains(owner) {
-            return Err(format!("{package}: notices live in unstaged package {owner}").into());
-        }
+    // A shared notice only counts if its owner is staged with this artifact. The
+    // inventory records the rest so they can be seen and fixed; the notice gate,
+    // not this record, refuses to accept them.
+    let unresolved: Vec<_> = shared
+        .iter()
+        .filter(|(_, owner)| !packages.contains(owner))
+        .map(|(package, owner)| json!({"package":package,"notices_in_unstaged":owner}))
+        .collect();
+    let mut document = json!({"schema":1,"scope":"exact Debian stage inputs and their observed prime files","source_delivery":"not established; matching source archives/patches/build instructions still required","packages":records});
+    if !unresolved.is_empty() {
+        document["unresolved_notices"] = json!(unresolved);
     }
-    let document = json!({"schema":1,"scope":"exact Debian stage inputs and their observed prime files","source_delivery":"not established; matching source archives/patches/build instructions still required","packages":records});
     storage::atomic_write(
         output,
         Path::new("inventory.json"),

@@ -24,6 +24,9 @@ pub fn check(document: &Value, prime: &Path) -> Result<Value> {
     if document["schema"] != 1 {
         return Err("unsupported native notice inventory".into());
     }
+    if let Some(unresolved) = document.get("unresolved_notices") {
+        return Err(format!("staged packages lack shipped notices: {unresolved}").into());
+    }
     let mut count = 0;
     let mut references = BTreeSet::new();
     for package in packages {
