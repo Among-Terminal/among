@@ -27,10 +27,14 @@ fn diagnostic_tail(output: &str) -> &str {
     &output[start..]
 }
 
-/// Development-mode acceptance over candidate bytes. Each runs here, in its own
-/// process and isolated profile, never as a standalone ignored test: each fixes
-/// development mode and needs the prepared candidate.
-pub const DEVELOPMENT_TESTS: [(&str, &str); 2] = [
+/// Acceptance over the prepared candidate. Each runs here, in its own process
+/// and isolated profile, never as a standalone ignored test: each needs the
+/// prepared inputs, and the development cases also fix development mode.
+pub const DEVELOPMENT_TESTS: [(&str, &str); 3] = [
+    (
+        "app::plugin_tests::installation::published_selection::published_native_selection_is_shown_installed_disabled_and_reviewed_without_implicit_access",
+        "PASS native ",
+    ),
     (
         "app::plugin_tests::installation::candidate::candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_rebinds_it",
         "PASS development_prerelease replace_rebind=true",
