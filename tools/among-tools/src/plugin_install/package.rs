@@ -99,7 +99,7 @@ pub fn capture(
     let record_bytes = profile::bounded(records, 8 * 1024 * 1024)?;
     let record_sha = storage::sha256(record_bytes.as_slice())?;
     let executable = host_test(root, std::str::from_utf8(&record_bytes)?)?;
-    let test_sha = storage::sha256(profile::bounded(&executable, 256 * 1024 * 1024)?.as_slice())?;
+    let test_sha = storage::sha256(profile::bounded(&executable, 512 * 1024 * 1024)?.as_slice())?;
     let inputs =
         storage::private_directory(scratch, "among-package-profile-inputs")?.join("release");
     match candidate {
@@ -119,7 +119,7 @@ pub fn capture(
     }
     if clean_source(root)? != source
         || storage::sha256(profile::bounded(records, 8 * 1024 * 1024)?.as_slice())? != record_sha
-        || storage::sha256(profile::bounded(&executable, 256 * 1024 * 1024)?.as_slice())?
+        || storage::sha256(profile::bounded(&executable, 512 * 1024 * 1024)?.as_slice())?
             != test_sha
     {
         return Err("host source/test input changed during package profile capture".into());

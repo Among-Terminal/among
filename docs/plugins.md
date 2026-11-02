@@ -438,8 +438,9 @@ session ID. Old replies cannot establish admission or acknowledge new settings.
 | `context.title` | Known terminal title, or null |
 | `context.process` | Running state and process-exit events |
 | `events.terminal` | Subscribe to terminal/workspace lifecycle events |
+| `system.metrics` | Read system load figures; shown in the access review |
 
-The last four require `context.terminals`. Missing grants omit fields rather than
+The context fields and terminal events require `context.terminals`. Missing grants omit fields rather than
 fill them with fake values. Without terminal context, status is application-only
 and its context contains only the session. Events require both terminal context
 and `events.terminal`; process-exit events additionally require `context.process`.

@@ -84,7 +84,7 @@ fn prepare_source_bound_fixture(root: &Path) {
     );
     let manifest = json!({"schema_version":1,"id":"system-status","version":"source-bound-test",
         "name":"System status source-bound UI fixture","description":"Real executable, synthetic local package metadata; not authenticated installation",
-        "entrypoint":"plugin","api":{"major":1,"minor":2},"required_features":["status"]})
+        "entrypoint":"plugin","api":{"major":1,"minor":2},"required_features":["status","system.metrics"]})
         .to_string();
     let receipt = crate::plugin::inventory::Receipt {
         origin: crate::plugin::inventory::Provenance::Release(
@@ -241,7 +241,7 @@ fn saved_managed(path: &Path, enabled: bool) -> (Vec<u8>, serde_json::Value) {
     );
     assert_eq!(
         document["plugins"][KEY]["review"]["features"],
-        json!(["status"])
+        json!(["status", "system.metrics"])
     );
     (bytes, document)
 }

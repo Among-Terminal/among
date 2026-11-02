@@ -20,6 +20,10 @@ pub const FEATURES: &[&str] = &[
     "context.title",
     "context.process",
     "events.terminal",
+    // Reading system load. The kernel policy that limits a plugin to exactly
+    // these sources belongs to the plugin sandbox; here the grant is reviewed
+    // and recorded like any other.
+    "system.metrics",
 ];
 
 #[derive(Clone, Debug, Default)]

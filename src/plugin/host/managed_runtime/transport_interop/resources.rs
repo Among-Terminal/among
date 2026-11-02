@@ -14,7 +14,7 @@ const TIPS: [&str; 3] = [
 fn fixture() -> Fixture {
     let fixture = Fixture::with_binary(
         "system-status",
-        &["status"],
+        &["status", "system.metrics"],
         &[],
         "AMONG_MANAGED_SYSTEM_BINARY",
         "AMONG_MANAGED_SYSTEM_SHA256",
@@ -71,10 +71,10 @@ fn real_resources_require_review_and_publish_measured_header_meters() {
     assert_eq!(fixture.host.supervised_count(), 0);
     assert!(fixture.host.running_generation(RESOURCE).is_none());
     fixture.host.disable(RESOURCE);
-    fixture.enable(&["status"]);
+    fixture.enable(&["status", "system.metrics"]);
     assert_eq!(
         fixture.host.plugins[0].runtime.as_ref().unwrap().grants,
-        BTreeSet::from(["status".to_string()])
+        BTreeSet::from(["status".to_string(), "system.metrics".to_string()])
     );
     assert_eq!(
         fixture.host.configuration(RESOURCE),
@@ -107,7 +107,7 @@ fn real_resources_require_review_and_publish_measured_header_meters() {
 #[test]
 fn real_resources_retired_reply_cannot_publish_into_reenabled_header() {
     let mut fixture = fixture();
-    fixture.enable(&["status"]);
+    fixture.enable(&["status", "system.metrics"]);
     let (_, old) = fixture.capture("app_header");
     let generation = fixture.host.running_generation(RESOURCE).unwrap();
     fixture.stop();
