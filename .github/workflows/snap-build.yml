@@ -54,6 +54,17 @@ jobs:
           test -f "among_${version}_${BUILD_ARCH}.snap"
           sha256sum "among_${version}_${BUILD_ARCH}.snap"
           printf 'SNAP_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Inventory the actual staged packages against prime
+        run: |
+          sudo env AMONG_CHECK_ROOT="$AMONG_CHECK_ROOT" parts/among/build/among-tools-target/release/among-tools \
+            inventory-snap-native prime parts/among/stage_packages snap-native-audit
+          sudo chown -R "$(id -u):$(id -g)" snap-native-audit
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: snap-native-audit-${{ matrix.arch }}
+          path: snap-native-audit/
+          if-no-files-found: error
+          retention-days: 14
       - name: Inspect and install exact bytes
         id: install
         env:

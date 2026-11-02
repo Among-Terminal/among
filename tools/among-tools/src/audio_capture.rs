@@ -173,6 +173,64 @@ fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Starts the one-null-sink PulseAudio server of an evidence directory and
+/// confirms its identity. `env` must select the socket through `PULSE_SERVER`
+/// and give the server a private `XDG_RUNTIME_DIR` and `HOME`.
+pub fn private_server(
+    base: &Path,
+    env: &BTreeMap<OsString, OsString>,
+    log_level: &str,
+) -> Result<OwnedProcess> {
+    let socket_path = owned_socket(base)?;
+    let socket = format!("unix:{}", socket_path.display());
+    let conf = base.join("pulse.conf");
+    fs::write(&conf, format!("load-module module-native-protocol-unix socket={}/runtime/pulse.sock auth-anonymous=1\nload-module module-null-sink sink_name=among_audit rate=48000 channels=1 channel_map=mono\nset-default-sink among_audit\nset-default-source among_audit.monitor\n",base.display()))?;
+    let pulse_log = File::create(base.join("pulse.log"))?;
+    let level = format!("--log-level={log_level}");
+    let mut pulse = OwnedProcess::spawn(
+        Path::new("/usr/bin/pulseaudio"),
+        &[
+            "-n",
+            "--daemonize=no",
+            "--use-pid-file=no",
+            "--exit-idle-time=-1",
+            &level,
+            // Timestamps show where a slow startup spent its time when the
+            // readiness bound below is exceeded.
+            "--log-time=yes",
+            "--file",
+            utf8(&conf)?,
+        ],
+        env,
+        base,
+        &pulse_log,
+    )?;
+    let start = Instant::now();
+    while !socket_path.exists() {
+        if start.elapsed() > Duration::from_secs(10) || !pulse.is_running()? {
+            return Err("owned audio server failed readiness".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let info = text("/usr/bin/pactl", &["info"], env, base, "server-info.txt")?;
+    let sinks = text(
+        "/usr/bin/pactl",
+        &["list", "short", "sinks"],
+        env,
+        base,
+        "sinks.txt",
+    )?;
+    let modules = text(
+        "/usr/bin/pactl",
+        &["list", "short", "modules"],
+        env,
+        base,
+        "modules.txt",
+    )?;
+    identity(&info, &sinks, &modules, &socket)?;
+    Ok(pulse)
+}
+
 pub fn run(request: &Invocation<'_>, output: &Path) -> Result<Value> {
     require_container()?;
     fs::DirBuilder::new().mode(0o700).create(output)?;
@@ -204,50 +262,7 @@ pub fn run(request: &Invocation<'_>, output: &Path) -> Result<Value> {
     }
     let socket = format!("unix:{}", owned_socket(&base)?.display());
     env.insert("PULSE_SERVER".into(), socket.clone().into());
-    let conf = base.join("pulse.conf");
-    fs::write(&conf, format!("load-module module-native-protocol-unix socket={}/runtime/pulse.sock auth-anonymous=1\nload-module module-null-sink sink_name=among_audit rate=48000 channels=1 channel_map=mono\nset-default-sink among_audit\nset-default-source among_audit.monitor\n",base.display()))?;
-    let pulse_log = File::create(base.join("pulse.log"))?;
-    let mut pulse = OwnedProcess::spawn(
-        Path::new("/usr/bin/pulseaudio"),
-        &[
-            "-n",
-            "--daemonize=no",
-            "--use-pid-file=no",
-            "--exit-idle-time=-1",
-            "--log-level=info",
-            // Timestamps show where a slow startup spent its time when the
-            // readiness bound below is exceeded.
-            "--log-time=yes",
-            "--file",
-            utf8(&conf)?,
-        ],
-        &env,
-        &base,
-        &pulse_log,
-    )?;
-    let start = Instant::now();
-    while !base.join("runtime/pulse.sock").exists() {
-        if start.elapsed() > Duration::from_secs(10) || !pulse.is_running()? {
-            return Err("owned audio server failed readiness".into());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let info = text("/usr/bin/pactl", &["info"], &env, &base, "server-info.txt")?;
-    let sinks = text(
-        "/usr/bin/pactl",
-        &["list", "short", "sinks"],
-        &env,
-        &base,
-        "sinks.txt",
-    )?;
-    let modules = text(
-        "/usr/bin/pactl",
-        &["list", "short", "modules"],
-        &env,
-        &base,
-        "modules.txt",
-    )?;
-    identity(&info, &sinks, &modules, &socket)?;
+    let mut pulse = private_server(&base, &env, "info")?;
     let xlog = File::create(base.join("xvfb.log"))?;
     let mut x = OwnedProcess::spawn_capture(
         Path::new("/usr/bin/Xvfb"),

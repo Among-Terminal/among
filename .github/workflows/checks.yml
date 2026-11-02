@@ -207,10 +207,10 @@ jobs:
           tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/test-executables.jsonl"
       - name: Real audio through each distribution's declared packages
         run: |
-          cargo build --locked --example audio-probe
+          cargo build --locked --example audio-probe --bin among
           input="$RUNNER_TEMP/native-audio-input"
           mkdir "$input"
-          cp target/debug/examples/audio-probe tools/among-tools/target/release/among-tools "$input/"
+          cp target/debug/examples/audio-probe target/debug/among tools/among-tools/target/release/among-tools "$input/"
           status=0
           for image in \
             debian@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f \

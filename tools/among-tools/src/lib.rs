@@ -6,6 +6,7 @@ pub mod appimage_tools;
 pub mod apt_collect;
 pub mod apt_provenance;
 pub mod audio_capture;
+pub mod audio_general;
 pub mod audio_package;
 pub mod audio_payload;
 pub mod binary_archive;

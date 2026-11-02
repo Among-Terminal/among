@@ -154,3 +154,32 @@ fn decoder_maps_reveal_a_shared_memory_pulse_connection() -> Result<()> {
     assert!(audio_package::shared_pulse_memory_absent(&posix).is_err());
     Ok(())
 }
+
+// The General check must tell which source played: 660 Hz exists only in the
+// built-in alert, and a cancelled long sound must be cut short, not merely heard.
+#[test]
+fn general_audio_judgement_separates_sources_and_cut_playback() -> Result<()> {
+    use among_tools::audio_general::{judge, sine_wav, Expected};
+    let pcm = |seconds, frequency| sine_wav(seconds, frequency).split_off(44);
+    let silence = vec![0u8; 96_000];
+    let local = pcm(1, 880.0);
+    let builtin: Vec<u8> = local
+        .chunks_exact(2)
+        .zip(pcm(1, 660.0).chunks_exact(2))
+        .flat_map(|(a, b)| {
+            let sum = i16::from_le_bytes([a[0], a[1]]) / 2 + i16::from_le_bytes([b[0], b[1]]) / 2;
+            sum.to_le_bytes()
+        })
+        .collect();
+    judge(&builtin, Expected::Builtin)?;
+    assert!(judge(&builtin, Expected::Local).is_err());
+    judge(&silence, Expected::Silence)?;
+    assert!(judge(&local, Expected::Silence).is_err());
+    judge(&local, Expected::Local)?;
+    assert!(judge(&silence, Expected::Local).is_err());
+    judge(&local, Expected::LocalCutBelow(4))?;
+    assert!(judge(&pcm(5, 880.0), Expected::LocalCutBelow(4)).is_err());
+    assert!(judge(&local, Expected::Builtin).is_err());
+    assert!(judge(&pcm(1, 660.0), Expected::Local).is_err());
+    Ok(())
+}

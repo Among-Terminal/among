@@ -67,15 +67,27 @@ pub(super) fn run(
     let gap = Rc::new(Cell::new(Duration::ZERO));
     let last = Rc::new(Cell::new(Instant::now()));
     let (count, maximum, previous) = (ticks.clone(), gap.clone(), last.clone());
+    // The end of the largest gap, on this clock, places a failure against the
+    // phase marks written next to the bound below.
+    let beat_start = Instant::now();
+    let worst_at = Rc::new(Cell::new(Duration::ZERO));
+    let worst = worst_at.clone();
     let timer = glib::timeout_add_local(Duration::from_millis(10), move || {
-        maximum.set(
-            maximum
-                .get()
-                .max(previous.replace(Instant::now()).elapsed()),
-        );
+        let now = Instant::now();
+        let elapsed = now.duration_since(previous.replace(now));
+        if elapsed > maximum.get() {
+            maximum.set(elapsed);
+            worst.set(now.duration_since(beat_start));
+        }
         count.set(count.get() + 1);
         glib::ControlFlow::Continue
     });
+    let phases = std::cell::RefCell::new(String::new());
+    let mark = |label: &str| {
+        phases
+            .borrow_mut()
+            .push_str(&format!("{} {label}\n", beat_start.elapsed().as_millis()));
+    };
     let sound = Sound::read_local(input)?;
     let mut audio = Audio::new()?;
     audio.select(sound.clone())?;
@@ -185,7 +197,9 @@ pub(super) fn run(
             b"execute the real fork after cancellation",
         )?;
     }
+    mark("native-call-released");
     pump(Duration::from_millis(1600));
+    mark("expiry-window-pumped");
     let plays_before_recovery =
         fs::read_to_string(runtime.join("audio-play-invocations")).unwrap_or_default();
     fs::write(output.join("before-recovery.txt"), format!("old={old} elapsed_ms={} plays={plays_before_recovery:?} old_snapshot={old_snapshot:?} current={:?}\n",admitted.elapsed().as_millis(),audio.decoder_snapshot()))?;
@@ -244,6 +258,7 @@ pub(super) fn run(
         output.join("cancelled-complete.txt"),
         format!("{retired:?}\n{first_notices:?}\n"),
     )?;
+    mark("first-operation-retired");
     let mut recovery_notices = Vec::new();
     if recovery {
         for name in ["audio-fork-stall", "audio-native-stall"] {
@@ -299,7 +314,23 @@ pub(super) fn run(
     assert_eq!(supervisors, 1);
     let temporary = super::operation_directories()?;
     assert_eq!(temporary, 0);
-    assert!(gap.get() < Duration::from_millis(250));
+    mark("finished");
+    fs::write(
+        output.join("heartbeat.txt"),
+        format!(
+            "ticks={} max_gap_ms={} max_gap_end_ms={}\n{}",
+            ticks.get(),
+            gap.get().as_millis(),
+            worst_at.get().as_millis(),
+            phases.borrow()
+        ),
+    )?;
+    assert!(
+        gap.get() < Duration::from_millis(250),
+        "GTK heartbeat exceeded its bound: {} ms ending {} ms after start",
+        gap.get().as_millis(),
+        worst_at.get().as_millis()
+    );
     assert!(ticks.get() > 100);
     super::save(&audio, output)?;
     fs::write(

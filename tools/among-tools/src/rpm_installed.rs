@@ -320,6 +320,12 @@ pub fn run(
                 "installed-live-resize",
                 vec!["check-live-resize", "/usr/bin/among"],
             ),
+            // Real output from the installed package, through General, on the
+            // audio route the package's dependencies provide.
+            (
+                "installed-general-audio",
+                vec!["check-general-audio", "/usr/bin/among"],
+            ),
             // Restored split layout, a pane command that keeps running while
             // its workspace is hidden, a pointer pane move and consent.
             (

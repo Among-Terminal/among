@@ -208,9 +208,18 @@ with no packaged root, through the GStreamer, pulsesink and libpulse a DEB or RP
 takes from the system. The CI `native` job runs it in fresh Debian 13, Ubuntu
 24.04 and Fedora 43 containers on amd64 and arm64
 (`packaging/ci/native-audio/check.sh`), installing only the packages those formats
-declare for audio plus the capture tools. The check uses a probe built by the job,
-not an installed DEB or RPM: `deb-release.yml` and `rpm-release.yml` run only for a
-`v*` tag, and audio from an installed package is not yet captured there.
+declare for audio plus the capture tools. The check uses a probe built by the job.
+
+`among-tools check-general-audio <among-binary>` runs the application itself on an
+owned display with a private null sink, because a test binary cannot host the
+decoder helper. It judges the captured waveform for: Preview with audio off;
+enabled, disabled and ineligible events; a saved source changed through General;
+a saved file that no longer exists; and a source pane closed during a long sound.
+The 660 Hz part of the built-in alert tells it apart from the local 880 Hz
+fixture. The same CI step runs this check on the job's build. `ci-deb-install` and
+`ci-rpm-install` run it on `/usr/bin/among` from the installed package, which
+happens only for a `v*` tag. Application shutdown during output and focus-driven
+cancellation are not covered.
 
 ## Reusable packaged-output checks
 

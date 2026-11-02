@@ -310,6 +310,13 @@ pub fn run(
                 vec!["check-live-resize", "/usr/bin/among"],
                 180,
             ),
+            // Real output from the installed package, through General, on the
+            // audio route the package's dependencies provide.
+            (
+                "installed-general-audio",
+                vec!["check-general-audio", "/usr/bin/among"],
+                300,
+            ),
         ] {
             let mut argv = vec![
                 "-u",
