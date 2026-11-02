@@ -130,6 +130,9 @@ pub struct PluginHost {
     plugins: Vec<PluginEntry>,
     /// Failures recorded for the current update, for diagnostics.
     last_rejections: Vec<(String, Rejection)>,
+    // What the self-check reports: it samples between polls, and `poll` clears
+    // the list above, so a rejection could fall between two samples.
+    seen_rejections: Vec<(String, Rejection)>,
     /// Answers collected during the last [`PluginHost::poll`], for the host to
     /// turn into slot content.
     results: Vec<PluginResult>,
@@ -196,6 +199,7 @@ impl PluginHost {
         Self {
             plugins: Vec::new(),
             last_rejections: Vec::new(),
+            seen_rejections: Vec::new(),
             results: Vec::new(),
             notices: Vec::new(),
             invalidated_sources: Default::default(),
@@ -751,8 +755,14 @@ impl PluginHost {
     }
 
     /// Rejections recorded during the last [`PluginHost::poll`].
+    #[cfg(test)]
     pub fn rejections(&self) -> &[(String, Rejection)] {
         &self.last_rejections
+    }
+
+    /// Distinct rejections of this run, at most 32, including the last poll's.
+    pub fn seen_rejections(&self) -> impl Iterator<Item = &(String, Rejection)> {
+        self.seen_rejections.iter().chain(&self.last_rejections)
     }
 
     /// Read whatever plugins have sent and reconcile timeouts.
@@ -761,7 +771,11 @@ impl PluginHost {
     /// is stopped and marked, and its content is withdrawn by the caller via
     /// [`PluginHost::faulted_sources`].
     pub fn poll(&mut self) {
-        self.last_rejections.clear();
+        for rejection in self.last_rejections.drain(..) {
+            if self.seen_rejections.len() < 32 && !self.seen_rejections.contains(&rejection) {
+                self.seen_rejections.push(rejection);
+            }
+        }
 
         let now = Instant::now();
         let count = self.plugins.len();

@@ -1350,8 +1350,7 @@ fn selfcheck(ctx: &Window, label: &str) {
         .collect();
     let rejections: Vec<String> = state
         .plugins
-        .rejections()
-        .iter()
+        .seen_rejections()
         .map(|(name, reason)| format!("{name}:{reason}"))
         .collect();
     let bound = state

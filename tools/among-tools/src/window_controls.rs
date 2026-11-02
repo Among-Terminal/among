@@ -123,6 +123,13 @@ pub fn run(binary: &Path, notifier: &Path, scratch: &Path) -> Result<PathBuf> {
     })?;
     h.command("printf '%s' \"$$\" > before-resize.pid")?;
     h.wait(10, |this| Ok(this.base.join("before-resize.pid").exists()))?;
+    // The session file follows the split after a delay; the comparison below
+    // needs the layout the resize must preserve, not the one before the split.
+    h.wait(10, |this| {
+        Ok(this
+            .snapshot_if_written()
+            .is_some_and(|session| session["workspaces"][0]["layout"]["type"] == "split"))
+    })?;
     let layout =
         h.snapshot_if_written().ok_or("missing session")?["workspaces"][0]["layout"].clone();
     let before = width(&h)?;
