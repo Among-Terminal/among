@@ -214,12 +214,12 @@ declare for audio plus the capture tools. The check uses a probe built by the jo
 owned display with a private null sink, because a test binary cannot host the
 decoder helper. It judges the captured waveform for: Preview with audio off;
 enabled, disabled and ineligible events; a saved source changed through General;
-a saved file that no longer exists; and a source pane closed during a long sound.
+a saved file that no longer exists; a source pane closed during a long sound; and
+SIGTERM to the application during a long sound.
 The 660 Hz part of the built-in alert tells it apart from the local 880 Hz
 fixture. The same CI step runs this check on the job's build. `ci-deb-install` and
 `ci-rpm-install` run it on `/usr/bin/among` from the installed package, which
-happens only for a `v*` tag. Application shutdown during output and focus-driven
-cancellation are not covered.
+happens only for a `v*` tag. Focus-driven cancellation is not covered.
 
 ## Reusable packaged-output checks
 

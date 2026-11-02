@@ -161,6 +161,14 @@ fn scenarios(short: &Path, long: &Path, missing: &Path) -> Vec<Scenario> {
             steps: &["split", BELL, "close"],
             expected: Expected::LocalCutBelow(4),
         },
+        // SIGTERM during a long sound ends the application; a decoder surviving
+        // its owner would keep playing past the bound.
+        Scenario {
+            name: "shutdown",
+            audio: audio(true, "always", &local(long)),
+            steps: &[BELL],
+            expected: Expected::LocalCutBelow(4),
+        },
     ]
 }
 
@@ -213,8 +221,13 @@ fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> 
     harness.wait(30, |this| {
         Ok(this.text()?.contains("among: script finished after"))
     })?;
-    std::thread::sleep(Duration::from_secs(3));
-    harness.stop(false)?;
+    if scenario.name == "shutdown" {
+        harness.stop(false)?;
+        std::thread::sleep(Duration::from_secs(5));
+    } else {
+        std::thread::sleep(Duration::from_secs(3));
+        harness.stop(false)?;
+    }
     std::thread::sleep(Duration::from_millis(500));
     recorder.signal(Signal::SIGINT)?;
     recorder.wait(Duration::from_secs(5))?;
@@ -273,7 +286,7 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<()> {
         serde_json::to_vec_pretty(&json!({"cases":results}))?,
     )?;
     println!(
-        "Captured General audio: {}. Shutdown and active focus revocation are not covered.",
+        "Captured General audio: {}. Focus-driven cancellation is not covered.",
         fixtures.display()
     );
     Ok(())
