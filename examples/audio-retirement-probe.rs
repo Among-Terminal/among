@@ -16,6 +16,51 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Fixture and evidence files written by this probe on the GTK thread. Under
+/// writeback pressure such a write blocks in the kernel, and the heartbeat would
+/// charge that delay to Among. The time is measured here so the bound applies to
+/// the application alone, and the raw gap stays on record beside it.
+#[derive(Default)]
+pub(crate) struct OwnWork {
+    pub(crate) total: Rc<Cell<Duration>>,
+    pub(crate) longest: Cell<Duration>,
+    pub(crate) longest_end: Cell<Option<Instant>>,
+}
+
+impl OwnWork {
+    pub(crate) fn timed<T>(&self, work: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let result = work();
+        let took = started.elapsed();
+        self.total.set(self.total.get() + took);
+        if took > self.longest.get() {
+            self.longest.set(took);
+            self.longest_end.set(Some(Instant::now()));
+        }
+        result
+    }
+
+    pub(crate) fn write(
+        &self,
+        path: impl AsRef<Path>,
+        bytes: impl AsRef<[u8]>,
+    ) -> std::io::Result<()> {
+        self.timed(|| fs::write(path, bytes))
+    }
+
+    pub(crate) fn copy(
+        &self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+    ) -> std::io::Result<u64> {
+        self.timed(|| fs::copy(from, to))
+    }
+
+    pub(crate) fn remove_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        self.timed(|| fs::remove_file(path))
+    }
+}
+
 fn pump(duration: Duration) {
     let start = Instant::now();
     while start.elapsed() < duration {
@@ -137,6 +182,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let beat_start = Instant::now();
     let worst_at = Rc::new(Cell::new(Duration::ZERO));
     let worst = worst_at.clone();
+    let own = OwnWork::default();
+    let net_gap = Rc::new(Cell::new(Duration::ZERO));
+    let (spent, net_maximum, seen) = (
+        own.total.clone(),
+        net_gap.clone(),
+        Cell::new(Duration::ZERO),
+    );
     let timer = glib::timeout_add_local(Duration::from_millis(10), move || {
         let now = Instant::now();
         let elapsed = now.duration_since(previous.replace(now));
@@ -144,6 +196,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             gap.set(elapsed);
             worst.set(now.duration_since(beat_start));
         }
+        let work = spent.get();
+        let net = elapsed.saturating_sub(work.saturating_sub(seen.replace(work)));
+        net_maximum.set(net_maximum.get().max(net));
         count.set(count.get() + 1);
         glib::ControlFlow::Continue
     });
@@ -163,9 +218,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "late-expiry" => "late",
         _ => return Err("unknown retirement scenario".into()),
     };
-    fs::write(runtime.join("audio-native-stall"), mode)?;
+    own.write(runtime.join("audio-native-stall"), mode)?;
     if scenario == "late-expiry" {
-        fs::write(runtime.join("audio-deny-kill"), b"trusted EPERM injection")?;
+        own.write(runtime.join("audio-deny-kill"), b"trusted EPERM injection")?;
     }
     let started = Instant::now();
     let event = scenario == "stall-event-revoke";
@@ -194,7 +249,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ticks.get() >= before + 3,
             "native GTK heartbeat stopped during the injected native-call stall"
         );
-        fs::copy(
+        own.copy(
             runtime.join("audio-native-stall-entered"),
             output.join("injected-call.txt"),
         )?;
@@ -216,12 +271,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .decoder_snapshot()
         .and_then(|snapshot| snapshot.pid)
         .ok_or("decoder PID was not observed")?;
-    fs::write(
+    own.write(
         output.join("first-decoder-state.txt"),
         format!("{:?}", audio.decoder_snapshot()),
     )?;
     if scenario == "stall-quarantine" {
-        fs::write(runtime.join("audio-deny-kill"), b"trusted EPERM injection")?;
+        own.write(runtime.join("audio-deny-kill"), b"trusted EPERM injection")?;
     }
     let cancellation = Instant::now();
     match scenario {
@@ -263,11 +318,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             audio.decoder_snapshot().and_then(|snapshot| snapshot.pid),
             Some(old_pid)
         );
-        fs::write(
+        own.write(
             output.join("quarantined-state.txt"),
             format!("{:?}", audio.decoder_snapshot()),
         )?;
-        fs::remove_file(runtime.join("audio-deny-kill"))?;
+        own.remove_file(runtime.join("audio-deny-kill"))?;
     }
     if scenario == "late-expiry" {
         wait(
@@ -282,7 +337,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         assert!(started.elapsed() >= Duration::from_millis(13_500));
         assert!(started.elapsed() < Duration::from_millis(14_200));
         assert!(!runtime.join("audio-play-invocations").exists());
-        fs::write(
+        own.write(
             runtime.join("audio-native-stall-release"),
             b"return after operation expiry",
         )?;
@@ -307,8 +362,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             !runtime.join("audio-play-invocations").exists(),
             "expired native construction reached play"
         );
-        fs::write(output.join("late-refusal.txt"), b"native constructor returned after expiry; pidfd confirmed helper exit; no play call occurred\n")?;
-        fs::remove_file(runtime.join("audio-deny-kill"))?;
+        own.write(output.join("late-refusal.txt"), b"native constructor returned after expiry; pidfd confirmed helper exit; no play call occurred\n")?;
+        own.remove_file(runtime.join("audio-deny-kill"))?;
     }
     wait(
         || {
@@ -352,7 +407,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "uncertain cleanup was reported as confirmed cancellation"
         );
     }
-    save(&audio, &output)?;
+    own.timed(|| save(&audio, &output))?;
     if let Some(pid) = audio.decoder_snapshot().and_then(|snapshot| snapshot.pid) {
         assert!(
             !Path::new(&format!("/proc/{pid}")).exists(),
@@ -391,19 +446,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(!recovery
         .iter()
         .any(|notice| matches!(notice, Notice::Failed { .. })));
-    fs::write(
+    own.write(
         output.join("heartbeat.txt"),
         format!(
-            "ticks={} max_gap_ms={} max_gap_end_ms={}\n{}",
+            "ticks={} max_gap_ms={} max_gap_end_ms={} net_gap_ms={} own_work_ms={} longest_own_ms={} longest_own_end_ms={}\n{}",
             ticks.get(),
             max_gap.get().as_millis(),
             worst_at.get().as_millis(),
+            net_gap.get().as_millis(),
+            own.total.get().as_millis(),
+            own.longest.get().as_millis(),
+            own.longest_end.get().map_or(0, |end| end.duration_since(beat_start).as_millis()),
             phases.borrow()
         ),
     )?;
     assert!(
-        max_gap.get() < Duration::from_millis(250),
-        "GTK heartbeat exceeded its bound: {} ms ending {} ms after start",
+        net_gap.get() < Duration::from_millis(250),
+        "GTK heartbeat exceeded its bound: {} ms net of the probe's own file work, largest raw gap {} ms ending {} ms after start",
+        net_gap.get().as_millis(),
         max_gap.get().as_millis(),
         worst_at.get().as_millis()
     );
@@ -415,9 +475,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             1,
             "late operation was replayed alongside explicit recovery"
         );
-        fs::write(output.join("play-invocations.txt"), plays)?;
+        own.write(output.join("play-invocations.txt"), plays)?;
     }
-    fs::write(output.join("parent-maps.txt"), fs::read("/proc/self/maps")?)?;
+    own.write(output.join("parent-maps.txt"), fs::read("/proc/self/maps")?)?;
     let supervisors = fs::read_dir("/proc/self/task")?
         .filter_map(Result::ok)
         .filter(|entry| {
@@ -431,8 +491,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         operation_temp_dirs_after, 0,
         "retired helper left an owned temporary subtree"
     );
-    save(&audio, &output)?;
-    fs::write(
+    own.timed(|| save(&audio, &output))?;
+    own.write(
         output.join("retirement.json"),
         serde_json::to_vec_pretty(
             &serde_json::json!({"scenario":scenario,"injection":"trusted native-call shim (plus kill EPERM for quarantine), not a discovered codec deadlock","gui_latency_us":gui_latency.as_micros(),"retirement_us":retirement.as_micros(),"elapsed_ms":started.elapsed().as_millis(),"gtk_ticks":ticks.get(),"max_gtk_gap_ms":max_gap.get().as_millis(),"supervisor_threads":supervisors,"operation_temp_dirs_after":operation_temp_dirs_after,"first_notices":format!("{first:?}"),"recovery_notices":format!("{recovery:?}")}),

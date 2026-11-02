@@ -1,5 +1,5 @@
 //! cancellation before a first play, with independent silent/recovery runs.
-use super::{pump, wait};
+use super::{pump, wait, OwnWork};
 use among::audio::{Audio, DecoderPhase, Notice, Request, Sound};
 use gtk::prelude::*;
 use std::{
@@ -20,43 +20,6 @@ impl Drop for Release {
             b"release owned fixture",
         );
         let _ = fs::remove_file(self.0.join("audio-deny-kill"));
-    }
-}
-
-/// Fixture and evidence files written by this probe on the GTK thread. Under
-/// writeback pressure such a write blocks in the kernel, and the heartbeat would
-/// charge that delay to Among. The time is measured here so the bound applies to
-/// the application alone, and the raw gap stays on record beside it.
-#[derive(Default)]
-struct OwnWork {
-    total: Rc<Cell<Duration>>,
-    longest: Cell<Duration>,
-    longest_end: Cell<Option<Instant>>,
-}
-
-impl OwnWork {
-    fn timed<T>(&self, work: impl FnOnce() -> T) -> T {
-        let started = Instant::now();
-        let result = work();
-        let took = started.elapsed();
-        self.total.set(self.total.get() + took);
-        if took > self.longest.get() {
-            self.longest.set(took);
-            self.longest_end.set(Some(Instant::now()));
-        }
-        result
-    }
-
-    fn write(&self, path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
-        self.timed(|| fs::write(path, bytes))
-    }
-
-    fn copy(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<u64> {
-        self.timed(|| fs::copy(from, to))
-    }
-
-    fn remove_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        self.timed(|| fs::remove_file(path))
     }
 }
 
