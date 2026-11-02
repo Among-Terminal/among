@@ -626,6 +626,12 @@ fn build_with_writer(
                     .insert("managed installation".into(), problem.to_string());
             }
         }
+        // These loads run after the startup status was published; unreadable
+        // plugin settings must still reach Preferences.
+        let state = state.borrow();
+        state
+            .settings_status
+            .splice(0, 1, &[&state.storage_status()]);
     }
     apply_env_plugin_switches(&state);
     if !admission.recovery_started.replace(true) {
