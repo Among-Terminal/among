@@ -42,12 +42,7 @@ pub fn source_identity(
 /// doc directory this one links to, if any.
 pub type Payload = (Vec<Value>, Vec<Value>, BTreeSet<String>, Option<String>);
 
-pub fn payload(
-    stream: impl Read,
-    prime: &Path,
-    output: &Path,
-    package: &str,
-) -> Result<Payload> {
+pub fn payload(stream: impl Read, prime: &Path, output: &Path, package: &str) -> Result<Payload> {
     if !package_name(package) {
         return Err("unsafe native package identity".into());
     }
@@ -289,7 +284,11 @@ fn write_inventory(
         if let Some(owner) = &shared_notices {
             shared.push((package.to_string(), owner.clone()));
         }
-        records.push(json!({"notices_shared_with":shared_notices,"package":package,"version":version,"architecture":deb822::required(&fields,"Architecture")?,"source_package":source,"source_version":source_version,"input":{"filename":deb.file_name().and_then(|name|name.to_str()).ok_or("Debian filename is not UTF-8")?,"sha256":storage::sha256(File::open(deb)?)?},"staged_files":staged,"notices":notices,"common_license_references":references}));
+        let mut record = json!({"package":package,"version":version,"architecture":deb822::required(&fields,"Architecture")?,"source_package":source,"source_version":source_version,"input":{"filename":deb.file_name().and_then(|name|name.to_str()).ok_or("Debian filename is not UTF-8")?,"sha256":storage::sha256(File::open(deb)?)?},"staged_files":staged,"notices":notices,"common_license_references":references});
+        if let Some(owner) = &shared_notices {
+            record["notices_shared_with"] = json!(owner);
+        }
+        records.push(record);
     }
     // A shared notice only counts if its owner is staged with this artifact.
     for (package, owner) in &shared {
