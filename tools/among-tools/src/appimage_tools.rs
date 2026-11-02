@@ -21,13 +21,13 @@ fn tools(architecture: &str) -> Result<Vec<Tool<'static>>> {
     let (suffix, linuxdeploy, appimagetool, runtime) = match architecture {
         "amd64" => (
             "x86_64",
-            "df908b19f1ed1cdafa79508d415aa12d6c56ce4d56d4149aa8c09286718706e5",
+            "8aea8da0f7f7039d2a2cecb14657d752a222a5e1d3825caeef186c82f751cdd1",
             "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
             "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46",
         ),
         "arm64" => (
             "aarch64",
-            "f38e4d7cebf20d8073ec4e00e0a167ac146cd8585fe2f8fe82df27d74f2bd8e1",
+            "5c1fddf96066891e829831cac0d84424690f3b22846c7f8f1bb9990a5c6c73f4",
             "f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158",
             "9a72a744d221576c9347ec074243acc5c3c7568896b12714e0e82e9f0bf47900",
         ),
