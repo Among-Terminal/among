@@ -151,10 +151,12 @@ pub fn run(binary: &Path, notifier: &Path, scratch: &Path) -> Result<PathBuf> {
         fs::read(h.base.join("before-resize.pid"))? == fs::read(h.base.join("after-resize.pid"))?,
         "resize restarted the shell",
     )?;
+    let resized = h.snapshot_if_written().ok_or("missing resized session")?["workspaces"][0]
+        ["layout"]
+        .clone();
     require(
-        h.snapshot_if_written().ok_or("missing resized session")?["workspaces"][0]["layout"]
-            == layout,
-        "resize changed the pane layout",
+        resized == layout,
+        &format!("resize changed the pane layout: {layout} became {resized}"),
     )?;
     println!(
         "PASS real drag changes and saves width; pane layout, shell and keyboard focus survive"
