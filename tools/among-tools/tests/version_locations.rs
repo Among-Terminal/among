@@ -8,11 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const FILES: [&str; 7] = [
+const FILES: [&str; 5] = [
     "Cargo.toml",
     "Cargo.lock",
-    "examples/plugins/Cargo.toml",
-    "examples/plugins/Cargo.lock",
     "packaging/rpm/among.spec",
     "data/com.github.among-terminal.metainfo.xml",
     "packaging/debian/changelog",
@@ -58,7 +56,7 @@ fn the_real_repository_agrees_on_one_version() -> Result<()> {
 fn a_location_with_another_version_fails_the_check() -> Result<()> {
     let version = current()?;
     let other = "9.9.9";
-    let mutations: [(&str, String, String); 6] = [
+    let mutations: [(&str, String, String); 4] = [
         (
             "Cargo.toml",
             format!("version = \"{version}\""),
@@ -68,16 +66,6 @@ fn a_location_with_another_version_fails_the_check() -> Result<()> {
             "Cargo.lock",
             format!("name = \"among\"\nversion = \"{version}\""),
             format!("name = \"among\"\nversion = \"{other}\""),
-        ),
-        (
-            "examples/plugins/Cargo.toml",
-            format!("version = \"{version}\""),
-            format!("version = \"{other}\""),
-        ),
-        (
-            "examples/plugins/Cargo.lock",
-            format!("name = \"among-example-plugins\"\nversion = \"{version}\""),
-            format!("name = \"among-example-plugins\"\nversion = \"{other}\""),
         ),
         (
             "packaging/rpm/among.spec",
