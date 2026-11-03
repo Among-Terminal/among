@@ -18,8 +18,9 @@ use crate::size::{self, CellSize, TermSize};
 use crate::slots::{self, Scope, SlotStore};
 use crate::tree::PaneId;
 
-/// How much text a slot shows before eliding.
-const PANE_SLOT_MAX_CHARS: usize = 80;
+// preserve admitted status text in the label; GTK ellipsizes its visual layout.
+// an additional 80-character cut discarded ordinary installed-profile paths.
+const PANE_SLOT_MAX_CHARS: usize = crate::plugin::protocol::MAX_TEXT_CHARS;
 
 /// The payload of a pane-header drag.
 ///

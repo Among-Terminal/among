@@ -375,10 +375,7 @@ fn real_ingress_policies_identity_stamping_and_context_grants_change_actual_wire
         application_active: true,
         viewed: fixture.core.borrow().source(1),
     });
-    fixture
-        .host
-        .request_status(KEY, "app_header", &Context::default())
-        .unwrap();
+    fixture.host.request_status(KEY, "app_header").unwrap();
     fixture.wait(|fixture| !fixture.host.results.is_empty());
     let status = fixture
         .received()
@@ -811,7 +808,7 @@ impl Fixture {
         let root = self.root.join(format!("provider-{repository}"));
         let mut receipt = inventory::tests::fixture(&root);
         let previous = receipt.package_path(&root);
-        receipt.repository_id = repository;
+        crate::plugin::inventory::tests::release_of(&mut receipt).repository_id = repository;
         let package = receipt.package_path(&root);
         std::fs::create_dir_all(package.parent().unwrap()).unwrap();
         std::fs::set_permissions(
@@ -1142,10 +1139,7 @@ fn cancelled_jobs_share_fifteen_retained_credits_and_preserve_reserved_enumerati
             id as usize
         );
     }
-    assert!(fixture
-        .host
-        .request_status(KEY, "app_header", &Context::default())
-        .is_none());
+    assert!(fixture.host.request_status(KEY, "app_header").is_none());
     fixture.send(
         json!({"type":"enumerate","session":"$session","generation":"$generation","request_id":900,
         "scope":{"slot":"app_header","target":{"kind":"application"}},"cursor":null}),
@@ -1177,10 +1171,7 @@ fn cancelled_jobs_share_fifteen_retained_credits_and_preserve_reserved_enumerati
     });
     assert_eq!(fixture.backend.borrow().completions().len(), count);
     assert!(fixture.host.plugins[0].state.is_healthy());
-    fixture
-        .host
-        .request_status(KEY, "app_header", &Context::default())
-        .unwrap();
+    fixture.host.request_status(KEY, "app_header").unwrap();
     fixture.wait(|fixture| !fixture.host.results.is_empty());
 }
 
@@ -1225,10 +1216,7 @@ fn delivery_only_processes_cannot_hide_feedback_and_flood_is_contained() {
     fixture.event(2, None);
     fixture.wait(|fixture| !fixture.host.plugins[1].state.is_healthy());
     assert!(fixture.host.plugins[0].state.is_healthy());
-    fixture
-        .host
-        .request_status(KEY, "app_header", &Context::default())
-        .unwrap();
+    fixture.host.request_status(KEY, "app_header").unwrap();
     fixture.wait(|fixture| !fixture.host.results.is_empty());
     assert!(fixture.backend.borrow().completions().len() <= 32);
     assert!(fixture.backend.borrow().rejections().len() <= 32);

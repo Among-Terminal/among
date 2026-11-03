@@ -284,7 +284,7 @@ fn ordinary_app_provider_controls_and_declarative_actions_use_one_live_core() {
     std::fs::write(package.join("among-plugin.json"), &bytes).unwrap();
     receipt.manifest_sha256 = crate::plugin::inventory::checksum(bytes.as_bytes()).unwrap();
     let mut other = receipt.clone();
-    other.repository_id = 13;
+    crate::plugin::inventory::tests::release_of(&mut other).repository_id = 13;
     let other_package = other.package_path(&root);
     std::fs::create_dir_all(&other_package).unwrap();
     let mut path = other_package.as_path();
@@ -671,7 +671,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
     std::fs::write(package.join("among-plugin.json"), &bytes).unwrap();
     receipt.manifest_sha256 = crate::plugin::inventory::checksum(bytes.as_bytes()).unwrap();
     let mut conflicting = receipt.clone();
-    conflicting.repository_id = 13;
+    crate::plugin::inventory::tests::release_of(&mut conflicting).repository_id = 13;
     let other = conflicting.package_path(&root);
     std::fs::create_dir_all(&other).unwrap();
     let mut path = other.as_path();

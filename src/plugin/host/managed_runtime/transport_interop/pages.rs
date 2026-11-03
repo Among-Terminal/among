@@ -34,10 +34,7 @@ fn frame(fixture: &Fixture) -> (String, Value) {
 
 fn request(fixture: &mut Fixture, scope: &str) -> (u64, managed::Scope) {
     let target = fixture.host.world.scope(scope).unwrap();
-    let id = fixture
-        .host
-        .request_status(PAGES, scope, &Context::default())
-        .unwrap();
+    let id = fixture.host.request_status(PAGES, scope).unwrap();
     assert!(fixture.host.plugins[0].inflight.contains_key(&id));
     (id, target)
 }

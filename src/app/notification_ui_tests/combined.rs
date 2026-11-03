@@ -57,7 +57,7 @@ fn install(root: &Path) -> (PathBuf, PathBuf) {
     provider.manifest_sha256 = crate::plugin::inventory::checksum(bytes.as_bytes()).unwrap();
 
     let mut producer = provider.clone();
-    producer.repository_id = 13;
+    crate::plugin::inventory::tests::release_of(&mut producer).repository_id = 13;
     let producer_package = producer.package_path(root);
     std::fs::create_dir_all(&producer_package).unwrap();
     let mut parent = producer_package.as_path();

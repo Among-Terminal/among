@@ -242,8 +242,8 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
     ctx.state
         .borrow_mut()
         .plugins
-        .register(crate::plugin::host::PluginSpec {
-            name: "continuity".into(),
+        .register_fixture(crate::plugin::host::PluginSpec {
+            name: "github:12/continuity".into(),
             command: vec![
                 std::env::current_exe()
                     .unwrap()
@@ -265,7 +265,9 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
                 .plugins
                 .listing()
                 .iter()
-                .any(|(name, state)| name == "continuity" && state == &PluginState::Running)
+                .any(|(name, state)| {
+                    name == "github:12/continuity" && state == &PluginState::Running
+                })
         },
         "sibling real process",
     );
@@ -581,7 +583,7 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
         .join(format!("combined-producer-{}", std::process::id()));
     let mut producer = inventory::tests::fixture(&producer_root);
     let original_package = producer.package_path(&producer_root);
-    producer.repository_id = 13;
+    inventory::tests::release_of(&mut producer).repository_id = 13;
     let producer_package = producer.package_path(&producer_root);
     std::fs::create_dir_all(producer_package.parent().unwrap()).unwrap();
     for directory in [

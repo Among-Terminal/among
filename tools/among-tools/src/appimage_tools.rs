@@ -23,7 +23,21 @@ struct Tool<'a> {
 /// assets and tag cannot change. A new helper version means a new release there
 /// and a separate pull request here, as `docs/build.md` describes.
 const HELPER_RELEASE: &str =
-    "https://github.com/Among-Terminal/appimage-tools/releases/download/2026.11.02";
+    "https://github.com/Among-Terminal/appimage-tools/releases/download/2026.11.02.1";
+const HELPER_RELEASE_PAGE: &str =
+    "https://github.com/Among-Terminal/appimage-tools/releases/tag/2026.11.02.1";
+
+/// Where each AppImage carries the notice of its runtime, in the same form as
+/// the `usr/share/doc/<package>/copyright` files of the bundled packages.
+pub const RUNTIME_NOTICE_PATH: &str = "usr/share/doc/appimage-runtime/copyright";
+
+/// The notice text of the pinned runtime. libfuse is linked statically, so its
+/// license and the place of its source have to travel inside the image; the
+/// link names the exact release of the runtime bytes the image starts with.
+pub fn runtime_notice() -> String {
+    include_str!("../../../packaging/appimage/runtime-notice.txt")
+        .replace("@HELPER_RELEASE_URL@", HELPER_RELEASE_PAGE)
+}
 
 fn tools(architecture: &str) -> Result<Vec<Tool<'static>>> {
     let (suffix, linuxdeploy, appimagetool, runtime) = match architecture {
@@ -96,9 +110,8 @@ fn validate(path: &Path, tool: &Tool<'_>, architecture: &str) -> Result<String> 
 
 /// The reviewed byte hashes, not the release address, grant execution
 /// authority. No helper is executed by this download command. Source and
-/// licence delivery for the helpers themselves is the helper release's job;
-/// what a built AppImage must carry for its embedded runtime is a separate
-/// release gate, not implied by a pin.
+/// licence delivery for the helpers themselves is the helper release's job; a
+/// built AppImage carries `runtime_notice` for the runtime it starts with.
 pub fn fetch(architecture: &str, destination: &Path) -> Result<()> {
     let tools = tools(architecture)?;
     if destination.symlink_metadata().is_ok() {
@@ -248,6 +261,15 @@ mod tests {
             ]
         );
         assert!(tools("universal").is_err());
+        // The tag in the notice must be the tag the runtime is downloaded from,
+        // or the image would send readers to sources of other bytes.
+        let notice = runtime_notice();
+        assert!(!notice.contains("@HELPER_RELEASE_URL@"));
+        assert!(notice.contains(HELPER_RELEASE_PAGE));
+        assert_eq!(
+            HELPER_RELEASE.replace("/releases/download/", "/releases/tag/"),
+            HELPER_RELEASE_PAGE
+        );
         let root = Scratch(storage::private_directory(
             &std::env::temp_dir(),
             "among-appimage-tool-pin",

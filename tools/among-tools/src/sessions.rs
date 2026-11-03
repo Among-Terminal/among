@@ -292,6 +292,15 @@ impl Harness {
                 if !self.window.is_empty() {
                     let _ = self.screenshot("timeout-window.png");
                 }
+                // Not every caller uploads the evidence directory, so the job
+                // log keeps the last application status it reported.
+                if let Ok(text) = self.text() {
+                    let mut lines = text.lines().rev().take(16).collect::<Vec<_>>();
+                    lines.reverse();
+                    for line in lines {
+                        eprintln!("{}", line.chars().take(400).collect::<String>());
+                    }
+                }
                 return Err(
                     format!("session wait timed out; evidence: {}", self.base.display()).into(),
                 );

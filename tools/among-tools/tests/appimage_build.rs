@@ -6,7 +6,7 @@
 //! build test runs the pinned helpers and is enabled only where the workflow
 //! provides staged inputs; elsewhere it says that it did not run.
 
-use among_tools::{appimage_build, storage, Result};
+use among_tools::{appimage_build, appimage_tools, storage, Result};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -129,6 +129,36 @@ fn linuxdeploy_wrapper_and_gtk_hooks_are_removed_and_the_reviewed_launcher_resto
     deployed(&root)?;
     write(&root, "apprun-hooks/binary", ELF)?;
     assert!(appimage_build::restore_launcher(&root, &digest).is_err());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+/// The runtime stays at the head of the image with libfuse statically linked,
+/// and no package owns it: this check is the only thing that keeps its notice.
+#[test]
+fn an_image_without_the_runtime_notice_or_its_license_text_is_refused() -> Result<()> {
+    let root = scratch("among-appimage-runtime-notice")?;
+    let notice = appimage_tools::RUNTIME_NOTICE_PATH;
+    let text = appimage_tools::runtime_notice();
+    let license = "usr/share/common-licenses/LGPL-2.1";
+    write(
+        &root,
+        license,
+        b"GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999\n",
+    )?;
+    let refusal = |root: &Path| match appimage_build::require_runtime_notice(root) {
+        Ok(()) => String::from("accepted"),
+        Err(error) => error.to_string(),
+    };
+    assert!(refusal(&root).contains("lacks the notice"));
+    write(&root, notice, b"a different notice")?;
+    assert!(refusal(&root).contains("differs"));
+    write(&root, notice, text.as_bytes())?;
+    assert_eq!(refusal(&root), "accepted");
+    write(&root, license, b"GNU GENERAL PUBLIC LICENSE\nVersion 3\n")?;
+    assert!(refusal(&root).contains("another text"));
+    fs::remove_file(root.join(license))?;
+    assert!(refusal(&root).contains("LGPL-2.1"));
     fs::remove_dir_all(root)?;
     Ok(())
 }

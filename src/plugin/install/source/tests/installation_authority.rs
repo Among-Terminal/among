@@ -64,7 +64,15 @@ fn install(root: &Path, version: &str, previous: Option<&Receipt>) -> Receipt {
         .requests()
         .iter()
         .any(|request| request.contains("/github-production-release-asset/12/")));
-    assert!(receipt.source.as_ref().unwrap().release_binding.is_some());
+    assert_eq!(
+        receipt
+            .release()
+            .and_then(|release| release.source.as_ref())
+            .unwrap()
+            .release_binding
+            .commit,
+        receipt.revision
+    );
     receipt
 }
 
@@ -152,7 +160,7 @@ fn missed_absence_case(
     identical_payload: bool,
 ) -> (bool, bool) {
     let root = OwnedRoot::new();
-    let old = install(&root.0, "1.0", None);
+    let old = install(&root.0, "1.0.0", None);
     let (path, local) = preferences(&root.0, &old);
     let before = std::fs::read(&path).unwrap();
     let gate = Rc::new(Cell::new(observer_running));
@@ -164,16 +172,14 @@ fn missed_absence_case(
             observer.poll();
             observer.running_generation(KEY).is_some()
         });
-        observer
-            .request_status(KEY, "app_header", &crate::plugin::Context::default())
-            .unwrap();
+        observer.request_status(KEY, "app_header").unwrap();
     } else {
         assert_eq!(observer.supervised_count(), 0);
     }
     let fresh = reinstall(
         &root.0,
         &old,
-        if identical_payload { "1.0" } else { "2.0" },
+        if identical_payload { "1.0.0" } else { "2.0.0" },
         separate_process,
     );
     assert_ne!(fresh.installation, old.installation);
@@ -247,13 +253,13 @@ fn same_installation_updates_preserve_live_enablement_and_later_disable_instead_
 ) {
     let _serial = JOB_TESTS.lock().unwrap();
     let root = OwnedRoot::new();
-    let old = install(&root.0, "1.0", None);
+    let old = install(&root.0, "1.0.0", None);
     let (path, local) = preferences(&root.0, &old);
     let before = std::fs::read(&path).unwrap();
     let gate = Rc::new(Cell::new(false));
     let mut observer = PluginHost::with_start_gate(gate.clone());
     observer.register_managed(inventory::read(&root.0).unwrap().remove(0), Some(&local));
-    let update = install(&root.0, "2.0", Some(&old));
+    let update = install(&root.0, "2.0.0", Some(&old));
     assert_eq!(update.installation, old.installation);
     observer.reconcile_managed(inventory::read(&root.0).unwrap().remove(0), Some(&local));
     assert!(observer.desired_enabled(KEY));
@@ -269,7 +275,7 @@ fn same_installation_updates_preserve_live_enablement_and_later_disable_instead_
         observer.supervised_stopped(KEY)
     });
     gate.set(false);
-    let later = install(&root.0, "3.0", Some(&update));
+    let later = install(&root.0, "3.0.0", Some(&update));
     assert_eq!(later.installation, old.installation);
     observer.reconcile_managed(inventory::read(&root.0).unwrap().remove(0), Some(&local));
     assert!(
@@ -293,12 +299,12 @@ fn same_installation_updates_preserve_live_enablement_and_later_disable_instead_
 fn fresh_token_matching_current_explicit_preference_is_admitted_without_reusing_old_authority() {
     let _serial = JOB_TESTS.lock().unwrap();
     let root = OwnedRoot::new();
-    let old = install(&root.0, "1.0", None);
+    let old = install(&root.0, "1.0.0", None);
     let (path, local) = preferences(&root.0, &old);
     let gate = Rc::new(Cell::new(false));
     let mut observer = PluginHost::with_start_gate(gate.clone());
     observer.register_managed(inventory::read(&root.0).unwrap().remove(0), Some(&local));
-    let fresh = reinstall(&root.0, &old, "2.0", true);
+    let fresh = reinstall(&root.0, &old, "2.0.0", true);
     let mut storage = crate::settings::PreferencesStorage::new(Some(path.parent().unwrap().into()));
     storage
         .managed_enable_changed(KEY, true, fresh.installation.as_deref())
@@ -349,7 +355,7 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
     use crate::plugin::host::Configuration;
     let _serial = JOB_TESTS.lock().unwrap();
     let root = OwnedRoot::new();
-    let old = install(&root.0, "1.0", None);
+    let old = install(&root.0, "1.0.0", None);
     let (path, local) = preferences(&root.0, &old);
     let before = std::fs::read(&path).unwrap();
     let mut observer = PluginHost::new();
@@ -362,10 +368,8 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
     let old_generation = observer.running_generation(KEY).unwrap();
     let old_pid = observer.supervised_pids()[0];
     observer.drain_invalidated_sources();
-    observer
-        .request_status(KEY, "app_header", &crate::plugin::Context::default())
-        .unwrap();
-    let fresh = reinstall(&root.0, &old, "2.0", true);
+    observer.request_status(KEY, "app_header").unwrap();
+    let fresh = reinstall(&root.0, &old, "2.0.0", true);
     assert_eq!(
         unsafe { libc::kill(old_pid as i32, 0) },
         0,
@@ -384,9 +388,7 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
         .drain_invalidated_sources()
         .iter()
         .any(|key| key == KEY));
-    assert!(observer
-        .request_status(KEY, "app_header", &crate::plugin::Context::default())
-        .is_none());
+    assert!(observer.request_status(KEY, "app_header").is_none());
     assert_eq!(observer.configuration(KEY), Configuration::NotApplied);
     wait(|| {
         observer.poll();
@@ -417,9 +419,7 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
     });
     assert_ne!(observer.running_generation(KEY).unwrap(), old_generation);
     assert!(fresh.package_path(&root.0).join("executed").exists());
-    observer
-        .request_status(KEY, "app_header", &crate::plugin::Context::default())
-        .unwrap();
+    observer.request_status(KEY, "app_header").unwrap();
     wait(|| {
         observer.poll();
         fresh
@@ -429,7 +429,7 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
     });
     assert_eq!(
         std::fs::read_to_string(fresh.package_path(&root.0).join("resource-observed")).unwrap(),
-        "2.0"
+        "2.0.0"
     );
     assert_eq!(
         std::fs::read(path.parent().unwrap().join("plugins.json")).unwrap(),
@@ -443,7 +443,7 @@ fn live_old_authority_is_revoked_and_reaped_before_fresh_manual_activation_and_c
 fn fresh_selection_survives_an_observed_absence_while_the_old_process_is_still_stopping() {
     let _serial = JOB_TESTS.lock().unwrap();
     let root = OwnedRoot::new();
-    let old = install(&root.0, "1.0", None);
+    let old = install(&root.0, "1.0.0", None);
     let (_, local) = preferences(&root.0, &old);
     let mut observer = PluginHost::new();
     observer.register_managed(inventory::read(&root.0).unwrap().remove(0), Some(&local));
@@ -457,7 +457,7 @@ fn fresh_selection_survives_an_observed_absence_while_the_old_process_is_still_s
         observer.managed_details(KEY).is_some(),
         "the retained old IO still owns its pending removal entry"
     );
-    let fresh = install(&root.0, "2.0", None);
+    let fresh = install(&root.0, "2.0.0", None);
     observer.reconcile_managed(inventory::read(&root.0).unwrap().remove(0), Some(&local));
     wait(|| {
         observer.poll();
@@ -479,7 +479,7 @@ fn changed_installation_authority_does_not_replace_identity_scoped_accepted_sett
         "preferences unavailable",
     ] {
         let root = OwnedRoot::new();
-        let old = install(&root.0, "1.0", None);
+        let old = install(&root.0, "1.0.0", None);
         let (path, mut local) = preferences(&root.0, &old);
         let before = std::fs::read(&path).unwrap();
         let gate = Rc::new(Cell::new(false));
@@ -490,7 +490,7 @@ fn changed_installation_authority_does_not_replace_identity_scoped_accepted_sett
         let accepted =
             json!({"version":1,"values":{"label":"session-only","unknown":"retain"},"future":42});
         observer.stored_settings_changed(KEY, accepted.clone());
-        let fresh = reinstall(&root.0, &old, "2.0", false);
+        let fresh = reinstall(&root.0, &old, "2.0.0", false);
         if observation == "only consent fields" {
             local.as_object_mut().unwrap().remove("settings");
         }
