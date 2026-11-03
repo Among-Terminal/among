@@ -437,7 +437,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         }
         assert_eq!(
             std::fs::read_to_string(receipt.package_path(&root).join("resource-observed")).unwrap(),
-            "4.0"
+            "4.0.0"
         );
         host.shutdown();
         while !host.is_stopped() {
@@ -625,7 +625,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
     assert!(old_path.join("version-resource").exists());
     screenshot(&view, "updated-selected-and-running");
     view.destroy();
-    let (metadata, archive) = test_managed_package("3.0", "managed-wrong-version", |_| {});
+    let (metadata, archive) = test_managed_package("3.0.0", "managed-wrong-version", |_| {});
     let release = Arc::new(AtomicBool::new(false));
     let server = Server::new({
         let release = release.clone();
@@ -644,7 +644,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
     let selected = server
         .inspect(true)
         .unwrap()
-        .select("sample", "3.0")
+        .select("sample", "3.0.0")
         .unwrap()
         .for_update(&entry, stored.as_ref())
         .unwrap();
@@ -813,7 +813,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         },
         Duration::from_secs(2),
     );
-    let (metadata, archive) = test_managed_package("4.0", "managed-resource", |_| {});
+    let (metadata, archive) = test_managed_package("4.0.0", "managed-resource", |_| {});
     let release = Arc::new(AtomicBool::new(false));
     let late_server = Server::new({
         let release = release.clone();
@@ -832,7 +832,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
     let selected = late_server
         .inspect(true)
         .unwrap()
-        .select("sample", "4.0")
+        .select("sample", "4.0.0")
         .unwrap();
     let late_job = late_server
         .install(
