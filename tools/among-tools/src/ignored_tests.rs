@@ -68,6 +68,17 @@ pub fn names(listing: &str) -> Result<Vec<String>> {
                 eprintln!("{name} requires check-installer-enospc-from-cargo in its mandatory bounded tmpfs CI container; exclusion from graphics is not an acceptance pass");
                 continue;
             }
+            if name == crate::plugin_install::NATIVE_TEST {
+                eprintln!("{name} requires prepared Release inputs and the mandatory check-plugin-install native job; exclusion from standalone graphics is not an acceptance pass");
+                continue;
+            }
+            if crate::plugin_install::DEVELOPMENT_TESTS
+                .iter()
+                .any(|(test, _)| *test == name)
+            {
+                eprintln!("{name} requires the prepared candidate and check-development-install; exclusion from standalone graphics is not an acceptance pass");
+                continue;
+            }
             if !names.insert(name.to_string()) {
                 return Err("duplicate Rust test name".into());
             }

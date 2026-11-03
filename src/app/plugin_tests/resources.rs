@@ -9,7 +9,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const KEY: &str = "github:1431055733/system-status";
-const CLIENT: &str = "306839e144d7a4c98432c6c68dad016c412dd656";
+const CLIENT: &str = "ac16a298b42022d9d62017e5d668e72458ba3b69";
 const PHASE: &str = "AMONG_RESOURCE_GUI_PHASE";
 const LEGACY: &[u8] = b"{\"plugins\":[],\"future\":\"retain these legacy bytes\"}\n";
 
@@ -84,21 +84,25 @@ fn prepare_source_bound_fixture(root: &Path) {
     );
     let manifest = json!({"schema_version":1,"id":"system-status","version":"source-bound-test",
         "name":"System status source-bound UI fixture","description":"Real executable, synthetic local package metadata; not authenticated installation",
-        "entrypoint":"plugin","api":{"major":1,"minor":2},"required_features":["status"]})
+        "entrypoint":"plugin","api":{"major":1,"minor":2},"required_features":["status","system.metrics"]})
         .to_string();
     let receipt = crate::plugin::inventory::Receipt {
-        repository_id: 1431055733,
-        owner: "Among-Terminal".into(),
-        repository: "among-plugins".into(),
+        origin: crate::plugin::inventory::Provenance::Release(
+            crate::plugin::inventory::ReleaseOrigin {
+                repository_id: 1431055733,
+                owner: "Among-Terminal".into(),
+                repository: "among-plugins".into(),
+                release_id: 1,
+                asset_id: 2,
+                source: None,
+            },
+        ),
         plugin_id: "system-status".into(),
         revision: CLIENT.into(),
         manifest_sha256: crate::plugin::inventory::checksum(manifest.as_bytes()).unwrap(),
         package_sha256: digest.clone(),
-        release_id: 1,
-        asset_id: 2,
         generation: "a".repeat(64),
         installation: None,
-        source: None,
     };
     let package = receipt.package_path(root);
     std::fs::create_dir_all(&package).unwrap();
@@ -237,7 +241,7 @@ fn saved_managed(path: &Path, enabled: bool) -> (Vec<u8>, serde_json::Value) {
     );
     assert_eq!(
         document["plugins"][KEY]["review"]["features"],
-        json!(["status"])
+        json!(["status", "system.metrics"])
     );
     (bytes, document)
 }

@@ -19,9 +19,30 @@ pub(super) fn present(
         installer(),
         changed,
         crate::plugin::install::registry::root(),
-        Rc::new(Job::refresh),
+        SourceRefresh::for_mode(crate::plugin::development::enabled()),
         details,
     );
+}
+
+/// How a registered source is refreshed. `prerelease` exists only in
+/// development mode, and its absence removes the action from every source row.
+struct SourceRefresh {
+    latest: Rc<super::repository_sources::Refresh>,
+    prerelease: Option<Rc<super::repository_sources::Refresh>>,
+}
+
+impl SourceRefresh {
+    /// The refresh actions of a process in the given mode. Only development
+    /// mode gets the prerelease action, so an ordinary window builds no such
+    /// button even before the job's own gate would refuse it.
+    fn for_mode(development: bool) -> Self {
+        Self {
+            latest: Rc::new(Job::refresh),
+            prerelease: development.then(|| {
+                Rc::new(Job::refresh_prerelease) as Rc<super::repository_sources::Refresh>
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -62,7 +83,7 @@ fn present_with(
         install,
         changed,
         crate::plugin::install::registry::root(),
-        Rc::new(Job::refresh),
+        SourceRefresh::for_mode(false),
         Rc::new(|_| None),
     );
 }
@@ -82,8 +103,37 @@ pub(crate) fn present_sources_for_test(
         install,
         changed,
         Some(root),
-        refresh,
+        SourceRefresh {
+            latest: refresh,
+            prerelease: None,
+        },
         Rc::new(|_| None),
+    );
+}
+
+/// Drives a source row's prerelease action with test-owned jobs and a chosen
+/// registry root; the rest of the window is the production one.
+#[cfg(test)]
+pub(crate) fn present_prerelease_for_test(
+    parent: &gtk::Window,
+    latest: Rc<super::repository_sources::Refresh>,
+    prerelease: Rc<super::repository_sources::Refresh>,
+    install: Rc<Install>,
+    changed: Rc<dyn Fn()>,
+    root: std::path::PathBuf,
+    details: Rc<super::PluginDetailsQuery>,
+) {
+    present_complete(
+        parent,
+        Rc::new(Job::start),
+        install,
+        changed,
+        Some(root),
+        SourceRefresh {
+            latest,
+            prerelease: Some(prerelease),
+        },
+        details,
     );
 }
 
@@ -101,7 +151,7 @@ pub(crate) fn present_updates_for_test(
         install,
         changed,
         crate::plugin::install::registry::root(),
-        Rc::new(Job::refresh),
+        SourceRefresh::for_mode(false),
         details,
     );
 }
@@ -112,7 +162,7 @@ fn present_complete(
     install: Rc<Install>,
     changed: Rc<dyn Fn()>,
     source_root: Option<std::path::PathBuf>,
-    refresh: Rc<super::repository_sources::Refresh>,
+    refresh: SourceRefresh,
     details: Rc<super::PluginDetailsQuery>,
 ) {
     let window = adw::PreferencesWindow::builder()
@@ -226,8 +276,14 @@ fn present_complete(
             packages.set_visible(true);
         }
     });
-    let sources =
-        super::repository_sources::Panel::new(&page, &preview, source_root, refresh, show.clone());
+    let sources = super::repository_sources::Panel::new(
+        &page,
+        &preview,
+        source_root,
+        refresh.latest,
+        refresh.prerelease,
+        show.clone(),
+    );
     page.add(&feedback);
     page.add(&preview);
     page.add(&packages);
@@ -460,15 +516,35 @@ fn installation_rows(
                     button.set_sensitive(false);
                 }
                 Ok(selection) => {
-                    let expected = details(&selection.identity()).map(|(entry, _)| entry.receipt);
+                    let installed = details(&selection.identity());
+                    let refusal = installed.as_ref().and_then(|(entry, stored)| {
+                        selection
+                            .clone()
+                            .for_installed(entry, stored.as_ref())
+                            .err()
+                    });
+                    let expected = installed.map(|(entry, _)| entry.receipt);
+                    let replacing = selection.is_prerelease();
                     if expected.is_some() {
-                        button.set_label("Apply update…");
+                        let (label, accessible) = if replacing {
+                            ("Replace with prerelease…", "Replace with")
+                        } else {
+                            ("Apply update…", "Apply")
+                        };
+                        button.set_label(label);
                         button.update_property(&[gtk::accessible::Property::Label(&format!(
-                            "Apply {} version {} update",
+                            "{accessible} {} version {} update",
                             plugin.id, version.manifest.version
                         ))]);
                     }
                     row.set_subtitle(&escape_display(&selection.description()));
+                    if let Some(problem) = refusal {
+                        row.set_subtitle(&escape_display(&format!(
+                            "{}\n{problem}",
+                            selection.description()
+                        )));
+                        button.set_sensitive(false);
+                    }
                     let install = install.clone();
                     let changed = changed.clone();
                     let row = row.downgrade();
@@ -478,17 +554,17 @@ fn installation_rows(
                         let Some(row) = row.upgrade() else { return; };
                         if let Some(expected)=&expected {
                             let Some((entry,stored))=details(&selection.identity()).filter(|(entry,_)|&entry.receipt==expected) else {row.set_subtitle("Installed generation changed; reopen current metadata before applying an update.");return;};
-                            let selection=match selection.clone().for_update(&entry,stored.as_ref()){Ok(selection)=>selection,Err(problem)=>{row.set_subtitle(problem.0);return;}};
+                            let selection=match selection.clone().for_installed(&entry,stored.as_ref()){Ok(selection)=>selection,Err(problem)=>{row.set_subtitle(problem.0);return;}};
                             let Some(parent)=window.upgrade() else {return;};
-                            let dialog=adw::AlertDialog::builder().heading("Apply this plugin update?").body(selection.review_description()).build();
-                            dialog.add_response("cancel","Cancel");dialog.add_response("apply","Apply update");dialog.set_default_response(Some("cancel"));dialog.set_close_response("cancel");
+                            let dialog=adw::AlertDialog::builder().heading(if replacing {"Replace this plugin with the prerelease?"} else {"Apply this plugin update?"}).body(selection.review_description()).build();
+                            dialog.add_response("cancel","Cancel");dialog.add_response("apply",if replacing {"Replace"} else {"Apply update"});dialog.set_default_response(Some("cancel"));dialog.set_close_response("cancel");
                             dialog.connect_response(None,{
                                 let button=button.downgrade();let row=row.downgrade();let install=install.clone();let changed=changed.clone();let window=window.clone();let details=details.clone();let expected=expected.clone();let selection=selection.clone();
                                 move |_,response| {
                                     if response!="apply" {return;}
                                     let (Some(button),Some(row),Some(parent))=(button.upgrade(),row.upgrade(),window.upgrade().filter(|window|window.is_visible())) else {return;};
                                     let Some((entry,stored))=details(&selection.identity()).filter(|(entry,_)|entry.receipt==expected) else {row.set_subtitle("Update confirmation is stale; installed generation changed.");return;};
-                                    match selection.clone().for_update(&entry,stored.as_ref()) {
+                                    match selection.clone().for_installed(&entry,stored.as_ref()) {
                                         Ok(selection)=>run_install(&button,&row,selection,install.clone(),changed.clone(),&parent),
                                         Err(problem)=>row.set_subtitle(problem.0),
                                     }
@@ -515,8 +591,22 @@ fn run_install(
     window: &adw::PreferencesWindow,
 ) {
     let updating = selection.is_update();
+    run_job(button, row, install(selection), updating, changed, window);
+}
+
+/// Shows one started installation in its row until it commits, fails or is
+/// cancelled. A committed selection reaches the host through `changed` even
+/// if the row or window is gone by then.
+pub(super) fn run_job(
+    button: &gtk::Button,
+    row: &adw::ActionRow,
+    job: Result<InstallJob, Problem>,
+    updating: bool,
+    changed: Rc<dyn Fn()>,
+    window: &adw::PreferencesWindow,
+) {
     let window = window.downgrade();
-    match install(selection) {
+    match job {
         Err(problem) => row.set_subtitle(problem.0),
         Ok(job) => {
             button.set_sensitive(false);
@@ -570,7 +660,7 @@ fn run_install(
                         row.set_subtitle(&match outcome {
                                                 Ok(commit) => match commit.durability {
                                                     crate::settings::Durability::Durable if updating => "Update selected; previous verified generation retained. Current enabled choice is preserved; publisher/access and runtime admission can still refuse execution.".into(),
-                                                    crate::settings::Durability::Durable => format!("Installed github:{}/{} disabled. Enable separately in Your plugins.", commit.receipt.repository_id, commit.receipt.plugin_id),
+                                                    crate::settings::Durability::Durable => format!("Installed {} disabled. Enable separately in Your plugins.", commit.receipt.key()),
                                                     _ => "Selection written; durability uncertain. Inspect the installed inventory before retrying.".into(),
                                                 },
                                                 Err(problem) => problem.to_string(),
@@ -587,5 +677,25 @@ fn run_install(
                 glib::ControlFlow::Continue
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod wiring_tests {
+    use super::*;
+
+    #[test]
+    fn only_development_mode_wires_the_prerelease_action_and_it_is_the_gated_job() {
+        assert!(SourceRefresh::for_mode(false).prerelease.is_none());
+        let action = SourceRefresh::for_mode(true)
+            .prerelease
+            .expect("development mode wires the prerelease action");
+        // The test process is ordinary, so the real prerelease job refuses
+        // before it starts a worker; the ordinary refresh would not.
+        let refused = action(12).err().expect("an ordinary process is refused");
+        assert!(
+            refused.0.contains("only in plugin development mode"),
+            "{refused}"
+        );
     }
 }

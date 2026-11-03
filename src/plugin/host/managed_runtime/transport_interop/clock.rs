@@ -1,11 +1,9 @@
-//! real clock-managed and legacy clock binaries from the exact companion source;
+//! real published clock-managed bytes and an independent system localtime oracle;
 //! package receipts here remain synthetic and do not certify release installation.
 
 use super::*;
-use crate::plugin::host::environment;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CLOCK: &str = "github:1431055733/clock";
@@ -42,30 +40,19 @@ fn epoch() -> u64 {
         .as_secs()
 }
 
-fn legacy_time() -> u64 {
-    let executable = PathBuf::from(
-        std::env::var_os("AMONG_LEGACY_CLOCK_BINARY").expect("explicit pinned legacy reference"),
-    );
-    let metadata = std::fs::symlink_metadata(&executable).unwrap();
-    assert!(executable.is_absolute() && metadata.is_file() && metadata.mode() & 0o111 != 0);
-    assert!(metadata.len() <= 32 * 1024 * 1024);
-    let checksum = inventory::checksum(&std::fs::read(&executable).unwrap()).unwrap();
-    assert_eq!(
-        checksum,
-        std::env::var("AMONG_LEGACY_CLOCK_SHA256").unwrap()
-    );
-    let mut command = Command::new(executable);
-    environment::configure(&mut command).unwrap();
-    let output = environment::capture_for_test(
-        command,
-        b"{\"type\":\"status\",\"request_id\":91,\"scope\":\"app_footer\",\"context\":{}}\n",
-    );
-    let row: Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(row["type"], "status");
-    assert_eq!(row["request_id"], 91);
-    assert_eq!(row["refresh_ms"], 1000);
-    assert_eq!(row["fragments"].as_array().unwrap().len(), 1);
-    seconds(row["fragments"][0]["text"].as_str().unwrap())
+fn system_local_seconds(second: u64) -> u64 {
+    // Each case starts in a separate process with its own TZ. Read the system
+    // timezone rules without changing process-global environment or executing
+    // another plugin as the authority for the expected result.
+    let timestamp: libc::time_t = second.try_into().unwrap();
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    assert!(!unsafe { libc::localtime_r(&timestamp, &mut local) }.is_null());
+    assert!((0..24).contains(&local.tm_hour));
+    assert!((0..60).contains(&local.tm_min));
+    assert!((0..60).contains(&local.tm_sec));
+    (local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec)
+        .try_into()
+        .unwrap()
 }
 
 #[test]
@@ -100,20 +87,13 @@ fn real_clock_reports_application_footer_in_inherited_timezone() {
     assert_eq!(fixture.host.configuration(CLOCK), Configuration::NotApplied);
     for scope in ["pane_footer:1", "workspace_summary:0"] {
         assert!(fixture.host.world.scope(scope).is_some());
-        assert!(fixture
-            .host
-            .request_status(CLOCK, scope, &Context::default())
-            .is_none());
+        assert!(fixture.host.request_status(CLOCK, scope).is_none());
     }
     let generation = fixture.host.running_generation(CLOCK).unwrap();
     let mut observed = Vec::new();
     for iteration in 0..2 {
         let before = epoch();
-        let legacy_before = offset.is_none().then(legacy_time);
-        let id = fixture
-            .host
-            .request_status(CLOCK, "app_footer", &Context::default())
-            .unwrap();
+        let id = fixture.host.request_status(CLOCK, "app_footer").unwrap();
         assert!(fixture.host.plugins[0].inflight.contains_key(&id));
         fixture.wait(|host| !host.results.is_empty());
         assert!(!fixture.host.plugins[0].inflight.contains_key(&id));
@@ -127,7 +107,6 @@ fn real_clock_reports_application_footer_in_inherited_timezone() {
         assert_eq!(fragment.tooltip.as_deref(), Some("Local time"));
         assert_eq!(fragment.priority, 5);
         let actual = seconds(fragment.text.as_deref().unwrap());
-        let legacy_after = offset.is_none().then(legacy_time);
         let after = epoch();
         assert!(
             after >= before && after - before <= 12,
@@ -136,10 +115,7 @@ fn real_clock_reports_application_footer_in_inherited_timezone() {
         if let Some(offset) = offset {
             assert!((before..=after).any(|second| (second + offset) % 86400 == actual));
         } else {
-            let start = legacy_before.unwrap();
-            let span = (legacy_after.unwrap() + 86400 - start) % 86400;
-            assert!(span <= 12);
-            assert!((actual + 86400 - start) % 86400 <= span);
+            assert!((before..=after).any(|second| system_local_seconds(second) == actual));
         }
         observed.push(actual);
         if iteration == 0 {
@@ -151,10 +127,7 @@ fn real_clock_reports_application_footer_in_inherited_timezone() {
         "actual host clock did not advance"
     );
     assert_eq!(fixture.host.running_generation(CLOCK), Some(generation));
-    fixture
-        .host
-        .request_status(CLOCK, "app_header", &Context::default())
-        .unwrap();
+    fixture.host.request_status(CLOCK, "app_header").unwrap();
     fixture.wait(|host| !host.results.is_empty());
     let results = fixture.host.drain_results();
     assert_eq!(results.len(), 1);
@@ -162,9 +135,8 @@ fn real_clock_reports_application_footer_in_inherited_timezone() {
     assert!(results[0].fragments.is_empty());
     assert_eq!(results[0].refresh, Refresh::IntervalMs(1000));
     println!(
-        "clock_case={case} clock_sha256={} legacy_clock_sha256={} footer_time_observed=true",
+        "clock_case={case} clock_sha256={} system_localtime_oracle=true footer_time_observed=true",
         std::env::var("AMONG_MANAGED_CLOCK_SHA256").unwrap(),
-        std::env::var("AMONG_LEGACY_CLOCK_SHA256").unwrap()
     );
     fixture.stop();
 }
@@ -191,10 +163,7 @@ fn invalid_host_timezone_refuses_clock_before_spawn() {
     assert!(fixture.host.plugins[0].io.is_none());
     assert!(fixture.host.plugins[0].observed.is_none());
     assert!(fixture.host.running_generation(CLOCK).is_none());
-    assert!(fixture
-        .host
-        .request_status(CLOCK, "app_footer", &Context::default())
-        .is_none());
+    assert!(fixture.host.request_status(CLOCK, "app_footer").is_none());
     fixture.host.poll();
     assert_eq!(fixture.host.supervised_count(), 0);
     assert!(fixture.host.results.is_empty());

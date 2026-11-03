@@ -73,7 +73,7 @@ pub(super) fn component(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::inventory::{self, SourceReceipt};
+    use crate::plugin::inventory;
     use serde_json::json;
 
     #[test]
@@ -81,12 +81,8 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("among-origin-{}", glib::uuid_string_random()));
         let mut receipt = inventory::tests::fixture(&root);
-        receipt.source = Some(SourceReceipt {
-            release_binding: None,
-            publisher_id: 34,
-            catalogue_revision: "a".repeat(40),
-            catalogue_sha256: "b".repeat(64),
-        });
+        inventory::tests::release_of(&mut receipt).source =
+            Some(inventory::tests::source_receipt(&receipt));
         let origin = Origin {
             repository_id: 12,
             publisher_id: 34,
@@ -95,7 +91,7 @@ mod tests {
         };
         assert_eq!(receipt.origin_change(&origin, "sample"), Change::Unchanged);
         let review = receipt.review(vec!["status".into()]);
-        receipt.repository = "renamed".into();
+        inventory::tests::release_of(&mut receipt).repository = "renamed".into();
         assert_eq!(receipt.origin_change(&origin, "sample"), Change::Renamed);
         assert!(receipt.matches_review(&review));
         let mut entry = inventory::read(&root).unwrap().remove(0);
@@ -106,7 +102,11 @@ mod tests {
             Some(&json!({"review":review}))
         )
         .is_ok());
-        receipt.source.as_mut().unwrap().publisher_id = 99;
+        inventory::tests::release_of(&mut receipt)
+            .source
+            .as_mut()
+            .unwrap()
+            .publisher_id = 99;
         assert!(
             !receipt.matches_review(&review),
             "same login cannot inherit a different numeric owner's grant"
@@ -149,7 +149,7 @@ mod tests {
             receipt.origin_change(&origin, "sample"),
             Change::PublisherChanged
         );
-        receipt.repository_id = 55;
+        inventory::tests::release_of(&mut receipt).repository_id = 55;
         assert_eq!(
             receipt.origin_change(&origin, "sample"),
             Change::IdentityChanged
@@ -168,8 +168,9 @@ mod tests {
             .manifest
             .required_features
             .push("settings".into());
-        receipt.repository_id = 12;
-        receipt.source.as_mut().unwrap().publisher_id = 34;
+        let release = inventory::tests::release_of(&mut receipt);
+        release.repository_id = 12;
+        release.source.as_mut().unwrap().publisher_id = 34;
         assert!(crate::plugin::managed::granted_features(
             &entry.inspected.as_ref().unwrap().manifest,
             &receipt,

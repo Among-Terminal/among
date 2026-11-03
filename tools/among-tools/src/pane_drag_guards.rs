@@ -17,7 +17,6 @@ use crate::{
     sessions::{fresh, Harness},
     Result,
 };
-use serde_json::json;
 use std::{
     fs::{self, File},
     path::{Path, PathBuf},
@@ -181,15 +180,15 @@ fn stored(h: &Harness) -> Result<String> {
 
 fn refresh_phase(binary: &Path, plugin: &Path, scratch: &Path) -> Result<()> {
     let mut h = fresh(binary, scratch, "among-pane-drag-refresh")?;
-    let plugins = h.base.join("data/among/plugins");
-    fs::create_dir_all(&plugins)?;
-    fs::copy(plugin, plugins.join("summaries"))?;
-    let summary = plugins.join("summary.txt");
-    fs::write(&summary, b"before-drag")?;
-    fs::write(
-        h.base.join("config/among/plugins.json"),
-        serde_json::to_vec(&json!({"plugins":[{"name":"summaries","enabled":true}]}))?,
+    let program = crate::live_status::profile::bounded(plugin, 8 * 1024 * 1024)?;
+    crate::managed_fixture::install(
+        &h.base,
+        "summaries",
+        &program,
+        &["status", "context.terminals"],
     )?;
+    let summary = h.base.join("home/summary.txt");
+    fs::write(&summary, b"before-drag")?;
     h.env.insert("AMONG_SELFCHECK_TICKS".into(), "2400".into());
     h.start("refresh")?;
     h.ready()?;

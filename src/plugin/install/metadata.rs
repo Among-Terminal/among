@@ -12,7 +12,6 @@ use crate::plugin::manifest::{self, Manifest};
 
 pub const MAX_CATALOGUE_BYTES: usize = 1024 * 1024;
 pub const MAX_PLUGINS: usize = 32;
-pub const MAX_VERSIONS: usize = 16;
 pub const MAX_ARTIFACTS: usize = 8;
 pub const MAX_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
@@ -33,7 +32,6 @@ pub struct Plugin {
 pub struct Version {
     pub revision: String,
     pub manifest_sha256: String,
-    pub release_id: u64,
     pub manifest: Manifest,
     pub artifacts: Vec<Artifact>,
 }
@@ -116,7 +114,7 @@ pub struct Artifact {
     pub runtime: Runtime,
     pub dependencies: Vec<Dependency>,
     pub format: String,
-    pub asset_id: u64,
+    pub asset: String,
     pub size: u64,
     pub sha256: String,
     pub members: Vec<Member>,
@@ -141,7 +139,6 @@ struct RawPlugin {
 struct RawVersion {
     revision: String,
     manifest_sha256: String,
-    release_id: u64,
     manifest: Value,
     artifacts: Vec<Artifact>,
 }
@@ -152,7 +149,7 @@ impl Catalogue {
         let plugins = if value.get("plugins").is_some() {
             let raw: RawCatalogue =
                 serde_json::from_value(value).map_err(|_| Problem("invalid catalogue fields"))?;
-            if raw.schema_version != 1 {
+            if raw.schema_version != 2 {
                 return Err(Problem("unsupported catalogue schema version"));
             }
             raw.plugins
@@ -160,7 +157,7 @@ impl Catalogue {
             let object = value
                 .as_object_mut()
                 .ok_or(Problem("invalid catalogue root"))?;
-            if object.remove("schema_version") != Some(Value::from(1)) {
+            if object.remove("schema_version") != Some(Value::from(2)) {
                 return Err(Problem("unsupported catalogue schema version"));
             }
             let version = Version::parse(value)?;
@@ -180,25 +177,21 @@ impl Catalogue {
             if !manifest::local_id(&plugin.id) || !ids.insert(plugin.id.clone()) {
                 return Err(Problem("invalid or duplicate catalogue plugin identity"));
             }
-            if plugin.versions.is_empty() || plugin.versions.len() > MAX_VERSIONS {
-                return Err(Problem("catalogue version count exceeds its bounds"));
+            if plugin.versions.len() != 1 {
+                return Err(Problem(
+                    "release catalogue needs exactly one version per plugin",
+                ));
             }
-            let mut versions = Vec::new();
-            let mut labels = BTreeSet::new();
-            for raw in plugin.versions {
-                let version = Version::parse(raw)?;
-                if version.manifest.id != plugin.id
-                    || !labels.insert(version.manifest.version.clone())
-                {
-                    return Err(Problem(
-                        "catalogue version identity is inconsistent or duplicated",
-                    ));
-                }
-                versions.push(version);
+            let raw = plugin.versions.into_iter().next().ok_or(Problem(
+                "release catalogue needs exactly one version per plugin",
+            ))?;
+            let version = Version::parse(raw)?;
+            if version.manifest.id != plugin.id {
+                return Err(Problem("catalogue version identity is inconsistent"));
             }
             accepted.push(Plugin {
                 id: plugin.id,
-                versions,
+                versions: vec![version],
             });
         }
         Ok(Self { plugins: accepted })
@@ -225,9 +218,9 @@ impl Version {
     fn parse(value: Value) -> Result<Self, Problem> {
         let raw: RawVersion = serde_json::from_value(value)
             .map_err(|_| Problem("invalid version fields or unsupported installation behaviour"))?;
-        if !hex(&raw.revision, 40) || !hex(&raw.manifest_sha256, 64) || raw.release_id == 0 {
+        if !hex(&raw.revision, 40) || !hex(&raw.manifest_sha256, 64) {
             return Err(Problem(
-                "version needs exact revision, manifest digest and release identity",
+                "version needs an exact revision and manifest digest",
             ));
         }
         let bytes =
@@ -238,15 +231,14 @@ impl Version {
         }
         let mut assets = BTreeSet::new();
         for artifact in &raw.artifacts {
-            if !assets.insert(artifact.asset_id) {
-                return Err(Problem("duplicate release asset identity"));
+            if !assets.insert(artifact.asset.as_str()) {
+                return Err(Problem("duplicate release asset name"));
             }
             artifact.validate(&manifest, &raw.manifest_sha256)?;
         }
         Ok(Self {
             revision: raw.revision,
             manifest_sha256: raw.manifest_sha256,
-            release_id: raw.release_id,
             manifest,
             artifacts: raw.artifacts,
         })
@@ -287,7 +279,8 @@ impl Artifact {
     fn validate(&self, manifest: &Manifest, manifest_sha256: &str) -> Result<(), Problem> {
         if self.os != "linux"
             || self.format != "tar.gz"
-            || self.asset_id == 0
+            || !crate::plugin::inventory::release::asset_name(&self.asset)
+            || self.asset == "among-plugins.json"
             || self.size == 0
             || self.size > MAX_PACKAGE_BYTES
             || !hex(&self.sha256, 64)

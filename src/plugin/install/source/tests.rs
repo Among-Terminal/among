@@ -4,7 +4,13 @@ use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 
 mod installation_authority;
+mod latest_discovery;
+mod newest_prerelease;
+mod official_source;
 mod release_binding;
+mod release_inventory;
+mod selection_description;
+mod version_order;
 
 pub(crate) static JOB_TESTS: Mutex<()> = Mutex::new(());
 
@@ -21,6 +27,13 @@ impl Reply {
     pub(crate) fn set_json(&mut self, value: Value) {
         self.body = value.to_string().into_bytes();
     }
+    pub(crate) fn bytes(body: Vec<u8>) -> Self {
+        Self {
+            body,
+            ..Self::json(Value::Null)
+        }
+    }
+
     pub(crate) fn json(value: Value) -> Self {
         Self {
             status: 200,
@@ -187,7 +200,35 @@ impl Server {
     }
 
     pub(crate) fn refresh(&self, repository_id: u64) -> Result<Job, Problem> {
-        Job::start_target(Target::Registered(repository_id), Some(self.client(true)))
+        Job::start_target(
+            Target::Registered(repository_id, release::Channel::Latest),
+            Some(self.client(true)),
+        )
+    }
+
+    pub(crate) fn refresh_prerelease(&self, repository_id: u64) -> Result<Job, Problem> {
+        Job::start_target(
+            Target::Registered(repository_id, release::Channel::Prerelease),
+            Some(self.client(true)),
+        )
+    }
+
+    // The development gate is checked by the public `Job::refresh_prerelease`;
+    // the test binary is never in development mode, so the selection itself is
+    // driven below the gate.
+    pub(crate) fn inspect_prerelease(&self) -> Result<Inspection, Problem> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(
+            Operation {
+                client: self.client(true),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                deadline: Instant::now() + OPERATION_TIMEOUT,
+            }
+            .inspect_target(Target::Registered(12, release::Channel::Prerelease)),
+        )
     }
 
     pub(crate) fn install(
@@ -260,14 +301,12 @@ pub(crate) fn normal(request: &str) -> Reply {
         Reply::json(
             serde_json::json!({"id":12,"owner":{"login":"example","id":34},"name":"sample","private":false,"default_branch":"main"}),
         )
-    } else if path == "/repos/example/sample/commits/main"
-        || path == "/repositories/12/commits/main"
-    {
-        Reply::json(serde_json::json!({"sha":"a".repeat(40)}))
-    } else if path == format!("/example/sample/{}/among-plugins.json", "a".repeat(40)) {
-        Reply::json(crate::plugin::install::metadata::tests::single())
     } else {
-        panic!("unexpected fixture request path: {path}");
+        package_route(
+            crate::plugin::install::metadata::tests::single(),
+            Vec::new(),
+            request,
+        )
     }
 }
 
@@ -283,11 +322,8 @@ fn actual_https_requests_pin_the_catalogue_and_reject_hostile_transport_outcomes
         .unwrap()
         .contains("inspection does not install or enable plugins"));
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
-    assert!(requests[2].starts_with(&format!(
-        "GET /example/sample/{}/among-plugins.json ",
-        "a".repeat(40)
-    )));
+    assert_eq!(requests.len(), 5);
+    assert!(requests[2].starts_with("GET /repositories/12/releases/assets/12 "));
     assert!(requests
         .iter()
         .all(|request| !request.to_lowercase().contains("authorization:")
@@ -309,7 +345,7 @@ fn actual_https_requests_pin_the_catalogue_and_reject_hostile_transport_outcomes
         }
     });
     assert_eq!(server.inspect(true).unwrap().repository_id, 12);
-    assert_eq!(server.requests().len(), 4);
+    assert_eq!(server.requests().len(), 6);
     drop(server);
 
     let server = Server::new(|request| {
@@ -457,26 +493,94 @@ fn selected(metadata: &Value) -> Selection {
             owner: "example".into(),
             repository: "sample".into(),
         },
-        "a".repeat(40),
+        metadata["revision"].as_str().unwrap().into(),
         metadata.to_string().into_bytes(),
     )
     .unwrap()
-    .select("sample", "1.0")
+    .select("sample", "1.0.0")
     .unwrap()
 }
 
 pub(crate) fn package_route(metadata: Value, archive: Vec<u8>, request: &str) -> Reply {
     let path = request.split_whitespace().nth(1).unwrap();
     match path {
-        "/repositories/12/releases/7" => Reply::json(serde_json::json!({"id":7,"draft":false,"tag_name":"v1.0","assets":[
-            {"id":11,"size":archive.len(),"state":"uploaded","digest":format!("sha256:{}", metadata["artifacts"][0]["sha256"].as_str().unwrap())}]})),
+        "/repositories/12/releases/latest" => Reply::json(release_document(&metadata)),
+        "/repositories/12/releases/assets/12" => Reply::json(metadata),
         "/repositories/12/git/ref/tags/v1.0" => Reply::json(serde_json::json!({"ref":"refs/tags/v1.0","object":{"type":"commit","sha":metadata["revision"]}})),
         path if path == format!("/repositories/12/git/commits/{}", metadata["revision"].as_str().unwrap()) => Reply::json(serde_json::json!({"sha":metadata["revision"]})),
         "/repositories/12/releases/assets/11" => Reply { status: 302, headers: vec![("Location".into(),
             "https://release-assets.githubusercontent.com/github-production-release-asset/12/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee?token=synthetic-delivery-token".into())], ..Reply::json(Value::Null) },
         path if path.starts_with("/github-production-release-asset/12/") => Reply { body: archive, ..Reply::json(Value::Null) },
-        path if path.ends_with("/among-plugins.json") => Reply::json(metadata),
-        _ => normal(request),
+        "/repos/example/sample" | "/repositories/12" => normal(request),
+        _ => panic!("unexpected fixture request path: {path}"),
+    }
+}
+
+// Owned synthetic observations for non-network model/storage controls only.
+// Production observations always come from latest + asset API + real tag walks.
+pub(crate) fn release_document(metadata: &Value) -> Value {
+    let catalogue = metadata.to_string();
+    let mut assets = vec![
+        serde_json::json!({"id":12,"name":"among-plugins.json","size":catalogue.len(),"state":"uploaded","digest":format!("sha256:{}",crate::plugin::inventory::checksum(catalogue.as_bytes()).unwrap())}),
+        serde_json::json!({"id":13,"name":"NOTICES","size":1,"state":"uploaded","digest":format!("sha256:{}","a".repeat(64))}),
+    ];
+    let versions = if let Some(plugins) = metadata["plugins"].as_array() {
+        plugins
+            .iter()
+            .flat_map(|plugin| plugin["versions"].as_array().unwrap())
+            .collect::<Vec<_>>()
+    } else {
+        vec![metadata]
+    };
+    for version in versions {
+        for artifact in version["artifacts"].as_array().unwrap() {
+            if assets
+                .iter()
+                .any(|asset| asset["name"] == artifact["asset"])
+            {
+                continue;
+            }
+            let id = if assets.len() == 2 {
+                11
+            } else {
+                assets.len() as u64 + 11
+            };
+            let asset = serde_json::json!({"id":id,"name":artifact["asset"],"size":artifact["size"],"state":"uploaded","digest":format!("sha256:{}",artifact["sha256"].as_str().unwrap())});
+            if id == 11 {
+                assets.insert(0, asset);
+            } else {
+                assets.push(asset);
+            }
+        }
+    }
+    serde_json::json!({"id":7,"draft":false,"prerelease":false,"immutable":true,"tag_name":"v1.0","assets":assets})
+}
+
+impl Inspection {
+    pub(crate) fn from_bytes(
+        origin: Origin,
+        revision: String,
+        bytes: Vec<u8>,
+    ) -> Result<Self, Problem> {
+        let metadata: Value = serde_json::from_slice(&bytes).unwrap();
+        let mut document = release_document(&metadata);
+        let catalogue = document["assets"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|asset| asset["name"] == "among-plugins.json")
+            .unwrap();
+        catalogue["size"] = serde_json::json!(bytes.len());
+        catalogue["digest"] = serde_json::json!(format!(
+            "sha256:{}",
+            crate::plugin::inventory::checksum(&bytes)?
+        ));
+        let snapshot = crate::plugin::inventory::release::ReleaseSnapshot::from_value(&document)?;
+        Self::from_release(
+            origin,
+            release::ResolvedRelease::fixture(snapshot, revision),
+            bytes,
+        )
     }
 }
 
@@ -508,7 +612,7 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
     const KEY: &str = "github:12/sample";
     let root = super::super::package::tests::OwnedRoot::new();
     let (metadata, archive) =
-        super::super::package::tests::managed_fixture("1.0", "managed-resource", |_| {});
+        super::super::package::tests::managed_fixture("1.0.0", "managed-resource", |_| {});
     let server =
         Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
     let initial = install_at(
@@ -516,7 +620,7 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
         server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root.0,
     )
@@ -539,7 +643,7 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
     };
     wait(&mut host, &|host| host.running_generation(KEY).is_some());
     let (metadata, archive) =
-        super::super::package::tests::managed_fixture("2.0", "managed-resource", |metadata| {
+        super::super::package::tests::managed_fixture("2.0.0", "managed-resource", |metadata| {
             metadata["manifest"]["settings"]["version"] = json!(2)
         });
     let migration =
@@ -547,18 +651,20 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
     let selected = migration
         .inspect(true)
         .unwrap()
-        .select("sample", "2.0")
+        .select("sample", "2.0.0")
         .unwrap();
     assert!(selected.for_update(&entry, local.get("settings")).is_err());
-    assert_eq!(migration.requests().len(), 3);
+    assert_eq!(migration.requests().len(), 5);
     assert_eq!(inventory::read(&root.0).unwrap()[0].receipt, initial);
     let (metadata, archive) =
-        super::super::package::tests::managed_fixture("2.0", "managed-resource", |metadata| {
+        super::super::package::tests::managed_fixture("2.0.0", "managed-resource", |metadata| {
             metadata["manifest"]["required_features"] =
                 json!(["status", "settings", "context.terminals", "context.title"])
         });
     let transferred = Server::new(move |request| {
-        if request.starts_with("GET /repos/example/sample ") {
+        if request.starts_with("GET /repos/example/sample ")
+            || request.starts_with("GET /repositories/12 ")
+        {
             Reply::json(
                 json!({"id":12,"owner":{"login":"example","id":99},"name":"sample","private":false,"default_branch":"main"}),
             )
@@ -569,7 +675,7 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
     let selected = transferred
         .inspect(true)
         .unwrap()
-        .select("sample", "2.0")
+        .select("sample", "2.0.0")
         .unwrap()
         .for_update(&entry, local.get("settings"))
         .unwrap();
@@ -663,7 +769,7 @@ fn real_https_install_rejects_all_reported_runtime_entrypoint_mismatches_without
         let selection = server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap();
         let outcome = install_at(&server, selection, &root.0);
         assert!(
@@ -776,7 +882,7 @@ fn real_https_native_formats_are_inertly_bound_to_linux_class_machine_and_loader
         let selection = server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap();
         let outcome = install_at(&server, selection, &root.0);
         assert!(
@@ -801,7 +907,7 @@ fn real_https_native_formats_are_inertly_bound_to_linux_class_machine_and_loader
         let selection = server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap();
         let committed = install_at(&server, selection, &root.0).unwrap();
         let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
@@ -832,7 +938,7 @@ fn actual_update_format_rejection_preserves_previous_selected_bytes_and_consent(
         first
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root.0,
     )
@@ -847,13 +953,14 @@ fn actual_update_format_rejection_preserves_previous_selected_bytes_and_consent(
     );
     let update =
         Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
-    let selected = update
+    // The fixture keeps the version and digests, which review would not offer;
+    // this case is about the package check inside an update already underway.
+    let mut selected = update
         .inspect(true)
         .unwrap()
-        .select("sample", "1.0")
-        .unwrap()
-        .for_update(&entry, None)
+        .select("sample", "1.0.0")
         .unwrap();
+    selected.previous = Some(entry.receipt.clone());
     assert!(install_at(&update, selected, &root.0).is_err());
     assert_eq!(
         std::fs::read(root.0.join("installed.json")).unwrap(),
@@ -883,27 +990,24 @@ fn actual_https_stream_commits_exact_selection_inert_and_loads_offline() {
     let outcome = install_at(&server, selection, &root.0).unwrap();
     assert_eq!(outcome.durability, crate::settings::Durability::Durable);
     assert_eq!(outcome.receipt.revision, "a".repeat(40));
-    assert_eq!(outcome.receipt.release_id, 7);
-    assert_eq!(outcome.receipt.asset_id, 11);
-    assert_eq!(outcome.receipt.source.as_ref().unwrap().publisher_id, 34);
-    assert_eq!(
-        outcome.receipt.source.as_ref().unwrap().catalogue_sha256,
-        catalogue_digest
-    );
-    assert_eq!(
-        outcome.receipt.source.as_ref().unwrap().catalogue_revision,
-        "a".repeat(40)
-    );
+    let release = outcome.receipt.release().unwrap();
+    assert_eq!(release.release_id, 7);
+    assert_eq!(release.asset_id, 11);
+    let source = release.source.as_ref().unwrap();
+    assert_eq!(source.publisher_id, 34);
+    assert_eq!(source.catalogue_sha256, catalogue_digest);
+    assert_eq!(source.catalogue_revision, "a".repeat(40));
     assert!(outcome.receipt.installation.is_some());
     let requests = server.requests();
     assert_eq!(
         requests.len(),
-        8,
-        "install rechecks the pinned release/ref/commit without refetching mutable latest/catalogue"
+        10,
+        "install rechecks identity/latest/full tag chain twice without redownloading the catalogue"
     );
-    assert!(requests[0].starts_with("GET /repositories/12/releases/7 "));
-    assert!(requests[1].starts_with("GET /repositories/12/git/ref/tags/v1.0 "));
-    assert!(requests[3].starts_with("GET /repositories/12/releases/assets/11 "));
+    assert!(requests[0].starts_with("GET /repositories/12 "));
+    assert!(requests[1].starts_with("GET /repositories/12/releases/latest "));
+    assert!(requests[2].starts_with("GET /repositories/12/git/ref/tags/v1.0 "));
+    assert!(requests[4].starts_with("GET /repositories/12/releases/assets/11 "));
     assert!(requests
         .iter()
         .all(|request| !request.to_lowercase().contains("authorization:")
@@ -939,7 +1043,7 @@ fn actual_network_release_hash_transfer_and_redirect_failures_never_select_files
         let selection = selected(&metadata);
         let server = Server::new(move |request| {
             let mut reply = package_route(metadata.clone(), archive.clone(), request);
-            if request.starts_with("GET /repositories/12/releases/7 ") {
+            if request.starts_with("GET /repositories/12/releases/latest ") {
                 let mut value: Value = serde_json::from_slice(&reply.body).unwrap();
                 match failure {
                     "release" => value["id"] = Value::from(8),
@@ -1099,10 +1203,8 @@ fn actual_numeric_refresh_refuses_deleted_recreated_names_without_retargeting_sa
                 Reply::json(
                     json!({"id":if recreated.load(Ordering::Acquire){55}else{12},"owner":{"login":"example","id":34},"name":"sample","private":false,"default_branch":"main"}),
                 )
-            } else if path == "/repositories/55/commits/main" {
-                Reply::json(json!({"sha":"a".repeat(40)}))
             } else {
-                normal(request)
+                normal(&request.replace("/repositories/55/", "/repositories/12/"))
             }
         }
     });
@@ -1171,7 +1273,7 @@ fn actual_network_refresh_finishing_after_committed_source_removal_cannot_resurr
                 .split_whitespace()
                 .nth(1)
                 .unwrap()
-                .ends_with("/among-plugins.json")
+                .ends_with("/releases/assets/12")
             {
                 let deadline = Instant::now() + Duration::from_secs(10);
                 while !release.load(Ordering::Acquire) {
@@ -1197,7 +1299,7 @@ fn actual_network_refresh_finishing_after_committed_source_removal_cannot_resurr
     release.store(false, Ordering::Release);
     let network = server.refresh(12).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while server.requests().len() < 6 {
+    while server.requests().len() < 8 {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
