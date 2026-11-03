@@ -46,7 +46,9 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # The arm64 runner spent 23 minutes building and ran the three-distribution
+    # audio step for 13 more; sixty minutes ended the job inside that last step.
+    timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: '1'
     steps:
