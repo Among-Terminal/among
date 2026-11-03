@@ -155,7 +155,9 @@ pub(crate) fn notification_fixture(version: &str) -> (Value, Vec<u8>) {
         {"id":"first","name":"Lifecycle provider","description":"Retained independent policy"},
         {"id":"second","name":"Removed after update","description":"Static declaration withdrawal"}
     ]);
-    if version != "1.0" {
+    // Only the first release declares both channels; every later one withdraws
+    // the second, which is what the update checks observe.
+    if version != "1.0.0" {
         metadata["manifest"]["delivery_channels"]
             .as_array_mut()
             .unwrap()

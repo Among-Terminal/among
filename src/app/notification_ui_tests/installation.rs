@@ -201,7 +201,7 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
     let root = inventory::root().unwrap();
     let config = crate::settings::directory().unwrap();
     crate::test_isolation::assert_below_check_root(&root);
-    let (metadata, archive) = test_notification_package("1.0");
+    let (metadata, archive) = test_notification_package("1.0.0");
     let server =
         Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
     let first = install_at(
@@ -209,7 +209,7 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
         server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root,
     )
@@ -359,7 +359,7 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
         },
         "configured real command while provider and HTTPS work are active",
     );
-    let (_server, release, job) = pending_update(&ctx, &root, "2.0");
+    let (_server, release, job) = pending_update(&ctx, &root, "2.0.0");
     continuity("pending-update");
     release.store(true, Ordering::Release);
     let second = finish_update(&job);
@@ -408,7 +408,7 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
         .stored_settings_changed(KEY, accepted.clone());
     let second_action = action(&ctx, &second.package_path(&root));
     let _delivery = active_delivery(&ctx, &second.package_path(&root), pane);
-    let (_server2, release2, job2) = pending_update(&ctx, &root, "3.0");
+    let (_server2, release2, job2) = pending_update(&ctx, &root, "3.0.0");
     let prefs = preferences(&ctx);
     native_toggle(&prefs, false);
     release2.store(true, Ordering::Release);
@@ -437,7 +437,7 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
     prefs.destroy();
     let third_action = action(&ctx, &third.package_path(&root));
     let third_delivery = active_delivery(&ctx, &third.package_path(&root), pane);
-    let (_server3, release3, job3) = pending_update(&ctx, &root, "4.0");
+    let (_server3, release3, job3) = pending_update(&ctx, &root, "4.0.0");
     activate(&ctx.window);
     confirm_package_action(&ctx, third.clone(), mutation::Action::Uninstall, None);
     wait(
@@ -520,7 +520,7 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
         server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root,
     )
