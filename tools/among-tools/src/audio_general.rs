@@ -22,7 +22,11 @@ const RATE: u32 = 48_000;
 const BELL: &str = "type:printf~'\\007'";
 const ENABLED: &str = "focus:notification-audio-enabled";
 const CONDITION: &str = "focus:notification-audio-condition";
+const PATH: &str = "focus:notification-audio-path";
 const DECODER_FLAG: &[u8] = b"--among-audio-decoder-v2";
+/// Holds the script until a sound is audible, so a cancellation that follows
+/// cuts a sound that was playing and not one still being prepared.
+const SOUNDING: &str = "wait-sound";
 
 /// What a capture must show. The built-in alert carries 660 and 880 Hz; the
 /// local fixture carries only 880 Hz, so 660 Hz tells the two sources apart.
@@ -137,6 +141,21 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
             steps: &["preferences", "activate:notification-audio-preview"],
             expected: Expected::Builtin,
         },
+        // With a working command channel configured, Preview must still reach
+        // nothing but the sound; the control scenario shows the same
+        // configuration does run on a bell.
+        Scenario {
+            name: "preview-isolated",
+            audio: None,
+            steps: &["preferences", "activate:notification-audio-preview"],
+            expected: Expected::Builtin,
+        },
+        Scenario {
+            name: "command-control",
+            audio: None,
+            steps: &[BELL],
+            expected: Expected::Silence,
+        },
         // The switch and condition below are operated from the keyboard. Only
         // the source is saved ahead, because the file chooser is a portal.
         Scenario {
@@ -163,6 +182,45 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
             steps: &["preferences", "activate:notification-audio-builtin", BELL],
             expected: Expected::Builtin,
         },
+        // The path is typed into General's own entry and accepted with its own
+        // button, so the file is read, validated and saved by the real control.
+        Scenario {
+            name: "source-local",
+            audio: audio(true, "always", &json!("builtin")),
+            steps: &[
+                "preferences",
+                PATH,
+                "text:{short}",
+                "activate:notification-audio-select",
+                BELL,
+            ],
+            expected: Expected::Local,
+        },
+        // A file the control refuses must leave the accepted sound in place.
+        Scenario {
+            name: "source-missing",
+            audio: audio(true, "always", &json!("builtin")),
+            steps: &[
+                "preferences",
+                PATH,
+                "text:{missing}",
+                "activate:notification-audio-select",
+                BELL,
+            ],
+            expected: Expected::Builtin,
+        },
+        Scenario {
+            name: "source-truncated",
+            audio: audio(true, "always", &json!("builtin")),
+            steps: &[
+                "preferences",
+                PATH,
+                "text:{truncated}",
+                "activate:notification-audio-select",
+                BELL,
+            ],
+            expected: Expected::Builtin,
+        },
         // The bell rings behind Preferences, where its terminal is not viewed.
         // Escape returns focus to that terminal, which ends the eligibility.
         Scenario {
@@ -173,9 +231,10 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
                 CONDITION,
                 "keys:Return Home Down Return",
                 BELL,
+                SOUNDING,
                 "keys:Escape",
             ],
-            expected: Expected::LocalCutBelow(4),
+            expected: Expected::LocalCutBelow(5),
         },
         Scenario {
             name: "file-removed",
@@ -208,16 +267,16 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
         Scenario {
             name: "pane-removed",
             audio: audio(true, "always", &local(long)),
-            steps: &["split", BELL, "close"],
-            expected: Expected::LocalCutBelow(4),
+            steps: &["split", BELL, SOUNDING, "close"],
+            expected: Expected::LocalCutBelow(5),
         },
         // SIGTERM during a long sound ends the application; a decoder surviving
         // its owner would keep playing past the bound.
         Scenario {
             name: "shutdown",
             audio: audio(true, "always", &local(long)),
-            steps: &[BELL],
-            expected: Expected::LocalCutBelow(4),
+            steps: &[BELL, SOUNDING],
+            expected: Expected::LocalCutBelow(5),
         },
     ]
 }
@@ -229,7 +288,11 @@ fn script(steps: &[&'static str]) -> (String, Vec<&'static str>) {
     let mut script = String::new();
     let mut external = Vec::new();
     for step in steps {
-        if step.starts_with("keys:") || *step == "kill-decoder" {
+        if step.starts_with("keys:")
+            || step.starts_with("text:")
+            || *step == "kill-decoder"
+            || *step == SOUNDING
+        {
             script.push_str(&format!("await:{}\n", external.len()));
             external.push(*step);
         } else {
@@ -266,10 +329,15 @@ fn decoders(application: u32) -> Result<Vec<u32>> {
     Ok(found)
 }
 
-fn kill_decoder(harness: &mut sessions::Harness, application: u32) -> Result<()> {
+fn wait_for_sound(harness: &mut sessions::Harness, application: u32) -> Result<()> {
     harness.wait(15, |_| Ok(!decoders(application)?.is_empty()))?;
     // Let the sound reach the sink first, so the capture shows it being cut.
     std::thread::sleep(Duration::from_secs(1));
+    Ok(())
+}
+
+fn kill_decoder(harness: &mut sessions::Harness, application: u32) -> Result<()> {
+    wait_for_sound(harness, application)?;
     for decoder in decoders(application)? {
         kill(Pid::from_raw(decoder as i32), Signal::SIGKILL)?;
     }
@@ -278,11 +346,35 @@ fn kill_decoder(harness: &mut sessions::Harness, application: u32) -> Result<()>
     Ok(())
 }
 
+/// Fixture files a typed step can name as `{short}`, `{missing}` and so on.
+struct Fixtures<'a> {
+    short: &'a Path,
+    long: &'a Path,
+    missing: &'a Path,
+    truncated: &'a Path,
+}
+
+impl Fixtures<'_> {
+    fn fill(&self, text: &str) -> String {
+        [
+            ("{short}", self.short),
+            ("{long}", self.long),
+            ("{missing}", self.missing),
+            ("{truncated}", self.truncated),
+        ]
+        .iter()
+        .fold(text.to_string(), |text, (name, path)| {
+            text.replace(name, &path.to_string_lossy())
+        })
+    }
+}
+
 fn perform(
     harness: &mut sessions::Harness,
     steps: &Path,
     application: u32,
     external: &[&str],
+    fixtures: &Fixtures,
 ) -> Result<()> {
     for (index, step) in external.iter().enumerate() {
         let paused = format!("among: script awaits {index}\n");
@@ -292,6 +384,17 @@ fn perform(
                 harness.xdo(&["key", "--clearmodifiers", key])?;
                 std::thread::sleep(Duration::from_millis(250));
             }
+        } else if let Some(text) = step.strip_prefix("text:") {
+            harness.xdo(&[
+                "type",
+                "--clearmodifiers",
+                "--delay",
+                "5",
+                &fixtures.fill(text),
+            ])?;
+            std::thread::sleep(Duration::from_millis(250));
+        } else if *step == SOUNDING {
+            wait_for_sound(harness, application)?;
         } else {
             kill_decoder(harness, application)?;
         }
@@ -300,7 +403,12 @@ fn perform(
     Ok(())
 }
 
-fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> {
+fn run_one(
+    binary: &Path,
+    scratch: &Path,
+    scenario: &Scenario,
+    fixtures: &Fixtures,
+) -> Result<Value> {
     let mut harness = sessions::fresh(binary, scratch, &format!("audio-{}", scenario.name))?;
     let base = harness.base.clone();
     fs::DirBuilder::new()
@@ -316,12 +424,27 @@ fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> 
         harness.env.insert(key.into(), value);
     }
     let general = base.join("config/among/general.json");
-    if let Some(audio) = &scenario.audio {
-        fs::write(
-            &general,
-            serde_json::to_vec(&json!({"version":1,"notifications":{"audio":audio}}))?,
-        )?;
-    }
+    // Two scenarios also configure the command channel, to show that Preview
+    // reaches no other channel and that the same configuration does run on a bell.
+    let marker = base.join("command-marker");
+    let command = matches!(scenario.name, "preview-isolated" | "command-control").then(|| {
+        json!({"enabled":true,"eligibility":"always","configuration":{
+            "executable":"/bin/sh","arguments":["-c","cat > \"$0\"",marker]}})
+    });
+    let initial = if scenario.audio.is_some() || command.is_some() {
+        let mut notifications = serde_json::Map::new();
+        if let Some(audio) = &scenario.audio {
+            notifications.insert("audio".into(), audio.clone());
+        }
+        if let Some(command) = &command {
+            notifications.insert("command".into(), command.clone());
+        }
+        let bytes = serde_json::to_vec(&json!({"version":1,"notifications":notifications}))?;
+        fs::write(&general, &bytes)?;
+        Some(bytes)
+    } else {
+        None
+    };
     let (steps, external) = script(scenario.steps);
     fs::write(base.join("steps"), steps)?;
     harness
@@ -347,7 +470,13 @@ fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> 
     )?;
     std::thread::sleep(Duration::from_millis(500));
     let application = harness.start(scenario.name)?;
-    perform(&mut harness, &base.join("steps"), application, &external)?;
+    perform(
+        &mut harness,
+        &base.join("steps"),
+        application,
+        &external,
+        fixtures,
+    )?;
     harness.wait(30, |this| {
         Ok(this.text()?.contains("among: script finished after"))
     })?;
@@ -406,6 +535,23 @@ fn run_one(binary: &Path, scratch: &Path, scenario: &Scenario) -> Result<Value> 
         "source-change" if saved?["source"] != "builtin" => {
             return Err("source change was not saved".into())
         }
+        "preview-isolated" if marker.exists() || written != initial => {
+            return Err("Preview reached the command channel or rewrote General".into())
+        }
+        "command-control" => {
+            let payload = storage::parse_json(&fs::read(&marker).map_err(|_| {
+                "a bell with the same command configuration ran no command".to_string()
+            })?)?;
+            if payload["kind"] != "terminal-bell" {
+                return Err("the command received another payload kind".into());
+            }
+        }
+        "source-local" if saved?["source"] != json!({"local":fixtures.short}) => {
+            return Err("the typed path was not saved as the local source".into())
+        }
+        "source-missing" | "source-truncated" if saved?["source"] != "builtin" => {
+            return Err("a refused file replaced the accepted sound".into())
+        }
         _ => {}
     }
     println!("PASS {}: {capture}", scenario.name);
@@ -428,8 +574,14 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<()> {
     let whole = sine_wav(1, 880.0);
     fs::write(&truncated, &whole[..whole.len() / 2])?;
     let mut results = Vec::new();
+    let paths = Fixtures {
+        short: &short,
+        long: &long,
+        missing: &missing,
+        truncated: &truncated,
+    };
     for scenario in scenarios(&short, &long, &missing, &truncated) {
-        results.push(run_one(binary, scratch, &scenario)?);
+        results.push(run_one(binary, scratch, &scenario, &paths)?);
     }
     fs::write(
         fixtures.join("result.json"),

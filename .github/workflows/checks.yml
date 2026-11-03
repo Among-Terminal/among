@@ -180,7 +180,7 @@ jobs:
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-live-resize target/release/among
           cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/preferences-tests.jsonl"
-          host_tests="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one actual among test executable") end' "$RUNNER_TEMP/preferences-tests.jsonl")"
+          host_tests="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .target.kind == ["bin"] and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one actual among test executable") end' "$RUNNER_TEMP/preferences-tests.jsonl")"
           tools/among-tools/target/release/among-tools prepare-candidate-plugin-inputs \
             "$RUNNER_TEMP/plugin-candidate" "$AMONG_CHECK_ROOT/official-plugin-inputs"
           tools/among-tools/target/release/among-tools ci-x11 \
