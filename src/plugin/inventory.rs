@@ -375,18 +375,29 @@ impl Receipt {
     }
 
     pub fn matches_review(&self, review: &Value) -> bool {
+        // A review that names an installation was granted to that one
+        // installation. An ordinary install that shares the identity (after
+        // "Recover previous" or a reinstall that follows the removal of a
+        // development install) must not inherit it, so the token has to
+        // match whenever the review carries one.
+        let installation_bound = |review: &Value| {
+            let named = &review["installation"];
+            if named.is_null() {
+                return !self.requires_development();
+            }
+            self.installation.is_some() && named.as_str() == self.installation.as_deref()
+        };
         match &self.origin {
             Provenance::Release(release) => match &release.source {
                 Some(source) => {
                     review["repository_id"].as_u64() == Some(release.repository_id)
                         && review["publisher_id"].as_u64() == Some(source.publisher_id)
-                        && (!self.requires_development()
-                            || (self.installation.is_some()
-                                && review["installation"].as_str() == self.installation.as_deref()))
+                        && installation_bound(review)
                 }
                 None => {
                     review["owner"].as_str() == Some(&release.owner)
                         && review["repository"].as_str() == Some(&release.repository)
+                        && installation_bound(review)
                 }
             },
             Provenance::Local(_) => {

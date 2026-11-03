@@ -10,6 +10,7 @@ mod official_source;
 mod release_binding;
 mod release_inventory;
 mod selection_description;
+mod version_order;
 
 pub(crate) static JOB_TESTS: Mutex<()> = Mutex::new(());
 
@@ -496,7 +497,7 @@ fn selected(metadata: &Value) -> Selection {
         metadata.to_string().into_bytes(),
     )
     .unwrap()
-    .select("sample", "1.0")
+    .select("sample", "1.0.0")
     .unwrap()
 }
 
@@ -611,7 +612,7 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
     const KEY: &str = "github:12/sample";
     let root = super::super::package::tests::OwnedRoot::new();
     let (metadata, archive) =
-        super::super::package::tests::managed_fixture("1.0", "managed-resource", |_| {});
+        super::super::package::tests::managed_fixture("1.0.0", "managed-resource", |_| {});
     let server =
         Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
     let initial = install_at(
@@ -619,7 +620,7 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
         server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root.0,
     )
@@ -642,7 +643,7 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
     };
     wait(&mut host, &|host| host.running_generation(KEY).is_some());
     let (metadata, archive) =
-        super::super::package::tests::managed_fixture("2.0", "managed-resource", |metadata| {
+        super::super::package::tests::managed_fixture("2.0.0", "managed-resource", |metadata| {
             metadata["manifest"]["settings"]["version"] = json!(2)
         });
     let migration =
@@ -650,13 +651,13 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
     let selected = migration
         .inspect(true)
         .unwrap()
-        .select("sample", "2.0")
+        .select("sample", "2.0.0")
         .unwrap();
     assert!(selected.for_update(&entry, local.get("settings")).is_err());
     assert_eq!(migration.requests().len(), 5);
     assert_eq!(inventory::read(&root.0).unwrap()[0].receipt, initial);
     let (metadata, archive) =
-        super::super::package::tests::managed_fixture("2.0", "managed-resource", |metadata| {
+        super::super::package::tests::managed_fixture("2.0.0", "managed-resource", |metadata| {
             metadata["manifest"]["required_features"] =
                 json!(["status", "settings", "context.terminals", "context.title"])
         });
@@ -674,7 +675,7 @@ fn real_update_transfer_requires_renewed_execution_review_and_schema_migrations_
     let selected = transferred
         .inspect(true)
         .unwrap()
-        .select("sample", "2.0")
+        .select("sample", "2.0.0")
         .unwrap()
         .for_update(&entry, local.get("settings"))
         .unwrap();
@@ -768,7 +769,7 @@ fn real_https_install_rejects_all_reported_runtime_entrypoint_mismatches_without
         let selection = server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap();
         let outcome = install_at(&server, selection, &root.0);
         assert!(
@@ -881,7 +882,7 @@ fn real_https_native_formats_are_inertly_bound_to_linux_class_machine_and_loader
         let selection = server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap();
         let outcome = install_at(&server, selection, &root.0);
         assert!(
@@ -906,7 +907,7 @@ fn real_https_native_formats_are_inertly_bound_to_linux_class_machine_and_loader
         let selection = server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap();
         let committed = install_at(&server, selection, &root.0).unwrap();
         let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
@@ -937,7 +938,7 @@ fn actual_update_format_rejection_preserves_previous_selected_bytes_and_consent(
         first
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root.0,
     )
@@ -957,7 +958,7 @@ fn actual_update_format_rejection_preserves_previous_selected_bytes_and_consent(
     let mut selected = update
         .inspect(true)
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .unwrap();
     selected.previous = Some(entry.receipt.clone());
     assert!(install_at(&update, selected, &root.0).is_err());

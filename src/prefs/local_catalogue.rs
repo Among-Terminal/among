@@ -18,6 +18,14 @@ pub(super) fn present(
     details: Rc<super::PluginDetailsQuery>,
 ) {
     let window = window(parent, changed, details, installer());
+    let opened = window.clone();
+    chooser().open(Some(&window.0), gio::Cancellable::NONE, move |file| {
+        opened.chosen(file)
+    });
+}
+
+/// The file dialog: only a catalogue named `among-plugins.json` can be picked.
+fn chooser() -> gtk::FileDialog {
     let chooser = gtk::FileDialog::builder()
         .title("Choose among-plugins.json")
         .modal(true)
@@ -28,15 +36,25 @@ pub(super) fn present(
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     chooser.set_filters(Some(&filters));
-    let opened = window.clone();
-    chooser.open(
-        Some(&window.0),
-        gio::Cancellable::NONE,
-        move |file| match file.ok().and_then(|file| file.path()) {
-            Some(path) => opened.show(&path),
-            None => opened.status("No catalogue was chosen; nothing was read."),
-        },
-    );
+    chooser
+}
+
+/// The dialog as native tests can inspect it without showing it.
+#[cfg(test)]
+pub(crate) fn chooser_for_test() -> gtk::FileDialog {
+    chooser()
+}
+
+/// Opens the local catalogue window and delivers `result` the way the file
+/// dialog would: a chosen file, or a dismissal.
+#[cfg(test)]
+pub(crate) fn present_chosen_for_test(
+    parent: &gtk::Window,
+    result: Result<gio::File, gtk::glib::Error>,
+    changed: Rc<dyn Fn()>,
+    details: Rc<super::PluginDetailsQuery>,
+) {
+    window(parent, changed, details, installer()).chosen(result);
 }
 
 /// Opens the local catalogue window for `path` without a file chooser. Native
@@ -101,6 +119,15 @@ impl Window {
             .title(escape_display(text))
             .build();
         self.1.add(&row);
+    }
+
+    /// The outcome of the file dialog. Dismissing it, or choosing something
+    /// that has no local path, reads nothing.
+    fn chosen(&self, file: Result<gio::File, gtk::glib::Error>) {
+        match file.ok().and_then(|file| file.path()) {
+            Some(path) => self.show(&path),
+            None => self.status("No catalogue was chosen; nothing was read."),
+        }
     }
 
     fn show(&self, path: &std::path::Path) {

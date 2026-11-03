@@ -511,7 +511,7 @@ fn a_reviewed_prerelease_installs_with_its_channel_and_reopens_offline() {
     let selection = server
         .inspect_prerelease()
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .unwrap();
     assert!(selection.is_prerelease());
     let inspected = server.requests().len();
@@ -561,7 +561,7 @@ fn a_reviewed_prerelease_installs_with_its_channel_and_reopens_offline() {
     let again = server
         .inspect_prerelease()
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .unwrap();
     assert!(again
         .for_update(&offline[0], None)
@@ -599,7 +599,7 @@ fn a_newer_prerelease_before_commit_requires_a_new_review() {
         let selection = server
             .inspect_prerelease()
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap();
         if moment == "before transfer" {
             pages.lock().unwrap()[0].push(listed(31, true, false, "2026-10-02T00:00:00Z"));
@@ -634,7 +634,7 @@ fn an_ordinary_selection_still_follows_latest_and_ignores_newer_prereleases() {
     let selection = server
         .inspect(true)
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .unwrap();
     assert!(!selection.is_prerelease());
     let committed = install_at(&server, selection, &root.0).unwrap();
@@ -667,7 +667,7 @@ fn an_ordinary_instance_refuses_prerelease_refresh_and_install_before_any_work()
     let selection = server
         .inspect_prerelease()
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .unwrap();
     let observed = server.requests().len();
     let root = super::super::super::package::tests::OwnedRoot::new();
@@ -678,7 +678,7 @@ fn an_ordinary_instance_refuses_prerelease_refresh_and_install_before_any_work()
 }
 
 #[test]
-fn a_cached_source_reopens_with_the_channel_of_its_newest_stored_inspection() {
+fn the_source_cache_refuses_every_write_of_a_prerelease_and_keeps_the_stable_snapshot() {
     use super::super::super::registry::{self, Outcome, Request};
     let root = super::super::super::package::tests::OwnedRoot::new();
     let server = prerelease_server(vec![vec![listed(30, true, false, "2026-10-01T00:00:00Z")]]);
@@ -700,33 +700,33 @@ fn a_cached_source_reopens_with_the_channel_of_its_newest_stored_inspection() {
     .unwrap();
     assert!(!cached().is_prerelease());
 
-    let development = server.inspect_prerelease().unwrap();
-    let observed = development.release.clone();
-    registry::run(
-        &root.0,
+    let stored = std::fs::read(root.0.join("sources.json")).unwrap();
+    let development = || Box::new(server.inspect_prerelease().unwrap());
+    for request in [
         Request::Refresh {
             expected: list(),
-            inspection: Box::new(development),
+            inspection: development(),
         },
-        || Ok(()),
-        || Ok(()),
-    )
-    .unwrap();
-    let reopened = cached();
-    assert!(reopened.is_prerelease());
-    assert_eq!(reopened.release, observed);
+        Request::ApprovePublisher {
+            expected: list(),
+            inspection: development(),
+        },
+    ] {
+        let refused = registry::run(&root.0, request, || Ok(()), || Ok(()))
+            .err()
+            .expect("a prerelease must not reach the source cache");
+        assert!(refused.0.contains("never stored"), "{refused}");
+    }
+    // A source that was never registered is refused too, so a prerelease cannot
+    // enter the cache as the first snapshot of a new registration.
+    let fresh = super::super::super::package::tests::OwnedRoot::new();
+    let refused = registry::run(&fresh.0, Request::Add(development()), || Ok(()), || Ok(()))
+        .err()
+        .expect("a prerelease must not create a registration");
+    assert!(refused.0.contains("never stored"), "{refused}");
+    assert!(!fresh.0.join("sources.json").exists());
 
-    let ordinary = server.inspect(true).unwrap();
-    registry::run(
-        &root.0,
-        Request::Refresh {
-            expected: list(),
-            inspection: Box::new(ordinary),
-        },
-        || Ok(()),
-        || Ok(()),
-    )
-    .unwrap();
+    assert_eq!(std::fs::read(root.0.join("sources.json")).unwrap(), stored);
     let reopened = cached();
     assert!(!reopened.is_prerelease());
     assert_eq!(reopened.release.snapshot.id, 7);
@@ -742,7 +742,7 @@ fn a_prerelease_replaces_an_install_only_when_confirmed_and_a_stable_release_of_
         server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root.0,
     )
@@ -754,7 +754,7 @@ fn a_prerelease_replaces_an_install_only_when_confirmed_and_a_stable_release_of_
         server
             .inspect_prerelease()
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap()
     };
 
@@ -782,7 +782,7 @@ fn a_prerelease_replaces_an_install_only_when_confirmed_and_a_stable_release_of_
         server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap()
     };
     for field in ["revision", "manifest", "package"] {
@@ -806,4 +806,158 @@ fn a_prerelease_replaces_an_install_only_when_confirmed_and_a_stable_release_of_
     assert_eq!(rebound.release().unwrap().release_id, 7);
     assert!(!rebound.requires_development());
     assert!(rebound.matches_review(&approved));
+}
+
+// An approval granted to a prerelease names that installation. Getting back to
+// an ordinary install, by restoring the retained generation or by removing the
+// prerelease and installing again, must ask for consent anew.
+#[test]
+fn returning_from_a_prerelease_to_an_ordinary_install_does_not_inherit_its_grants() {
+    use crate::plugin::install::mutation::Action;
+
+    let root = super::super::super::package::tests::OwnedRoot::new();
+    let server = prerelease_server(vec![vec![listed(30, true, false, "2026-10-01T00:00:00Z")]]);
+    let ordinary_selection = || {
+        server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0.0")
+            .unwrap()
+    };
+    let replace_with_prerelease = || {
+        let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
+        let confirmed = server
+            .inspect_prerelease()
+            .unwrap()
+            .select("sample", "1.0.0")
+            .unwrap()
+            .for_installed(&entry, None)
+            .unwrap();
+        install_at(&server, confirmed, &root.0).unwrap().receipt
+    };
+    let ordinary = install_at(&server, ordinary_selection(), &root.0)
+        .unwrap()
+        .receipt;
+    let prerelease = replace_with_prerelease();
+    let prerelease_grant = prerelease.review(vec!["status".into()]);
+    assert!(prerelease.matches_review(&prerelease_grant));
+
+    let restored = store::mutate(
+        &root.0,
+        &prerelease,
+        Action::RestorePrevious,
+        None,
+        &|| Ok(()),
+        || Ok(()),
+    )
+    .unwrap()
+    .receipt;
+    assert_eq!(restored, ordinary);
+    assert!(
+        !restored.matches_review(&prerelease_grant),
+        "restoring the ordinary generation must not accept the prerelease's grant"
+    );
+    assert!(restored.matches_review(&ordinary.review(vec!["status".into()])));
+
+    // A fresh ordinary install after the prerelease is removed gets a new
+    // consent token, so the stored grant names another installation.
+    let prerelease = replace_with_prerelease();
+    let prerelease_grant = prerelease.review(vec!["status".into()]);
+    store::mutate(
+        &root.0,
+        &prerelease,
+        Action::Uninstall,
+        None,
+        &|| Ok(()),
+        || Ok(()),
+    )
+    .unwrap();
+    let reinstalled = install_at(&server, ordinary_selection(), &root.0)
+        .unwrap()
+        .receipt;
+    assert!(!reinstalled.matches_review(&prerelease_grant));
+}
+
+// A generation installed from a prerelease runs only under the development
+// flag. Once a stable release of the same bytes rebinds it, the very same
+// installation starts in an ordinary process, so nothing about it needs the
+// flag afterwards.
+#[test]
+fn a_rebound_stable_generation_runs_without_the_development_flag() {
+    use crate::plugin::host::{PluginHost, PluginState};
+    const KEY: &str = "github:12/sample";
+    assert!(!crate::plugin::development::enabled());
+    let root = super::super::super::package::tests::OwnedRoot::new();
+    let (metadata, archive) =
+        super::super::super::package::tests::managed_fixture("1.0.0", "managed-resource", |_| {});
+    let server = Server::new(route(
+        metadata,
+        archive,
+        Arc::new(Mutex::new(vec![vec![listed(
+            30,
+            true,
+            false,
+            "2026-10-01T00:00:00Z",
+        )]])),
+        |_| {},
+    ));
+    let prerelease = install_at(
+        &server,
+        server
+            .inspect_prerelease()
+            .unwrap()
+            .select("sample", "1.0.0")
+            .unwrap(),
+        &root.0,
+    )
+    .unwrap()
+    .receipt;
+    assert!(prerelease.requires_development());
+    let settings = |receipt: &crate::plugin::inventory::Receipt| {
+        json!({"enabled":true,"installation":receipt.installation,
+            "review":receipt.review(vec!["status".into(),"settings".into()])})
+    };
+    let mut host = PluginHost::new();
+    host.register_managed(
+        crate::plugin::inventory::read(&root.0).unwrap().remove(0),
+        Some(&settings(&prerelease)),
+    );
+    assert_eq!(host.supervised_count(), 0);
+    assert!(matches!(&host.listing()[0].1,
+        PluginState::Unavailable { reason } if reason == crate::plugin::host::DEVELOPMENT_ONLY));
+    host.shutdown();
+
+    let entry = crate::plugin::inventory::read(&root.0).unwrap().remove(0);
+    let rebound = install_at(
+        &server,
+        server
+            .inspect(true)
+            .unwrap()
+            .select("sample", "1.0.0")
+            .unwrap()
+            .for_update(&entry, None)
+            .unwrap(),
+        &root.0,
+    )
+    .unwrap()
+    .receipt;
+    assert!(!rebound.requires_development());
+    assert_eq!(rebound.installation, prerelease.installation);
+    let mut host = PluginHost::new();
+    host.register_managed(
+        crate::plugin::inventory::read(&root.0).unwrap().remove(0),
+        Some(&settings(&rebound)),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while host.running_generation(KEY).is_none() {
+        host.poll();
+        assert!(Instant::now() < deadline, "{:?}", host.listing());
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    host.shutdown();
+    while !host.is_stopped() {
+        host.poll();
+        assert!(Instant::now() < deadline, "{:?}", host.listing());
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }

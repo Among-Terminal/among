@@ -10,6 +10,7 @@ mod package;
 pub mod registry;
 pub mod source;
 pub(crate) mod store;
+mod version;
 
 #[cfg(test)]
 pub(crate) use package::tests::fixture_for as test_package;

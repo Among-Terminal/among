@@ -188,8 +188,14 @@ fn starts_under_the_flag(ctx: &Window, key: &str) {
         .review_access(key, review)
         .unwrap();
     ctx.state.borrow_mut().plugins.enable(key);
+    // A supervised child only shows that a process was spawned; Running is
+    // reached after the plugin has answered the handshake and been admitted.
     wait_for(
-        || ctx.state.borrow().plugins.supervised_count() == 1,
+        || {
+            ctx.state.borrow().plugins.overview().iter().any(|info| {
+                info.key == key && info.state == crate::plugin::host::PluginState::Running
+            })
+        },
         Duration::from_secs(10),
     );
     ctx.state.borrow_mut().plugins.disable(key);

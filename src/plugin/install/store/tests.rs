@@ -654,7 +654,7 @@ fn detached_supervision_retains_real_process_lease_until_the_child_has_been_reap
     use serde_json::json;
     let root = OwnedRoot::new();
     let (metadata, archive) =
-        crate::plugin::install::test_managed_package("1.0", "managed-ignore-term", |_| {});
+        crate::plugin::install::test_managed_package("1.0.0", "managed-ignore-term", |_| {});
     let server =
         Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
     let first = install_at(
@@ -662,7 +662,7 @@ fn detached_supervision_retains_real_process_lease_until_the_child_has_been_reap
         server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root.0,
     )

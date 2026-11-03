@@ -59,7 +59,7 @@ fn actual_latest_asset_discovery_uses_api_ids_and_reopens_the_same_snapshot_offl
     assert_eq!(server.requests().len(), 5, "cache reopen must stay offline");
     let committed = install_at(
         &server,
-        cached.select("sample", "1.0").unwrap(),
+        cached.select("sample", "1.0.0").unwrap(),
         &root.0.join("managed"),
     )
     .unwrap();
@@ -225,7 +225,7 @@ fn actual_latest_or_custom_publisher_drift_requires_fresh_review_before_package_
         let selection = server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap();
         changed.store(true, Ordering::Release);
         let problem = install_at(&server, selection, &root.0).unwrap_err();

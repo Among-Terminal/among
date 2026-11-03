@@ -50,7 +50,7 @@ fn actual_https_release_binding_peels_lightweight_annotated_nested_and_bounded_d
         assert_eq!(inspection.catalogue_revision, "d".repeat(40));
         let committed = install_at(
             &server,
-            inspection.select("sample", "1.0").unwrap(),
+            inspection.select("sample", "1.0.0").unwrap(),
             &root.0,
         )
         .unwrap();
@@ -115,7 +115,7 @@ fn actual_https_unrelated_release_update_preserves_previous_bytes_token_settings
         initial
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root.0,
     )
@@ -339,7 +339,7 @@ fn actual_https_release_binding_refuses_unrelated_unavailable_ambiguous_and_movi
         });
         let outcome = server
             .inspect(true)
-            .and_then(|inspection| inspection.select("sample", "1.0"))
+            .and_then(|inspection| inspection.select("sample", "1.0.0"))
             .and_then(|selection| install_at(&server, selection, &root.0));
         println!(
             "actual HTTPS strict release boundary {case}: {}",

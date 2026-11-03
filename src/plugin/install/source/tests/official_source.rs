@@ -33,15 +33,15 @@ fn official_selection_pins_numeric_publisher_without_confusing_third_party_label
         bytes.clone(),
     )
     .unwrap();
-    assert!(inspected.select("sample", "1.0").is_ok());
+    assert!(inspected.select("sample", "1.0.0").is_ok());
     inspected.publisher_id += 1;
-    assert!(inspected.select("sample", "1.0").is_err());
+    assert!(inspected.select("sample", "1.0.0").is_err());
     let mut third_party = origin(official::PUBLISHER_ID + 1);
     third_party.repository_id = 99;
     // Equal display labels are not official authority and remain valid custom origins.
     assert!(Inspection::from_bytes(third_party, "a".repeat(40), bytes)
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .is_ok());
 }
 
@@ -55,7 +55,7 @@ fn official_transfer_before_download_or_precommit_refuses_real_https_installatio
             metadata.to_string().into_bytes(),
         )
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .unwrap();
         let root = crate::plugin::install::package::tests::OwnedRoot::new();
         let queries = Arc::new(AtomicUsize::new(0));

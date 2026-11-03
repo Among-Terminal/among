@@ -60,7 +60,7 @@ fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
     let selection = server
         .inspect(true)
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .unwrap();
     let first = install_at(&server, selection.clone(), &root)
         .unwrap()
@@ -449,7 +449,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         return;
     }
     let root = crate::plugin::inventory::root().unwrap();
-    let (first_meta, first_bytes) = test_managed_package("1.0", "managed-resource", |_| {});
+    let (first_meta, first_bytes) = test_managed_package("1.0.0", "managed-resource", |_| {});
     let first_server =
         Server::new(move |request| package_route(first_meta.clone(), first_bytes.clone(), request));
     let first = install_at(
@@ -457,7 +457,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         first_server
             .inspect(true)
             .unwrap()
-            .select("sample", "1.0")
+            .select("sample", "1.0.0")
             .unwrap(),
         &root,
     )
@@ -514,7 +514,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .find(|pid| pid.to_string() != first_pid)
         .unwrap();
     let release = Arc::new(AtomicBool::new(false));
-    let (metadata, archive) = test_managed_package("2.0", "managed-resource", |_| {});
+    let (metadata, archive) = test_managed_package("2.0.0", "managed-resource", |_| {});
     let server = Rc::new(Server::new({
         let release = release.clone();
         move |request| {
@@ -585,7 +585,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
     );
     assert_eq!(
         std::fs::read_to_string(old_path.join("resource-observed")).unwrap(),
-        "1.0",
+        "1.0.0",
         "real old process opens its own immutable resources during pending download"
     );
     assert_eq!(
@@ -597,8 +597,8 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         || {
             ctx.state.borrow().plugins.overview().iter().any(|info| {
                 info.key == KEY
-                    && info.version.as_deref() == Some("2.0")
-                    && info.running_version.as_deref() == Some("2.0")
+                    && info.version.as_deref() == Some("2.0.0")
+                    && info.running_version.as_deref() == Some("2.0.0")
                     && info.state == PluginState::Running
             })
         },
@@ -786,8 +786,8 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         || {
             ctx.state.borrow().plugins.overview().iter().any(|info| {
                 info.key == KEY
-                    && info.version.as_deref() == Some("2.0")
-                    && info.running_version.as_deref() == Some("2.0")
+                    && info.version.as_deref() == Some("2.0.0")
+                    && info.running_version.as_deref() == Some("2.0.0")
                     && info.state == PluginState::Running
             })
         },
@@ -989,7 +989,7 @@ fn active_installer_completion_targets_replacement_window_not_the_retiring_host(
     let selected = server
         .inspect(true)
         .unwrap()
-        .select("sample", "1.0")
+        .select("sample", "1.0.0")
         .unwrap();
     let job = server.install(selected, root.clone()).unwrap();
     wait_for(

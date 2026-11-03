@@ -19,12 +19,7 @@ pub(super) fn present(
         installer(),
         changed,
         crate::plugin::install::registry::root(),
-        SourceRefresh {
-            latest: Rc::new(Job::refresh),
-            prerelease: crate::plugin::development::enabled().then(|| {
-                Rc::new(Job::refresh_prerelease) as Rc<super::repository_sources::Refresh>
-            }),
-        },
+        SourceRefresh::for_mode(crate::plugin::development::enabled()),
         details,
     );
 }
@@ -34,6 +29,20 @@ pub(super) fn present(
 struct SourceRefresh {
     latest: Rc<super::repository_sources::Refresh>,
     prerelease: Option<Rc<super::repository_sources::Refresh>>,
+}
+
+impl SourceRefresh {
+    /// The refresh actions of a process in the given mode. Only development
+    /// mode gets the prerelease action, so an ordinary window builds no such
+    /// button even before the job's own gate would refuse it.
+    fn for_mode(development: bool) -> Self {
+        Self {
+            latest: Rc::new(Job::refresh),
+            prerelease: development.then(|| {
+                Rc::new(Job::refresh_prerelease) as Rc<super::repository_sources::Refresh>
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -678,5 +687,25 @@ pub(super) fn run_job(
                 glib::ControlFlow::Continue
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod wiring_tests {
+    use super::*;
+
+    #[test]
+    fn only_development_mode_wires_the_prerelease_action_and_it_is_the_gated_job() {
+        assert!(SourceRefresh::for_mode(false).prerelease.is_none());
+        let action = SourceRefresh::for_mode(true)
+            .prerelease
+            .expect("development mode wires the prerelease action");
+        // The test process is ordinary, so the real prerelease job refuses
+        // before it starts a worker; the ordinary refresh would not.
+        let refused = action(12).err().expect("an ordinary process is refused");
+        assert!(
+            refused.0.contains("only in plugin development mode"),
+            "{refused}"
+        );
     }
 }

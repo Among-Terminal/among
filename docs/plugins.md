@@ -172,7 +172,16 @@ granted to the replaced install, which stays available as the previous
 generation. A generation from a prerelease starts only with
 `--plugin-development`.
 
-A newer stable release is an ordinary update of it. A stable release of the
+Going back to an ordinary install, by **Recover previous…** or by removing the
+prerelease and installing again, asks for access consent anew: a review that
+names an installation is accepted only by the installation whose token it
+carries, so the prerelease's grants never reach the ordinary install.
+
+A newer stable release is an ordinary update of it. "Newer" means Semantic
+Versioning 2.0.0 precedence. A lower version is shown with the reason and is
+not offered. A version that is not written as Semantic Versioning (`1.0`,
+`2026.10`, a `v` prefix) has no order, so neither it nor an installed version of
+that form is ever offered as an update. A stable release of the
 same version is offered as an update only with the same manifest digest,
 package digest and tag commit; applying it rebinds the install to the stable
 release, and it then starts without the flag. The same version with other
@@ -362,6 +371,10 @@ managed preference edit retries pending identity-scoped settings/switch/review
 changes together, merging current unknown data rather than erasing it. Restarting
 the application before successful persistence can lose session-only changes.
 
+The record parser is strict: an older build refuses an `installed.json` that
+holds a prerelease or a local-catalogue receipt, because those records carry
+fields it does not know. Records of ordinary releases keep their earlier shape.
+
 Managed installation selection is authoritative. The
 application reads only its committed `among/managed/installed.json` record in
 the XDG data directory, not arbitrary discovered manifests or staging files.
@@ -439,7 +452,7 @@ session ID. Old replies cannot establish admission or acknowledge new settings.
 | `context.title` | Known terminal title, or null |
 | `context.process` | Running state and process-exit events |
 | `events.terminal` | Subscribe to terminal/workspace lifecycle events |
-| `system.metrics` | Read system load figures; shown in the access review |
+| `system.metrics` | Declares that the plugin reads system load figures. Shown in the access review and recorded; the host does not yet restrict what the plugin process can read |
 
 The context fields and terminal events require `context.terminals`. Missing grants omit fields rather than
 fill them with fake values. Without terminal context, status is application-only

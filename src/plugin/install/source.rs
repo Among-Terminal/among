@@ -11,7 +11,7 @@ use reqwest::{Client, Url};
 use serde_json::Value;
 
 use super::metadata::{Catalogue, Platform};
-use super::{official, package, store};
+use super::{official, package, store, version};
 use crate::plugin::data::{self, Problem};
 use crate::plugin::inventory::release::ReleaseAsset;
 use crate::plugin::inventory::{Receipt, SourceReceipt};
@@ -95,7 +95,7 @@ impl Inspection {
 
     /// Whether this inspection observed the newest development prerelease
     /// rather than the latest stable release. The channel lives in the
-    /// observed snapshot itself, so a cached inspection keeps it as well.
+    /// observed snapshot itself. The source cache refuses such an inspection.
     pub fn is_prerelease(&self) -> bool {
         self.release.snapshot.is_prerelease()
     }
@@ -312,13 +312,30 @@ impl Selection {
         Ok(self)
     }
 
-    // A published version names one content. The same version may differ from
-    // the installed one only in where it was published: the stable release of
-    // the prerelease bytes, whose update rebinds the provenance.
+    // Only a higher version is an update, and order exists only for Semantic
+    // Versioning 2.0.0 strings: for anything else nobody can say which side is
+    // newer, so no update is offered. A published version names one content.
+    // The same version may differ from the installed one only in where it was
+    // published: the stable release of the prerelease bytes, whose update
+    // rebinds the provenance.
     fn consistent_with(&self, entry: &crate::plugin::inventory::Entry) -> Result<(), Problem> {
         let installed = entry.inspected.as_ref().map_err(|problem| *problem)?;
-        if installed.manifest.version != self.version.manifest.version {
-            return Ok(());
+        let (Some(current), Some(offered)) = (
+            version::SemVer::parse(&installed.manifest.version),
+            version::SemVer::parse(&self.version.manifest.version),
+        ) else {
+            return Err(Problem(
+                "the installed or offered version is not a Semantic Versioning 2.0.0 version, so its order is unknown; no update is offered",
+            ));
+        };
+        match offered.cmp(&current) {
+            std::cmp::Ordering::Greater => return Ok(()),
+            std::cmp::Ordering::Less => {
+                return Err(Problem(
+                    "the offered version is lower than the installed one; no downgrade is offered",
+                ))
+            }
+            std::cmp::Ordering::Equal => {}
         }
         if entry.receipt.manifest_sha256 != self.version.manifest_sha256
             || entry.receipt.package_sha256 != self.artifact.sha256

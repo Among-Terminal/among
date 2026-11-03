@@ -3,7 +3,7 @@ use serde_json::json;
 
 fn version(id: &str) -> Value {
     json!({"revision":"a".repeat(40),"manifest_sha256":"b".repeat(64),
-        "manifest":{"schema_version":1,"id":id,"version":"1.0","name":"Equal display name",
+        "manifest":{"schema_version":1,"id":id,"version":"1.0.0","name":"Equal display name",
             "description":"Ready-built fixture","entrypoint":"bin/plugin","api":{"major":1,"minor":2},
             "settings":{"version":1,"apply":"live","fields":[{"key":"label","label":"Label","kind":"string","default":id}]}},
         "artifacts":[{"os":"linux","architecture":"amd64","runtime":{"kind":"native","libc":"glibc","minimum":"2.35"},
@@ -186,7 +186,7 @@ fn schema_two_refuses_schema_one_and_embedded_api_authority_in_both_envelopes() 
         vec![],
         vec![version("sample"), {
             let mut different = version("sample");
-            different["manifest"]["version"] = json!("2.0");
+            different["manifest"]["version"] = json!("2.0.0");
             different
         }],
     ] {

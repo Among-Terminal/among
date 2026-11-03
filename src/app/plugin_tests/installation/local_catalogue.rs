@@ -8,7 +8,7 @@ use super::*;
 #[ignore = "requires an isolated native display, xdotool and its own process for development mode"]
 fn local_catalogue_installs_and_replaces_only_with_explicit_review_in_development_mode() {
     use crate::plugin::install::test_package as fixture_for;
-    use serde_json::json;
+    use serde_json::{json, Value};
     // Ignored native tests run one per process, so fixing the mode here
     // affects no other test.
     assert!(crate::plugin::development::fix(true));
@@ -121,11 +121,73 @@ fn local_catalogue_installs_and_replaces_only_with_explicit_review_in_developmen
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     view.destroy();
 
-    // A second install of the same ID is a replacement that needs its own
-    // confirmation and starts with a new consent token.
-    crate::prefs::local_catalogue::present_path_for_test(
+    // The user's settings of this plugin; a replacement must leave them alone.
+    let schema = crate::plugin::schema::SettingsSchema::parse(json!({"version":1,"apply":"live",
+        "fields":[{"key":"label","label":"Label","kind":"string"}]}))
+    .unwrap();
+    ctx.state
+        .borrow_mut()
+        .settings
+        .managed_settings_changed(
+            "development/sample",
+            &schema,
+            json!({"label":"kept"}).as_object().unwrap(),
+        )
+        .unwrap();
+    let settings_file = crate::settings::directory()
+        .unwrap()
+        .join("managed-plugins.json");
+    let saved_label = || -> Value {
+        let saved: Value = serde_json::from_slice(&std::fs::read(&settings_file).unwrap()).unwrap();
+        saved["plugins"]["development/sample"]["settings"]["values"]["label"].clone()
+    };
+    assert_eq!(saved_label(), "kept");
+
+    // The file dialog offers only the catalogue name, and dismissing it reads
+    // nothing: no package row appears.
+    let dialog = crate::prefs::local_catalogue::chooser_for_test();
+    assert_eq!(dialog.title(), "Choose among-plugins.json");
+    assert!(dialog.is_modal());
+    let filters = dialog.filters().unwrap();
+    assert_eq!(filters.n_items(), 1);
+    let filter = filters
+        .item(0)
+        .unwrap()
+        .downcast::<gtk::FileFilter>()
+        .unwrap();
+    let named = |name: &str| {
+        let info = gtk::gio::FileInfo::new();
+        info.set_display_name(name);
+        filter.match_(&info)
+    };
+    assert!(named("among-plugins.json"));
+    assert!(!named("other.json") && !named("among-plugins.json.bak"));
+    crate::prefs::local_catalogue::present_chosen_for_test(
         preferences.upcast_ref(),
-        &author.join("among-plugins.json"),
+        Err(gtk::glib::Error::new(
+            gtk::DialogError::Dismissed,
+            "Dismissed by user",
+        )),
+        changed.clone(),
+        details.clone(),
+    );
+    let dismissed = local_window();
+    assert!(has_label(
+        dismissed.upcast_ref(),
+        "No catalogue was chosen; nothing was read."
+    ));
+    assert!(!widgets(dismissed.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .any(|button| button.label().as_deref() == Some("Review…")));
+    dismissed.destroy();
+
+    // A second install of the same ID is a replacement that needs its own
+    // confirmation and starts with a new consent token. The catalogue now
+    // arrives the way the dialog delivers a chosen file.
+    crate::prefs::local_catalogue::present_chosen_for_test(
+        preferences.upcast_ref(),
+        Ok(gtk::gio::File::for_path(author.join("among-plugins.json"))),
         changed,
         details,
     );
@@ -171,6 +233,11 @@ fn local_catalogue_installs_and_replaces_only_with_explicit_review_in_developmen
         .borrow()
         .plugins
         .desired_enabled("development/sample"));
+    assert_eq!(
+        saved_label(),
+        "kept",
+        "replacing the package keeps the user's settings"
+    );
     view.destroy();
     preferences.destroy();
     ctx.window.destroy();

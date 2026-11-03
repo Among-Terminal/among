@@ -61,6 +61,20 @@ pub(crate) fn run(
     begin_commit: impl FnOnce() -> Result<(), Problem>,
 ) -> Result<Outcome, Problem> {
     check()?;
+    // The cache serves ordinary runs, which must keep seeing the latest stable
+    // release. A prerelease is reviewed from memory and installed in
+    // development mode only, so no write path may retain one, whichever
+    // caller forgot to filter it.
+    if let Request::Add(inspection)
+    | Request::Refresh { inspection, .. }
+    | Request::ApprovePublisher { inspection, .. } = &request
+    {
+        if inspection.is_prerelease() {
+            return Err(Problem(
+                "a prerelease is never stored in the source cache; only the latest stable release is retained",
+            ));
+        }
+    }
     if matches!(&request,Request::Remove(expected)|Request::ApprovePublisher{expected,..} if expected.is_official())
     {
         return Err(Problem("the application-owned official source cannot be removed or assigned a different publisher"));

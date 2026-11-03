@@ -299,3 +299,75 @@ fn a_development_install_is_listed_but_not_started_in_an_ordinary_run() {
     assert_eq!(host.supervised_count(), 0);
     assert!(!root.0.join("executed").exists());
 }
+
+/// Lists every path below `root`, so a test can show that a cancelled
+/// installation left no staging files behind.
+fn tree(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path.clone());
+            }
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn a_cancelled_local_installation_changes_nothing_new_or_replacing() {
+    let _serial = JOB_TESTS.lock().unwrap();
+    let root = OwnedRoot::new();
+    let author = Author::new(&root);
+    let cancelled = Arc::new(AtomicBool::new(true));
+    let run = |selection: LocalSelection| {
+        install(
+            selection,
+            &store(&root),
+            &AtomicU8::new(DOWNLOADING),
+            &cancelled,
+        )
+    };
+
+    // A new install cancelled before it starts leaves no record at all.
+    let before = tree(&store(&root));
+    let refused = run(author.selection()).unwrap_err();
+    assert!(refused.0.contains("cancelled"), "{refused}");
+    assert!(inventory::read(&store(&root)).unwrap().is_empty());
+    assert_eq!(tree(&store(&root)), before, "no staging files remain");
+
+    // A replacement cancelled the same way keeps the installed generation
+    // selected and byte-for-byte untouched.
+    let first = finish(spawn(author.selection(), store(&root)).unwrap())
+        .unwrap()
+        .receipt;
+    let selected = std::fs::read(store(&root).join("installed.json")).unwrap();
+    let before = tree(&store(&root));
+    let refused = run(author.selection().replacing(&first).unwrap()).unwrap_err();
+    assert!(refused.0.contains("cancelled"), "{refused}");
+    assert_eq!(
+        std::fs::read(store(&root).join("installed.json")).unwrap(),
+        selected
+    );
+    assert_eq!(inventory::read(&store(&root)).unwrap()[0].receipt, first);
+    assert_eq!(tree(&store(&root)), before, "no staging files remain");
+
+    // A real job cancelled while it runs ends either cancelled with the same
+    // untouched store, or, if it passed the commit boundary first, committed;
+    // it is never half done.
+    let job = spawn(author.selection().replacing(&first).unwrap(), store(&root)).unwrap();
+    let cancelled_in_time = job.cancel();
+    let outcome = finish(job);
+    let entries = inventory::read(&store(&root)).unwrap();
+    assert_eq!(entries.len(), 1);
+    if cancelled_in_time {
+        assert!(outcome.is_err());
+        assert_eq!(entries[0].receipt, first);
+    } else {
+        assert_eq!(entries[0].receipt, outcome.unwrap().receipt);
+    }
+}
