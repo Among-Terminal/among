@@ -35,7 +35,7 @@ fn actual_workflow_satisfies_the_release_draft_policy() -> Result<()> {
 fn policy_refuses_publication_scope_order_and_input_drift() -> Result<()> {
     let valid = actual()?;
     type Mutation = fn(&mut Value) -> Result<()>;
-    let mutations: [(&str, Mutation); 23] = [
+    let mutations: [(&str, Mutation); 24] = [
         ("scheduled trigger", |w| {
             w["on"]["schedule"] = json!([{"cron":"0 0 * * *"}]);
             Ok(())
@@ -62,6 +62,15 @@ fn policy_refuses_publication_scope_order_and_input_drift() -> Result<()> {
         }),
         ("ref check on a shallow checkout", |w| {
             w["jobs"]["verify-ref"]["steps"][0]["with"]["fetch-depth"] = json!(1);
+            Ok(())
+        }),
+        ("ancestry test only mentioned in a comment", |w| {
+            let step = &mut w["jobs"]["verify-ref"]["steps"][1];
+            let text = step["run"].as_str().ok_or("run")?.replace(
+                "git merge-base --is-ancestor",
+                "# git merge-base --is-ancestor",
+            );
+            step["run"] = text.into();
             Ok(())
         }),
         ("branch trigger", |w| {

@@ -107,47 +107,38 @@ fn item(commit: &Commit) -> String {
     text
 }
 
+/// User-visible commits grouped by kind, in the order both the changelog and
+/// the AppStream entry list them. A breaking change appears only under
+/// "Breaking changes".
+fn groups(commits: &[Commit]) -> Vec<(&'static str, Vec<&Commit>)> {
+    let relevant = || commits.iter().filter(|commit| !commit.is_release_commit());
+    [
+        ("Breaking changes", "", true),
+        ("Features", "feat", false),
+        ("Bug fixes", "fix", false),
+        ("Performance", "perf", false),
+    ]
+    .into_iter()
+    .map(|(title, kind, breaking)| {
+        let members: Vec<&Commit> = relevant()
+            .filter(|commit| {
+                if breaking {
+                    commit.breaking
+                } else {
+                    !commit.breaking && commit.kind == kind
+                }
+            })
+            .collect();
+        (title, members)
+    })
+    .filter(|(_, members)| !members.is_empty())
+    .collect()
+}
+
 /// The release section of the changelog, without a trailing blank line.
 pub fn changelog_section(version: &str, date: &str, commits: &[Commit]) -> String {
-    let relevant: Vec<&Commit> = commits
-        .iter()
-        .filter(|commit| !commit.is_release_commit())
-        .collect();
-    let groups: [(&str, Vec<&Commit>); 4] = [
-        (
-            "Breaking changes",
-            relevant.iter().copied().filter(|c| c.breaking).collect(),
-        ),
-        (
-            "Features",
-            relevant
-                .iter()
-                .copied()
-                .filter(|c| !c.breaking && c.kind == "feat")
-                .collect(),
-        ),
-        (
-            "Bug fixes",
-            relevant
-                .iter()
-                .copied()
-                .filter(|c| !c.breaking && c.kind == "fix")
-                .collect(),
-        ),
-        (
-            "Performance",
-            relevant
-                .iter()
-                .copied()
-                .filter(|c| !c.breaking && c.kind == "perf")
-                .collect(),
-        ),
-    ];
     let mut section = format!("## {version} - {date}\n");
-    for (title, members) in groups {
-        if members.is_empty() {
-            continue;
-        }
+    for (title, members) in groups(commits) {
         let _ = write!(section, "\n### {title}\n\n");
         for commit in members {
             let _ = writeln!(section, "- {}", item(commit));
@@ -156,12 +147,17 @@ pub fn changelog_section(version: &str, date: &str, commits: &[Commit]) -> Strin
     section
 }
 
-/// `existing` changelog text with `section` added as the newest release.
-pub fn changelog_text(existing: Option<&str>, section: &str) -> String {
-    const HEADER: &str = "# Changelog\n\nUser-visible changes of the application, newest first. \
+const CHANGELOG_HEADER: &str =
+    "# Changelog\n\nUser-visible changes of the application, newest first. \
 Written by `among-tools release-prepare` from the titles of the merged pull requests.\n";
+
+/// `existing` changelog text with `section` added as the newest release. A
+/// file whose first release starts at the very first line, without any header,
+/// gets the section in front of it.
+pub fn changelog_text(existing: Option<&str>, section: &str) -> String {
     match existing {
-        None => format!("{HEADER}\n{section}"),
+        None => format!("{CHANGELOG_HEADER}\n{section}"),
+        Some(text) if text.starts_with("## ") => format!("{section}\n{text}"),
         Some(text) => match text.find("\n## ") {
             Some(position) => format!(
                 "{}\n{section}\n{}",
@@ -180,7 +176,8 @@ fn escape_xml(text: &str) -> String {
 }
 
 /// `metainfo` with a stable release entry added in front of the existing ones.
-/// The older entries stay as the history of earlier versions.
+/// The older entries stay as the history of earlier versions. The notes are
+/// grouped like the changelog: one paragraph and list per kind of change.
 pub fn metainfo_with_release(
     metainfo: &str,
     version: &str,
@@ -193,29 +190,26 @@ pub fn metainfo_with_release(
         .position(|line| line.trim() == "<releases>")
         .ok_or("AppStream metainfo has no <releases> line")?;
     let indent = &lines[position][..lines[position].len() - lines[position].trim_start().len()];
+    let grouped = groups(commits);
+    if grouped.is_empty() {
+        return Err("a release needs at least one user-visible change".into());
+    }
     let mut entry = format!(
         "{indent}  <release version=\"{version}\" date=\"{date}\" type=\"stable\">\n\
 {indent}    <description>\n"
     );
-    let items: Vec<String> = commits
-        .iter()
-        .filter(|commit| {
-            !commit.is_release_commit()
-                && (commit.breaking
-                    || commit.kind == "feat"
-                    || commit.kind == "fix"
-                    || commit.kind == "perf")
-        })
-        .map(|commit| escape_xml(&item(commit)))
-        .collect();
-    if items.is_empty() {
-        return Err("a release needs at least one user-visible change".into());
+    for (title, members) in grouped {
+        let _ = writeln!(entry, "{indent}      <p>{title}</p>");
+        let _ = writeln!(entry, "{indent}      <ul>");
+        for commit in members {
+            let _ = writeln!(
+                entry,
+                "{indent}        <li>{}</li>",
+                escape_xml(&item(commit))
+            );
+        }
+        let _ = writeln!(entry, "{indent}      </ul>");
     }
-    let _ = writeln!(entry, "{indent}      <ul>");
-    for text in items {
-        let _ = writeln!(entry, "{indent}        <li>{text}</li>");
-    }
-    let _ = writeln!(entry, "{indent}      </ul>");
     let _ = writeln!(entry, "{indent}    </description>");
     let _ = writeln!(entry, "{indent}  </release>");
     lines.insert(position + 1, &entry);
@@ -242,7 +236,7 @@ pub fn civil_date(unix_seconds: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("/usr/bin/git")
         .args(args)
         .current_dir(root)
@@ -262,37 +256,73 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
-/// The newest stable tag (`vMAJOR.MINOR.PATCH`) reachable from `HEAD`.
-/// Release candidates (`-rc.N`) are not releases of their own.
-pub fn last_stable_tag(root: &Path) -> Result<(String, (u64, u64, u64))> {
-    git(root, &["tag", "--merged", "HEAD", "--list", "v*"])?
+fn stable_tags(listing: &str) -> Vec<(String, (u64, u64, u64))> {
+    listing
         .lines()
         .filter_map(|tag| {
             let version = version_locations::triple(tag.strip_prefix('v')?).ok()?;
             Some((tag.to_string(), version))
         })
+        .collect()
+}
+
+/// The newest stable tag (`vMAJOR.MINOR.PATCH`) reachable from `HEAD`.
+/// Release candidates (`-rc.N`) are not releases of their own.
+pub fn last_stable_tag(root: &Path) -> Result<(String, (u64, u64, u64))> {
+    stable_tags(&git(root, &["tag", "--merged", "HEAD", "--list", "v*"])?)
+        .into_iter()
         .max_by_key(|(_, version)| *version)
         .ok_or_else(|| "no stable v* tag is reachable from HEAD".into())
 }
 
-/// Titles of the commits after `tag`, merge commits excluded.
-pub fn commits_since(root: &Path, tag: &str) -> Result<Vec<Commit>> {
+/// The highest stable version among all tags of the repository, if any.
+pub fn highest_stable_version(root: &Path) -> Result<Option<(u64, u64, u64)>> {
+    Ok(stable_tags(&git(root, &["tag", "--list", "v*"])?)
+        .into_iter()
+        .map(|(_, version)| version)
+        .max())
+}
+
+/// A commit whose title is not a Conventional Commit of an allowed type. Such
+/// a commit cannot influence the version or the changelog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Untitled {
+    pub sha: String,
+    pub subject: String,
+}
+
+/// Commits after `tag`, merge commits excluded: the titled ones, and the ones
+/// that were left out because their title does not parse.
+pub fn commits_since(root: &Path, tag: &str) -> Result<(Vec<Commit>, Vec<Untitled>)> {
     let log = git(
         root,
         &[
             "log",
             "--no-merges",
-            "--format=%x1e%s%x1f%b",
+            "--format=%H%x1f%s%x1f%b%x1e",
             &format!("{tag}..HEAD"),
         ],
     )?;
-    Ok(log
+    let mut titled = Vec::new();
+    let mut untitled = Vec::new();
+    for record in log
         .split('\u{1e}')
-        .filter_map(|record| {
-            let (subject, body) = record.split_once('\u{1f}')?;
-            parse_commit(subject.trim(), body)
-        })
-        .collect())
+        .filter(|record| !record.trim().is_empty())
+    {
+        let mut fields = record.trim_start_matches('\n').splitn(3, '\u{1f}');
+        let (Some(sha), Some(subject), Some(body)) = (fields.next(), fields.next(), fields.next())
+        else {
+            return Err("unreadable git log record".into());
+        };
+        match parse_commit(subject.trim(), body) {
+            Some(commit) => titled.push(commit),
+            None => untitled.push(Untitled {
+                sha: sha.trim().to_string(),
+                subject: subject.trim().to_string(),
+            }),
+        }
+    }
+    Ok((titled, untitled))
 }
 
 /// What a release would contain.
@@ -301,16 +331,18 @@ pub struct Plan {
     pub base: (u64, u64, u64),
     pub next: Option<(u64, u64, u64)>,
     pub commits: Vec<Commit>,
+    pub untitled: Vec<Untitled>,
 }
 
 pub fn plan(root: &Path) -> Result<Plan> {
     let (tag, base) = last_stable_tag(root)?;
-    let commits = commits_since(root, &tag)?;
+    let (commits, untitled) = commits_since(root, &tag)?;
     Ok(Plan {
         next: next_version(base, &commits),
         tag,
         base,
         commits,
+        untitled,
     })
 }
 
@@ -322,19 +354,76 @@ pub struct Prepared {
     pub files: Vec<(String, String)>,
 }
 
+/// The untitled commits named by `accepted` (SHA prefixes of at least seven
+/// hexadecimal digits). Every untitled commit must be named and every name must
+/// match one, so that a commit is never dropped without a person saying so.
+fn acknowledge<'a>(untitled: &'a [Untitled], accepted: &[String]) -> Result<Vec<&'a Untitled>> {
+    for name in accepted {
+        let valid = name.len() >= 7 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if !valid
+            || untitled
+                .iter()
+                .filter(|commit| commit.sha.starts_with(&name.to_ascii_lowercase()))
+                .count()
+                != 1
+        {
+            return Err(format!(
+                "--accept-untitled names {name}, which is not exactly one commit without a Conventional Commit title"
+            )
+            .into());
+        }
+    }
+    let missing: Vec<String> = untitled
+        .iter()
+        .filter(|commit| {
+            !accepted
+                .iter()
+                .any(|name| commit.sha.starts_with(&name.to_ascii_lowercase()))
+        })
+        .map(|commit| {
+            format!(
+                "  {} {}",
+                &commit.sha[..12.min(commit.sha.len())],
+                commit.subject
+            )
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "these commits have no Conventional Commit title and would be left out of the release:\n{}\n\
+Name them with --accept-untitled <sha>,<sha>... to leave them out on purpose",
+            missing.join("\n")
+        )
+        .into());
+    }
+    Ok(untitled.iter().collect())
+}
+
 /// Computes the release and returns the new text of every file it changes.
-/// Writes nothing.
-pub fn prepare(root: &Path, date: &str) -> Result<Option<Prepared>> {
+/// Writes nothing. `accepted` names the untitled commits that are left out on
+/// purpose; they are recorded in the pull request body.
+///
+/// The version is the larger of the one the titles call for and the one the
+/// files already say: if the files were bumped ahead of the last tag, that
+/// version is released even when the titles alone would call for less.
+pub fn prepare(root: &Path, date: &str, accepted: &[String]) -> Result<Option<Prepared>> {
     let plan = plan(root)?;
-    let Some((major, minor, patch)) = plan.next else {
+    let Some(computed) = plan.next else {
         return Ok(None);
     };
-    let version = format!("{major}.{minor}.{patch}");
+    let left_out = acknowledge(&plan.untitled, accepted)?;
     let current = version_locations::check(root)?;
-    if version_locations::triple(&current)? >= (major, minor, patch) {
-        return Err(
-            format!("the files already say {current}; the next release is {version}").into(),
-        );
+    let (major, minor, patch) = computed.max(version_locations::triple(&current)?);
+    let version = format!("{major}.{minor}.{patch}");
+    let existing = std::fs::read_to_string(root.join(CHANGELOG)).ok();
+    if existing.as_deref().is_some_and(|text| {
+        text.contains(&format!("\n## {version} - "))
+            || text.starts_with(&format!("## {version} - "))
+    }) {
+        return Err(format!(
+            "release {version} is already prepared (CHANGELOG.md has its section); tag it, or wait for new changes"
+        )
+        .into());
     }
     let mut files: Vec<(String, String)> = version_locations::rewrite_all(root, &version)?
         .into_iter()
@@ -346,16 +435,32 @@ pub fn prepare(root: &Path, date: &str) -> Result<Option<Prepared>> {
         }
     }
     let section = changelog_section(&version, date, &plan.commits);
-    let existing = std::fs::read_to_string(root.join(CHANGELOG)).ok();
     files.push((
         CHANGELOG.to_string(),
         changelog_text(existing.as_deref(), &section),
     ));
-    let body = format!(
-        "Release {version}, computed from the pull request titles since {}.\n\n{section}\n\
-Merging this pull request tags the merge commit `v{version}` and starts the release draft. \
-The draft is published by hand.\n",
+    let mut body = format!(
+        "Release {version}, computed from the pull request titles since {}.\n\n{section}\n",
         plan.tag
+    );
+    if !left_out.is_empty() {
+        body.push_str("Commits without a Conventional Commit title, left out on purpose:\n\n");
+        for commit in left_out {
+            let _ = writeln!(
+                body,
+                "- {} {}",
+                &commit.sha[..12.min(commit.sha.len())],
+                commit.subject
+            );
+        }
+        body.push('\n');
+    }
+    let _ = writeln!(
+        body,
+        "Before merging, add `{}` with the release highlights; the checks fail without it. \
+Merging this pull request tags the merge commit `v{version}` and starts the release draft. \
+The draft is published by hand.",
+        notes_path(&version)
     );
     Ok(Some(Prepared {
         title: format!("chore(release): {version}"),
@@ -365,15 +470,63 @@ The draft is published by hand.\n",
     }))
 }
 
-/// Writes the files of a prepared release.
+/// Where the hand-written highlights of a stable release live.
+pub fn notes_path(version: &str) -> String {
+    format!(".github/release-notes/v{version}.md")
+}
+
+fn ensure_clean_working_branch(root: &Path) -> Result<()> {
+    let branch = git(root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if matches!(branch.trim(), "main" | "HEAD") {
+        return Err(format!(
+            "refusing to prepare a release on {}: create a working branch first",
+            branch.trim()
+        )
+        .into());
+    }
+    if !git(root, &["status", "--porcelain", "--untracked-files=no"])?
+        .trim()
+        .is_empty()
+    {
+        return Err("refusing to prepare a release in a tree with uncommitted changes".into());
+    }
+    Ok(())
+}
+
+/// Writes the files of a prepared release, all or none: every target is
+/// resolved first, every new text goes to a temporary file next to its target,
+/// and only when all of them exist are they renamed into place.
 pub fn write(root: &Path, prepared: &Prepared) -> Result<()> {
+    ensure_clean_working_branch(root)?;
+    let mut targets = Vec::new();
     for (path, text) in &prepared.files {
         let target = if root.join(path).exists() {
             storage::safe_path(root, Path::new(path))?
         } else {
-            root.join(path)
+            storage::relative_path(Path::new(path))?;
+            root.canonicalize()?.join(path)
         };
-        std::fs::write(target, text)?;
+        let name = target.file_name().ok_or("release file has no name")?;
+        let temporary = target.with_file_name(format!(".{}.release-tmp", name.to_string_lossy()));
+        targets.push((target, temporary, text));
+    }
+    let staged = (|| -> Result<()> {
+        for (target, temporary, text) in &targets {
+            std::fs::write(temporary, text)?;
+            if let Ok(metadata) = std::fs::metadata(target) {
+                std::fs::set_permissions(temporary, metadata.permissions())?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        for (_, temporary, _) in &targets {
+            let _ = std::fs::remove_file(temporary);
+        }
+        return Err(error);
+    }
+    for (target, temporary, _) in &targets {
+        std::fs::rename(temporary, target)?;
     }
     Ok(())
 }

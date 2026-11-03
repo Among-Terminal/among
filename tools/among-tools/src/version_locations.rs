@@ -338,6 +338,33 @@ fn check_changelogs(root: &Path, version: &str) -> Result<()> {
     Ok(())
 }
 
+/// The version of the `among` package in `Cargo.toml` text.
+pub fn cargo_version(text: &str) -> Result<String> {
+    cargo_manifest_version(text, "among")
+}
+
+/// A prepared release (its section exists in `CHANGELOG.md`) must come with
+/// non-empty hand-written highlights, because the draft workflow refuses a
+/// stable tag without them and the tag job refuses to create the tag.
+fn check_release_notes(root: &Path, version: &str) -> Result<()> {
+    let Ok(changelog) = read_file(root, "CHANGELOG.md") else {
+        return Ok(());
+    };
+    let prepared = changelog.starts_with(&format!("## {version} - "))
+        || changelog.contains(&format!("\n## {version} - "));
+    if !prepared {
+        return Ok(());
+    }
+    let path = crate::release_plan::notes_path(version);
+    let notes = read_file(root, &path).map_err(|_| {
+        format!("release {version} is prepared but {path} is missing; write the release highlights")
+    })?;
+    require(
+        !notes.trim().is_empty(),
+        format!("{path} is empty; write the release highlights"),
+    )
+}
+
 /// Reads all locations, requires them to agree and returns the version.
 pub fn check(root: &Path) -> Result<String> {
     let found = read_all(root)?;
@@ -353,5 +380,6 @@ pub fn check(root: &Path) -> Result<String> {
         )?;
     }
     check_changelogs(root, &version)?;
+    check_release_notes(root, &version)?;
     Ok(version)
 }

@@ -10,6 +10,11 @@ name: Release tag
 # A tag created with the repository token starts no push workflow, so the draft
 # workflow is started with workflow_dispatch on the tag instead. It then runs
 # with the tag as its ref and the tag's commit as its commit.
+#
+# The decision (is this a release commit, does it carry the version and the
+# highlights, is the version above every stable tag, does the tag exist) is made
+# by `among-tools release-tag` in a job that holds no write permission. The job
+# that holds the write token checks out nothing and only carries the decision out.
 on:
   push:
     branches: [main]
@@ -17,124 +22,92 @@ on:
     inputs:
       candidate:
         description: >-
-          Release candidate number N. Tags the commit of the current stable
-          release tag as v<version>-rc.N and starts its draft. Leave empty on
-          any other run.
-        required: true
+          Release candidate number N (required for a manual run): tags the
+          commit of the current stable release tag as v<version>-rc.N and starts
+          its draft.
+        required: false
         type: string
 
 permissions: {}
 
-# One group per commit: a single group would let GitHub drop a queued run when
-# a newer one arrives, and a dropped run would leave a release commit untagged.
+# One group per commit and candidate: a single group would let GitHub drop a
+# queued run when a newer one arrives, and a dropped run would leave a release
+# commit untagged.
 concurrency:
-  group: release-tag-${{ github.sha }}
+  group: release-tag-${{ github.sha }}-${{ inputs.candidate }}
   cancel-in-progress: false
 
 jobs:
+  decide:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      action: ${{ steps.decision.outputs.action }}
+      tag: ${{ steps.decision.outputs.tag }}
+      sha: ${{ steps.decision.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup override set 1.98.1
+          dirname "$(rustup which cargo)" >> "$GITHUB_PATH"
+      - name: Decide whether and what to tag
+        id: decision
+        env:
+          CARGO_HOME: ${{ runner.temp }}/release-cargo
+          CARGO_TARGET_DIR: ${{ runner.temp }}/release-target
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --bin among-tools
+          tool="$CARGO_TARGET_DIR/release/among-tools"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            "$tool" release-tag . push "$GITHUB_SHA" | tee "$RUNNER_TEMP/decision"
+          else
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "run this workflow on main, not on $GITHUB_REF" >&2; exit 1; }
+            "$tool" release-tag . candidate "$CANDIDATE" | tee "$RUNNER_TEMP/decision"
+          fi
+          cat "$RUNNER_TEMP/decision" >> "$GITHUB_OUTPUT"
+
   tag:
-    if: github.event_name == 'push'
+    needs: decide
+    if: needs.decide.outputs.action == 'create' || needs.decide.outputs.action == 'exists'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       contents: write
       actions: write
     env:
       GH_TOKEN: ${{ github.token }}
+      ACTION: ${{ needs.decide.outputs.action }}
+      TAG: ${{ needs.decide.outputs.tag }}
+      SHA: ${{ needs.decide.outputs.sha }}
     steps:
-      - name: Tag a merged release commit and start its draft
+      - name: Create the tag and start its draft
         shell: bash
         run: |
           set -euo pipefail
-          fail() { echo "release tag: $*" >&2; exit 1; }
           repo="$GITHUB_REPOSITORY"
-
-          subject=$(gh api "repos/$repo/commits/$GITHUB_SHA" --jq '.commit.message | split("\n")[0]')
-          pattern='^chore\(release\): ([0-9]+\.[0-9]+\.[0-9]+)( \(#[0-9]+\))?$'
-          if [[ ! "$subject" =~ $pattern ]]; then
-            echo "Not a release commit: $subject"
-            exit 0
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "unexpected tag '$TAG'" >&2; exit 1; }
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit '$SHA'" >&2; exit 1; }
+          if [ "$ACTION" = create ]; then
+            gh api --method POST "repos/$repo/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" > /dev/null
+            echo "Created $TAG at $SHA"
           fi
-          version="${BASH_REMATCH[1]}"
-          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
-            || fail "version '$version' has a leading zero"
-
-          # The title alone must not decide: the commit has to carry the version.
-          cargo=$(gh api -H 'Accept: application/vnd.github.raw' "repos/$repo/contents/Cargo.toml?ref=$GITHUB_SHA" \
-            | grep -m1 '^version = ' | cut -d'"' -f2)
-          [ "$cargo" = "$version" ] || fail "the title says $version but Cargo.toml says '$cargo'"
-
-          tag="v$version"
-          existing=$(gh api "repos/$repo/git/matching-refs/tags/$tag" \
-            --jq ".[] | select(.ref == \"refs/tags/$tag\") | .object.sha")
-          if [ -z "$existing" ]; then
-            gh api --method POST "repos/$repo/git/refs" -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" > /dev/null
-            echo "Created $tag at $GITHUB_SHA"
-          else
-            [ "$existing" = "$GITHUB_SHA" ] || fail "$tag already exists at $existing, not at $GITHUB_SHA"
-            echo "$tag already exists at $GITHUB_SHA"
-          fi
-
-          # A re-run after a failed dispatch starts the draft; a re-run after
-          # a started one does not start it twice.
-          runs=$(gh run list --repo "$repo" --workflow release-draft.yml --branch "$tag" \
+          # A re-run after a failed dispatch starts the draft; a re-run after a
+          # started one does not start it twice.
+          runs=$(gh run list --repo "$repo" --workflow release-draft.yml --branch "$TAG" \
             --json databaseId --jq length)
           if [ "$runs" = 0 ]; then
-            gh workflow run release-draft.yml --repo "$repo" --ref "$tag"
-            echo "Started release-draft.yml on $tag"
+            gh workflow run release-draft.yml --repo "$repo" --ref "$TAG"
+            echo "Started release-draft.yml on $TAG"
           else
-            echo "release-draft.yml already ran on $tag"
-          fi
-
-  candidate:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-      actions: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      CANDIDATE: ${{ inputs.candidate }}
-    steps:
-      - name: Tag the release commit as a release candidate and start its draft
-        shell: bash
-        run: |
-          set -euo pipefail
-          fail() { echo "release candidate: $*" >&2; exit 1; }
-          repo="$GITHUB_REPOSITORY"
-          [ "$GITHUB_REF" = refs/heads/main ] || fail "run this workflow on main, not on $GITHUB_REF"
-          [[ "$CANDIDATE" =~ ^[1-9][0-9]*$ ]] || fail "candidate '$CANDIDATE' must be a positive integer without leading zeros"
-
-          version=$(gh api -H 'Accept: application/vnd.github.raw' "repos/$repo/contents/Cargo.toml?ref=main" \
-            | grep -m1 '^version = ' | cut -d'"' -f2)
-          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
-            || fail "Cargo.toml version '$version' is not MAJOR.MINOR.PATCH"
-
-          # The candidate is the exact commit of the stable tag, which the tag
-          # job put on the merge commit of the release pull request.
-          sha=$(gh api "repos/$repo/commits/refs/tags/v$version" --jq .sha 2>/dev/null) \
-            || fail "v$version does not exist; merge the release pull request first"
-          relation=$(gh api "repos/$repo/compare/$sha...main" --jq .status)
-          case "$relation" in
-            ahead|identical) ;;
-            *) fail "$sha is not contained in main ($relation)" ;;
-          esac
-
-          tag="v$version-rc.$CANDIDATE"
-          existing=$(gh api "repos/$repo/git/matching-refs/tags/$tag" \
-            --jq ".[] | select(.ref == \"refs/tags/$tag\") | .object.sha")
-          if [ -z "$existing" ]; then
-            gh api --method POST "repos/$repo/git/refs" -f "ref=refs/tags/$tag" -f "sha=$sha" > /dev/null
-            echo "Created $tag at $sha"
-          else
-            [ "$existing" = "$sha" ] || fail "$tag already exists at $existing, not at $sha"
-          fi
-          runs=$(gh run list --repo "$repo" --workflow release-draft.yml --branch "$tag" \
-            --json databaseId --jq length)
-          if [ "$runs" = 0 ]; then
-            gh workflow run release-draft.yml --repo "$repo" --ref "$tag"
-            echo "Started release-draft.yml on $tag"
-          else
-            echo "release-draft.yml already ran on $tag"
+            echo "release-draft.yml already ran on $TAG"
           fi

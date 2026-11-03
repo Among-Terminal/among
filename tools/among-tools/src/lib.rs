@@ -51,6 +51,7 @@ pub mod release_metadata;
 pub mod release_notes;
 pub mod release_plan;
 pub mod release_policy;
+pub mod release_tag;
 pub mod resources;
 pub mod rpm;
 pub mod rpm_installed;

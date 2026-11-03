@@ -1,7 +1,8 @@
 //! `release-tag.yml` creates tags with the repository token and starts the
-//! draft workflow on them. These tests pin what that token can do: which
-//! events start it, which scopes each job holds, that no outside action or
-//! secret is involved, and that the shell never sees text from an expression.
+//! draft workflow on them. The decision logic is tested in `release_tag.rs`;
+//! these tests pin what the workflow lets that token do: which events start it,
+//! which job holds which scope, that the write job checks out and builds
+//! nothing, and that no outside action is unpinned and no secret is read.
 
 use among_tools::{deb_workflow, Result};
 use serde_json::{json, Value};
@@ -19,6 +20,8 @@ fn script(job: &Value) -> Result<String> {
         .ok_or("steps")?
         .iter()
         .filter_map(|step| step["run"].as_str())
+        .flat_map(str::lines)
+        .filter(|line| !line.trim_start().starts_with('#'))
         .collect::<Vec<_>>()
         .join("\n"))
 }
@@ -30,86 +33,95 @@ fn only_a_push_to_main_or_a_manual_run_starts_it() -> Result<()> {
     let inputs = &document["on"]["workflow_dispatch"]["inputs"];
     assert_eq!(inputs.as_object().map(|map| map.len()), Some(1));
     assert_eq!(inputs["candidate"]["type"], "string");
+    assert_eq!(inputs["candidate"]["required"], false);
     assert_eq!(document["on"].as_object().map(|map| map.len()), Some(2));
     assert_eq!(document["permissions"], json!({}));
-    // One group per commit: a shared group would drop a queued release run.
+    // One group per commit and candidate: a shared group would drop a queued
+    // release run.
     assert_eq!(
         document["concurrency"]["group"],
-        "release-tag-${{ github.sha }}"
+        "release-tag-${{ github.sha }}-${{ inputs.candidate }}"
     );
     assert_eq!(document["concurrency"]["cancel-in-progress"], false);
     Ok(())
 }
 
 #[test]
-fn the_token_can_only_write_tags_and_start_workflows() -> Result<()> {
+fn the_decision_job_can_only_read_and_the_write_job_runs_no_checked_out_code() -> Result<()> {
     let document = workflow()?;
     let jobs = document["jobs"].as_object().ok_or("jobs")?;
     assert_eq!(jobs.len(), 2);
+
+    let decide = &jobs["decide"];
+    assert_eq!(decide["permissions"], json!({"contents":"read"}));
+    let steps = decide["steps"].as_array().ok_or("steps")?;
+    let checkout = &steps[0];
+    assert!(checkout["uses"]
+        .as_str()
+        .is_some_and(|uses| uses.starts_with("actions/checkout@")));
+    assert_eq!(checkout["with"]["fetch-depth"], 0);
+    assert_eq!(checkout["with"]["persist-credentials"], false);
+    let shell = script(decide)?;
+    assert!(shell.contains("release-tag . push \"$GITHUB_SHA\""));
+    assert!(shell.contains("release-tag . candidate \"$CANDIDATE\""));
+    assert!(shell.contains("[ \"$GITHUB_REF\" = refs/heads/main ]"));
+
+    let tag = &jobs["tag"];
+    assert_eq!(
+        tag["permissions"],
+        json!({"contents":"write","actions":"write"})
+    );
+    assert_eq!(tag["needs"], "decide");
+    assert_eq!(
+        tag["if"],
+        "needs.decide.outputs.action == 'create' || needs.decide.outputs.action == 'exists'"
+    );
+    for step in tag["steps"].as_array().ok_or("steps")? {
+        assert!(step.get("uses").is_none(), "the write job runs an action");
+    }
     for (name, job) in jobs {
-        assert_eq!(
-            job["permissions"],
-            json!({"contents":"write","actions":"write"}),
-            "{name}"
-        );
         for step in job["steps"].as_array().ok_or("steps")? {
-            assert!(step.get("uses").is_none(), "{name} runs an outside action");
+            if let Some(uses) = step["uses"].as_str() {
+                let (_, revision) = uses.split_once('@').ok_or("unpinned action")?;
+                assert_eq!(revision.len(), 40, "{name}: {uses}");
+            }
         }
         let text = job.to_string();
         assert!(!text.contains("secrets."), "{name} reads a secret");
-        let shell = script(job)?;
-        for forbidden in [
-            "gh release",
-            "draft=false",
-            "--method DELETE",
-            "--method PATCH",
-            "--force",
-        ] {
-            assert!(!shell.contains(forbidden), "{name}: {forbidden}");
-        }
-        // Expression text reaches the shell only through the environment.
-        assert!(
-            !shell.contains("${{"),
-            "{name} interpolates an expression into the script"
-        );
     }
     Ok(())
 }
 
 #[test]
-fn a_release_commit_is_recognised_by_title_and_by_the_version_it_carries() -> Result<()> {
+fn the_write_job_only_creates_the_decided_tag_and_starts_the_draft() -> Result<()> {
     let document = workflow()?;
-    assert_eq!(document["jobs"]["tag"]["if"], "github.event_name == 'push'");
-    let shell = script(&document["jobs"]["tag"])?;
+    let tag = &document["jobs"]["tag"];
+    assert_eq!(tag["env"]["ACTION"], "${{ needs.decide.outputs.action }}");
+    assert_eq!(tag["env"]["TAG"], "${{ needs.decide.outputs.tag }}");
+    assert_eq!(tag["env"]["SHA"], "${{ needs.decide.outputs.sha }}");
+    let shell = script(tag)?;
+    // Outputs reach the shell only through the environment, and are validated.
+    assert!(
+        !shell.contains("${{"),
+        "an expression is interpolated into the script"
+    );
     for required in [
-        "chore\\(release\\): ([0-9]+\\.[0-9]+\\.[0-9]+)( \\(#[0-9]+\\))?$",
-        "contents/Cargo.toml?ref=$GITHUB_SHA",
-        "the title says $version but Cargo.toml says",
-        "already exists at $existing, not at $GITHUB_SHA",
-        "gh workflow run release-draft.yml --repo \"$repo\" --ref \"$tag\"",
-        "refs/tags/$tag",
+        "^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$",
+        "^[0-9a-f]{40}$",
+        "if [ \"$ACTION\" = create ]; then",
+        "git/refs\" -f \"ref=refs/tags/$TAG\" -f \"sha=$SHA\"",
+        "gh workflow run release-draft.yml --repo \"$repo\" --ref \"$TAG\"",
     ] {
         assert!(shell.contains(required), "missing: {required}");
     }
-    Ok(())
-}
-
-#[test]
-fn a_candidate_tags_the_stable_release_commit_on_main_only() -> Result<()> {
-    let document = workflow()?;
-    let job = &document["jobs"]["candidate"];
-    assert_eq!(job["if"], "github.event_name == 'workflow_dispatch'");
-    assert_eq!(job["env"]["CANDIDATE"], "${{ inputs.candidate }}");
-    let shell = script(job)?;
-    for required in [
-        "[ \"$GITHUB_REF\" = refs/heads/main ]",
-        "^[1-9][0-9]*$",
-        "commits/refs/tags/v$version",
-        "ahead|identical",
-        "v$version-rc.$CANDIDATE",
-        "already exists at $existing, not at $sha",
+    for forbidden in [
+        "gh release",
+        "draft=false",
+        "--method DELETE",
+        "--method PATCH",
+        "--force",
     ] {
-        assert!(shell.contains(required), "missing: {required}");
+        assert!(!shell.contains(forbidden), "{forbidden}");
     }
     Ok(())
 }

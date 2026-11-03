@@ -76,11 +76,20 @@ fn downloads(job: &Value) -> Result<Vec<(String, String)>> {
     Ok(found)
 }
 
+/// Shell text without comment-only lines: a safeguard that only a comment
+/// mentions is not a safeguard.
+fn code(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn script(job: &Value) -> Result<String> {
     let mut text = String::new();
     for step in steps(job)? {
         if let Some(run) = step.get("run") {
-            text.push_str(run.as_str().ok_or("workflow command is not text")?);
+            text.push_str(&code(run.as_str().ok_or("workflow command is not text")?));
             text.push('\n');
         }
     }
@@ -241,7 +250,7 @@ pub fn validate(document: &Value) -> Result<()> {
             )?;
         }
     }
-    let publish = draft_script(document)?;
+    let publish = code(&draft_script(document)?);
     for required in [
         "set -euo pipefail",
         "is required on the runner",

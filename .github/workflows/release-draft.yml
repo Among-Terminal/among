@@ -5,7 +5,7 @@ name: Release draft
 # Publishing the draft is the owner's manual decision; nothing here publishes.
 #
 # The tag normally starts the run by itself (push). A tag created with the
-# repository token starts no push workflow, so release-please.yml starts this
+# repository token starts no push workflow, so release-tag.yml starts this
 # workflow with workflow_dispatch on the tag instead; the run then has the tag
 # as its ref and the tag's commit as its commit, exactly like a push run.
 on:

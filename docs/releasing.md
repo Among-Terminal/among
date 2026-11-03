@@ -282,23 +282,38 @@ this chain publishes: the owner merges the pull request and publishes the draft.
    `BREAKING CHANGE:` footer) and `feat` raise the minor version, `fix` and
    `perf` raise the patch version; from `1.0` a breaking change raises the
    major version. If only `docs`, `test`, `ci`, `build`, `refactor` or `chore`
-   commits exist, nothing is prepared. Without `--dry-run` it rewrites every
-   version location, adds the release to `CHANGELOG.md` and puts a stable
-   entry in front of the AppStream release list, then prints the title
+   commits exist, nothing is prepared. If the files already say a version above
+   the last tag (an unreleased bump), that version is released when the titles
+   call for less. Without `--dry-run` it rewrites every version location, adds
+   the release to `CHANGELOG.md` and puts a stable entry in front of the
+   AppStream release list (changes grouped by kind), then prints the title
    `chore(release): X.Y.Z` and the body for the pull request. It never tags,
-   pushes or contacts GitHub.
+   pushes or contacts GitHub, refuses to write on `main`, in a tree with
+   uncommitted changes, or when a file cannot be staged, and writes all files
+   or none.
+
+   Commits whose title is not a Conventional Commit cannot influence the
+   version or the changelog. They are listed (`NOT TITLED ...`) and the command
+   fails until each one is named with `--accept-untitled <sha>,<sha>...`
+   (prefixes of at least seven digits); the body of the pull request then lists
+   them as left out on purpose. A dry run shows them without failing.
 3. **Add the release highlights.** A stable tag needs a non-empty
    `.github/release-notes/vX.Y.Z.md` (section 5). Write it in the same branch;
-   this is the one hand-written file of a release.
+   this is the one hand-written file of a release. `check-release-metadata`
+   fails while a prepared release (its section is in `CHANGELOG.md`) has no
+   such file, and the tag job refuses to tag a commit without it.
 4. **Open the pull request** with your own `gh` credentials, using the printed
    title and body. Because a person opens it, the required checks run on it like
    on any other pull request, and `pr-title` and `check-release-metadata` verify
    the title and that every version location agrees.
 5. **Merge by hand.** Squash-merging puts a commit titled
    `chore(release): X.Y.Z` on `main`.
-6. **Tag and draft.** `.github/workflows/release-tag.yml` runs on that push. It
-   checks the title and that `Cargo.toml` at that commit carries the version,
-   creates `vX.Y.Z` on the commit with the repository token and starts
+6. **Tag and draft.** `.github/workflows/release-tag.yml` runs on that push.
+   A read-only job builds the tool and runs `among-tools release-tag`, which
+   checks the title, that `Cargo.toml` at that commit carries the version, that
+   the highlights file exists and is not empty, that the version is above every
+   stable tag and that an existing tag points at the same commit. Only then the
+   write job (no checkout) creates `vX.Y.Z` with the repository token and starts
    `release-draft.yml` on the tag by `workflow_dispatch`. A tag made with the
    repository token starts no `push` workflow, which is why the draft is
    started explicitly. The draft workflow's `verify-ref` job refuses a manual

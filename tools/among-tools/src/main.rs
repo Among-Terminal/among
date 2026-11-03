@@ -58,7 +58,8 @@ Usage:
   among-tools prepare-stable-build <source-root> <new-output> <tag>
   among-tools check-stable-build <tree>
   among-tools check-release-metadata <source-root>
-  among-tools release-prepare <source-root> [--dry-run]
+  among-tools release-prepare <source-root> [--dry-run] [--accept-untitled <sha,sha...>]
+  among-tools release-tag <source-root> push <commit> | candidate <number>
   among-tools package-metainfo <source.xml> <package-version> <output.xml>
   among-tools check-stable-source <repository> <record.json> <bundle.tar>
   among-tools third-party-notices <source-root> <destination> <generate|check>
@@ -444,25 +445,49 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 )?)?
             );
         }
-        [command, root, rest @ ..]
-            if command == "release-prepare" && (rest.is_empty() || rest == ["--dry-run"]) =>
-        {
+        [command, root, rest @ ..] if command == "release-prepare" => {
             let root = Path::new(root);
+            let (mut dry_run, mut accepted) = (false, Vec::new());
+            let mut options = rest.iter();
+            while let Some(option) = options.next() {
+                match option.as_str() {
+                    "--dry-run" => dry_run = true,
+                    "--accept-untitled" => accepted.extend(
+                        options
+                            .next()
+                            .ok_or("--accept-untitled needs a comma-separated list of commit ids")?
+                            .split(',')
+                            .map(str::to_string),
+                    ),
+                    other => return Err(format!("unknown release-prepare option {other}").into()),
+                }
+            }
             let plan = among_tools::release_plan::plan(root)?;
             println!(
                 "last stable tag {}, {} titled commits since",
                 plan.tag,
                 plan.commits.len()
             );
+            for commit in &plan.untitled {
+                println!("NOT TITLED {} {}", commit.sha, commit.subject);
+            }
+            if dry_run {
+                // A dry run only shows the plan, so it accepts what it lists.
+                accepted = plan
+                    .untitled
+                    .iter()
+                    .map(|commit| commit.sha.clone())
+                    .collect();
+            }
             let seconds = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs();
             let date = among_tools::release_plan::civil_date(seconds);
-            match among_tools::release_plan::prepare(root, &date)? {
+            match among_tools::release_plan::prepare(root, &date, &accepted)? {
                 None => {
                     println!("No user-visible change since the last release: nothing to prepare.")
                 }
-                Some(prepared) if !rest.is_empty() => {
+                Some(prepared) if dry_run => {
                     println!("Next version {}: {}", prepared.version, prepared.title);
                     for (path, _) in &prepared.files {
                         println!("would change {path}");
@@ -473,6 +498,15 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                     println!("TITLE: {}\n\n{}", prepared.title, prepared.body);
                 }
             }
+        }
+        [command, root, mode, argument] if command == "release-tag" => {
+            let root = Path::new(root);
+            let decision = match mode.as_str() {
+                "push" => among_tools::release_tag::decide_push(root, argument)?,
+                "candidate" => among_tools::release_tag::decide_candidate(root, argument)?,
+                other => return Err(format!("unknown release-tag mode {other}").into()),
+            };
+            print!("{}", decision.render());
         }
         [command, root] if command == "check-release-metadata" => {
             among_tools::release_metadata::run(Path::new(root), &among_tools::scratch::root()?)?;
