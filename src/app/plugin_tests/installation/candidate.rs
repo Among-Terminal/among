@@ -190,14 +190,25 @@ fn starts_under_the_flag(ctx: &Window, key: &str) {
     ctx.state.borrow_mut().plugins.enable(key);
     // A supervised child only shows that a process was spawned; Running is
     // reached after the plugin has answered the handshake and been admitted.
-    wait_for(
-        || {
-            ctx.state.borrow().plugins.overview().iter().any(|info| {
-                info.key == key && info.state == crate::plugin::host::PluginState::Running
-            })
-        },
-        Duration::from_secs(10),
-    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        while glib::MainContext::default().pending() {
+            glib::MainContext::default().iteration(false);
+        }
+        let listing = ctx.state.borrow().plugins.listing();
+        if listing
+            .iter()
+            .any(|(name, state)| name == key && *state == crate::plugin::host::PluginState::Running)
+        {
+            break;
+        }
+        // The state names the reason a started plugin was not admitted.
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{key} did not reach Running; host states: {listing:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     ctx.state.borrow_mut().plugins.disable(key);
     wait_for(
         || ctx.state.borrow().plugins.supervised_count() == 0,
