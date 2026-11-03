@@ -186,3 +186,13 @@ the corresponding source, the license texts and a component list (`NOTICE.md`).
 Only `runtime` becomes part of an Among AppImage: it stays at the head of the
 image, with libfuse (LGPL-2.1) statically linked. The sources of `runtime` and
 libfuse are in the helper release, not in `appimage-sources-<arch>`.
+
+No package owns the runtime, so `build-appimage` writes its notice into the image
+as `usr/share/doc/appimage-runtime/copyright`, from
+[packaging/appimage/runtime-notice.txt](../packaging/appimage/runtime-notice.txt):
+the components of the runtime, their license texts, a link to the exact helper
+release holding the licenses and sources, and how to rebuild the runtime with a
+modified libfuse. The LGPL-2.1 text is the image's
+`usr/share/common-licenses/LGPL-2.1`. The build fails if the notice in the AppDir
+or in the extracted final image is missing or differs from that text, or if the
+LGPL-2.1 text is absent.
