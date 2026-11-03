@@ -23,14 +23,10 @@ impl Fixture {
         Ok(f)
     }
     fn manifests(&self, version: &str) -> Result<()> {
-        for name in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
-            let path = self.0.join(name);
-            fs::create_dir_all(path.parent().ok_or("fixture parent absent")?)?;
-            fs::write(
-                path,
-                format!("[package]\nname=\"fixture\"\nversion=\"{version}\"\n"),
-            )?;
-        }
+        fs::write(
+            self.0.join("Cargo.toml"),
+            format!("[package]\nname=\"fixture\"\nversion=\"{version}\"\n"),
+        )?;
         Ok(())
     }
     fn git(&self, args: &[&str]) -> Result<String> {
@@ -49,7 +45,7 @@ impl Fixture {
         Ok(String::from_utf8(output.stdout)?.trim().into())
     }
     fn commit(&self, label: &str) -> Result<()> {
-        self.git(&["add", "Cargo.toml", "examples/plugins/Cargo.toml"])?;
+        self.git(&["add", "Cargo.toml"])?;
         self.git(&["-c", "commit.gpgSign=false", "commit", "-qm", label])?;
         Ok(())
     }
@@ -127,11 +123,8 @@ fn malformed_older_untrusted_and_mismatched_tags_are_refused() -> Result<()> {
     f.git(&["checkout", "-q", "main"])?;
     f.git(&["-c", "tag.gpgSign=false", "tag", "v9.9.9"])?;
     assert!(f.stable("v9.9.9", &[f.asset()], None, None).is_err());
-    fs::write(
-        f.0.join("examples/plugins/Cargo.toml"),
-        "[package]\nversion=\"1.2.5\"\n",
-    )?;
-    f.commit("mismatched plugin")?;
+    f.manifests("1.2.4")?;
+    f.commit("manifest version differs from the tag")?;
     f.git(&["-c", "tag.gpgSign=false", "tag", "v1.2.5"])?;
     assert!(f.stable("v1.2.5", &[f.asset()], None, None).is_err());
     Ok(())

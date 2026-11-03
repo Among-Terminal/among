@@ -78,14 +78,17 @@ not a context-free invocation. No Cargo or compiler is called by this runner.
 
 ## Independent Linux resource measurements
 
-`check-resource-measurements SYSTEM_STATUS_BINARY` drives the real prebuilt plugin
-over its JSON-lines stdin/stdout protocol. It checks initial CPU N/A, waits 1.1
+`check-resource-measurements OFFICIAL_PLUGIN_PROFILE` takes the profile that
+`check-plugin-install` observed, pins the installed `system-status` executable to
+the public artifact (receipt, manifest, artifact and executable digests and size)
+and drives it over the managed API 1.2 JSON-lines stdin/stdout protocol: handshake,
+then status requests bound to a session and generation. It checks initial CPU N/A, waits 1.1
 seconds, and compares CPU/MEM/root-DISK with independently read `/proc/stat`,
 `/proc/meminfo` and `df -P /` accounting. Original tolerances stay at 2/2/1
 percentage points, with exact meter-to-displayed-percentage consistency. It checks
 response IDs and graceful shutdown, retains the original measurements JSON fields,
 and fails on missing/malformed accounting or a stalled child. Requires Linux procfs,
-`df` and the compiled plugin, not a display, GTK, Cargo or an interpreter at runtime.
+`df` and the installed official plugin, not a display, GTK, Cargo or an interpreter at runtime.
 
 ## Fresh-process Preferences
 
@@ -132,13 +135,13 @@ tools or a locked headless Cargo bootstrap and then dispatches to Rust. Full
 source/bootstrap replay and legacy test parity are tracked in migration evidence;
 an installed fixture is not DEB/Snap release acceptance.
 
-`check-plugin-install SOURCE_ROOT AMONG_BINARY PREBUILT_PLUGINS PLUGIN_INSTALLER`
-must run inside an owned display. Build the existing Rust plugin installer example
-first (`cargo build --release --locked --example install --manifest-path
-examples/plugins/Cargo.toml`). The checker requires exactly the approved three
-plugin sources and installed native bytes, verifies default-disabled discovery and
-runtime-only enabling, and exercises the selected application without compiling
-at runtime. Plugin input/output logs and fresh HOME/XDG state stay isolated.
+`check-plugin-install AMONG_TEST_EXECUTABLE OFFICIAL_PLUGIN_INPUTS` must run inside
+an owned display. The inputs come from `prepare-official-plugin-inputs` or
+`prepare-candidate-plugin-inputs` and bind the official packages by repository,
+release, asset and digest; the host never compiles a plugin. The checker runs the
+exact host lifecycle test (install disabled, access review, explicit enablement,
+disable, uninstall) against those packages. Plugin input/output logs and fresh
+HOME/XDG state stay isolated.
 
 ## Debian input and staging primitives
 
@@ -208,7 +211,7 @@ evidence, not stable publication, Wayland or complete source/license acceptance.
 The owned display runner forwards only PATH and the two
 nonsecret GitHub hosted markers needed for the explicit gate, not credentials.
 
-After building the app, tools and three example plugins, run each command through
+After building the app and the tools, run each command through
 `among-tools ci-x11` on a disposable desktop:
 
 ```sh
@@ -330,11 +333,11 @@ Target build and clean installed acceptance must be separate environments. The
 private Snap rehearsal is testing this separation; a workflow definition or a
 passing source test does not establish clean installed acceptance.
 
-`source-snapshot ROOT VENDOR NEW_ARCHIVE` includes all three locked Cargo graphs;
-vendor with both `--sync examples/plugins/Cargo.toml` and
-`--sync tools/among-tools/Cargo.toml`. `check-source-snapshot ARCHIVE` streams the
+`source-snapshot ROOT VENDOR NEW_ARCHIVE` includes both locked Cargo graphs;
+vendor with `--sync tools/among-tools/Cargo.toml` next to the root manifest.
+`check-source-snapshot ARCHIVE` streams the
 safe-member inventory and mandatory original-source/vendor checks. Rebuilding
-all three packages offline is a separate requirement, not implied by SHA-256.
+both packages offline is a separate requirement, not implied by SHA-256.
 
 `inventory-snap-native PRIME EXACT_DEBS NEW_OUTPUT` reads the actual .deb inputs
 with dpkg-deb rather than host-installed package metadata. It compares observed

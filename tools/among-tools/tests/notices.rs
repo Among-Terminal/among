@@ -23,7 +23,7 @@ fn graph(f: &Fixture) -> Value {
 }
 
 #[test]
-fn verbatim_license_and_notice_bytes_deduplicate_across_all_three_graphs() -> Result<()> {
+fn verbatim_license_and_notice_bytes_deduplicate_across_both_graphs() -> Result<()> {
     let f = fixture()?;
     let graphs = notices::MANIFESTS.map(|manifest| (manifest, graph(&f)));
     let (outputs, count) = notices::inventory(&graphs, &f.0)?;
@@ -40,11 +40,7 @@ fn verbatim_license_and_notice_bytes_deduplicate_across_all_three_graphs() -> Re
     assert_eq!(inventory["schema"], 1);
     assert_eq!(
         inventory["packages"][0]["trees"],
-        json!([
-            "Cargo.toml",
-            "examples/plugins/Cargo.toml",
-            "tools/among-tools/Cargo.toml"
-        ])
+        json!(["Cargo.toml", "tools/among-tools/Cargo.toml"])
     );
     assert_eq!(
         inventory["packages"][0]["texts"][0]["sha256"],
@@ -97,8 +93,8 @@ fn missing_license_unsafe_evidence_and_conflicting_graphs_fail() -> Result<()> {
 }
 
 #[test]
-fn actual_cli_uses_three_locked_metadata_calls_separates_stderr_and_detects_stale_bytes(
-) -> Result<()> {
+fn actual_cli_uses_two_locked_metadata_calls_separates_stderr_and_detects_stale_bytes() -> Result<()>
+{
     let f = fixture()?;
     let graph = f.0.join("graph.json");
     fs::write(&graph, serde_json::to_vec(&self::graph(&f))?)?;
@@ -393,7 +389,7 @@ fn actual_cli_generates_and_checks_supplemental_bytes_before_any_publication() -
 #[test]
 fn lock_conflicts_and_missing_grants_cannot_be_replaced_by_source_declarations() -> Result<()> {
     let (f, graph, mut index) = supplemental_fixture()?;
-    let lock = f.0.join("examples/plugins/Cargo.lock");
+    let lock = f.0.join("tools/among-tools/Cargo.lock");
     let original = fs::read_to_string(&lock)?;
     fs::write(
         &lock,

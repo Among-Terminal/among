@@ -73,23 +73,23 @@ fn packaged_release_version_matches_rc_without_rewriting_history() -> Result<()>
     Ok(())
 }
 fn fixture() -> Value {
-    json!({"name":"among","base":"core24","confinement":"classic","grade":"devel","license":"Apache-2.0","platforms":{"amd64":{"build-on":["amd64"],"build-for":["amd64"]},"arm64":{"build-on":["arm64"],"build-for":["arm64"]}},"apps":{"among":{"command":"bin/among"}},"adopt-info":"among","parts":{"among":{"rust-channel":"1.98.1","rust-path":[".","examples/plugins"],"rust-inherit-ldflags":true,"build-environment":[{"LDFLAGS":"-L/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR"}],"stage-packages":["librsvg2-common"],"build-attributes":["enable-patchelf"],"override-build":"true\n","override-stage":"glib-compile-schemas --strict \"$CRAFT_PART_INSTALL/usr/share/glib-2.0/schemas\"\n"}}})
+    json!({"name":"among","base":"core24","confinement":"classic","grade":"devel","license":"Apache-2.0","platforms":{"amd64":{"build-on":["amd64"],"build-for":["amd64"]},"arm64":{"build-on":["arm64"],"build-for":["arm64"]}},"apps":{"among":{"command":"bin/among"}},"adopt-info":"among","parts":{"among":{"rust-channel":"1.98.1","rust-path":["."],"rust-inherit-ldflags":true,"build-environment":[{"LDFLAGS":"-L/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR"}],"stage-packages":["librsvg2-common"],"build-attributes":["enable-patchelf"],"override-build":"true\n","override-stage":"glib-compile-schemas --strict \"$CRAFT_PART_INSTALL/usr/share/glib-2.0/schemas\"\n"}}})
 }
-fn manifests() -> Result<[toml::Value; 2]> {
-    let document: toml::Value =
-        toml::from_str("[package]\nversion=\"0.1.0\"\nlicense=\"Apache-2.0\"\n")?;
-    Ok([document.clone(), document])
+fn manifest() -> Result<toml::Value> {
+    Ok(toml::from_str(
+        "[package]\nversion=\"0.1.0\"\nlicense=\"Apache-2.0\"\n",
+    )?)
 }
 
 #[test]
 fn each_original_recipe_consistency_boundary_refuses_mutated_effective_values() -> Result<()> {
     let valid = fixture();
-    let manifests = manifests()?;
+    let manifests = manifest()?;
     assert_eq!(
         release_metadata::validate(&valid, &manifests, XML, DESKTOP)?.len(),
         2
     );
-    for mutation in 0..16 {
+    for mutation in 0..17 {
         let mut changed = valid.clone();
         match mutation {
             0 => changed["name"] = "other".into(),
@@ -106,7 +106,8 @@ fn each_original_recipe_consistency_boundary_refuses_mutated_effective_values() 
             6 => changed["apps"]["among"]["command"] = "other".into(),
             7 => changed["adopt-info"] = "other".into(),
             8 => changed["parts"]["among"]["rust-channel"] = "stable".into(),
-            9 => changed["parts"]["among"]["rust-path"] = json!(["."]),
+            // A second Cargo package would build the removed example plugins again.
+            9 => changed["parts"]["among"]["rust-path"] = json!([".", "examples/plugins"]),
             10 => changed["parts"]["among"]["rust-cargo-parameters"] = json!(["--locked"]),
             11 => changed["parts"]["among"]["rust-inherit-ldflags"] = false.into(),
             12 => {
@@ -116,6 +117,9 @@ fn each_original_recipe_consistency_boundary_refuses_mutated_effective_values() 
             13 => changed["parts"]["among"]["override-stage"] = "x86_64-linux-gnu".into(),
             14 => changed["parts"]["among"]["stage-packages"] = json!([]),
             15 => changed["parts"]["among"]["override-prime"] = "true".into(),
+            16 => {
+                changed["parts"]["among"]["override-build"] = "install -Dm755 \"$CRAFT_PART_INSTALL/bin/clock\" \"$CRAFT_PART_INSTALL/usr/share/among/plugins/clock\"\n".into()
+            }
             _ => return Err("unknown fixture mutation".into()),
         }
         assert!(
@@ -135,10 +139,10 @@ fn each_original_recipe_consistency_boundary_refuses_mutated_effective_values() 
 #[test]
 fn manifest_xml_desktop_version_license_and_identity_must_agree() -> Result<()> {
     let valid = fixture();
-    let manifests = manifests()?;
+    let manifests = manifest()?;
     for (key, value) in [("version", "0.2.0"), ("license", "MIT")] {
         let mut changed = manifests.clone();
-        changed[1]["package"][key] = toml::Value::String(value.into());
+        changed["package"][key] = toml::Value::String(value.into());
         assert!(release_metadata::validate(&valid, &changed, XML, DESKTOP).is_err());
     }
     for xml in [

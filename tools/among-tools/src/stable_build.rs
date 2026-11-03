@@ -96,19 +96,17 @@ pub fn prepare(root: &Path, output: &Path, tag: &str) -> Result<Value> {
             .file_name()
             .ok_or("stable destination name absent")?,
     );
-    for manifest in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
-        let document: toml::Value = toml::from_str(&fs::read_to_string(storage::safe_path(
-            &root,
-            Path::new(manifest),
-        )?)?)?;
-        if document
-            .get("package")
-            .and_then(|value| value.get("version"))
-            .and_then(toml::Value::as_str)
-            != Some(version)
-        {
-            return Err("stable tag must match both package versions".into());
-        }
+    let document: toml::Value = toml::from_str(&fs::read_to_string(storage::safe_path(
+        &root,
+        Path::new("Cargo.toml"),
+    )?)?)?;
+    if document
+        .get("package")
+        .and_then(|value| value.get("version"))
+        .and_then(toml::Value::as_str)
+        != Some(version)
+    {
+        return Err("stable tag must match the package version".into());
     }
     let original =
         fs::read_to_string(storage::safe_path(&root, Path::new("snap/snapcraft.yaml"))?)?;

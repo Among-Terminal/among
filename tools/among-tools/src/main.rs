@@ -16,7 +16,7 @@ Usage:
   among-tools vm-x11 <command> [args...]
   among-tools run-ignored-tests <cargo-test-executables.jsonl>
   among-tools check-installer-enospc-from-cargo <cargo-test-executables.jsonl>
-  among-tools check-resource-measurements <system-status-binary>
+  among-tools check-resource-measurements <official-plugin-profile>
   among-tools check-preferences <prebuilt-app-test> <prebuilt-plugins-directory>
   among-tools check-preferences-from-cargo <cargo-test-executables.jsonl> <prebuilt-plugins-directory>
   among-tools install-prebuilt <source-root> <among-binary> <native-uninstaller>

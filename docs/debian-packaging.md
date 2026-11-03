@@ -121,14 +121,16 @@ The Debian inputs live under `packaging/debian/`. The CI builder copies them int
 `debian/` inside a fresh isolated public source build tree and makes its rules
 executable; it never merges them into an existing package tree. The build environment
 requires debhelper 13, pkg-config, GTK4/adwaita/GTK4 VTE development
-packages and Rust 1.98.1 available through rustup. The rules build and test all
-three independent locked Cargo packages and use a dedicated `target/debian`
+packages and Rust 1.98.1 available through rustup. The rules build and test both
+independent locked Cargo packages and use a dedicated `target/debian`
 directory. Rust staging replaces the direct interpreter build dependency.
 
 The system package installs `/usr/bin/among`, the standard desktop/icon/AppStream
 assets with ID `com.github.among-terminal`, and license materials under
-`/usr/share/doc/among-terminal/`. Three example binaries are staged under
-`/usr/share/among/plugins/`; staging does not enable them or edit user files.
+`/usr/share/doc/among-terminal/`. No plugin is bundled: the official plugins
+are installed from their own repository, and staging neither installs nor
+enables any plugin or edits user files. The payload check rejects a
+`usr/share/among/plugins` directory.
 Maintainer contact: Among Terminal <hello+amongterminal@highload.zone>.
 
 ## Software-centre presentation

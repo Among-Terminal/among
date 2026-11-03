@@ -29,21 +29,21 @@ Requires:       gsettings-desktop-schemas
 
 %description
 Organize live terminals in resizable panes and persistent project workspaces.
-Optional external-process plugins provide clock, resource and directory status.
-Plugin installation and enablement are explicit user actions.
+Optional external-process plugins, such as clock, resource and directory
+status, are installed from the official plugin source. Plugin installation
+and enablement are explicit user actions.
 
 %prep
 %autosetup -n %{name}-%{version}
 
 %build
-# The product and build tooling use three independent Cargo packages.
+# The product and build tooling use two independent Cargo packages.
 # Build them in-tree and install into a staging root so the build does not
 # require an installed Rust toolchain at run time.
 export CARGO_HOME=%{_builddir}/cargo-home
 export CARGO_TARGET_DIR=%{_builddir}/cargo-target
 mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
 cargo build --release --locked --manifest-path Cargo.toml
-cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
 cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --bin among-tools
 
 %install
@@ -53,16 +53,10 @@ mkdir -p %{buildroot}%{_bindir}
 mkdir -p %{buildroot}%{_datadir}/applications
 mkdir -p %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
 mkdir -p %{buildroot}%{_datadir}/metainfo
-mkdir -p %{buildroot}%{_datadir}/among/plugins
 
 install -m 0755 "$CARGO_TARGET_DIR/release/among" %{buildroot}%{_bindir}/among
-
-# Only the three shipped example plugins are packaged. They stay disabled by
-# default, exactly as in the Snap and Debian packages.
-for plugin in clock system-status pane-pwd; do
-    install -m 0755 "$CARGO_TARGET_DIR/release/$plugin" \
-        %{buildroot}%{_datadir}/among/plugins/$plugin
-done
+# No plugin is packaged: official plugins are installed from their own
+# repository, exactly as with the Snap and Debian packages.
 
 install -m 0644 data/com.github.among-terminal.desktop \
     %{buildroot}%{_datadir}/applications/
@@ -81,7 +75,6 @@ install -m 0644 data/com.github.among-terminal.metainfo.xml \
 export CARGO_HOME=%{_builddir}/cargo-home
 export CARGO_TARGET_DIR=%{_builddir}/cargo-target
 cargo test --locked --manifest-path Cargo.toml
-cargo test --locked --manifest-path examples/plugins/Cargo.toml
 desktop-file-validate \
     %{buildroot}%{_datadir}/applications/com.github.among-terminal.desktop
 appstream-util validate-relax \
@@ -95,8 +88,6 @@ appstream-util validate-relax \
 %{_datadir}/applications/com.github.among-terminal.desktop
 %{_datadir}/icons/hicolor/scalable/apps/com.github.among-terminal.svg
 %{_datadir}/metainfo/com.github.among-terminal.metainfo.xml
-%dir %{_datadir}/among
-%{_datadir}/among/plugins
 
 %changelog
 * Mon Oct 19 2026 Among Terminal <hello+amongterminal@highload.zone> - 0.1.2~rc.1-1

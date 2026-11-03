@@ -207,6 +207,15 @@ plugin installer. Native UI, explicit access/enablement and terminal continuity
 must be demonstrated by that host test before this check can pass. Preparing the
 inputs alone establishes none of those behaviours or application-RC readiness.
 
+`among-tools check-resource-measurements <profile>` takes the profile that
+`check-plugin-install` observed. It accepts the installed `system-status`
+executable only when the receipt, manifest, artifact and executable digests and size
+match the public artifact, then drives it over the managed handshake and compares
+CPU, MEM and root-DISK with independent `/proc` and `df -P /` readings. No plugin
+is built from this repository. The only plugin executable the host still builds is
+`examples/fake-plugin.rs`, a labelled protocol and failure-control fixture; it
+never stands in for an official plugin.
+
 Package workflows compile exactly the `among` binary test target with
 `AMONG_CHECK_SOURCE_SHA` set to the checkout's full HEAD. The compile-time value is
 exported only with the observed runtime profile. `capture-package-plugin-profile`

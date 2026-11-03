@@ -30,7 +30,6 @@ fn fixture() -> Result<std::path::PathBuf> {
     let root = storage::private_directory(&std::env::temp_dir(), "among-rpm")?;
     fs::create_dir_all(root.join("packaging/rpm"))?;
     fs::create_dir_all(root.join("data"))?;
-    fs::create_dir_all(root.join("examples/plugins"))?;
     // The real root manifest: its binding features are what the spec floors are
     // checked against, so a synthetic copy could drift from the real levels.
     // pin only the fixture version; retain the real binding features as the
@@ -38,10 +37,6 @@ fn fixture() -> Result<std::path::PathBuf> {
     let mut manifest: toml::Value = toml::from_str(include_str!("../../../Cargo.toml"))?;
     manifest["package"]["version"] = toml::Value::String("0.1.0".into());
     fs::write(root.join("Cargo.toml"), toml::to_string(&manifest)?)?;
-    fs::write(
-        root.join("examples/plugins/Cargo.toml"),
-        "[package]\nname = \"plugins\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    )?;
     fs::create_dir_all(root.join("THIRD_PARTY"))?;
     fs::write(root.join("LICENSE"), "synthetic license\n")?;
     fs::write(root.join("NOTICE"), "synthetic notice\n")?;
@@ -151,29 +146,40 @@ fn missing_field_wrong_version_and_unreferenced_payload_are_refused() -> Result<
 }
 
 #[test]
-fn a_new_example_plugin_cannot_enter_the_package_unnoticed() -> Result<()> {
+fn a_plugin_cannot_re_enter_the_package_unnoticed() -> Result<()> {
     let root = fixture()?;
     let original = spec_of(&root);
-    // Adding an example to the install loop without extending the recorded set
-    // would ship a plugin the Snap and Debian packages do not contain.
-    write_spec(
-        &root,
-        &original.replace(
-            "for plugin in clock system-status pane-pwd; do",
-            "for plugin in clock system-status pane-pwd git-state; do",
+    let check = |root: &std::path::Path| rpm::check(root, &rpm::spec_path(root));
+    // Official plugins are installed from their own repository: the spec may
+    // neither build the removed Cargo package, nor install a plugin loop, nor
+    // list or own anything below /usr/share/among.
+    for (anchor, addition) in [
+        (
+            "cargo build --release --locked --manifest-path Cargo.toml\n",
+            "cargo build --release --locked --manifest-path examples/plugins/Cargo.toml\n",
         ),
-    )?;
-    assert!(rpm::check(&root, &rpm::spec_path(&root)).is_err());
-
-    // Dropping a shipped example must be refused just as firmly.
-    write_spec(
-        &root,
-        &original.replace(
-            "for plugin in clock system-status pane-pwd; do",
-            "for plugin in clock system-status; do",
+        (
+            "cargo test --locked --manifest-path Cargo.toml\n",
+            "cargo test --locked --manifest-path examples/plugins/Cargo.toml\n",
         ),
-    )?;
-    assert!(rpm::check(&root, &rpm::spec_path(&root)).is_err());
+        (
+            "mkdir -p %{buildroot}%{_datadir}/applications\n",
+            "mkdir -p %{buildroot}%{_datadir}/among/plugins\n",
+        ),
+        (
+            "install -m 0755 \"$CARGO_TARGET_DIR/release/among\" %{buildroot}%{_bindir}/among\n",
+            "for plugin in clock system-status pane-pwd; do\n    true\ndone\n",
+        ),
+        ("%{_bindir}/among\n", "%{_datadir}/among/plugins\n"),
+        ("%{_bindir}/among\n", "%dir %{_datadir}/among\n"),
+    ] {
+        assert!(original.contains(anchor), "{anchor:?}");
+        write_spec(
+            &root,
+            &original.replacen(anchor, &format!("{anchor}{addition}"), 1),
+        )?;
+        assert!(check(&root).is_err(), "{addition:?} was accepted");
+    }
 
     write_spec(&root, &original)?;
     assert!(rpm::check(&root, &rpm::spec_path(&root)).is_ok());
@@ -203,7 +209,7 @@ fn a_spec_outside_the_project_or_named_with_a_version_is_refused() -> Result<()>
 }
 
 #[test]
-fn duplicated_headers_payload_paths_licenses_and_plugins_are_refused() -> Result<()> {
+fn duplicated_headers_payload_paths_and_licenses_are_refused() -> Result<()> {
     let root = fixture()?;
     let original = spec_of(&root);
     let check = |root: &std::path::Path| rpm::check(root, &rpm::spec_path(root));
@@ -235,17 +241,6 @@ fn duplicated_headers_payload_paths_licenses_and_plugins_are_refused() -> Result
     write_spec(
         &root,
         &original.replace("%license NOTICE\n", "%license NOTICE\n%license NOTICE\n"),
-    )?;
-    assert!(check(&root).is_err());
-
-    // A repeated plugin name still forms the expected set, so only a length
-    // check notices that a different plugin was meant.
-    write_spec(
-        &root,
-        &original.replace(
-            "for plugin in clock system-status pane-pwd; do",
-            "for plugin in clock clock system-status pane-pwd; do",
-        ),
     )?;
     assert!(check(&root).is_err());
 
@@ -377,12 +372,11 @@ fn library_floors_follow_the_binding_api_level_and_cannot_be_understated() -> Re
 }
 
 #[test]
-fn the_package_owns_its_application_data_directory() -> Result<()> {
-    let root = fixture()?;
-    let original = spec_of(&root);
-    // An unowned /usr/share/among would survive erase as an orphan directory.
-    write_spec(&root, &original.replace("%dir %{_datadir}/among\n", ""))?;
-    assert!(rpm::check(&root, &rpm::spec_path(&root)).is_err());
-    fs::remove_dir_all(root)?;
+fn the_package_creates_no_application_data_directory() -> Result<()> {
+    let spec = spec_of(&fixture()?);
+    assert!(
+        !spec.contains("_datadir}/among"),
+        "a fresh package must create or own nothing under /usr/share/among"
+    );
     Ok(())
 }

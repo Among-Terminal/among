@@ -33,8 +33,7 @@ fn run() -> io::Result<i32> {
         io::stderr().write_all(&fs::read(root.join("failure-stderr"))?)?;
         return Ok(match failure.as_str() {
             "Cargo.toml" => 37,
-            "examples/plugins/Cargo.toml" => 38,
-            "tools/among-tools/Cargo.toml" => 39,
+            "tools/among-tools/Cargo.toml" => 38,
             _ => 91,
         });
     }

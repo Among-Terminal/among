@@ -1,10 +1,12 @@
+use crate::plugin_install::release;
 use crate::process::{allowed_environment, OwnedProcess};
 use crate::{storage, Result};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use serde_json::{json, Value};
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub fn cpu_counters(text: &str) -> Result<Vec<u64>> {
@@ -83,8 +85,23 @@ pub fn disk_percent(text: &str) -> Result<f64> {
         .parse::<u32>()? as f64)
 }
 
+/// Identity, session and generation the check presents in its managed
+/// handshake; every reply must carry the same binding back.
+const IDENTITY: &str = "github:1431055733/system-status";
+const SESSION: &str = "resource-check-session";
+const GENERATION: &str = "resource-check-generation";
+
+fn hello() -> Value {
+    json!({"type":"managed_hello","major":1,"minor":2,"identity":IDENTITY,
+        "session":SESSION,"generation":GENERATION,"features":["status","system.metrics"]})
+}
+
 pub fn response(bytes: &[u8], id: u64) -> Result<Vec<Value>> {
     let value = storage::parse_json(bytes)?;
+    if value["type"] != "status" || value["session"] != SESSION || value["generation"] != GENERATION
+    {
+        return Err("plugin response is not a status reply bound to this session".into());
+    }
     if value["request_id"].as_u64() != Some(id) {
         return Err("plugin response request ID differs".into());
     }
@@ -135,16 +152,24 @@ fn request(stdin: &mut impl Write, stdout: &mut impl Read, id: u64) -> Result<Ve
     writeln!(
         stdin,
         "{}",
-        json!({"type":"status", "request_id":id, "scope":"app_header", "context":{}})
+        json!({"type":"status","session":SESSION,"generation":GENERATION,"request_id":id,
+            "scope":{"slot":"app_header","target":{"kind":"application"}},
+            "context":{"session":SESSION}})
     )?;
     stdin.flush()?;
+    let line = read_line(stdout)?;
+    response(&line, id)
+}
+
+/// Reads one newline-terminated frame within five seconds and one MiB.
+fn read_line(stdout: &mut impl Read) -> Result<Vec<u8>> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut line = Vec::new();
     loop {
         let mut byte = [0];
         match stdout.read(&mut byte) {
             Ok(0) => return Err("plugin closed output before its response".into()),
-            Ok(_) if byte[0] == b'\n' => return response(&line, id),
+            Ok(_) if byte[0] == b'\n' => return Ok(line),
             Ok(_) => {
                 line.push(byte[0]);
                 if line.len() > 1024 * 1024 {
@@ -162,7 +187,88 @@ fn request(stdin: &mut impl Write, stdout: &mut impl Read, id: u64) -> Result<Ve
     }
 }
 
-pub fn run(binary: &Path, scratch: &Path) -> Result<Value> {
+/// The installed system-status executable of an observed official-plugin
+/// profile, accepted only when it is the exact public artifact: the receipt,
+/// the manifest digest, the artifact digest and the executable's own digest
+/// and size must all agree with the validated release catalogue.
+pub fn pinned_executable(profile: &Path) -> Result<PathBuf> {
+    fn bounded(root: &Path, relative: &str, limit: u64) -> Result<Vec<u8>> {
+        let path = storage::safe_path(root, Path::new(relative))?;
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_file() || metadata.len() > limit {
+            return Err(format!("{relative} is not a bounded regular file").into());
+        }
+        Ok(fs::read(path)?)
+    }
+    let text = |value: &Value, key: &str| -> Result<String> {
+        Ok(value[key]
+            .as_str()
+            .ok_or_else(|| format!("profile record lacks {key}"))?
+            .to_owned())
+    };
+    let inputs = release::profile_inputs(profile)?;
+    let catalogue = release::catalogue(profile, &inputs)?;
+    let architecture = crate::platform::discover()?.architecture;
+    let (_, artifact) = release::select(&catalogue, &architecture)?
+        .into_iter()
+        .find(|(version, _)| version["manifest"]["id"] == "system-status")
+        .ok_or("the release catalogue holds no system-status artifact")?;
+    let managed = storage::safe_path(profile, Path::new("managed"))?;
+    let installed = storage::parse_json(&bounded(&managed, "installed.json", 256 * 1024)?)?;
+    let receipts = installed["installations"]
+        .as_array()
+        .ok_or("installed selection lacks installations")?
+        .iter()
+        .filter(|receipt| {
+            receipt["repository_id"] == 1431055733u64 && receipt["plugin_id"] == "system-status"
+        })
+        .collect::<Vec<_>>();
+    let [receipt] = receipts.as_slice() else {
+        return Err("system-status selection is absent or duplicated".into());
+    };
+    let generation = text(receipt, "generation")?;
+    if generation.len() != 64 || !generation.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("invalid system-status generation".into());
+    }
+    let package = format!("generations/1431055733/system-status/{generation}");
+    let manifest = bounded(
+        &managed,
+        &format!("{package}/among-plugin.json"),
+        256 * 1024,
+    )?;
+    if storage::sha256(manifest.as_slice())? != text(receipt, "manifest_sha256")?
+        || artifact["sha256"] != receipt["package_sha256"]
+    {
+        return Err("installed system-status differs from its selected receipt".into());
+    }
+    let manifest = storage::parse_json(&manifest)?;
+    let entrypoint = text(&manifest, "entrypoint")?;
+    let member = artifact["members"]
+        .as_array()
+        .ok_or("artifact members absent")?
+        .iter()
+        .find(|member| member["path"] == entrypoint.as_str())
+        .ok_or("the entrypoint has no public digest")?;
+    let path = storage::safe_path(&managed, Path::new(&format!("{package}/{entrypoint}")))?;
+    let metadata = fs::symlink_metadata(&path)?;
+    if !metadata.is_file()
+        || metadata.permissions().mode() & 0o111 == 0
+        || member["executable"] != true
+        || member["size"] != metadata.len()
+        || storage::sha256(File::open(&path)?)? != text(member, "sha256")?
+    {
+        return Err("system-status executable differs from the public artifact".into());
+    }
+    Ok(path)
+}
+
+/// Measures the system-status executable that an observed official-plugin
+/// profile installed, after pinning it to the public artifact.
+pub fn run(profile: &Path, scratch: &Path) -> Result<Value> {
+    measure(&pinned_executable(profile)?, scratch)
+}
+
+pub fn measure(binary: &Path, scratch: &Path) -> Result<Value> {
     let binary = binary.canonicalize()?;
     fs::create_dir_all(scratch)?;
     let base = storage::private_directory(scratch, "among-resource-check")?;
@@ -175,6 +281,11 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<Value> {
     let mut stdout = plugin.take_stdout()?;
     let flags = OFlag::from_bits_truncate(fcntl(&stdout, FcntlArg::F_GETFL)?);
     fcntl(&stdout, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+    writeln!(stdin, "{}", hello())?;
+    stdin.flush()?;
+    if storage::parse_json(&read_line(&mut stdout)?)? != hello() {
+        return Err("plugin did not accept the managed handshake unchanged".into());
+    }
     let start = Instant::now();
     let before = cpu_counters(&fs::read_to_string("/proc/stat")?)?;
     let first = request(&mut stdin, &mut stdout, 1)?;

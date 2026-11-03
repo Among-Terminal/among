@@ -8,11 +8,7 @@ use std::time::Duration;
 
 mod supplemental;
 
-pub const MANIFESTS: [&str; 3] = [
-    "Cargo.toml",
-    "examples/plugins/Cargo.toml",
-    "tools/among-tools/Cargo.toml",
-];
+pub const MANIFESTS: [&str; 2] = ["Cargo.toml", "tools/among-tools/Cargo.toml"];
 
 fn locked_download_identity(root: &Path, manifest: &str, diagnostic: &str) -> Option<String> {
     let identity = diagnostic.lines().find_map(|line| {
@@ -207,7 +203,7 @@ pub fn inventory(
     supplemental.finish()?;
     let count = records.len();
     let mut bytes = serde_json::to_vec_pretty(
-        &json!({"schema":1,"scope":"all three locked Cargo graphs, including build and target-specific dependencies","packages":records}),
+        &json!({"schema":1,"scope":"both locked Cargo graphs, including build and target-specific dependencies","packages":records}),
     )?;
     bytes.push(b'\n');
     outputs.insert("inventory.json".into(), bytes);
@@ -274,7 +270,7 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
         }
     }
     println!(
-        "{} {count} dependency records and {} verbatim texts from three locked graphs",
+        "{} {count} dependency records and {} verbatim texts from the locked graphs",
         if check { "Checked" } else { "Generated" },
         outputs
             .keys()

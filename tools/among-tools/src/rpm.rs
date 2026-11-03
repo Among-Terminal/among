@@ -152,7 +152,6 @@ fn is_metadata_directive(token: &str) -> bool {
 }
 
 const APPLICATION_ID: &str = "com.github.among-terminal";
-const PLUGINS: [&str; 3] = ["clock", "system-status", "pane-pwd"];
 
 /// Parse the `Key:` headers of the preamble, skipping comments and section
 /// directives. Continuation lines belong to the previous field rather than
@@ -324,16 +323,15 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
             return Err(format!("RPM %files is missing {path}").into());
         }
     }
-    if !listed.contains("%{_datadir}/among/plugins") {
-        return Err("RPM %files must ship the example plugin directory".into());
-    }
-    // Without ownership of the parent, erasing the package leaves an empty
-    // /usr/share/among behind that no package will ever remove.
-    if !files
+    // Official plugins are installed from their own repository. Any listed
+    // path below the former plugin directory would put a mixed old and new
+    // distribution on the user's disk, including a bare %dir that no package
+    // content needs.
+    if files
         .lines()
-        .any(|line| line.trim() == "%dir %{_datadir}/among")
+        .any(|line| line.contains("%{_datadir}/among") || line.contains("/usr/share/among"))
     {
-        return Err("RPM %files must own the %{_datadir}/among directory".into());
+        return Err("RPM %files must not ship or own anything under /usr/share/among".into());
     }
     let mut licensed = BTreeSet::new();
     for line in files.lines().map(str::trim) {
@@ -372,36 +370,20 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
         }
     }
 
-    // The packaged example set must match the three shipped examples exactly.
-    // A substring search would accept a loop that installs a fourth plugin or
-    // drops one, so the loop itself is compared against the recorded set.
+    // No build or install step may bring a plugin back: the plugin Cargo
+    // package no longer exists in this source tree, and an install into the
+    // plugin directory would only fail at package build time.
     let install = section("install")?;
-    let loop_line = install
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("for plugin in") && line.ends_with("; do"))
-        .ok_or("RPM install must name the shipped example plugins explicitly")?;
-    let looped = loop_line
-        .trim_start_matches("for plugin in ")
-        .trim_end_matches("; do")
-        .split_whitespace()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let listed_plugins = looped.iter().cloned().collect::<BTreeSet<_>>();
-    // A repeated name collapses in the set comparison below, yet installs the
-    // same file twice and hides a typo that was meant to be another plugin.
-    if listed_plugins.len() != looped.len() {
-        return Err("RPM install loop names an example plugin more than once".into());
+    for step in ["build", "check"] {
+        if section(step)?.contains("examples/plugins") {
+            return Err(format!("RPM %{step} still builds the removed example plugins").into());
+        }
     }
-    let expected = PLUGINS
-        .iter()
-        .map(|name| name.to_string())
-        .collect::<BTreeSet<_>>();
-    if listed_plugins != expected {
-        return Err(format!(
-            "RPM example plugin set differs from the shipped set: expected {expected:?}, found {listed_plugins:?}"
-        )
-        .into());
+    if install.contains("examples/plugins")
+        || install.contains("for plugin in")
+        || install.contains("_datadir}/among")
+    {
+        return Err("RPM %install must not install plugin executables".into());
     }
 
     // A themed hicolor icon must remain a name, not a cwd-relative file path.

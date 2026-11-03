@@ -166,12 +166,17 @@ fn the_shared_source_snapshot_carries_the_rpm_spec_and_its_release_workflow() ->
         "NOTICE",
         "THIRD_PARTY/inventory.json",
         "Cargo.lock",
-        "examples/plugins/Cargo.lock",
     ] {
         assert!(
             inputs.contains_key(required),
             "{required} is not a source input"
         );
     }
+    assert!(
+        inputs
+            .keys()
+            .all(|name| !name.starts_with("examples/plugins")),
+        "the removed example plugin package must not be delivered as source"
+    );
     Ok(())
 }

@@ -220,7 +220,7 @@ pub fn package(inputs: &Inputs<'_>, output: &Path, scratch: &Path) -> Result<Val
     write_bundle(inputs, output, &trust)
 }
 
-/// Read the executable, plugin and metadata members out of the actual Snap
+/// Read the executable and metadata members out of the actual Snap
 /// with `unsquashfs` and require the bytes the audit saw in prime.
 ///
 /// The association published next to the Snap claims these sources build
@@ -231,16 +231,7 @@ pub fn compare_snap_payload(snap: &Path, prime: &Path, scratch: &Path) -> Result
         ("PATH".into(), "/usr/bin:/bin".into()),
         ("LC_ALL".into(), "C.UTF-8".into()),
     ]);
-    for (index, name) in [
-        "bin/among",
-        "usr/share/among/plugins/clock",
-        "usr/share/among/plugins/system-status",
-        "usr/share/among/plugins/pane-pwd",
-        "meta/snap.yaml",
-    ]
-    .iter()
-    .enumerate()
-    {
+    for (index, name) in ["bin/among", "meta/snap.yaml"].iter().enumerate() {
         let actual = base.join(format!("member-{index}"));
         let errors = File::create(base.join(format!("member-{index}.stderr")))?;
         let mut process = OwnedProcess::spawn_split(

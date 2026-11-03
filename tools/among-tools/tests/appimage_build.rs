@@ -162,7 +162,6 @@ fn an_unattributed_bundled_library_fails_the_audit_by_name() -> Result<()> {
     for relative in [
         "AppRun",
         "usr/bin/among",
-        "usr/share/among/plugins/clock",
         "usr/lib/libgtk-4.so.1",
         "usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so",
     ] {
@@ -217,6 +216,12 @@ fn an_unattributed_bundled_library_fails_the_audit_by_name() -> Result<()> {
     fs::remove_file(root.join("usr/lib/escape"))?;
     write(&root, "usr/share/stray.so", ELF)?;
     assert!(appimage_build::bundled_libraries(&root).is_err());
+    fs::remove_file(root.join("usr/share/stray.so"))?;
+    // A plugin executable is no longer one of the project's own executables:
+    // an image that still carries one is refused instead of audited as shipped.
+    write(&root, "usr/share/among/plugins/clock", ELF)?;
+    assert!(appimage_build::bundled_libraries(&root).is_err());
+    assert!(among_tools::deb::reject_bundled_plugins(&root).is_err());
     fs::remove_dir_all(root)?;
     Ok(())
 }

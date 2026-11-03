@@ -24,13 +24,7 @@ const RUNTIME_DATA: [&str; 5] = [
 
 /// Project executables. Every other ELF file in the image is a bundled
 /// distribution library and must be attributed to a package.
-const OWN_EXECUTABLES: [&str; 5] = [
-    "AppRun",
-    "usr/bin/among",
-    "usr/share/among/plugins/clock",
-    "usr/share/among/plugins/system-status",
-    "usr/share/among/plugins/pane-pwd",
-];
+const OWN_EXECUTABLES: [&str; 2] = ["AppRun", "usr/bin/among"];
 
 /// Distribution data trees copied into the image next to the libraries. Their
 /// packages' notices travel with the image just like the libraries' notices.
@@ -735,6 +729,7 @@ pub fn build(
     restore_launcher(&final_root, &launcher_sha256)?;
     crate::appimage::verify_raster_icons(&final_root)?;
     require_runtime_data(&final_root)?;
+    crate::deb::reject_bundled_plugins(&final_root)?;
     if bundled_libraries(&final_root)? != libraries {
         return Err("final AppImage libraries differ from the audited AppDir".into());
     }
