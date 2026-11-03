@@ -192,10 +192,21 @@ pub fn github_tag_source(
     root: &Path,
     environment: &BTreeMap<String, String>,
 ) -> Result<(String, String)> {
+    // A tag pushed with a user's credentials starts the run as `push`. A tag
+    // created with the repository token starts no push run, so the release tag
+    // workflow starts the run manually on the tag (`workflow_dispatch`): the
+    // ref is still the tag and the commit is still the tag's commit, and both
+    // are verified below exactly as for a push.
     if environment.get("GITHUB_ACTIONS").map(String::as_str) != Some("true")
-        || environment.get("GITHUB_EVENT_NAME").map(String::as_str) != Some("push")
+        || !matches!(
+            environment.get("GITHUB_EVENT_NAME").map(String::as_str),
+            Some("push" | "workflow_dispatch")
+        )
     {
-        return Err("package construction is restricted to GitHub release-tag push CI".into());
+        return Err(
+            "package construction is restricted to GitHub release-tag push CI or a manual start on the tag"
+                .into(),
+        );
     }
     let reference = environment
         .get("GITHUB_REF")

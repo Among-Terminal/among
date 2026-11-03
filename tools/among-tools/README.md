@@ -150,7 +150,7 @@ metadata/license inventory before creating a new system-payload tree, preserves
 attribution bytes and exact file modes, rewrites only the desktop executable path,
 and never invokes the per-user installer or touches HOME/XDG. Existing output is
 refused. Individual writes are atomic; multi-file crash atomicity is not implied.
-`deb-tag-source SOURCE_ROOT` refuses anything except a GitHub release-tag push and
+`deb-tag-source SOURCE_ROOT` refuses anything except a GitHub release-tag push or a manual start on the tag, and
 checks exact checkout/tag/event source plus origin/main ancestry using local Git.
 These primitives and their negative fixtures do not constitute package building,
 installed acceptance or completed release workflow migration. No supported local

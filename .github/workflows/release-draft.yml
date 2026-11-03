@@ -3,9 +3,15 @@ name: Release draft
 # A release tag builds every package in this one run, through the package
 # workflows' installed checks, and only then fills a GitHub Release draft.
 # Publishing the draft is the owner's manual decision; nothing here publishes.
+#
+# The tag normally starts the run by itself (push). A tag created with the
+# repository token starts no push workflow, so release-please.yml starts this
+# workflow with workflow_dispatch on the tag instead; the run then has the tag
+# as its ref and the tag's commit as its commit, exactly like a push run.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions: {}
 
@@ -14,17 +20,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A manual start can name any ref, a push start can only name a tag, so the
+  # manual start has to prove here what the trigger proves by itself.
+  verify-ref:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: A manual start needs a v* tag that main contains
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "release draft: $*" >&2; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
+            echo "Started by a tag push; nothing more to verify here."
+            exit 0
+          fi
+          case "$GITHUB_REF" in
+            refs/tags/v?*) ;;
+            *) fail "a manual start must run on a v* tag, not on $GITHUB_REF" ;;
+          esac
+          commit=$(git rev-parse "$GITHUB_REF^{commit}")
+          [ "$commit" = "$GITHUB_SHA" ] || fail "$GITHUB_REF is $commit, the run started on $GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main \
+            || fail "$GITHUB_SHA is not contained in main"
+          echo "$GITHUB_REF at $GITHUB_SHA is contained in main"
+
   deb:
+    needs: [verify-ref]
     permissions:
       contents: read
     uses: ./.github/workflows/deb-release.yml
 
   rpm:
+    needs: [verify-ref]
     permissions:
       contents: read
     uses: ./.github/workflows/rpm-release.yml
 
   appimage:
+    needs: [verify-ref]
     permissions:
       contents: read
     uses: ./.github/workflows/appimage-release.yml

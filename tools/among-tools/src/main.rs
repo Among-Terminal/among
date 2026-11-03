@@ -58,6 +58,7 @@ Usage:
   among-tools prepare-stable-build <source-root> <new-output> <tag>
   among-tools check-stable-build <tree>
   among-tools check-release-metadata <source-root>
+  among-tools release-prepare <source-root> [--dry-run]
   among-tools package-metainfo <source.xml> <package-version> <output.xml>
   among-tools check-stable-source <repository> <record.json> <bundle.tar>
   among-tools third-party-notices <source-root> <destination> <generate|check>
@@ -442,6 +443,36 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                     Path::new(bundle)
                 )?)?
             );
+        }
+        [command, root, rest @ ..]
+            if command == "release-prepare" && (rest.is_empty() || rest == ["--dry-run"]) =>
+        {
+            let root = Path::new(root);
+            let plan = among_tools::release_plan::plan(root)?;
+            println!(
+                "last stable tag {}, {} titled commits since",
+                plan.tag,
+                plan.commits.len()
+            );
+            let seconds = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs();
+            let date = among_tools::release_plan::civil_date(seconds);
+            match among_tools::release_plan::prepare(root, &date)? {
+                None => {
+                    println!("No user-visible change since the last release: nothing to prepare.")
+                }
+                Some(prepared) if !rest.is_empty() => {
+                    println!("Next version {}: {}", prepared.version, prepared.title);
+                    for (path, _) in &prepared.files {
+                        println!("would change {path}");
+                    }
+                }
+                Some(prepared) => {
+                    among_tools::release_plan::write(root, &prepared)?;
+                    println!("TITLE: {}\n\n{}", prepared.title, prepared.body);
+                }
+            }
         }
         [command, root] if command == "check-release-metadata" => {
             among_tools::release_metadata::run(Path::new(root), &among_tools::scratch::root()?)?;

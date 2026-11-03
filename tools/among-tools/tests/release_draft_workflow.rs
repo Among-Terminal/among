@@ -35,9 +35,33 @@ fn actual_workflow_satisfies_the_release_draft_policy() -> Result<()> {
 fn policy_refuses_publication_scope_order_and_input_drift() -> Result<()> {
     let valid = actual()?;
     type Mutation = fn(&mut Value) -> Result<()>;
-    let mutations: [(&str, Mutation); 19] = [
-        ("manual trigger", |w| {
-            w["on"]["workflow_dispatch"] = json!(null);
+    let mutations: [(&str, Mutation); 23] = [
+        ("scheduled trigger", |w| {
+            w["on"]["schedule"] = json!([{"cron":"0 0 * * *"}]);
+            Ok(())
+        }),
+        ("manual trigger with inputs", |w| {
+            w["on"]["workflow_dispatch"] = json!({"inputs":{"tag":{"type":"string"}}});
+            Ok(())
+        }),
+        ("package build before the ref check", |w| {
+            w["jobs"]["deb"]
+                .as_object_mut()
+                .ok_or("deb job")?
+                .remove("needs");
+            Ok(())
+        }),
+        ("ref check without the main ancestry test", |w| {
+            let step = &mut w["jobs"]["verify-ref"]["steps"][1];
+            let text = step["run"]
+                .as_str()
+                .ok_or("run")?
+                .replace("git merge-base --is-ancestor", "git merge-base");
+            step["run"] = text.into();
+            Ok(())
+        }),
+        ("ref check on a shallow checkout", |w| {
+            w["jobs"]["verify-ref"]["steps"][0]["with"]["fetch-depth"] = json!(1);
             Ok(())
         }),
         ("branch trigger", |w| {

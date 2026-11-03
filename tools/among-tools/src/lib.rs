@@ -49,6 +49,7 @@ pub mod release_assets;
 pub mod release_draft_workflow;
 pub mod release_metadata;
 pub mod release_notes;
+pub mod release_plan;
 pub mod release_policy;
 pub mod resources;
 pub mod rpm;
@@ -68,6 +69,7 @@ pub mod stable_build;
 pub mod stable_source;
 pub mod storage;
 pub mod store_credentials;
+pub mod version_locations;
 pub mod window_controls;
 pub mod workspace_reorder;
 
