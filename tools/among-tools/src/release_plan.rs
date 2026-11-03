@@ -189,6 +189,34 @@ fn escape_xml(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// `metainfo` without its `<release>` entry for `version`, whatever the order
+/// of the entry's attributes and whether it is written on one line or several.
+fn without_release_entry(metainfo: &str, version: &str) -> Result<String> {
+    let document = roxmltree::Document::parse(metainfo)?;
+    let Some(entry) = document
+        .descendants()
+        .find(|node| node.has_tag_name("release") && node.attribute("version") == Some(version))
+    else {
+        return Ok(metainfo.to_string());
+    };
+    let range = entry.range();
+    let line_start = metainfo[..range.start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let start = if metainfo[line_start..range.start].trim().is_empty() {
+        line_start
+    } else {
+        range.start
+    };
+    let mut end = range.end;
+    let tail = &metainfo[end..];
+    let blanks = tail.len() - tail.trim_start_matches([' ', '\t']).len();
+    if tail[blanks..].starts_with('\n') {
+        end += blanks + 1;
+    }
+    Ok(format!("{}{}", &metainfo[..start], &metainfo[end..]))
+}
+
 /// `metainfo` with a stable release entry added in front of the existing ones.
 /// The older entries stay as the history of earlier versions. The notes are
 /// grouped like the changelog: one paragraph and list per kind of change.
@@ -198,24 +226,10 @@ pub fn metainfo_with_release(
     date: &str,
     commits: &[Commit],
 ) -> Result<String> {
-    let mut lines: Vec<&str> = metainfo.split_inclusive('\n').collect();
     // An entry for this version may already exist (the files were bumped ahead
     // of the release): it is replaced, never duplicated.
-    if let Some(start) = lines
-        .iter()
-        .position(|line| line.contains(&format!("<release version=\"{version}\"")))
-    {
-        let end = if lines[start].trim_end().ends_with("/>") {
-            start
-        } else {
-            start
-                + lines[start..]
-                    .iter()
-                    .position(|line| line.contains("</release>"))
-                    .ok_or("AppStream release entry is not closed")?
-        };
-        lines.drain(start..=end);
-    }
+    let stripped = without_release_entry(metainfo, version)?;
+    let mut lines: Vec<&str> = stripped.split_inclusive('\n').collect();
     let position = lines
         .iter()
         .position(|line| line.trim() == "<releases>")
@@ -465,6 +479,8 @@ pub fn prepare(root: &Path, date: &str, accepted: &[String]) -> Result<Option<Pr
     for (path, text) in &mut files {
         if path == version_locations::METAINFO {
             *text = metainfo_with_release(text, &version, date, &plan.commits)?;
+            // Never hand a duplicate to `write`, whatever the input looked like.
+            version_locations::unique_releases(text)?;
         }
     }
     let section = changelog_section(&version, date, &plan.commits);
@@ -526,10 +542,14 @@ fn ensure_clean_working_branch(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Writes the files of a prepared release, all or none: every target is
-/// resolved first, every new text goes to a temporary file next to its target,
-/// and only when all of them exist are they renamed into place.
+/// Writes the files of a prepared release. Every target is resolved first and a
+/// temporary path that already exists (even as a symlink) is refused before
+/// anything is written. Every new text then goes to a temporary file created
+/// next to its target, and only when all of them exist are they renamed into
+/// place. If a rename fails, the files already replaced are put back; if that
+/// restore itself fails, the error names the files that were left changed.
 pub fn write(root: &Path, prepared: &Prepared) -> Result<()> {
+    use std::io::Write as _;
     ensure_clean_working_branch(root)?;
     let mut targets = Vec::new();
     for (path, text) in &prepared.files {
@@ -541,46 +561,64 @@ pub fn write(root: &Path, prepared: &Prepared) -> Result<()> {
         };
         let name = target.file_name().ok_or("release file has no name")?;
         let temporary = target.with_file_name(format!(".{}.release-tmp", name.to_string_lossy()));
+        if std::fs::symlink_metadata(&temporary).is_ok() {
+            return Err(
+                format!("refusing to write: {} already exists", temporary.display()).into(),
+            );
+        }
         targets.push((target, temporary, text));
     }
+    let discard_temporaries = || {
+        for (_, temporary, _) in &targets {
+            let _ = std::fs::remove_file(temporary);
+        }
+    };
     let staged = (|| -> Result<()> {
         for (target, temporary, text) in &targets {
-            std::fs::write(temporary, text)?;
+            // `create_new` never follows or reuses an existing path.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(temporary)?;
+            file.write_all(text.as_bytes())?;
             if let Ok(metadata) = std::fs::metadata(target) {
                 std::fs::set_permissions(temporary, metadata.permissions())?;
             }
         }
         Ok(())
     })();
-    let discard_temporaries = || {
-        for (_, temporary, _) in &targets {
-            let _ = std::fs::remove_file(temporary);
-        }
-    };
     if let Err(error) = staged {
         discard_temporaries();
         return Err(error);
     }
     // The previous content is kept in memory so that a failing rename puts the
-    // already replaced files back: the tree ends up either new or unchanged.
+    // already replaced files back.
     let previous: Vec<Option<Vec<u8>>> = targets
         .iter()
         .map(|(target, _, _)| std::fs::read(target).ok())
         .collect();
     for (index, (target, temporary, _)) in targets.iter().enumerate() {
         if let Err(error) = std::fs::rename(temporary, target) {
+            let mut left_changed = Vec::new();
             for ((done, _, _), old) in targets[..index].iter().zip(&previous) {
-                match old {
-                    Some(bytes) => {
-                        let _ = std::fs::write(done, bytes);
-                    }
-                    None => {
-                        let _ = std::fs::remove_file(done);
-                    }
+                let restored = match old {
+                    Some(bytes) => std::fs::write(done, bytes),
+                    None => std::fs::remove_file(done),
+                };
+                if restored.is_err() {
+                    left_changed.push(done.display().to_string());
                 }
             }
             discard_temporaries();
-            return Err(error.into());
+            if left_changed.is_empty() {
+                return Err(error.into());
+            }
+            return Err(format!(
+                "renaming {} failed: {error}; restoring failed, these files were left changed: {}",
+                target.display(),
+                left_changed.join(", ")
+            )
+            .into());
         }
     }
     Ok(())

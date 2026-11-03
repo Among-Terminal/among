@@ -111,7 +111,8 @@ fn cargo_lock_version(text: &str, name: &str) -> Result<String> {
 /// Replaces the quoted value of a `version = "..."` line, keeping the line's
 /// layout. `None` when the line is not a version assignment.
 fn rewrite_version_line(line: &str, version: &str) -> Option<String> {
-    let rest = line.strip_prefix("version")?;
+    // TOML ignores indentation, so an indented assignment is still the key.
+    let rest = line.trim_start().strip_prefix("version")?;
     let after_equals = rest.trim_start().strip_prefix('=')?;
     let quote = after_equals.find('"')?;
     let end = after_equals[quote + 1..].find('"')? + quote + 1;
@@ -127,7 +128,7 @@ fn set_cargo_manifest_version(text: &str, version: &str) -> Result<String> {
     for line in text.split_inclusive('\n') {
         let body = line.trim_end_matches(['\n', '\r']);
         let ending = &line[body.len()..];
-        if body.starts_with('[') {
+        if body.trim_start().starts_with('[') {
             in_package = body.trim() == "[package]";
         }
         match in_package
@@ -368,8 +369,12 @@ fn check_release_notes(root: &Path, version: &str) -> Result<()> {
 /// Two `<release>` entries for one version make AppStream ambiguous; a release
 /// preparation that adds an entry without replacing the old one produces this.
 fn check_metainfo_releases(root: &Path) -> Result<()> {
-    let text = read_file(root, METAINFO)?;
-    let document = roxmltree::Document::parse(&text)?;
+    unique_releases(&read_file(root, METAINFO)?)
+}
+
+/// Fails when two `<release>` entries of the metainfo text share a version.
+pub fn unique_releases(text: &str) -> Result<()> {
+    let document = roxmltree::Document::parse(text)?;
     let mut seen = std::collections::BTreeSet::new();
     for release in document
         .descendants()

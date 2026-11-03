@@ -476,3 +476,66 @@ fn a_rename_failure_restores_the_tree_and_leaves_no_temporary_file() -> Result<(
     assert!(leftovers.is_empty(), "{leftovers:?}");
     Ok(())
 }
+
+#[test]
+fn an_existing_entry_is_found_whatever_the_order_of_its_attributes() -> Result<()> {
+    let list = commits(&["fix: later (#8)"]);
+    for existing in [
+        "    <release date=\"2026-01-01\" type=\"stable\" version=\"0.2.0\">\n      <description><p>old</p></description>\n    </release>\n",
+        "    <release type=\"stable\" version=\"0.2.0\" date=\"2026-01-01\"/>\n",
+        "    <release\n        date=\"2026-01-01\"\n        version=\"0.2.0\">\n      <description><p>old</p></description>\n    </release>\n",
+    ] {
+        let xml = format!(
+            "<component>\n  <releases>\n{existing}    <release version=\"0.1.0\" date=\"2025-01-01\"/>\n  </releases>\n</component>\n"
+        );
+        let rendered = metainfo_with_release(&xml, "0.2.0", "2026-11-03", &list)?;
+        version_locations::unique_releases(&rendered)?;
+        assert_eq!(rendered.matches("0.2.0\"").count(), 1, "{rendered}");
+        assert!(rendered.contains("version=\"0.1.0\"") && !rendered.contains("<p>old</p>"));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_symlink_in_the_way_of_a_temporary_file_is_refused_before_anything_is_written() -> Result<()> {
+    let root = at_first_release()?;
+    empty_commit(&root, "feat: drag (#5)")?;
+    let prepared = prepare(&root, "2026-11-03", &[])?.ok_or("no release")?;
+    let outside = root.join("outside-target");
+    std::os::unix::fs::symlink(&outside, root.join(".Cargo.toml.release-tmp"))?;
+    let error = write(&root, &prepared).err().ok_or("followed a symlink")?;
+    assert!(error.to_string().contains("already exists"), "{error}");
+    assert!(!outside.exists(), "the symlink target was created");
+    assert_eq!(version_locations::check(&root)?, "0.1.1");
+    assert!(root
+        .join(".Cargo.toml.release-tmp")
+        .symlink_metadata()?
+        .file_type()
+        .is_symlink());
+    Ok(())
+}
+
+#[test]
+fn a_failed_restore_is_reported_with_the_files_left_changed() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        // Root can write a read-only file, so the restore cannot fail.
+        return Ok(());
+    }
+    let root = at_first_release()?;
+    empty_commit(&root, "feat: drag (#5)")?;
+    fs::create_dir(root.join("CHANGELOG.md"))?;
+    write_file(&root, "CHANGELOG.md/keep", "x")?;
+    git(&root, &["add", "-f", "CHANGELOG.md/keep"])?;
+    git(&root, &["commit", "-q", "-m", "chore: changelog directory"])?;
+    let prepared = prepare(&root, "2026-11-03", &[])?.ok_or("no release")?;
+    // Cargo.toml is renamed first; being read-only it cannot be written back.
+    fs::set_permissions(root.join("Cargo.toml"), fs::Permissions::from_mode(0o444))?;
+    let error = write(&root, &prepared).err().ok_or("wrote")?;
+    let text = error.to_string();
+    assert!(
+        text.contains("left changed") && text.contains("Cargo.toml"),
+        "{text}"
+    );
+    Ok(())
+}

@@ -189,3 +189,22 @@ fn a_duplicate_release_entry_in_the_metainfo_fails_the_check() -> Result<()> {
     assert!(error.to_string().contains("more than once"), "{error}");
     Ok(())
 }
+
+#[test]
+fn an_indented_manifest_is_rewritten_like_any_other() -> Result<()> {
+    let root = copy()?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "  [package]\n  name = \"among\"\n    version = \"0.1.2\"\n",
+    )?;
+    let rewritten = version_locations::rewrite_all(&root, "9.9.9")?;
+    let (_, text) = rewritten
+        .iter()
+        .find(|(path, _)| *path == "Cargo.toml")
+        .ok_or("no Cargo.toml")?;
+    assert_eq!(
+        text,
+        "  [package]\n  name = \"among\"\n    version = \"9.9.9\"\n"
+    );
+    Ok(())
+}

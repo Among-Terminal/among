@@ -295,7 +295,7 @@ this chain publishes: the owner merges the pull request and publishes the draft.
    Commits whose title is not a Conventional Commit cannot influence the
    version or the changelog. They are listed (`NOT TITLED ...`) and the command
    fails until each one is named with `--accept-untitled <sha>,<sha>...`
-   (prefixes of at least seven digits); the body of the pull request then lists
+   (prefixes of at least seven hexadecimal digits); the body of the pull request then lists
    them as left out on purpose. A dry run applies the same checks (it fails the
    same way, also when nothing is releasable but untitled commits exist, and
    rejects names that match no such commit) and only skips the writing.
