@@ -175,10 +175,23 @@ fn selected(ctx: &Window) -> crate::plugin::inventory::Receipt {
         .receipt
 }
 
+/// How far a started development generation is expected to get.
+#[derive(Clone, Copy, PartialEq)]
+enum Reach {
+    /// The plugin answers the handshake and is admitted.
+    Admitted,
+    /// The host launches the process, which is all the development gate
+    /// decides. The official plugins compile their own repository identity
+    /// (`github:1431055733/<id>`) into the handshake check and close the pipe
+    /// when the host offers `development/<id>`, so a local install of their
+    /// bytes is launched but never admitted.
+    Launched,
+}
+
 /// Grants the package's own requirements as the review would and shows that
 /// the host really runs it, which only development mode allows for this
 /// generation.
-fn starts_under_the_flag(ctx: &Window, key: &str) {
+fn starts_under_the_flag(ctx: &Window, key: &str, reach: Reach) {
     let (entry, _) = ctx.state.borrow().plugins.managed_details(key).unwrap();
     let manifest = &entry.inspected.as_ref().unwrap().manifest;
     let review = entry.receipt.review(manifest.required_features.clone());
@@ -196,16 +209,28 @@ fn starts_under_the_flag(ctx: &Window, key: &str) {
             glib::MainContext::default().iteration(false);
         }
         let listing = ctx.state.borrow().plugins.listing();
-        if listing
+        let state = listing
             .iter()
-            .any(|(name, state)| name == key && *state == crate::plugin::host::PluginState::Running)
-        {
-            break;
+            .find(|(name, _)| name == key)
+            .map(|(_, state)| state);
+        match (reach, state) {
+            (Reach::Admitted, Some(PluginState::Running)) => break,
+            (Reach::Launched, Some(PluginState::Running | PluginState::Faulted { .. })) => break,
+            // Refused by the development gate: the process never started.
+            (_, Some(PluginState::Unavailable { reason })) => {
+                panic!("{key} was not launched: {reason}")
+            }
+            _ => {}
         }
         // The state names the reason a started plugin was not admitted.
         assert!(
             std::time::Instant::now() < deadline,
-            "{key} did not reach Running; host states: {listing:?}"
+            "{key} did not reach {}; host states: {listing:?}",
+            if reach == Reach::Admitted {
+                "Running"
+            } else {
+                "a launched state"
+            }
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -305,7 +330,7 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
         .join("managed-plugins.json");
     let saved: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
     assert!(saved["plugins"][KEY].get("review").is_none());
-    starts_under_the_flag(&ctx, KEY);
+    starts_under_the_flag(&ctx, KEY, Reach::Admitted);
 
     // The stable release of the same bytes and commit rebinds it.
     press(&button(&view, "Refresh"));
@@ -403,7 +428,7 @@ fn candidate_packages_install_from_a_local_catalogue_and_start_under_the_flag() 
     assert_eq!(entries.len(), 1);
     assert!(entries[0].receipt.local().is_some());
     assert!(entries[0].inspected.is_ok());
-    starts_under_the_flag(&ctx, "development/clock");
+    starts_under_the_flag(&ctx, "development/clock", Reach::Launched);
     view.destroy();
     preferences.destroy();
     ctx.window.destroy();
