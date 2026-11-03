@@ -287,6 +287,27 @@ mod effect_snapshot_tests {
     use super::*;
     use crate::notifications::{EffectAuthorityError, Eligibility};
 
+    /// A development installation is registered like a release one; refusing its
+    /// key left it unable to start under the development flag.
+    #[test]
+    fn release_and_development_plugin_keys_register_and_other_shapes_do_not() {
+        for accepted in ["github:12/clock", "development/clock", "development/a-1"] {
+            assert!(identity(accepted), "{accepted}");
+        }
+        for refused in [
+            "",
+            "development/",
+            "development/Clock",
+            "development/a/b",
+            "github:0/clock",
+            "github:012/clock",
+            "github:12/",
+            "other/clock",
+        ] {
+            assert!(!identity(refused), "{refused}");
+        }
+    }
+
     #[test]
     fn forged_private_envelope_fields_and_missing_or_foreign_origins_refuse_conversion() {
         let now = Instant::now();
@@ -1322,7 +1343,13 @@ impl Drop for Backend {
     }
 }
 
+/// A managed plugin key: `github:<repository id>/<plugin>` for a release
+/// installation, `development/<plugin>` for one installed from a local
+/// catalogue under the development flag.
 fn identity(value: &str) -> bool {
+    if let Some(plugin) = value.strip_prefix("development/") {
+        return local_id(plugin);
+    }
     value
         .strip_prefix("github:")
         .and_then(|value| value.split_once('/'))
