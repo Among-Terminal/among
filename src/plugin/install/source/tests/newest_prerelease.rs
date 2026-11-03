@@ -202,7 +202,7 @@ fn every_page_up_to_the_third_is_read_and_a_fourth_is_never_requested() {
     assert_eq!(
         server.inspect_prerelease().unwrap_err(),
         Problem(
-            "the release list is longer than the 300 releases read and they hold no prerelease; nothing was changed"
+            "the 300 releases read hold no prerelease and the list may hold more that were not read; nothing was changed"
         )
     );
     assert_eq!(list_requests(&server).len(), 3);

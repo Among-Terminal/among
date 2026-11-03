@@ -309,6 +309,12 @@ impl Receipt {
                 if let Some(source) = &release.source {
                     source.validate(release, self)?;
                 }
+                // A prerelease approval names its installation, so a
+                // prerelease receipt without a consent token could never
+                // match one and would be unusable.
+                if self.requires_development() && self.installation.is_none() {
+                    return Err(Problem("invalid committed installation receipt"));
+                }
             }
             // A local install always has its own consent token: there is no
             // earlier receipt format it could be compatible with.
@@ -806,6 +812,25 @@ pub(crate) mod tests {
         let mut tokenless = local.clone();
         tokenless.installation = None;
         assert!(tokenless.validate().is_err());
+        // A prerelease approval names its installation, so a prerelease
+        // receipt needs the consent token too; an ordinary one may lack it.
+        let mut prerelease = release.clone();
+        let mut snapshot =
+            serde_json::to_value(&source_receipt(&release).release_snapshot).unwrap();
+        snapshot["prerelease"] = json!(true);
+        release_of(&mut prerelease)
+            .source
+            .as_mut()
+            .unwrap()
+            .release_snapshot = Box::new(serde_json::from_value(snapshot).unwrap());
+        assert!(prerelease.requires_development());
+        prerelease.installation = Some("f".repeat(64));
+        prerelease.validate().unwrap();
+        prerelease.installation = None;
+        assert!(prerelease.validate().is_err());
+        let mut ordinary = release.clone();
+        ordinary.installation = None;
+        ordinary.validate().unwrap();
         let mut unsafe_asset = local.clone();
         unsafe_asset.origin = Provenance::Local(LocalOrigin {
             catalogue_sha256: "d".repeat(64),

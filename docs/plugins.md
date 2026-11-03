@@ -144,6 +144,14 @@ them. A local install has the identity `development/<plugin-id>`, separate
 from any `github:<repository>/<plugin-id>` install of the same plugin, so its
 settings and switch never mix with a release install.
 
+The host offers that identity, `development/<plugin-id>`, in the handshake
+and does not present a published one. A plugin installed from a local
+catalogue must therefore be built to accept `development/<plugin-id>`. The
+published plugins compile their own `github:<repository-id>/<plugin-id>`
+identity into that check: their bytes install and the process starts, but the
+plugin closes the channel and the host marks it faulted ("plugin stdout
+closed"). Install published plugins from their release or prerelease instead.
+
 Installing again under an ID that already has a development install is a
 replacement. It needs a separate **Replace** confirmation, starts disabled
 and receives no access granted to the replaced install; the replaced
@@ -160,7 +168,11 @@ In development mode every row of Registered sources also has **Use latest
 prerelease**. Among reads up to three pages of 100 releases and picks the
 non-draft prerelease with the greatest creation time, the greater numeric ID
 deciding a tie. A list that ends without a prerelease, and three full pages
-without one, are refused with their own reasons. The chosen prerelease passes
+without one, are refused with their own reasons; the second says only that the
+300 releases read hold none and the list may hold more. GitHub documents no
+order for the list, so a repository with 300 or more releases is judged by the
+releases read: the result is the newest prerelease among those, which need not
+be the newest in the repository. The chosen prerelease passes
 the same identity, immutability, digest, schema 2 and tag checks as a latest
 release, and installation repeats the selection before it commits. The result
 is shown for review and is not saved as source metadata.
@@ -181,7 +193,10 @@ A newer stable release is an ordinary update of it. "Newer" means Semantic
 Versioning 2.0.0 precedence. A lower version is shown with the reason and is
 not offered. A version that is not written as Semantic Versioning (`1.0`,
 `2026.10`, a `v` prefix) has no order, so neither it nor an installed version of
-that form is ever offered as an update. A stable release of the
+that form is ever offered as an update, and the install review says so before
+consent. The very same non-SemVer text still names the same version: with the
+same bytes it is "already installed", with other bytes or another commit it is
+a publisher inconsistency. A stable release of the
 same version is offered as an update only with the same manifest digest,
 package digest and tag commit; applying it rebinds the install to the stable
 release, and it then starts without the flag. The same version with other

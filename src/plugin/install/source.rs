@@ -320,15 +320,24 @@ impl Selection {
     // rebinds the provenance.
     fn consistent_with(&self, entry: &crate::plugin::inventory::Entry) -> Result<(), Problem> {
         let installed = entry.inspected.as_ref().map_err(|problem| *problem)?;
-        let (Some(current), Some(offered)) = (
+        let order = match (
             version::SemVer::parse(&installed.manifest.version),
             version::SemVer::parse(&self.version.manifest.version),
-        ) else {
-            return Err(Problem(
-                "the installed or offered version is not a Semantic Versioning 2.0.0 version, so its order is unknown; no update is offered",
-            ));
+        ) {
+            (Some(current), Some(offered)) => offered.cmp(&current),
+            // The very same text names the same version without any order, so
+            // only its content decides below. Different texts cannot be put
+            // in order.
+            _ if installed.manifest.version == self.version.manifest.version => {
+                std::cmp::Ordering::Equal
+            }
+            _ => {
+                return Err(Problem(
+                    "the installed or offered version is not a Semantic Versioning 2.0.0 version, so its order is unknown; no update is offered",
+                ))
+            }
         };
-        match offered.cmp(&current) {
+        match order {
             std::cmp::Ordering::Greater => return Ok(()),
             std::cmp::Ordering::Less => {
                 return Err(Problem(
@@ -418,6 +427,13 @@ impl Selection {
             )
         });
         let base = format!("{}\nSelected version {} · catalogue-declared version commit {}\n{}\nRequired access: {}\nOptional access: {}\nThe exact release tag must resolve to this commit and remain consistent through the pre-commit recheck. This is content consistency, not build reproducibility or independent publisher authentication. Only this plugin may restart. Publisher/access changes require renewed runtime review before new code starts. Local settings are retained; unsupported migrations are refused. The previous verified generation remains available. Independent filesystem/network effects cannot be rolled back.",self.description(),self.version.manifest.version,self.version.revision,change.map_or("New installation",|change|change.description()),self.version.manifest.required_features.join(", "),self.version.manifest.optional_features.join(", "));
+        // Without a SemVer version no order exists, so no later release can
+        // ever be offered as an update of this install; say so before consent.
+        let base = if version::SemVer::parse(&self.version.manifest.version).is_none() {
+            format!("{base}\nThis version is not a Semantic Versioning 2.0.0 version, so Among will never offer updates for this plugin; a newer release has to be installed by removing it first.")
+        } else {
+            base
+        };
         if self.fresh_consent {
             format!("{base}\nThis prerelease replaces the installed generation under the same identity and keeps its local settings. It starts disabled, and access granted to the replaced installation is not carried over. It starts only with --plugin-development.")
         } else if self.is_prerelease() {

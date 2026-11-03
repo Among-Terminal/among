@@ -177,21 +177,20 @@ fn selected(ctx: &Window) -> crate::plugin::inventory::Receipt {
 
 /// How far a started development generation is expected to get.
 #[derive(Clone, Copy, PartialEq)]
-enum Reach {
+pub(super) enum Reach {
     /// The plugin answers the handshake and is admitted.
     Admitted,
-    /// The host launches the process, which is all the development gate
-    /// decides. The official plugins compile their own repository identity
-    /// (`github:1431055733/<id>`) into the handshake check and close the pipe
-    /// when the host offers `development/<id>`, so a local install of their
-    /// bytes is launched but never admitted.
-    Launched,
+    /// The official plugins compile their own repository identity
+    /// (`github:1431055733/<id>`) into the handshake check. The host offers
+    /// `development/<id>` for a local install, so the process is launched and
+    /// then closes its channel: the host faults it with exactly this reason.
+    ClosesChannel,
 }
 
 /// Grants the package's own requirements as the review would and shows that
 /// the host really runs it, which only development mode allows for this
 /// generation.
-fn starts_under_the_flag(ctx: &Window, key: &str, reach: Reach) {
+pub(super) fn starts_under_the_flag(ctx: &Window, key: &str, reach: Reach) {
     let (entry, _) = ctx.state.borrow().plugins.managed_details(key).unwrap();
     let manifest = &entry.inspected.as_ref().unwrap().manifest;
     let review = entry.receipt.review(manifest.required_features.clone());
@@ -215,7 +214,14 @@ fn starts_under_the_flag(ctx: &Window, key: &str, reach: Reach) {
             .map(|(_, state)| state);
         match (reach, state) {
             (Reach::Admitted, Some(PluginState::Running)) => break,
-            (Reach::Launched, Some(PluginState::Running | PluginState::Faulted { .. })) => break,
+            (Reach::ClosesChannel, Some(PluginState::Faulted { reason }))
+                if reason == "plugin stdout closed" =>
+            {
+                break
+            }
+            (_, Some(PluginState::Faulted { reason })) => {
+                panic!("{key} faulted for another reason: {reason}")
+            }
             // Refused by the development gate: the process never started.
             (_, Some(PluginState::Unavailable { reason })) => {
                 panic!("{key} was not launched: {reason}")
@@ -229,7 +235,7 @@ fn starts_under_the_flag(ctx: &Window, key: &str, reach: Reach) {
             if reach == Reach::Admitted {
                 "Running"
             } else {
-                "a launched state"
+                "a closed channel"
             }
         );
         std::thread::sleep(Duration::from_millis(5));
@@ -428,7 +434,7 @@ fn candidate_packages_install_from_a_local_catalogue_and_start_under_the_flag() 
     assert_eq!(entries.len(), 1);
     assert!(entries[0].receipt.local().is_some());
     assert!(entries[0].inspected.is_ok());
-    starts_under_the_flag(&ctx, "development/clock", Reach::Launched);
+    starts_under_the_flag(&ctx, "development/clock", Reach::ClosesChannel);
     view.destroy();
     preferences.destroy();
     ctx.window.destroy();

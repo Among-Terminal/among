@@ -46,16 +46,6 @@ impl SourceRefresh {
 }
 
 #[cfg(test)]
-impl SourceRefresh {
-    fn ordinary() -> Self {
-        Self {
-            latest: Rc::new(Job::refresh),
-            prerelease: None,
-        }
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn present_for_test(parent: &gtk::Window, start: Rc<Start>) {
     present_with(parent, start, installer(), Rc::new(|| {}));
 }
@@ -93,7 +83,7 @@ fn present_with(
         install,
         changed,
         crate::plugin::install::registry::root(),
-        SourceRefresh::ordinary(),
+        SourceRefresh::for_mode(false),
         Rc::new(|_| None),
     );
 }
@@ -161,7 +151,7 @@ pub(crate) fn present_updates_for_test(
         install,
         changed,
         crate::plugin::install::registry::root(),
-        SourceRefresh::ordinary(),
+        SourceRefresh::for_mode(false),
         details,
     );
 }

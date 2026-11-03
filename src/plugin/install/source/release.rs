@@ -272,7 +272,7 @@ impl Operation {
             Problem("no published prerelease in this repository; nothing was changed")
         } else {
             Problem(
-                "the release list is longer than the 300 releases read and they hold no prerelease; nothing was changed",
+                "the 300 releases read hold no prerelease and the list may hold more that were not read; nothing was changed",
             )
         })?;
         // The chosen release is read again as one document. GitHub does not

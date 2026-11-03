@@ -39,7 +39,7 @@ impl PartialOrd for Identifier {
 }
 
 impl SemVer {
-    /// Parses exactly the grammar of the specification: no `v` prefix, no
+    /// Parses exactly the SemVer 2.0.0 grammar: no `v` prefix, no
     /// missing components and no leading zeros in numeric parts.
     pub fn parse(text: &str) -> Option<Self> {
         let (without_build, build) = match text.split_once('+') {
@@ -107,7 +107,7 @@ impl Ord for SemVer {
                 ([], _) => Ordering::Greater,
                 (_, []) => Ordering::Less,
                 // Slices order element by element and, on a shared prefix, the
-                // shorter list first, which is the specification's rule.
+                // shorter list first, which is SemVer's rule.
                 (left, right) => left.cmp(right),
             }
         })
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn precedence_follows_the_published_ordering_chain() {
-        // The chain given in the specification's precedence section.
+        // The precedence chain given in the SemVer 2.0.0 text.
         let chain = [
             "1.0.0-alpha",
             "1.0.0-alpha.1",

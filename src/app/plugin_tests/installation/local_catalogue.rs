@@ -7,7 +7,11 @@ use super::*;
 #[test]
 #[ignore = "requires an isolated native display, xdotool and its own process for development mode"]
 fn local_catalogue_installs_and_replaces_only_with_explicit_review_in_development_mode() {
-    use crate::plugin::install::test_package as fixture_for;
+    // The fake plugin answers the handshake with the identity the host
+    // offers, `development/sample`, so this local install can be admitted.
+    fn fixture_for(_id: &str) -> (Value, Vec<u8>) {
+        crate::plugin::install::test_managed_package("1.0.0", "managed-resource", |_| {})
+    }
     use serde_json::{json, Value};
     // Ignored native tests run one per process, so fixing the mode here
     // affects no other test.
@@ -238,6 +242,15 @@ fn local_catalogue_installs_and_replaces_only_with_explicit_review_in_developmen
         "kept",
         "replacing the package keeps the user's settings"
     );
+    // A plugin built for `development/<id>` is admitted and runs under the
+    // flag; the published bytes with their own identity are covered by the
+    // candidate check.
+    super::candidate::starts_under_the_flag(
+        &ctx,
+        "development/sample",
+        super::candidate::Reach::Admitted,
+    );
+    assert_eq!(saved_label(), "kept");
     view.destroy();
     preferences.destroy();
     ctx.window.destroy();

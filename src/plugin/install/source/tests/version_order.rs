@@ -77,6 +77,43 @@ fn only_a_semver_higher_version_is_offered_as_an_update() {
     let refused = reused.for_update(&entry("1.0.0"), None).unwrap_err();
     assert!(refused.0.contains("publisher inconsistency"), "{refused}");
 
+    // The same bytes under the same version are not an update either: an
+    // ordinary install is simply already there, with or without build
+    // metadata that SemVer ignores.
+    for same in ["1.0.0", "1.0.0+001", "1.0.0+other-build"] {
+        let refused = offered(same).for_update(&entry("1.0.0"), None).unwrap_err();
+        assert_eq!(refused.0, "this version is already installed", "{same}");
+    }
+
+    // Byte-equal texts outside SemVer name the same version without an
+    // order: only the content decides, exactly as for SemVer.
+    for text in ["1.0", "2026.10", "latest"] {
+        let refused = offered(text).for_update(&entry(text), None).unwrap_err();
+        assert_eq!(refused.0, "this version is already installed", "{text}");
+        let mut changed = offered(text);
+        changed.artifact.sha256 = "b".repeat(64);
+        let refused = changed.for_update(&entry(text), None).unwrap_err();
+        assert!(
+            refused.0.contains("publisher inconsistency"),
+            "{text}: {refused}"
+        );
+        let mut moved = offered(text);
+        moved.version.revision = "b".repeat(40);
+        let refused = moved.for_update(&entry(text), None).unwrap_err();
+        assert!(
+            refused.0.contains("publisher inconsistency"),
+            "{text}: {refused}"
+        );
+    }
+    // Different texts stay unordered even when they look alike.
+    let refused = offered("1.0").for_update(&entry("1.00"), None).unwrap_err();
+    assert!(refused.0.contains("Semantic Versioning"), "{refused}");
+
+    // The install review says before consent that such a plugin gets no updates.
+    let note = "never offer updates";
+    assert!(offered("1.0").review_description().contains(note));
+    assert!(!offered("1.0.0").review_description().contains(note));
+
     assert_eq!(
         crate::plugin::inventory::read(&root.0).unwrap()[0].receipt,
         installed
