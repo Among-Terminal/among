@@ -11,7 +11,9 @@ full release acceptance. Normal user installation is documented on the
 `.github/workflows/deb-release.yml` builds candidates exclusively for `v*` tag
 pushes, accepting stable `vX.Y.Z` and preview `vX.Y.Z-rc.N` tags (positive `N`).
 Its only trigger is `workflow_call`: `release-draft.yml` starts it for the tag
-push, and the called run sees that push event. The base version must match
+push or, for a tag made with the repository token, for a manual start on the
+tag; the called run sees the caller's event, and the builder accepts only those
+two with the tag as ref. The base version must match
 Cargo/AppStream versions, checked before package construction. It has no
 branch, pull-request, schedule or manual dispatch build trigger; GitHub reruns
 retain the original tag event. Native

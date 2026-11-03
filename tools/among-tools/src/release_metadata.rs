@@ -253,6 +253,8 @@ pub fn validate(
 
 pub fn run(root: &Path, scratch: &Path) -> Result<()> {
     artwork(root)?;
+    let version = crate::version_locations::check(root)?;
+    println!("PASS every version location says {version}");
     let read = |name: &str| -> Result<String> {
         Ok(fs::read_to_string(storage::safe_path(
             root,

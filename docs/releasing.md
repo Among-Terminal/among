@@ -260,9 +260,106 @@ nightlies; a release tag only fills a draft (section 5). Once scheduled
 workflows exist, disable the specific scheduled workflow in GitHub Actions when
 pausing nightlies; preserve stable controls and prior provenance.
 
+## 4a. The release cycle
+
+A release goes through a release pull request, a tag and a draft. Nothing in
+this chain publishes: the owner merges the pull request and publishes the draft.
+
+1. **Titles drive the version.** Pull requests merge by squash only, so `main`
+   holds one commit per pull request, titled as a Conventional Commit (see
+   [CONTRIBUTING](../CONTRIBUTING.md#pull-requests)).
+2. **Prepare.** On a clean, current `main` checkout of a new branch, run
+
+   ```sh
+   cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --bin among-tools
+   tools/among-tools/target/release/among-tools release-prepare . --dry-run
+   tools/among-tools/target/release/among-tools release-prepare .
+   ```
+
+   The command takes the newest stable tag reachable from `HEAD` (candidates
+   `-rc.N` do not count), reads the commit titles after it and chooses the
+   version: while the major version is `0`, a breaking change (`!` or a
+   `BREAKING CHANGE:` footer) and `feat` raise the minor version, `fix` and
+   `perf` raise the patch version; from `1.0` a breaking change raises the
+   major version. If only `docs`, `test`, `ci`, `build`, `refactor` or `chore`
+   commits exist, nothing is prepared. If the files already say a version above
+   the last tag (an unreleased bump), that version is released when the titles
+   call for less. Without `--dry-run` it rewrites every version location, adds
+   the release to `CHANGELOG.md` and puts a stable entry in front of the
+   AppStream release list (changes grouped by kind), then prints the title
+   `chore(release): X.Y.Z` and the body for the pull request. It never tags,
+   pushes or contacts GitHub, refuses to write on `main`, in a tree with
+   uncommitted changes, or when a file cannot be staged, and writes all files
+   or none.
+
+   Commits whose title is not a Conventional Commit cannot influence the
+   version or the changelog. They are listed (`NOT TITLED ...`) and the command
+   fails until each one is named with `--accept-untitled <sha>,<sha>...`
+   (prefixes of at least seven hexadecimal digits); the body of the pull request then lists
+   them as left out on purpose. A dry run applies the same checks (it fails the
+   same way, also when nothing is releasable but untitled commits exist, and
+   rejects names that match no such commit) and only skips the writing.
+3. **Add the release highlights.** A stable tag needs a non-empty
+   `.github/release-notes/vX.Y.Z.md` (section 5). Write it in the same branch;
+   this is the one hand-written file of a release. `check-release-metadata`
+   fails while a prepared release (its section is in `CHANGELOG.md`) has no
+   such file, and the tag job refuses to tag a commit without it.
+4. **Open the pull request** with your own `gh` credentials, using the printed
+   title and body. Because a person opens it, the required checks run on it like
+   on any other pull request, and `pr-title` and `check-release-metadata` verify
+   the title and that every version location agrees.
+5. **Merge by hand.** Squash-merging puts a commit titled
+   `chore(release): X.Y.Z` on `main`.
+6. **Tag and draft.** `.github/workflows/release-tag.yml` runs on that push.
+   A read-only job builds the tool and runs `among-tools release-tag`, which
+   checks the title, that `Cargo.toml` at that commit carries the version, that
+   the highlights file exists and is not empty, that the version is above every
+   stable tag and that an existing tag points at the same commit. Only then the
+   write job (no checkout) creates `vX.Y.Z` with the repository token and starts
+   `release-draft.yml` on the tag by `workflow_dispatch`. A tag made with the
+   repository token starts no `push` workflow, which is why the draft is
+   started explicitly. The draft workflow's `verify-ref` job refuses a manual
+   start unless the ref is a `v*` tag whose commit `main` contains. The
+   decision job builds the tool on every push to `main`; if that build or the
+   decision fails for a release commit, fix the cause and re-run the failed
+   workflow run of that push (the decision and the tag creation are
+   idempotent, an existing tag at the same commit is accepted).
+7. **Publish by hand** after downloading and verifying the draft (section 5).
+
+The workflow uses job-level permissions (`contents: write`, `actions: write`)
+and no personal token, GitHub App or secret; the repository setting
+"Allow GitHub Actions to create and approve pull requests" stays off.
+
+### Release candidates
+
+To test the exact commit before publishing, run the **Release tag** workflow by
+hand on `main` with the input `candidate` set to `N` (for example `1`). It
+creates `vX.Y.Z-rc.N` on the commit of the stable tag `vX.Y.Z` and starts the
+draft workflow on it; the draft is a prerelease. Candidate tags need the stable
+tag to exist, so merge the release pull request first, and do not publish the
+stable draft until the candidate has been accepted. Repeat with `N+1` after a
+fix: merge a new release pull request and use its new version.
+
+### Version locations
+
+`among-tools check-release-metadata .` (run by `Checks`) reads every place that
+spells the version and fails when one differs or is missing: `Cargo.toml` and
+`Cargo.lock`, `examples/plugins/Cargo.toml` and `Cargo.lock`,
+`packaging/rpm/among.spec` (`Version:`) and the newest AppStream `<release>`.
+`release-prepare` rewrites the same list, so a location cannot be added to one
+and forgotten in the other. Not locations: `tools/among-tools` (its own version,
+never shipped), `packaging/debian/changelog` and the RPM `%changelog`
+(history; the Debian changelog of a build is generated from the tag, and the
+check only requires their newest entry not to be ahead of the application), and
+`packaging/ci/deb-upgrade/previous-release.json` (pins the last published
+release and changes after publication, section 5).
+
 ## 5. Release drafts from a tag
 
-Pushing a `v*` tag starts `.github/workflows/release-draft.yml`. In one run it
+Pushing a `v*` tag, or starting the workflow by hand on a `v*` tag as
+`release-tag.yml` does (section 4a), runs `.github/workflows/release-draft.yml`.
+A manual start first passes the `verify-ref` job, which fails unless the ref is a
+`v*` tag and its commit is contained in `main`. In one run it
 calls `deb-release.yml`, `rpm-release.yml` and `appimage-release.yml`, which
 build and install-check every package for amd64 and arm64. Only if all of their
 jobs pass does it fill the tag's GitHub Release draft; any failure leaves
@@ -271,7 +368,8 @@ run only when called this way.
 
 | Job | Token | Does |
 |---|---|---|
-| `deb`, `rpm`, `appimage` | `contents: read` | build and installed checks |
+| `verify-ref` | `contents: read` | full-depth checkout; for a manual start, requires a `v*` tag ref whose commit is contained in `main`; a tag push passes through |
+| `deb`, `rpm`, `appimage` | `contents: read` | build and installed checks, after `verify-ref` |
 | `assemble` | `contents: read` | `among-tools stage-release-assets`: selects, binds and checksums the files; `among-tools release-notes`: renders the description |
 | `draft` | `contents: write` | creates or reconciles the draft, uploads, verifies; runs nothing it downloaded |
 
