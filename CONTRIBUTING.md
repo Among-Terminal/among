@@ -144,7 +144,13 @@ type!: summary of a breaking change
 
 - Allowed types: `feat`, `fix`, `docs`, `test`, `ci`, `build`, `perf`,
   `refactor`, `chore`. The scope in parentheses is optional; `!` before the
-  colon marks a breaking change.
+  colon marks a breaking change. The scope may be any non-empty text without
+  parentheses.
+- GitHub's default `Revert "..."` title is not accepted. Write a revert as a
+  normal Conventional Commit, for example `fix: revert the faster redraw`; use
+  `fix` or `feat` when users are affected, otherwise `chore`.
+- The failing check does not print the title (the runner would interpret
+  workflow commands inside it); read the title on the pull request page.
 - Titles, descriptions and commit messages are written in English.
 - The `pr-title` check validates the title and runs again whenever the title is
   edited. Fix a failing check by editing the title; no new commit is needed.
