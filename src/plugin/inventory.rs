@@ -818,11 +818,11 @@ pub(crate) mod tests {
         let mut snapshot =
             serde_json::to_value(&source_receipt(&release).release_snapshot).unwrap();
         snapshot["prerelease"] = json!(true);
-        release_of(&mut prerelease)
+        *release_of(&mut prerelease)
             .source
             .as_mut()
             .unwrap()
-            .release_snapshot = Box::new(serde_json::from_value(snapshot).unwrap());
+            .release_snapshot = serde_json::from_value(snapshot).unwrap();
         assert!(prerelease.requires_development());
         prerelease.installation = Some("f".repeat(64));
         prerelease.validate().unwrap();
