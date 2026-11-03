@@ -159,13 +159,7 @@ fn actual_cli_refuses_missing_authentication_before_output_creation() -> Result<
 }
 
 /// The Snap members whose bytes the audited prime must match.
-const PAYLOAD: [&str; 5] = [
-    "bin/among",
-    "usr/share/among/plugins/clock",
-    "usr/share/among/plugins/system-status",
-    "usr/share/among/plugins/pane-pwd",
-    "meta/snap.yaml",
-];
+const PAYLOAD: [&str; 2] = ["bin/among", "meta/snap.yaml"];
 
 fn write_payload(root: &std::path::Path) -> Result<()> {
     for name in PAYLOAD {
@@ -193,7 +187,7 @@ fn squash(directory: &std::path::Path, image: &std::path::Path) -> Result<()> {
 
 /// The association binds sources to the binary that was audited. The
 /// comparison reads the members out of an actual SquashFS image, so a Snap
-/// whose executable, plugin or metadata bytes differ from the audited prime,
+/// whose executable or metadata bytes differ from the audited prime,
 /// or that lacks one of them, is refused, and a matching one passes.
 #[test]
 #[ignore = "builds SquashFS images with mksquashfs from squashfs-tools; package-build containers lack it, the Checks ignored-test runner runs it"]
@@ -210,13 +204,10 @@ fn snap_members_are_compared_with_the_audited_prime_bytes() -> Result<()> {
     squash(&payload, &snap)?;
     delivery_package::compare_snap_payload(&snap, &prime, &f.0)?;
 
-    fs::write(
-        prime.join("usr/share/among/plugins/clock"),
-        b"rebuilt plugin",
-    )?;
+    fs::write(prime.join("bin/among"), b"rebuilt executable")?;
     let refusal = delivery_package::compare_snap_payload(&snap, &prime, &f.0)
         .err()
-        .ok_or("a changed plugin was accepted")?;
+        .ok_or("a changed executable was accepted")?;
     assert_eq!(
         refusal.to_string(),
         "Snap differs from audited prime executable/metadata bytes"
