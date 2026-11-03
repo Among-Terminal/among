@@ -144,7 +144,7 @@ fn real_pwd_unknown_empty_and_host_unavailable_cwd_never_fall_back() {
     }
     assert!(fixture
         .host
-        .request_status(PWD, "pane_footer:999", &Context::default())
+        .request_status(PWD, "pane_footer:999")
         .is_none());
     fixture.stop();
 }
@@ -158,10 +158,7 @@ fn real_pwd_closed_and_retired_replies_cannot_overwrite_live_panes() {
     world.terminals.remove(0);
     world.focused_pane = Some(2);
     fixture.host.update_context(vec![10, 20], world);
-    assert!(fixture
-        .host
-        .request_status(PWD, "pane_footer:1", &Context::default())
-        .is_none());
+    assert!(fixture.host.request_status(PWD, "pane_footer:1").is_none());
     assert!(fixture.host.plugins[0].inflight.contains_key(&id));
     fixture.host.handle_managed_line(0, &closed_reply);
     assert!(!fixture.host.plugins[0].inflight.contains_key(&id));

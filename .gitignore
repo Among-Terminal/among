@@ -4,3 +4,14 @@
 *.pyc
 __pycache__/
 target/
+/package-plugin-profile/
+/appimage-checker/
+/clean-snap-input/
+/release-candidate/
+/appimage-candidate/
+/appimage-sources/
+/parts/
+/prime/
+/stage/
+/.snapcraft/
+/*.snap
