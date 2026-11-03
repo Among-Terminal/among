@@ -233,6 +233,52 @@ fn snap_members_are_compared_with_the_audited_prime_bytes() -> Result<()> {
     Ok(())
 }
 
+/// The listing check sees files nobody named: any entry at or below the
+/// application data directory refuses the Snap, a lookalike sibling does not.
+#[test]
+fn a_snap_listing_with_plugin_entries_is_refused() -> Result<()> {
+    let clean = "squashfs-root\nsquashfs-root/bin\nsquashfs-root/bin/among\n\
+        squashfs-root/meta/snap.yaml\nsquashfs-root/usr/share/among-data/readme\n";
+    delivery_package::reject_plugin_entries(clean)?;
+    for entry in [
+        "squashfs-root/usr/share/among",
+        "squashfs-root/usr/share/among/plugins",
+        "squashfs-root/usr/share/among/plugins/clock",
+        "usr/share/among/ci-marker",
+    ] {
+        let listing = format!("{clean}{entry}\n");
+        let refusal = delivery_package::reject_plugin_entries(&listing)
+            .err()
+            .ok_or_else(|| format!("{entry} was accepted"))?;
+        assert!(refusal.to_string().contains("bundles plugins"), "{refusal}");
+    }
+    Ok(())
+}
+
+/// The same refusal on a real SquashFS image: a Snap whose bytes match the
+/// audited prime but that also carries a plugin is refused.
+#[test]
+#[ignore = "builds SquashFS images with mksquashfs from squashfs-tools; package-build containers lack it, the Checks ignored-test runner runs it"]
+fn a_real_snap_carrying_a_plugin_is_refused_even_when_members_match() -> Result<()> {
+    let f = Fixture(storage::private_directory(
+        &std::env::temp_dir(),
+        "among-delivery-plugin-snap",
+    )?);
+    let payload = f.0.join("payload");
+    let prime = f.0.join("prime");
+    write_payload(&payload)?;
+    write_payload(&prime)?;
+    fs::create_dir_all(payload.join("usr/share/among/plugins"))?;
+    fs::write(payload.join("usr/share/among/plugins/clock"), b"plugin")?;
+    let snap = f.0.join("bundled.snap");
+    squash(&payload, &snap)?;
+    let refusal = delivery_package::compare_snap_payload(&snap, &prime, &f.0)
+        .err()
+        .ok_or("a Snap with a bundled plugin was accepted")?;
+    assert!(refusal.to_string().contains("bundles plugins"), "{refusal}");
+    Ok(())
+}
+
 /// Inputs for the packaging command with every directory present but none
 /// of them authenticated.
 struct Unauthenticated {

@@ -132,6 +132,29 @@ fn actual_cli_uses_two_locked_metadata_calls_separates_stderr_and_detects_stale_
         b"modified",
     )?;
     assert!(!run("check")?.status.success());
+    assert!(run("generate")?.status.success());
+    assert!(run("check")?.status.success());
+
+    // A text left behind by a dependency that no locked graph uses any more
+    // is evidence for nothing shipped: check refuses it, generate removes it.
+    let stale = f.0.join("output/texts/removed-crate-9.9.9");
+    fs::create_dir_all(&stale)?;
+    fs::write(stale.join("LICENSE-MIT"), b"left over")?;
+    let refused = run("check")?;
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("texts/removed-crate-9.9.9/LICENSE-MIT"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(stale.exists());
+    assert!(run("generate")?.status.success());
+    assert!(!stale.exists());
+    assert!(f
+        .0
+        .join("output/texts/fixture-crate-1.0.0/NOTICE")
+        .is_file());
+    assert!(run("check")?.status.success());
     Ok(())
 }
 

@@ -80,7 +80,8 @@ not a context-free invocation. No Cargo or compiler is called by this runner.
 
 `check-resource-measurements OFFICIAL_PLUGIN_PROFILE` takes the profile that
 `check-plugin-install` observed, pins the installed `system-status` executable to
-the public artifact (receipt, manifest, artifact and executable digests and size)
+the release candidate catalogue of the same run (receipt, manifest, artifact and
+executable digests and size; a published release once one exists)
 and drives it over the managed API 1.2 JSON-lines stdin/stdout protocol: handshake,
 then status requests bound to a session and generation. It checks initial CPU N/A, waits 1.1
 seconds, and compares CPU/MEM/root-DISK with independently read `/proc/stat`,

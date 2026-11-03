@@ -83,6 +83,12 @@ jobs:
             echo 'Internal tooling leaked into Snap payload' >&2
             exit 1
           fi
+          # Official plugins are installed from their own repository; the image
+          # must hold nothing below usr/share/among.
+          if unsquashfs -l "among_${SNAP_VERSION}_${BUILD_ARCH}.snap" | grep -E '^squashfs-root/usr/share/among(/|$)'; then
+            echo 'Plugins or application data leaked into Snap payload' >&2
+            exit 1
+          fi
           sudo snap install --dangerous --classic "among_${SNAP_VERSION}_${BUILD_ARCH}.snap"
           snap list among
       - name: Build native acceptance drivers outside Snap payload

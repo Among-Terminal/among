@@ -372,6 +372,29 @@ fn library_floors_follow_the_binding_api_level_and_cannot_be_understated() -> Re
 }
 
 #[test]
+fn only_the_application_data_directory_is_forbidden_not_a_lookalike_sibling() -> Result<()> {
+    for refused in [
+        "%{_datadir}/among",
+        "%{_datadir}/among/plugins",
+        "%dir %{_datadir}/among\n",
+        "mkdir -p %{buildroot}%{_datadir}/among/plugins",
+        "/usr/share/among/plugins/clock",
+    ] {
+        assert!(rpm::mentions_application_data(refused), "{refused:?}");
+    }
+    for allowed in [
+        "%{_datadir}/among-terminal-data/file",
+        "%{_datadir}/amongst",
+        "/usr/share/among.d/x",
+        "%{_datadir}/applications/com.github.among-terminal.desktop",
+        "%{_datadir}/metainfo/com.github.among-terminal.metainfo.xml",
+    ] {
+        assert!(!rpm::mentions_application_data(allowed), "{allowed:?}");
+    }
+    Ok(())
+}
+
+#[test]
 fn the_package_creates_no_application_data_directory() -> Result<()> {
     let spec = spec_of(&fixture()?);
     assert!(

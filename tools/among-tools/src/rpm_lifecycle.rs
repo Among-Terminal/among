@@ -20,8 +20,10 @@ use std::process::{Command, Stdio};
 pub const OLDER_SUFFIX: &str = "~ciolder";
 
 /// The file only the older package owns. An upgrade that leaves it behind did
-/// not replace the older package's file set.
-pub const OLDER_MARKER: &str = "/usr/share/among/ci-older-fixture";
+/// not replace the older package's file set. It sits in a directory only the
+/// fixture owns, so that no candidate-owned directory such as `/usr/share/among`
+/// (which a plugin-free package does not create) is left behind by an upgrade.
+pub const OLDER_MARKER: &str = "/usr/share/among-ci-older-fixture/marker";
 
 /// The fixture lives in its own directory so it can never be mistaken for the
 /// single binary RPM of the candidate or attached to a release.
@@ -159,6 +161,9 @@ pub fn make_older_fixture(candidate: &Path, work: &Path, output: &Path) -> Resul
         } else {
             files.push_str(&format!("\"{path}\"\n"));
         }
+    }
+    if let Some(directory) = Path::new(OLDER_MARKER).parent().and_then(Path::to_str) {
+        files.push_str(&format!("%dir \"{directory}\"\n"));
     }
     files.push_str(&format!("\"{OLDER_MARKER}\"\n"));
     let mut requires = String::new();

@@ -53,6 +53,11 @@ fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() 
     fs::create_dir(root.join("packaging/debian"))?;
     let rules = "cargo +1.98.1 build --release --locked --bins\n";
     fs::write(root.join("packaging/debian/rules"), rules)?;
+    let install = "usr/bin/among\nusr/share/applications/com.github.among-terminal.desktop\n";
+    fs::write(
+        root.join("packaging/debian/among-terminal.install"),
+        install,
+    )?;
     fs::write(
         root.join("packaging/debian/control"),
         "Maintainer: Among Terminal <hello+amongterminal@highload.zone>\nRules-Requires-Root: no\n",
@@ -77,6 +82,25 @@ fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() 
         assert!(deb::check_source_inputs(root).is_err());
     }
     fs::write(root.join("packaging/debian/rules"), rules)?;
+    // Nothing may be installed below the application data directory, while a
+    // lookalike sibling directory is not that directory.
+    for bad in [
+        format!("{install}usr/share/among/plugins\n"),
+        format!("{install}usr/share/among\n"),
+        format!("{install}usr/share/among/anything\n"),
+    ] {
+        fs::write(root.join("packaging/debian/among-terminal.install"), bad)?;
+        assert!(deb::check_source_inputs(root).is_err());
+    }
+    fs::write(
+        root.join("packaging/debian/among-terminal.install"),
+        format!("{install}usr/share/among-terminal-data/file\n"),
+    )?;
+    deb::check_source_inputs(root)?;
+    fs::write(
+        root.join("packaging/debian/among-terminal.install"),
+        install,
+    )?;
     fs::write(
         root.join("docs/install.md"),
         "cargo install --git wrong --locked among\ncargo uninstall among\n",

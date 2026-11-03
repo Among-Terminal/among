@@ -10,20 +10,31 @@ pub const APP_ID: &str = "com.github.among-terminal";
 /// their own repository, so no plugin executable is part of a host package.
 pub const EXECUTABLES: [&str; 1] = ["among"];
 
-/// Where a package would carry plugin executables. Host packages must not.
-pub const BUNDLED_PLUGINS_DIRECTORY: &str = "usr/share/among/plugins";
+/// The directory a package used to fill with plugin executables. A host
+/// package ships nothing there, so nothing at all may be below it.
+pub const APPLICATION_DATA_DIRECTORY: &str = "usr/share/among";
 
-/// Refuses a package payload that still bundles plugin executables, instead of
-/// accepting a mixed old and new distribution.
+/// True for the application data directory itself and anything below it, but
+/// not for a sibling that merely shares the prefix, such as `usr/share/among-x`.
+pub fn is_application_data_path(path: &str) -> bool {
+    path == APPLICATION_DATA_DIRECTORY
+        || path
+            .strip_prefix(APPLICATION_DATA_DIRECTORY)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Refuses a package payload that still carries the application data
+/// directory (where plugins used to be bundled), instead of accepting a mixed
+/// old and new distribution.
 pub fn reject_bundled_plugins(root: &Path) -> Result<()> {
     if root
-        .join(BUNDLED_PLUGINS_DIRECTORY)
+        .join(APPLICATION_DATA_DIRECTORY)
         .symlink_metadata()
         .is_ok()
     {
         return Err(format!(
-            "package payload bundles plugins under {BUNDLED_PLUGINS_DIRECTORY}; \
-             official plugins are installed from their repository"
+            "package payload carries /{APPLICATION_DATA_DIRECTORY}; \
+             official plugins are installed from their repository, not bundled"
         )
         .into());
     }
@@ -154,6 +165,15 @@ pub fn check_source_inputs(root: &Path) -> Result<()> {
         return Err(
             "Debian build inputs lost locked native builds or user-installer isolation".into(),
         );
+    }
+    // The install list is the other place a package gains files: nothing may
+    // be installed below the application data directory.
+    let install = fs::read_to_string(storage::safe_path(
+        root,
+        Path::new("packaging/debian/among-terminal.install"),
+    )?)?;
+    if install.lines().map(str::trim).any(is_application_data_path) {
+        return Err("Debian install list packages files below usr/share/among".into());
     }
     let manifest: toml::Value = toml::from_str(&fs::read_to_string(storage::safe_path(
         root,

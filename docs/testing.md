@@ -210,7 +210,8 @@ inputs alone establishes none of those behaviours or application-RC readiness.
 `among-tools check-resource-measurements <profile>` takes the profile that
 `check-plugin-install` observed. It accepts the installed `system-status`
 executable only when the receipt, manifest, artifact and executable digests and size
-match the public artifact, then drives it over the managed handshake and compares
+match the release candidate catalogue of the same run (a published release once
+one exists), then drives it over the managed handshake and compares
 CPU, MEM and root-DISK with independent `/proc` and `df -P /` readings. No plugin
 is built from this repository. The only plugin executable the host still builds is
 `examples/fake-plugin.rs`, a labelled protocol and failure-control fixture; it

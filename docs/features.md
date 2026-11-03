@@ -150,9 +150,11 @@ returns to terminal input. No context-menu recording is included in the videos.
 
 ## Optional live status plugins
 
-After [installing the examples](plugins.md#installing), open **Settings** with
-**Ctrl+,** and select **Plugins**. All three examples are disabled by default;
-enable only the ones you want. Switches apply immediately and persist on restart.
+Among packages carry no plugins. Open **Settings** with **Ctrl+,**, select
+**Plugins** and install the ones you want from the built-in **Official plugins
+for Among Terminal** source (see [installing](plugins.md#installing-official-plugins)).
+A newly installed plugin is disabled until you review its access and enable it.
+Switches apply immediately and persist on restart.
 
 | Plugin | Where it appears | What it reports |
 | --- | --- | --- |

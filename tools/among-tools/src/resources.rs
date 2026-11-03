@@ -188,7 +188,7 @@ fn read_line(stdout: &mut impl Read) -> Result<Vec<u8>> {
 }
 
 /// The installed system-status executable of an observed official-plugin
-/// profile, accepted only when it is the exact public artifact: the receipt,
+/// profile, accepted only when it is the exact catalogue artifact: the receipt,
 /// the manifest digest, the artifact digest and the executable's own digest
 /// and size must all agree with the validated release catalogue.
 pub fn pinned_executable(profile: &Path) -> Result<PathBuf> {
@@ -257,13 +257,13 @@ pub fn pinned_executable(profile: &Path) -> Result<PathBuf> {
         || member["size"] != metadata.len()
         || storage::sha256(File::open(&path)?)? != text(member, "sha256")?
     {
-        return Err("system-status executable differs from the public artifact".into());
+        return Err("system-status executable differs from the catalogue artifact".into());
     }
     Ok(path)
 }
 
 /// Measures the system-status executable that an observed official-plugin
-/// profile installed, after pinning it to the public artifact.
+/// profile installed, after pinning it to the catalogue artifact.
 pub fn run(profile: &Path, scratch: &Path) -> Result<Value> {
     measure(&pinned_executable(profile)?, scratch)
 }
@@ -323,4 +323,181 @@ pub fn measure(binary: &Path, scratch: &Path) -> Result<Value> {
     println!("PASS executable CPU/MEM/root-DISK vs independent readings: {evidence}");
     println!("Evidence: {}", base.display());
     Ok(evidence)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin_install::release::fixture::Fixture;
+    use serde_json::Value;
+
+    const GENERATION: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// An observed profile whose system-status installation is exactly the
+    /// synthetic catalogue artifact: the receipt, the manifest and the executable
+    /// all match the release catalogue.
+    struct Profile {
+        fixture: Fixture,
+    }
+
+    impl Profile {
+        fn new() -> Result<Self> {
+            let fixture = Fixture::new()?;
+            let package = fixture.root.join(format!(
+                "managed/generations/1431055733/system-status/{GENERATION}"
+            ));
+            fs::create_dir_all(package.join("bin"))?;
+            for name in ["among-plugin.json", "SOURCE.json", "bin/plugin"] {
+                fs::copy(
+                    fixture.root.join("system-status").join(name),
+                    package.join(name),
+                )?;
+            }
+            let prepared = fixture.inputs["plugins"]
+                .as_array()
+                .and_then(|plugins| plugins.iter().find(|p| p["id"] == "system-status"))
+                .ok_or("fixture lacks system-status")?;
+            let receipt = json!({"repository_id":1431055733u64,"plugin_id":"system-status",
+                "generation":GENERATION,"manifest_sha256":prepared["manifest_sha256"],
+                "package_sha256":prepared["sha256"]});
+            let profile = Self { fixture };
+            profile.write_installed(&json!({"installations":[receipt]}))?;
+            Ok(profile)
+        }
+
+        fn root(&self) -> &Path {
+            &self.fixture.root
+        }
+
+        fn executable(&self) -> PathBuf {
+            self.root().join(format!(
+                "managed/generations/1431055733/system-status/{GENERATION}/bin/plugin"
+            ))
+        }
+
+        fn installed(&self) -> Result<Value> {
+            storage::parse_json(&fs::read(self.root().join("managed/installed.json"))?)
+        }
+
+        fn write_installed(&self, document: &Value) -> Result<()> {
+            fs::write(
+                self.root().join("managed/installed.json"),
+                serde_json::to_vec(document)?,
+            )?;
+            Ok(())
+        }
+
+        fn change_receipt(&self, key: &str, value: Value) -> Result<()> {
+            let mut document = self.installed()?;
+            document["installations"][0][key] = value;
+            self.write_installed(&document)
+        }
+    }
+
+    #[test]
+    fn the_exact_public_artifact_is_pinned() -> Result<()> {
+        let profile = Profile::new()?;
+        let pinned = pinned_executable(profile.root())?;
+        assert_eq!(pinned.canonicalize()?, profile.executable().canonicalize()?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_receipt_naming_another_package_or_manifest_is_refused() -> Result<()> {
+        for key in ["package_sha256", "manifest_sha256"] {
+            let profile = Profile::new()?;
+            profile.change_receipt(key, json!("0".repeat(64)))?;
+            let error = pinned_executable(profile.root())
+                .err()
+                .ok_or_else(|| format!("a foreign {key} was accepted"))?;
+            assert!(
+                error
+                    .to_string()
+                    .contains("differs from its selected receipt"),
+                "{key}: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_executable_with_other_bytes_or_size_is_refused() -> Result<()> {
+        // Same length, different bytes: only the digest can tell.
+        // Different length: the recorded size already differs.
+        for replacement in [
+            b"synthetic non-executable paylOad".to_vec(),
+            b"shorter".to_vec(),
+        ] {
+            let profile = Profile::new()?;
+            let path = profile.executable();
+            let original = fs::read(&path)?;
+            assert_ne!(replacement, original);
+            fs::write(&path, &replacement)?;
+            let error = pinned_executable(profile.root())
+                .err()
+                .ok_or("a changed executable was accepted")?;
+            assert!(
+                error
+                    .to_string()
+                    .contains("differs from the catalogue artifact"),
+                "{error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_executable_without_the_execute_bit_is_refused() -> Result<()> {
+        let profile = Profile::new()?;
+        fs::set_permissions(profile.executable(), fs::Permissions::from_mode(0o600))?;
+        assert!(pinned_executable(profile.root()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_or_duplicated_selection_is_refused() -> Result<()> {
+        let profile = Profile::new()?;
+        let receipt = profile.installed()?["installations"][0].clone();
+        profile.write_installed(&json!({"installations":[]}))?;
+        assert!(pinned_executable(profile.root())
+            .err()
+            .ok_or("an absent selection was accepted")?
+            .to_string()
+            .contains("absent or duplicated"));
+        profile.write_installed(&json!({"installations":[receipt.clone(), receipt]}))?;
+        assert!(pinned_executable(profile.root())
+            .err()
+            .ok_or("a duplicated selection was accepted")?
+            .to_string()
+            .contains("absent or duplicated"));
+        // Another plugin's receipt is not the system-status selection.
+        let mut other = profile.installed()?["installations"][0].clone();
+        other["plugin_id"] = "clock".into();
+        profile.write_installed(&json!({"installations":[other]}))?;
+        assert!(pinned_executable(profile.root()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_generation_that_is_not_sixty_four_hex_characters_is_refused() -> Result<()> {
+        for generation in [
+            "abc".to_string(),
+            "g".repeat(64),
+            format!("{GENERATION}0"),
+            "../".repeat(21) + "x",
+        ] {
+            let profile = Profile::new()?;
+            profile.change_receipt("generation", json!(generation))?;
+            let error = pinned_executable(profile.root())
+                .err()
+                .ok_or_else(|| format!("generation {generation:?} was accepted"))?;
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid system-status generation"),
+                "{generation:?}: {error}"
+            );
+        }
+        Ok(())
+    }
 }

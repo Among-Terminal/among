@@ -153,6 +153,22 @@ fn is_metadata_directive(token: &str) -> bool {
 
 const APPLICATION_ID: &str = "com.github.among-terminal";
 
+/// True when `text` names `/usr/share/among` (or its `%{_datadir}` spelling)
+/// itself or a path below it. A sibling that only shares the prefix, such as
+/// `%{_datadir}/among-terminal-data`, is a different directory and is allowed.
+pub fn mentions_application_data(text: &str) -> bool {
+    ["%{_datadir}/among", "/usr/share/among"]
+        .iter()
+        .any(|name| {
+            text.match_indices(name).any(|(start, _)| {
+                text[start + name.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|next| !(next.is_alphanumeric() || matches!(next, '-' | '_' | '.')))
+            })
+        })
+}
+
 /// Parse the `Key:` headers of the preamble, skipping comments and section
 /// directives. Continuation lines belong to the previous field rather than
 /// being headers themselves, and body text under `%description` is not a header
@@ -327,10 +343,7 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
     // path below the former plugin directory would put a mixed old and new
     // distribution on the user's disk, including a bare %dir that no package
     // content needs.
-    if files
-        .lines()
-        .any(|line| line.contains("%{_datadir}/among") || line.contains("/usr/share/among"))
-    {
+    if mentions_application_data(&files) {
         return Err("RPM %files must not ship or own anything under /usr/share/among".into());
     }
     let mut licensed = BTreeSet::new();
@@ -381,7 +394,7 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
     }
     if install.contains("examples/plugins")
         || install.contains("for plugin in")
-        || install.contains("_datadir}/among")
+        || mentions_application_data(&install)
     {
         return Err("RPM %install must not install plugin executables".into());
     }
