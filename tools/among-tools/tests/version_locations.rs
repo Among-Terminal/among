@@ -170,3 +170,22 @@ fn rewriting_changes_every_location_and_nothing_else() -> Result<()> {
     assert_eq!(version_locations::check(&root)?, "9.9.9");
     Ok(())
 }
+
+#[test]
+fn a_duplicate_release_entry_in_the_metainfo_fails_the_check() -> Result<()> {
+    let version = current()?;
+    let root = copy()?;
+    let entry =
+        format!("    <release version=\"{version}\" date=\"2026-01-01\" type=\"stable\"/>\n");
+    edit(
+        &root,
+        "data/com.github.among-terminal.metainfo.xml",
+        "<releases>\n",
+        &format!("<releases>\n{entry}"),
+    )?;
+    let error = version_locations::check(&root)
+        .err()
+        .ok_or("duplicate accepted")?;
+    assert!(error.to_string().contains("more than once"), "{error}");
+    Ok(())
+}

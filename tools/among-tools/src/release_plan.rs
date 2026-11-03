@@ -39,16 +39,30 @@ impl Commit {
 /// Conventional Commit of an allowed type. A `BREAKING CHANGE:` footer in the
 /// body also marks a breaking change.
 pub fn parse_commit(subject: &str, body: &str) -> Option<Commit> {
-    let (head, rest) = subject.split_once(": ")?;
-    let (head, bang) = match head.strip_suffix('!') {
-        Some(head) => (head, true),
-        None => (head, false),
+    // The scope is read up to the first closing parenthesis, so a scope may
+    // contain ": " (the pull request title check accepts any non-empty scope
+    // without parentheses).
+    let kind_end = subject.find(['(', '!', ':'])?;
+    let kind = &subject[..kind_end];
+    let mut tail = &subject[kind_end..];
+    let scope = match tail.strip_prefix('(') {
+        Some(inner) => {
+            let close = inner.find(')')?;
+            let scope = &inner[..close];
+            if scope.is_empty() || scope.contains('(') {
+                return None;
+            }
+            tail = &inner[close + 1..];
+            Some(scope.to_string())
+        }
+        None => None,
     };
-    let (kind, scope) = match head.split_once('(') {
-        Some((kind, scope)) => (kind, Some(scope.strip_suffix(')')?.to_string())),
-        None => (head, None),
+    let (tail, bang) = match tail.strip_prefix('!') {
+        Some(tail) => (tail, true),
+        None => (tail, false),
     };
-    if !TYPES.contains(&kind) || scope.as_deref().is_some_and(str::is_empty) {
+    let rest = tail.strip_prefix(": ")?;
+    if !TYPES.contains(&kind) {
         return None;
     }
     let rest = rest.trim();
@@ -185,6 +199,23 @@ pub fn metainfo_with_release(
     commits: &[Commit],
 ) -> Result<String> {
     let mut lines: Vec<&str> = metainfo.split_inclusive('\n').collect();
+    // An entry for this version may already exist (the files were bumped ahead
+    // of the release): it is replaced, never duplicated.
+    if let Some(start) = lines
+        .iter()
+        .position(|line| line.contains(&format!("<release version=\"{version}\"")))
+    {
+        let end = if lines[start].trim_end().ends_with("/>") {
+            start
+        } else {
+            start
+                + lines[start..]
+                    .iter()
+                    .position(|line| line.contains("</release>"))
+                    .ok_or("AppStream release entry is not closed")?
+        };
+        lines.drain(start..=end);
+    }
     let position = lines
         .iter()
         .position(|line| line.trim() == "<releases>")
@@ -408,10 +439,12 @@ Name them with --accept-untitled <sha>,<sha>... to leave them out on purpose",
 /// version is released even when the titles alone would call for less.
 pub fn prepare(root: &Path, date: &str, accepted: &[String]) -> Result<Option<Prepared>> {
     let plan = plan(root)?;
+    // Before the "nothing to release" answer: an untitled commit might have
+    // been a fix, so silence about it is never an answer.
+    let left_out = acknowledge(&plan.untitled, accepted)?;
     let Some(computed) = plan.next else {
         return Ok(None);
     };
-    let left_out = acknowledge(&plan.untitled, accepted)?;
     let current = version_locations::check(root)?;
     let (major, minor, patch) = computed.max(version_locations::triple(&current)?);
     let version = format!("{major}.{minor}.{patch}");
@@ -519,14 +552,36 @@ pub fn write(root: &Path, prepared: &Prepared) -> Result<()> {
         }
         Ok(())
     })();
-    if let Err(error) = staged {
+    let discard_temporaries = || {
         for (_, temporary, _) in &targets {
             let _ = std::fs::remove_file(temporary);
         }
+    };
+    if let Err(error) = staged {
+        discard_temporaries();
         return Err(error);
     }
-    for (target, temporary, _) in &targets {
-        std::fs::rename(temporary, target)?;
+    // The previous content is kept in memory so that a failing rename puts the
+    // already replaced files back: the tree ends up either new or unchanged.
+    let previous: Vec<Option<Vec<u8>>> = targets
+        .iter()
+        .map(|(target, _, _)| std::fs::read(target).ok())
+        .collect();
+    for (index, (target, temporary, _)) in targets.iter().enumerate() {
+        if let Err(error) = std::fs::rename(temporary, target) {
+            for ((done, _, _), old) in targets[..index].iter().zip(&previous) {
+                match old {
+                    Some(bytes) => {
+                        let _ = std::fs::write(done, bytes);
+                    }
+                    None => {
+                        let _ = std::fs::remove_file(done);
+                    }
+                }
+            }
+            discard_temporaries();
+            return Err(error.into());
+        }
     }
     Ok(())
 }

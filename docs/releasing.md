@@ -296,7 +296,9 @@ this chain publishes: the owner merges the pull request and publishes the draft.
    version or the changelog. They are listed (`NOT TITLED ...`) and the command
    fails until each one is named with `--accept-untitled <sha>,<sha>...`
    (prefixes of at least seven digits); the body of the pull request then lists
-   them as left out on purpose. A dry run shows them without failing.
+   them as left out on purpose. A dry run applies the same checks (it fails the
+   same way, also when nothing is releasable but untitled commits exist, and
+   rejects names that match no such commit) and only skips the writing.
 3. **Add the release highlights.** A stable tag needs a non-empty
    `.github/release-notes/vX.Y.Z.md` (section 5). Write it in the same branch;
    this is the one hand-written file of a release. `check-release-metadata`
@@ -317,7 +319,11 @@ this chain publishes: the owner merges the pull request and publishes the draft.
    `release-draft.yml` on the tag by `workflow_dispatch`. A tag made with the
    repository token starts no `push` workflow, which is why the draft is
    started explicitly. The draft workflow's `verify-ref` job refuses a manual
-   start unless the ref is a `v*` tag whose commit `main` contains.
+   start unless the ref is a `v*` tag whose commit `main` contains. The
+   decision job builds the tool on every push to `main`; if that build or the
+   decision fails for a release commit, fix the cause and re-run the failed
+   workflow run of that push (the decision and the tag creation are
+   idempotent, an existing tag at the same commit is accepted).
 7. **Publish by hand** after downloading and verifying the draft (section 5).
 
 The workflow uses job-level permissions (`contents: write`, `actions: write`)

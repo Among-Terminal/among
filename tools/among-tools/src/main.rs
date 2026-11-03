@@ -471,14 +471,8 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
             for commit in &plan.untitled {
                 println!("NOT TITLED {} {}", commit.sha, commit.subject);
             }
-            if dry_run {
-                // A dry run only shows the plan, so it accepts what it lists.
-                accepted = plan
-                    .untitled
-                    .iter()
-                    .map(|commit| commit.sha.clone())
-                    .collect();
-            }
+            // A dry run applies the same checks as a real run (including the
+            // acknowledgement of untitled commits) and only skips the writing.
             let seconds = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs();

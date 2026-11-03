@@ -365,6 +365,25 @@ fn check_release_notes(root: &Path, version: &str) -> Result<()> {
     )
 }
 
+/// Two `<release>` entries for one version make AppStream ambiguous; a release
+/// preparation that adds an entry without replacing the old one produces this.
+fn check_metainfo_releases(root: &Path) -> Result<()> {
+    let text = read_file(root, METAINFO)?;
+    let document = roxmltree::Document::parse(&text)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for release in document
+        .descendants()
+        .filter(|node| node.has_tag_name("release"))
+    {
+        let version = release.attribute("version").unwrap_or_default();
+        require(
+            seen.insert(version.to_string()),
+            format!("{METAINFO} lists release {version} more than once"),
+        )?;
+    }
+    Ok(())
+}
+
 /// Reads all locations, requires them to agree and returns the version.
 pub fn check(root: &Path) -> Result<String> {
     let found = read_all(root)?;
@@ -379,6 +398,7 @@ pub fn check(root: &Path) -> Result<String> {
             format!("version location {path} says {other}, Cargo.toml says {version}"),
         )?;
     }
+    check_metainfo_releases(root)?;
     check_changelogs(root, &version)?;
     check_release_notes(root, &version)?;
     Ok(version)

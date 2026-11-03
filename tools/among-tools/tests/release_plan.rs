@@ -370,3 +370,109 @@ fn nothing_is_prepared_without_a_user_visible_change() -> Result<()> {
     assert!(prepare(&root, "2026-11-03", &[])?.is_none());
     Ok(())
 }
+
+#[test]
+fn a_scope_may_contain_a_colon_and_a_space() -> Result<()> {
+    let parsed = parse_commit("feat(a: b): do it (#3)", "").ok_or("not parsed")?;
+    assert_eq!(parsed.scope.as_deref(), Some("a: b"));
+    assert_eq!(parsed.description, "do it");
+    let breaking = parse_commit("fix(a: b)!: do it", "").ok_or("not parsed")?;
+    assert!(breaking.breaking);
+    assert!(parse_commit("feat(a(b)): x", "").is_none());
+    assert!(parse_commit("feat(a) x", "").is_none());
+    Ok(())
+}
+
+fn run_tool(root: &std::path::Path, arguments: &[&str]) -> Result<std::process::Output> {
+    Ok(
+        std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
+            .arg("release-prepare")
+            .arg(root)
+            .args(arguments)
+            .output()?,
+    )
+}
+
+#[test]
+fn a_dry_run_applies_the_same_checks_as_a_real_run() -> Result<()> {
+    let root = at_first_release()?;
+    empty_commit(&root, "feat: drag (#5)")?;
+    let untitled = empty_commit(&root, "Replay the documented commands")?;
+    let before = fs::read_to_string(root.join("Cargo.toml"))?;
+
+    let refused = run_tool(&root, &["--dry-run"])?;
+    assert!(!refused.status.success(), "unnamed untitled commit");
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("NOT TITLED"));
+    let unknown = run_tool(&root, &["--dry-run", "--accept-untitled", "abcdef0123"])?;
+    assert!(!unknown.status.success(), "unknown commit name");
+    let named = run_tool(&root, &["--dry-run", "--accept-untitled", &untitled[..10]])?;
+    assert!(
+        named.status.success(),
+        "{}",
+        String::from_utf8_lossy(&named.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("Cargo.toml"))?,
+        before,
+        "a dry run writes nothing"
+    );
+    Ok(())
+}
+
+#[test]
+fn nothing_releasable_but_untitled_commits_is_not_a_quiet_success() -> Result<()> {
+    let root = at_first_release()?;
+    empty_commit(&root, "docs: words")?;
+    let untitled = empty_commit(&root, "Fix the focus bug")?;
+    let output = run_tool(&root, &[])?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Fix the focus bug"));
+    // Named on purpose, the answer is a plain "nothing to prepare".
+    let named = run_tool(&root, &["--accept-untitled", &untitled[..10]])?;
+    assert!(named.status.success());
+    Ok(())
+}
+
+#[test]
+fn an_entry_already_in_the_metainfo_is_replaced_not_duplicated() -> Result<()> {
+    // The files say 0.1.2 and the metainfo already has a 0.1.2 entry.
+    let root = repository("0.1.2", "0.1.1")?;
+    git(&root, &["checkout", "-q", "-b", "work"])?;
+    empty_commit(&root, "fix: keep focus (#4)")?;
+    let prepared = prepare(&root, "2026-11-03", &[])?.ok_or("no release")?;
+    write(&root, &prepared)?;
+    write_file(&root, ".github/release-notes/v0.1.2.md", "Fix.\n")?;
+    let metainfo = fs::read_to_string(root.join("data/com.github.among-terminal.metainfo.xml"))?;
+    assert_eq!(
+        metainfo.matches("<release version=\"0.1.2\"").count(),
+        1,
+        "{metainfo}"
+    );
+    assert!(metainfo.contains("keep focus (#4)"));
+    assert_eq!(version_locations::check(&root)?, "0.1.2");
+    Ok(())
+}
+
+#[test]
+fn a_rename_failure_restores_the_tree_and_leaves_no_temporary_file() -> Result<()> {
+    let root = at_first_release()?;
+    empty_commit(&root, "feat: drag (#5)")?;
+    // CHANGELOG.md exists as a directory, so replacing it fails at the rename
+    // after the version files have already been replaced.
+    fs::create_dir(root.join("CHANGELOG.md"))?;
+    write_file(&root, "CHANGELOG.md/keep", "x")?;
+    git(&root, &["add", "-f", "CHANGELOG.md/keep"])?;
+    git(&root, &["commit", "-q", "-m", "chore: changelog directory"])?;
+    let prepared = prepare(&root, "2026-11-03", &[])?.ok_or("no release")?;
+    assert!(write(&root, &prepared).is_err());
+    assert_eq!(version_locations::check(&root)?, "0.1.1");
+    let mut leftovers = Vec::new();
+    for entry in fs::read_dir(&root)? {
+        let name = entry?.file_name().to_string_lossy().to_string();
+        if name.ends_with(".release-tmp") {
+            leftovers.push(name);
+        }
+    }
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    Ok(())
+}
