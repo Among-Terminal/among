@@ -275,7 +275,7 @@ fn same_installation_updates_preserve_live_enablement_and_later_disable_instead_
         observer.supervised_stopped(KEY)
     });
     gate.set(false);
-    let later = install(&root.0, "3.0", Some(&update));
+    let later = install(&root.0, "3.0.0", Some(&update));
     assert_eq!(later.installation, old.installation);
     observer.reconcile_managed(inventory::read(&root.0).unwrap().remove(0), Some(&local));
     assert!(
