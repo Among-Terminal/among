@@ -129,6 +129,41 @@ contributed sources, workflows, packaging, launchers or executable
 documentation. Snapcraft's own internal use of Python is an external tool
 detail and not a project entry point.
 
+## Pull requests
+
+Pull requests merge by squash only: the whole branch becomes one commit on
+`main`, and that commit takes the pull request title. The release tooling reads
+those commits to choose the next version, so the title is not decoration.
+
+The title must be a [Conventional Commit](https://www.conventionalcommits.org/):
+
+```text
+type(scope): short summary
+type!: summary of a breaking change
+```
+
+- Allowed types: `feat`, `fix`, `docs`, `test`, `ci`, `build`, `perf`,
+  `refactor`, `chore`. The scope in parentheses is optional; `!` before the
+  colon marks a breaking change. The scope may be any non-empty text without
+  parentheses.
+- GitHub's default `Revert "..."` title is not accepted. Write a revert as a
+  normal Conventional Commit, for example `fix: revert the faster redraw`; use
+  `fix` or `feat` when users are affected, otherwise `chore`.
+- The failing check does not print the title (the runner would interpret
+  workflow commands inside it); read the title on the pull request page.
+- Titles, descriptions and commit messages are written in English.
+- The `pr-title` check validates the title and runs again whenever the title is
+  edited. Fix a failing check by editing the title; no new commit is needed.
+
+How the title drives the version (while the major version is `0`):
+
+| Type | Effect on the next application version |
+|---|---|
+| breaking change (`!`) | raises the minor version |
+| `feat` | raises the minor version |
+| `fix`, `perf` | raises the patch version |
+| `docs`, `test`, `ci`, `build`, `refactor`, `chore` | no release by themselves |
+
 ## Reporting a plugin fault
 
 Plugins run as separate processes on purpose: a plugin that crashes takes only
