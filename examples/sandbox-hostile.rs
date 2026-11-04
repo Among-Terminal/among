@@ -363,6 +363,91 @@ fn compat32() -> String {
     "unsupported:architecture".into()
 }
 
+/// Reads the first bytes of a SysV shared memory segment another process of
+/// the same user created under `key`.
+fn shm_read(key: i64) -> String {
+    let id = unsafe { libc::shmget(key as libc::key_t, 0, 0) };
+    if id < 0 {
+        return last_error();
+    }
+    let address = unsafe { libc::shmat(id, std::ptr::null(), libc::SHM_RDONLY) };
+    if address as isize == -1 {
+        return last_error();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(address as *const u8, 16) };
+    let text: String = bytes
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as char)
+        .collect();
+    unsafe { libc::shmdt(address) };
+    format!("ok:{text}")
+}
+
+/// Lists SysV shared memory objects by slot index with SHM_STAT, which needs
+/// no /proc and no key.
+fn shm_stat() -> String {
+    // from linux/shm.h; the libc crate does not export it.
+    const SHM_STAT: libc::c_int = 13;
+    let mut found = 0;
+    let mut last = String::from("err:ENOENT");
+    for index in 0..1024 {
+        let mut description: libc::shmid_ds = unsafe { std::mem::zeroed() };
+        if unsafe { libc::shmctl(index, SHM_STAT, &mut description) } >= 0 {
+            found += 1;
+        } else {
+            last = last_error();
+        }
+    }
+    if found > 0 {
+        format!("ok:{found}")
+    } else {
+        last
+    }
+}
+
+/// Reaches a SysV message queue by key and reads how many messages it holds.
+fn msg_read(key: i64) -> String {
+    let id = unsafe { libc::msgget(key as libc::key_t, 0) };
+    if id < 0 {
+        return last_error();
+    }
+    let mut description: libc::msqid_ds = unsafe { std::mem::zeroed() };
+    if unsafe { libc::msgctl(id, libc::IPC_STAT, &mut description) } < 0 {
+        return last_error();
+    }
+    format!("ok:{}", description.msg_qnum)
+}
+
+/// Reaches a SysV semaphore set by key and reads the value of its first one.
+fn sem_read(key: i64) -> String {
+    let id = unsafe { libc::semget(key as libc::key_t, 0, 0) };
+    if id < 0 {
+        return last_error();
+    }
+    let value = unsafe { libc::semctl(id, 0, libc::GETVAL) };
+    if value < 0 {
+        return last_error();
+    }
+    format!("ok:{value}")
+}
+
+/// Opens a POSIX message queue by name and reads how many messages it holds.
+fn mq_read(name: &str) -> String {
+    let queue = unsafe { libc::mq_open(c(name).as_ptr(), libc::O_RDONLY) };
+    if queue == -1 {
+        return last_error();
+    }
+    let mut attributes: libc::mq_attr = unsafe { std::mem::zeroed() };
+    let outcome = if unsafe { libc::mq_getattr(queue, &mut attributes) } < 0 {
+        last_error()
+    } else {
+        format!("ok:{}", attributes.mq_curmsgs)
+    };
+    unsafe { libc::mq_close(queue) };
+    outcome
+}
+
 /// Enters new user, mount and network namespaces, where the process holds a
 /// full capability set, and tries what a confined plugin must still not do.
 fn userns(secret: &str, outside: &str) -> String {
@@ -446,6 +531,11 @@ fn run(line: &str) -> Option<String> {
             unsafe { libc::abort() };
         }
         "userns" => userns(argument(0), argument(1)),
+        "shm_read" => shm_read(number(arguments, 0)),
+        "shm_stat" => shm_stat(),
+        "msg_read" => msg_read(number(arguments, 0)),
+        "sem_read" => sem_read(number(arguments, 0)),
+        "mq_read" => mq_read(argument(0)),
         "pid" => format!("ok:{}", std::process::id()),
         _ => format!("unknown:{action}"),
     };

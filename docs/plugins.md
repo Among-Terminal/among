@@ -528,6 +528,10 @@ What it cannot do, each answered with `EPERM` or `EACCES`:
   itself (`prlimit64`, `sched_set*`, `setpriority`, `ioprio_set`, `migrate_pages`
   and `move_pages` with the calling process as target). `abort()` still ends the
   process.
+- Use named inter-process objects of the user: SysV shared memory, message queues
+  and semaphores (`shm*`, `msg*`, `sem*`) and POSIX message queues (`mq_*`). They
+  have no per-user namespace and can be listed without `/proc`, so a plugin could
+  otherwise reach another process of the same user through them.
 - Change the mode, owner, attributes or times of a file (`chmod`, `chown`,
   `setxattr`, `utimensat` and their variants), because Landlock does not mediate
   these; truncate a file it may only read (mediated by Landlock ABI 3).

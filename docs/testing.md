@@ -554,3 +554,8 @@ When a kernel or `linux-libc-dev` update adds a system call with a name that tou
 file metadata, mounts, namespaces or privileges, `plugin::sandbox::policy::review_tests` fails until the call is
 either added to the filter in `policy.rs` or listed with its reason in `REVIEWED_ALLOWED`. That is the update step
 for the filter's call list.
+
+The same-user IPC rows (`SysV shared memory`, `SysV message queue`, `SysV semaphore set`, `POSIX message
+queue`) create the objects in the test process, then show that the unconfined fixture reads them (the control)
+and that the confined one is refused with `EPERM`. A control that cannot reach the object marks the row
+`NOT VERIFIED`.
