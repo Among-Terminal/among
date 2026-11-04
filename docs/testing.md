@@ -541,3 +541,16 @@ level, foreign owner, permissions, a component swapped during opening),
 `system.metrics`). Kernels that Among cannot reach natively (Landlock ABI 1 or 2,
 no Landlock) are exercised by injecting the probe result; their real behaviour is
 not verified.
+
+`plugin::host::confinement_tests::the_released_official_plugins_still_produce_their_fragments_under_confinement`
+runs the released `clock`, `pane-pwd` and `system-status` binaries as managed plugins. It needs
+`AMONG_OFFICIAL_PLUGINS=<directory>` holding one extracted release package per plugin identifier
+(`clock/`, `pane-pwd/`, `system-status/`). Without the variable it prints `NOT VERIFIED` and passes, except
+under `AMONG_REQUIRE_SANDBOX=1`, where it fails; the `native` CI job extracts the candidate packages of the
+runner's architecture and sets both. Only the `native` job of `checks.yml` runs these tests; the package
+workflows only build the test executables.
+
+When a kernel or `linux-libc-dev` update adds a system call with a name that touches sockets, processes, signals,
+file metadata, mounts, namespaces or privileges, `plugin::sandbox::policy::review_tests` fails until the call is
+either added to the filter in `policy.rs` or listed with its reason in `REVIEWED_ALLOWED`. That is the update step
+for the filter's call list.

@@ -498,6 +498,13 @@ What a confined plugin can do:
   Its path is in
   `AMONG_PLUGIN_DATA_DIR`. Uninstalling a plugin keeps this directory and its
   contents; removing the data is a separate action that does not exist yet.
+  A link anywhere on that path, including above `XDG_DATA_HOME` such as
+  `~/.local` or `~/.local/share`, makes every plugin Unavailable; the reason names
+  the component. Typical causes are a dotfile manager that links `~/.local` or
+  `~/.local/share` into a repository, and image-based systems where `/home` is a
+  link to `/var/home`. Fix it by making that component a real directory (move the
+  contents and drop the link), or by starting Among with `XDG_DATA_HOME` set to a
+  path that contains no link, for example the target of the link under `/var/home`.
 - Use the protocol on stdin and stdout. Nothing else is open: every other
   descriptor of the host is closed on `exec`.
 - Not read `/proc`, including `/proc/self`, unless it holds `system.metrics` and
@@ -552,8 +559,9 @@ Without consent a plugin on an older kernel is shown as Unavailable in Preferenc
 with the observed level, the required level and an "Allow reduced protection…"
 action. Consent is stored per plugin identity with the level it was given for. A
 later start that reaches a lower level asks again; a higher level starts without
-asking. A plugin that runs with reduced protection is marked as such on its card
-for as long as it runs.
+asking. A plugin the user allowed to run with reduced protection carries a mark on
+its card for as long as that permission is stored, whether the plugin is running or
+stopped.
 
 For every start the host records the plugin identity, generation, granted
 features, a digest of the policy that was applied, the Landlock ABI and enforcement

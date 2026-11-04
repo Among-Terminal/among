@@ -572,6 +572,11 @@ impl Confined {
 #[test]
 fn the_released_official_plugins_still_produce_their_fragments_under_confinement() {
     let Some(packages) = std::env::var_os("AMONG_OFFICIAL_PLUGINS").map(PathBuf::from) else {
+        assert!(
+            std::env::var_os("AMONG_REQUIRE_SANDBOX").is_none(),
+            "AMONG_REQUIRE_SANDBOX is set, so the official plugin packages are required: \
+             set AMONG_OFFICIAL_PLUGINS to a directory with one extracted package per plugin"
+        );
         eprintln!(
             "NOT VERIFIED: AMONG_OFFICIAL_PLUGINS is not set; the released binaries were not run"
         );
@@ -641,4 +646,26 @@ fn the_released_official_plugins_still_produce_their_fragments_under_confinement
         bars[0].starts_with("CPU ") && bars[0].ends_with('%'),
         "{bars:?}"
     );
+}
+
+#[test]
+fn a_stopped_plugin_with_a_stored_reduced_consent_still_carries_the_mark() {
+    // disabled, never started in this session, consent read from the local record.
+    let confined = confined(Setup {
+        local: json!({"enabled": false, "protection_consent": "reduced:2"}),
+        ..Setup::default()
+    });
+    assert!(confined.host.plugins[0].io.is_none());
+    let overview = confined.host.overview().remove(0);
+    let line = overview
+        .protection
+        .expect("the mark is shown while stopped");
+    assert!(line.contains("reduced protection allowed"), "{line}");
+    assert!(line.contains("runs with reduced protection"), "{line}");
+    // no consent, no mark.
+    let plain = self::confined(Setup {
+        local: json!({"enabled": false}),
+        ..Setup::default()
+    });
+    assert_eq!(plain.host.overview()[0].protection, None);
 }

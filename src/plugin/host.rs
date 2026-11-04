@@ -720,7 +720,7 @@ impl PluginHost {
                 return false;
             }
         };
-        let spawned = Process::start_admitted(launch.command, reservation, launch.confinement);
+        let spawned = launch.start(reservation);
 
         match spawned {
             Ok(process) => {

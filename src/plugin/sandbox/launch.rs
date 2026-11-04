@@ -153,6 +153,7 @@ impl Confinement {
         let mut ruleset = ruleset;
         let pipe_fd = self.pipe_fd.clone();
         let abi = self.abi;
+        let required = self.required;
         #[cfg(test)]
         let inject = self.inject;
         // the hook may run several times in different forked children; each
@@ -183,6 +184,7 @@ impl Confinement {
                 let outcome = confine(
                     keep,
                     abi,
+                    required,
                     &mut ruleset,
                     &program,
                     &mut report,
@@ -363,6 +365,7 @@ fn build_ruleset(spec: &Spec<'_>, abi: u32) -> Result<RulesetCreated, Refused> {
 fn confine(
     keep: RawFd,
     abi: u32,
+    required: Protection,
     ruleset: &mut Option<RulesetCreated>,
     program: &Program,
     report: &mut Report,
@@ -423,6 +426,12 @@ fn confine(
             report.failed = Step::Seccomp;
             return Err(errno);
         }
+    }
+    // the last gate before `exec`: a process whose protection is below the
+    // level it was allowed to run at never reaches the plugin's code.
+    if !Protection::of_report(report).satisfies(required) {
+        report.failed = Step::Level;
+        return Err(libc::EPERM);
     }
     Ok(())
 }
@@ -594,6 +603,13 @@ pub(crate) mod allocation_guard {
             unsafe { System.alloc(layout) }
         }
         unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            if FORBIDDEN.load(Ordering::Relaxed) {
+                let message = b"deallocation between fork and exec\n";
+                unsafe {
+                    libc::write(2, message.as_ptr().cast(), message.len());
+                    libc::_exit(101);
+                }
+            }
             unsafe { System.dealloc(pointer, layout) }
         }
         unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {

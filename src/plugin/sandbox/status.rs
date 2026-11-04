@@ -15,6 +15,8 @@ pub enum Step {
     Landlock = 2,
     Seccomp = 3,
     Inheritance = 4,
+    /// Every step succeeded but the protection reached is below the required level.
+    Level = 5,
 }
 
 impl Step {
@@ -25,6 +27,7 @@ impl Step {
             2 => Self::Landlock,
             3 => Self::Seccomp,
             4 => Self::Inheritance,
+            5 => Self::Level,
             _ => return None,
         })
     }
@@ -36,6 +39,7 @@ impl Step {
             Self::Landlock => "applying the Landlock filesystem rules failed",
             Self::Seccomp => "loading the seccomp filter failed",
             Self::Inheritance => "closing inherited descriptors failed",
+            Self::Level => "the protection reached is below the required level",
         }
     }
 }

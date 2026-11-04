@@ -545,3 +545,201 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod review_tests {
+    //! a kernel that gains a call touching sockets, processes, signals, file
+    //! metadata, mounts or privileges must not slip past the deny list
+    //! unnoticed: such a name has to be filtered or listed here as reviewed.
+
+    use super::denied;
+    use std::collections::BTreeSet;
+
+    /// Name fragments of calls whose reach a reviewer has to judge.
+    const WATCHED: &[&str] = &[
+        "xattr",
+        "chmod",
+        "chown",
+        "utime",
+        "mount",
+        "sock",
+        "signal",
+        "kill",
+        "pid",
+        "ptrace",
+        "uring",
+        "perf",
+        "bpf",
+        "key",
+        "priority",
+        "sched_set",
+        "affinity",
+        "rlimit",
+        "move_",
+        "migrate",
+        "setns",
+        "unshare",
+        "process_",
+        "kcmp",
+        "userfault",
+        "fsopen",
+        "fsconfig",
+        "fsmount",
+        "fspick",
+        "open_tree",
+        "clone",
+        "reboot",
+        "kexec",
+        "swap",
+        "chroot",
+        "quotactl",
+        "acct",
+        "ioprio",
+        "personality",
+        "memfd",
+        "seccomp",
+        "landlock",
+        "prctl",
+        "ioperm",
+        "iopl",
+        "mknod",
+        "link",
+        "rename",
+        "statmount",
+        "listmount",
+    ];
+
+    /// Watched calls that are deliberately allowed, each with the reason.
+    const REVIEWED_ALLOWED: &[(&str, &str)] = &[
+        ("fstat", "reads an open descriptor"),
+        ("fstatfs", "reads an open descriptor; statfs is needed for disk usage"),
+        ("fstatfs64", "32-bit table only"),
+        ("fstatat64", "32-bit table only"),
+        ("fstat64", "32-bit table only"),
+        ("getpid", "own process"),
+        ("getppid", "own parent"),
+        ("getsockname", "needs a socket, which cannot be created"),
+        ("setsockopt", "needs a socket, which cannot be created"),
+        ("getsockopt", "needs a socket, which cannot be created"),
+        ("clone", "children inherit the sandbox"),
+        ("clone3", "children inherit the sandbox"),
+        ("fsync", "own open file"),
+        ("rename", "Landlock mediates the paths"),
+        ("renameat", "Landlock mediates the paths"),
+        ("renameat2", "Landlock mediates the paths"),
+        ("link", "Landlock mediates the paths"),
+        ("linkat", "Landlock mediates the paths"),
+        ("symlink", "Landlock mediates the paths"),
+        ("symlinkat", "Landlock mediates the paths"),
+        ("mknod", "Landlock mediates creation in the data directory"),
+        ("mknodat", "Landlock mediates creation in the data directory"),
+        ("getrlimit", "read only, own process"),
+        ("setrlimit", "own process only"),
+        ("personality", "execution domain of the own process; the filter checks the call's architecture"),
+        ("getpriority", "read only"),
+        ("sched_get_priority_max", "read only"),
+        ("sched_get_priority_min", "read only"),
+        ("sched_getaffinity", "read only"),
+        ("prctl", "own process; no_new_privs is already set"),
+        ("arch_prctl", "own process"),
+        ("chroot", "needs CAP_SYS_CHROOT"),
+        ("acct", "needs CAP_SYS_PACCT"),
+        ("swapon", "needs CAP_SYS_ADMIN"),
+        ("swapoff", "needs CAP_SYS_ADMIN"),
+        ("reboot", "needs CAP_SYS_BOOT"),
+        ("iopl", "needs CAP_SYS_RAWIO"),
+        ("ioperm", "needs CAP_SYS_RAWIO"),
+        ("quotactl", "needs CAP_SYS_ADMIN"),
+        ("quotactl_fd", "needs CAP_SYS_ADMIN"),
+        ("kexec_load", "needs CAP_SYS_BOOT"),
+        ("kexec_file_load", "needs CAP_SYS_BOOT"),
+        ("getxattr", "read only"),
+        ("lgetxattr", "read only"),
+        ("fgetxattr", "read only"),
+        ("getxattrat", "read only"),
+        ("listxattr", "read only"),
+        ("llistxattr", "read only"),
+        ("flistxattr", "read only"),
+        ("listxattrat", "read only"),
+        ("unshare", "namespaces give rights only inside them; mount and sockets stay denied, Landlock and seccomp are inherited"),
+        ("setns", "joining a namespace needs privilege over it; the same reasoning as unshare"),
+        ("signalfd", "receives signals; cannot send them"),
+        ("signalfd4", "receives signals; cannot send them"),
+        ("pkey_mprotect", "own memory"),
+        ("pkey_alloc", "own memory"),
+        ("pkey_free", "own memory"),
+        ("seccomp", "can only add restrictions"),
+        ("landlock_create_ruleset", "can only add restrictions"),
+        ("landlock_add_rule", "can only add restrictions"),
+        ("landlock_restrict_self", "can only add restrictions"),
+        ("memfd_create", "anonymous memory; no access to user files"),
+        ("memfd_secret", "anonymous memory"),
+        ("process_mrelease", "needs a pidfd, and pidfd_open and pidfd_getfd are denied"),
+        ("statmount", "read only mount information"),
+        ("listmount", "read only mount information"),
+        ("ioprio_get", "read only"),
+        ("readlink", "Landlock mediates the paths"),
+        ("readlinkat", "Landlock mediates the paths"),
+        ("unlink", "Landlock mediates the paths"),
+        ("unlinkat", "Landlock mediates the paths"),
+        ("mq_unlink", "OPEN QUESTION, not a decision: named POSIX message queues and SysV IPC objects of the same user are outside Landlock; see the design notes"),
+        ("utimensat_time64","32-bit table only; a foreign architecture is killed"),
+    ];
+
+    fn call_names(header: &str) -> BTreeSet<String> {
+        header
+            .lines()
+            .filter_map(|line| line.strip_prefix("#define __NR_"))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn every_watched_kernel_call_in_the_installed_headers_is_filtered_or_reviewed() {
+        let filtered: BTreeSet<&str> = denied().map(|rule| rule.name).collect();
+        let reviewed: BTreeSet<&str> = REVIEWED_ALLOWED.iter().map(|(name, _)| *name).collect();
+        let mut seen = 0;
+        let mut unreviewed = Vec::new();
+        for path in [
+            "/usr/include/x86_64-linux-gnu/asm/unistd_64.h",
+            "/usr/include/asm-generic/unistd.h",
+        ] {
+            let Ok(header) = std::fs::read_to_string(path) else {
+                eprintln!("NOT VERIFIED: {path} is not installed");
+                continue;
+            };
+            seen += 1;
+            for name in call_names(&header) {
+                // the filter's own table is per architecture; a name denied on
+                // the other one still counts as reviewed here.
+                let watched = WATCHED.iter().any(|fragment| name.contains(fragment));
+                if watched
+                    && !filtered.contains(name.as_str())
+                    && !reviewed.contains(name.as_str())
+                    && !LEGACY_X86_ONLY.contains(&name.as_str())
+                {
+                    unreviewed.push(format!("{name} ({path})"));
+                }
+            }
+        }
+        if seen == 0 {
+            return;
+        }
+        assert!(
+            unreviewed.is_empty(),
+            "kernel calls to review: filter them in policy.rs or list them with a reason \
+             in REVIEWED_ALLOWED: {unreviewed:?}"
+        );
+    }
+
+    /// Denied on x86-64 only; the generic table has no such call.
+    const LEGACY_X86_ONLY: &[&str] = &["chmod", "chown", "lchown", "utime", "utimes", "futimesat"];
+
+    #[test]
+    fn every_reviewed_exception_has_a_reason() {
+        for (name, reason) in REVIEWED_ALLOWED {
+            assert!(!reason.is_empty(), "{name}");
+        }
+    }
+}

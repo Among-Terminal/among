@@ -275,18 +275,35 @@ fn a_complete_record_without_exec_is_a_failed_start_without_a_process() {
 }
 
 #[test]
-fn a_child_that_applied_less_than_required_is_refused_and_returned_to_be_killed() {
+fn a_child_below_the_required_level_stops_before_exec_and_leaves_no_process() {
     if !full_protection_available() {
         return;
     }
     let scratch = Scratch::new("below");
     let mut prepared = prepare(&scratch, Some(Protection::Full { abi: 99 }), |c| c);
     match prepared.confinement.spawn(&mut prepared.command) {
-        Err(StartError::Unproven { child, reason }) => {
-            assert!(reason.contains("required protection level"), "{reason}");
-            reap(child);
+        // the child itself refuses: it never reaches exec, so no process exists
+        // for the host to kill.
+        Err(StartError::Failed {
+            reason,
+            confinement_failed,
+            errno,
+        }) => {
+            assert!(confinement_failed);
+            assert_eq!(errno, Some(libc::EPERM));
+            assert!(
+                reason.starts_with("the protection reached is below the required level"),
+                "{reason}"
+            );
         }
-        _ => panic!("a below-requirement start was accepted"),
+        Err(StartError::Unproven { child, .. }) => {
+            reap(child);
+            panic!("the child reached exec below the required level");
+        }
+        Ok((child, _)) => {
+            reap(child);
+            panic!("a below-requirement start was accepted");
+        }
     }
 }
 

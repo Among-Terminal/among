@@ -20,6 +20,27 @@ pub(super) struct State {
     pub(super) record: Option<Record>,
 }
 
+impl State {
+    /// The protection line of the plugin's card. A plugin the user allowed to
+    /// run with reduced protection carries the mark whether or not it runs
+    /// now, so it is visible for as long as the consent is stored.
+    pub(super) fn card_line(&self) -> Option<String> {
+        let running = self
+            .record
+            .as_ref()
+            .filter(|record| record.applied.is_some())
+            .map(Record::protection_line);
+        match (running, self.consent) {
+            (Some(line), _) => Some(line),
+            (None, Some(consent)) if !consent.is_full() => Some(format!(
+                "Protection: reduced protection allowed ({}) · runs with reduced protection",
+                consent.label()
+            )),
+            _ => self.record.as_ref().map(Record::protection_line),
+        }
+    }
+}
+
 /// One start's confinement, as the user can inspect it: what was asked, what
 /// the child proved and why a start was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,10 +115,47 @@ impl Record {
     }
 }
 
-/// A started or refused start.
+/// A command ready to start, with the confinement it must be started under.
+/// In the product the confinement is mandatory; only test builds can hold none.
 pub(super) struct Launch {
-    pub(super) command: Command,
-    pub(super) confinement: Option<Confinement>,
+    command: Command,
+    #[cfg(not(test))]
+    confinement: Confinement,
+    #[cfg(test)]
+    confinement: Option<Confinement>,
+}
+
+impl Launch {
+    fn confined(command: Command, confinement: Confinement) -> Self {
+        Self {
+            command,
+            #[cfg(not(test))]
+            confinement,
+            #[cfg(test)]
+            confinement: Some(confinement),
+        }
+    }
+
+    #[cfg(test)]
+    fn unconfined(command: Command) -> Self {
+        Self {
+            command,
+            confinement: None,
+        }
+    }
+
+    pub(super) fn start(
+        self,
+        admission: std::sync::Arc<super::super::admission::Lease>,
+    ) -> std::io::Result<Process> {
+        #[cfg(not(test))]
+        return Process::start_admitted(self.command, admission, self.confinement);
+        #[cfg(test)]
+        match self.confinement {
+            Some(confinement) => Process::start_admitted(self.command, admission, confinement),
+            None => Process::start_unconfined_admitted(self.command, admission),
+        }
+    }
 }
 
 fn unavailable(reason: impl ToString) -> PluginState {
@@ -151,10 +209,7 @@ impl PluginHost {
         if self.test_confinement.is_none() {
             let mut command = super::super::process::pinned_program(directory, executable, lease);
             environment::configure(&mut command, None).map_err(unavailable)?;
-            return Ok(Launch {
-                command,
-                confinement: None,
-            });
+            return Ok(Launch::unconfined(command));
         }
         let features = self.plugins[index]
             .runtime
@@ -215,10 +270,7 @@ impl PluginHost {
             return Err(self.refuse(index, record, None, reason.into()));
         }
         self.plugins[index].confinement.record = Some(record);
-        Ok(Launch {
-            command,
-            confinement: Some(confinement),
-        })
+        Ok(Launch::confined(command, confinement))
     }
 
     fn refuse(

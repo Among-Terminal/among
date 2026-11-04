@@ -101,6 +101,27 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustup override set 1.98.1
           dirname "$(rustup which cargo)" >> "$GITHUB_PATH"
+      - name: Official plugin packages for the confined host test
+        # The test that runs clock, pane-pwd and system-status under the
+        # sandbox needs their packages; with AMONG_REQUIRE_SANDBOX it fails
+        # when they are missing instead of skipping.
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64) arch=arm64 ;;
+            *) exit 1 ;;
+          esac
+          packages="$RUNNER_TEMP/official-packages"
+          mkdir -m 700 "$packages"
+          for id in clock pane-pwd system-status; do
+            set -- "$RUNNER_TEMP/plugin-candidate/$id"-*-linux-"$arch".tar.gz
+            test "$#" -eq 1
+            test -f "$1"
+            mkdir -m 700 "$packages/$id"
+            tar -xzf "$1" -C "$packages/$id"
+          done
+          echo "AMONG_OFFICIAL_PLUGINS=$packages" >> "$GITHUB_ENV"
       - name: Two independent Cargo packages
         run: sh scripts/check-packages.sh
       - name: Hostile plugin actions as a throwaway user in a disposable container

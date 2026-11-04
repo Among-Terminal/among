@@ -489,6 +489,61 @@ fn every_hostile_action_is_denied_under_confinement_after_succeeding_without_it(
         Need::Required,
     );
 
+    // new user, mount and network namespaces hold a full capability set inside
+    // themselves. the seccomp filter and Landlock domain are inherited and no_new_privs
+    // is set, so none of the denied things becomes possible there.
+    let namespace_line = format!("userns {} {}", secret.display(), outside.display());
+    let control = start(&scratch, Mode::Control).ask(&namespace_line);
+    let confined = start(
+        &scratch,
+        Mode::Confined {
+            features: &BTreeSet::new(),
+        },
+    )
+    .ask(&namespace_line);
+    let entered = |outcome: &Outcome| outcome.text().contains("unshare=ok");
+    if entered(&control) {
+        let text = confined.text();
+        assert!(
+            entered(&confined),
+            "unshare is allowed and harmless: {text}"
+        );
+        for expected in [
+            "mount=err:EPERM",
+            "socket=err:EPERM",
+            "read=err:EACCES",
+            "write=err:EACCES",
+        ] {
+            assert!(
+                text.contains(expected),
+                "inside a user namespace `{expected}` must hold: {text}"
+            );
+        }
+        // the control proves the namespace gives these rights when nothing confines it.
+        for allowed in ["mount=ok", "socket=ok", "read=ok", "write=ok"] {
+            assert!(
+                control.text().contains(allowed),
+                "control `{allowed}`: {}",
+                control.text()
+            );
+        }
+        record(
+            "inside a new user namespace: mount, socket, read, write",
+            &control,
+            &confined,
+            "confined as expected",
+        );
+    } else {
+        record(
+            "inside a new user namespace: mount, socket, read, write",
+            &control,
+            &confined,
+            "NOT VERIFIED (control cannot create a user namespace here)",
+        );
+        run.unverified
+            .push(format!("userns control gave `{}`", control.text()));
+    }
+
     // alternative system call entry points.
     #[cfg(target_arch = "x86_64")]
     {
@@ -500,24 +555,32 @@ fn every_hostile_action_is_denied_under_confinement_after_succeeding_without_it(
             },
         )
         .ask("x32");
-        // the control must come back with an ordinary answer (ENOSYS when the
-        // kernel has no x32 support); the confined process must be killed.
+        // the filter kills with SIGSYS before the kernel looks at the call, so
+        // that is asserted whatever the control did.
         assert!(
-            matches!(&control, Outcome::Answered(_)),
-            "x32 control: {}",
-            control.text()
-        );
-        assert!(
-            matches!(confined, Outcome::Died(Some(_))),
-            "x32 confined: {}",
+            matches!(confined, Outcome::Died(Some(libc::SIGSYS))),
+            "x32 confined must die by SIGSYS: {}",
             confined.text()
         );
-        record(
-            "x32 system call entry (x86-64)",
-            &control,
-            &confined,
-            "confined as expected",
-        );
+        // a control that merely returns ENOSYS shows only that this kernel has
+        // no x32 entry, not that the call would have worked: not verified.
+        if control.succeeded() {
+            record(
+                "x32 system call entry (x86-64)",
+                &control,
+                &confined,
+                "confined as expected",
+            );
+        } else {
+            record(
+                "x32 system call entry (x86-64)",
+                &control,
+                &confined,
+                "NOT VERIFIED (control returns an error: this kernel has no working x32 entry)",
+            );
+            run.unverified
+                .push(format!("x32 control gave `{}`", control.text()));
+        }
         let control = start(&scratch, Mode::Control).ask("compat32");
         let confined = start(
             &scratch,
@@ -526,12 +589,12 @@ fn every_hostile_action_is_denied_under_confinement_after_succeeding_without_it(
             },
         )
         .ask("compat32");
+        assert!(
+            matches!(confined, Outcome::Died(Some(libc::SIGSYS))),
+            "int 0x80 confined must die by SIGSYS: {}",
+            confined.text()
+        );
         if control.succeeded() {
-            assert!(
-                matches!(confined, Outcome::Died(Some(_))),
-                "int 0x80 confined: {}",
-                confined.text()
-            );
             record(
                 "32-bit int 0x80 entry (x86-64)",
                 &control,

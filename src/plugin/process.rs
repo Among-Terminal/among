@@ -103,12 +103,29 @@ pub struct Process {
 impl Process {
     #[cfg(test)]
     pub fn start(command: Command) -> io::Result<Self> {
-        Self::start_admitted(command, Arc::new(Lease::new()), None)
+        Self::start_with(command, Arc::new(Lease::new()), None)
     }
 
-    /// Starts a process. With a confinement, the start succeeds only when the
-    /// child proves it applied at least the required protection.
+    /// Test hosts whose fixtures write beside themselves: no confinement.
+    #[cfg(test)]
+    pub(super) fn start_unconfined_admitted(
+        command: Command,
+        admission: Arc<Lease>,
+    ) -> io::Result<Self> {
+        Self::start_with(command, admission, None)
+    }
+
+    /// Starts a process. The confinement is mandatory: the start succeeds only
+    /// when the child proves it applied at least the required protection.
     pub(super) fn start_admitted(
+        command: Command,
+        admission: Arc<Lease>,
+        confinement: Confinement,
+    ) -> io::Result<Self> {
+        Self::start_with(command, admission, Some(confinement))
+    }
+
+    fn start_with(
         mut command: Command,
         admission: Arc<Lease>,
         confinement: Option<Confinement>,

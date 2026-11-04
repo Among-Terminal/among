@@ -110,11 +110,7 @@ impl PluginHost {
                     state: plugin.state.clone(),
                     generation: None,
                     running_version: plugin.io.as_ref().and_then(|io| io.package_version.clone()),
-                    protection: plugin
-                        .confinement
-                        .record
-                        .as_ref()
-                        .map(|record| record.protection_line()),
+                    protection: plugin.confinement.card_line(),
                     protection_details: plugin
                         .confinement
                         .record

@@ -351,6 +351,38 @@ fn compat32() -> String {
     "unsupported:architecture".into()
 }
 
+/// Enters new user, mount and network namespaces, where the process holds a
+/// full capability set, and tries what a confined plugin must still not do.
+fn userns(secret: &str, outside: &str) -> String {
+    let entered =
+        unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWNET) };
+    if entered != 0 {
+        return format!("ok:unshare={}", last_error());
+    }
+    let target = c("/");
+    let mounted = unsafe {
+        libc::mount(
+            c("tmpfs").as_ptr(),
+            target.as_ptr(),
+            c("tmpfs").as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    let mount = status(i64::from(mounted));
+    let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+    let socket = if socket < 0 {
+        last_error()
+    } else {
+        "ok".into()
+    };
+    // writing the id map would give the process uid 0 inside the namespace.
+    let map = write_file("/proc/self/uid_map");
+    let read = read_file(secret);
+    let write = write_file(outside);
+    format!("ok:unshare=ok,mount={mount},socket={socket},uid_map={map},read={read},write={write}")
+}
+
 /// Forks a child that signals `pid` after this process has exited and writes
 /// its outcome to `result_path`; the caller reads the file.
 fn orphan_signal(pid: i64, result_path: &str) -> String {
@@ -401,6 +433,7 @@ fn run(line: &str) -> Option<String> {
         "abort" => {
             unsafe { libc::abort() };
         }
+        "userns" => userns(argument(0), argument(1)),
         "pid" => format!("ok:{}", std::process::id()),
         _ => format!("unknown:{action}"),
     };

@@ -3,7 +3,6 @@
 //! foreign owner anywhere on the way refuses the start instead of redirecting
 //! the plugin's writes.
 
-use crate::plugin::data::Problem;
 use std::ffi::CString;
 use std::fs::File;
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -36,20 +35,37 @@ fn data_home_from(
 const TOP: &str = "among";
 const BRANCH: &str = "plugin-data";
 
-fn component(name: &str) -> Result<CString, Problem> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err(Problem("plugin data directory name is not a plain name"));
+/// Why the data directory cannot be used. The text names the offending path
+/// and what to change, because it is shown to the user.
+#[derive(Debug)]
+pub struct Problem(pub String);
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
-    CString::new(name).map_err(|_| Problem("plugin data directory name is not a plain name"))
 }
 
-fn open_directory(parent: &File, name: &CString) -> Result<File, Problem> {
+fn problem(text: &str) -> Problem {
+    Problem(text.to_string())
+}
+
+fn component(name: &str) -> Result<CString, Problem> {
+    let plain = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    if !plain {
+        return Err(problem("plugin data directory name is not a plain name"));
+    }
+    CString::new(name).map_err(|_| problem("plugin data directory name is not a plain name"))
+}
+
+/// Opens `name` below `parent` without following a link. `shown` is the path
+/// the user knows the directory by, used in the refusal.
+fn open_directory(parent: &File, name: &CString, shown: &Path) -> Result<File, Problem> {
     let fd = unsafe {
         libc::openat(
             parent.as_raw_fd(),
@@ -58,20 +74,39 @@ fn open_directory(parent: &File, name: &CString) -> Result<File, Problem> {
         )
     };
     if fd < 0 {
-        return Err(Problem(
-            "plugin data directory path contains a link or an unavailable directory",
-        ));
+        let error = std::io::Error::last_os_error();
+        // O_NOFOLLOW on a link, or O_DIRECTORY on a file, both mean the entry is
+        // not a plain directory.
+        let link = matches!(
+            error.raw_os_error(),
+            Some(libc::ELOOP) | Some(libc::ENOTDIR)
+        );
+        return Err(Problem(if link {
+            format!(
+                "plugin data directory path contains a link or a non-directory at {} \
+                 (replace it by a real directory, or start Among with XDG_DATA_HOME \
+                 pointing at a path without links)",
+                shown.display()
+            )
+        } else {
+            format!(
+                "plugin data directory path has an unavailable directory at {}: {error}",
+                shown.display()
+            )
+        }));
     }
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn create_if_missing(parent: &File, name: &CString) -> Result<(), Problem> {
-    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0
-        && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
-    {
-        return Err(Problem("cannot create the plugin data directory"));
+/// Creates the directory when it is missing; true when this call created it.
+fn create_if_missing(parent: &File, name: &CString) -> Result<bool, Problem> {
+    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0 {
+        return Ok(true);
     }
-    Ok(())
+    if std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+        return Err(problem("cannot create the plugin data directory"));
+    }
+    Ok(false)
 }
 
 /// A directory the user owns; the plugin's own directory must also be private.
@@ -81,19 +116,22 @@ fn create_if_missing(parent: &File, name: &CString) -> Result<(), Problem> {
 /// refusing them would refuse every plugin. A replacement made by someone with
 /// write access is caught by the owner check on each descriptor that was
 /// opened without following links.
-fn check_owned(directory: &File, leaf: bool) -> Result<(), Problem> {
+fn check_owned(directory: &File, leaf: bool, shown: &Path) -> Result<(), Problem> {
     let metadata = directory
         .metadata()
-        .map_err(|_| Problem("cannot inspect the plugin data directory"))?;
+        .map_err(|_| problem("cannot inspect the plugin data directory"))?;
     if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
-        return Err(Problem(
-            "plugin data directory is not a directory owned by the current user",
-        ));
+        return Err(Problem(format!(
+            "plugin data directory {} is not a directory owned by the current user",
+            shown.display()
+        )));
     }
     if leaf && metadata.mode() & 0o7777 != 0o700 {
-        return Err(Problem(
-            "plugin data directory permissions are wider than the owner's",
-        ));
+        return Err(Problem(format!(
+            "plugin data directory {} has permissions {:o}, not the required 700",
+            shown.display(),
+            metadata.mode() & 0o7777
+        )));
     }
     Ok(())
 }
@@ -105,9 +143,9 @@ fn check_owned(directory: &File, leaf: bool) -> Result<(), Problem> {
 /// `0700`.
 pub fn open(data_home: &Path, namespace: &str, plugin_id: &str) -> Result<DataDir, Problem> {
     if !data_home.is_absolute() {
-        return Err(Problem("plugin data home must be an absolute path"));
+        return Err(problem("plugin data home must be an absolute path"));
     }
-    let mut current = File::open("/").map_err(|_| Problem("cannot open the filesystem root"))?;
+    let mut current = File::open("/").map_err(|_| problem("cannot open the filesystem root"))?;
     let mut path = PathBuf::from("/");
     for part in data_home.components() {
         match part {
@@ -115,16 +153,16 @@ pub fn open(data_home: &Path, namespace: &str, plugin_id: &str) -> Result<DataDi
             Component::Normal(name) => {
                 let name = name
                     .to_str()
-                    .ok_or(Problem("plugin data home is not UTF-8"))?;
+                    .ok_or(problem("plugin data home is not UTF-8"))?;
                 let name_c = CString::new(name)
-                    .map_err(|_| Problem("plugin data home contains a NUL byte"))?;
-                current = open_directory(&current, &name_c)?;
+                    .map_err(|_| problem("plugin data home contains a NUL byte"))?;
                 path.push(name);
+                current = open_directory(&current, &name_c, &path)?;
             }
-            _ => return Err(Problem("plugin data home is not a normalised path")),
+            _ => return Err(problem("plugin data home is not a normalised path")),
         }
     }
-    check_owned(&current, false)?;
+    check_owned(&current, false, &path)?;
     let names = [TOP, BRANCH, namespace, plugin_id];
     // every name is judged before the first directory is created.
     let encoded = names
@@ -132,10 +170,17 @@ pub fn open(data_home: &Path, namespace: &str, plugin_id: &str) -> Result<DataDi
         .map(|name| component(name))
         .collect::<Result<Vec<_>, _>>()?;
     for (index, (name, name_c)) in names.iter().zip(&encoded).enumerate() {
-        create_if_missing(&current, name_c)?;
-        current = open_directory(&current, name_c)?;
-        check_owned(&current, index == names.len() - 1)?;
         path.push(name);
+        let created = create_if_missing(&current, name_c)?;
+        current = open_directory(&current, name_c, &path)?;
+        let leaf = index == names.len() - 1;
+        // mkdir applies the umask, which can only narrow the mode but could
+        // leave a directory the owner cannot use; a directory made here is set
+        // to exactly 0700 on its descriptor whatever the umask was.
+        if created && unsafe { libc::fchmod(current.as_raw_fd(), 0o700) } != 0 {
+            return Err(problem("cannot set the plugin data directory mode"));
+        }
+        check_owned(&current, leaf, &path)?;
     }
     Ok(DataDir {
         directory: current,
@@ -165,6 +210,40 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn a_narrow_umask_still_yields_exactly_0700_on_a_new_leaf() {
+        const MARKER: &str = "AMONG_NARROW_UMASK_PROCESS";
+        // umask is process-wide, so this runs in a process of its own.
+        if std::env::var_os(MARKER).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "plugin::sandbox::data_dir::tests::a_narrow_umask_still_yields_exactly_0700_on_a_new_leaf",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(MARKER, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let scratch = Scratch::new("narrow-umask");
+        // 0o377 removes read and write from the owner as well.
+        unsafe { libc::umask(0o377) };
+        let opened = open(&scratch.0, "12", "clock").unwrap();
+        assert_eq!(
+            std::fs::metadata(&opened.path).unwrap().mode() & 0o7777,
+            0o700
+        );
+        // and the directory can be reopened afterwards.
+        assert!(open(&scratch.0, "12", "clock").is_ok());
     }
 
     #[test]
@@ -235,10 +314,15 @@ mod tests {
             symlink(&moved, victim).unwrap();
             let result = open(&base, "12", "clock");
             assert!(result.is_err(), "link at level {level} was followed");
+            let reason = result.err().unwrap().0;
+            assert!(reason.contains("link"), "level {level}: {reason}");
+            // the reason names the component that is a link, so the user can fix it.
             assert!(
-                result.err().unwrap().0.contains("link"),
-                "level {level} names the link"
+                reason.contains(&format!("at {}", victim.display())),
+                "level {level} names {}: {reason}",
+                victim.display()
             );
+            assert!(reason.contains("XDG_DATA_HOME"), "{reason}");
         }
     }
 
