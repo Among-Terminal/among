@@ -5,6 +5,8 @@
 //! is added to one list but not the other cannot exist: both use `LOCATIONS`.
 //!
 //! Not release locations, on purpose:
+//! * The official plugins live in `Among-Terminal/among-plugins` and version
+//!   independently of the application.
 //! * `tools/among-tools` has its own version. The tooling package is never
 //!   shipped and its version does not describe the application.
 //! * `packaging/debian/changelog` and the RPM `%changelog` are history. The
@@ -29,7 +31,7 @@ pub struct Location {
     write: fn(&str, &str) -> Result<String>,
 }
 
-pub const LOCATIONS: [Location; 6] = [
+pub const LOCATIONS: [Location; 4] = [
     Location {
         path: "Cargo.toml",
         read: |text| cargo_manifest_version(text, "among"),
@@ -39,16 +41,6 @@ pub const LOCATIONS: [Location; 6] = [
         path: "Cargo.lock",
         read: |text| cargo_lock_version(text, "among"),
         write: |text, version| set_cargo_lock_version(text, "among", version),
-    },
-    Location {
-        path: "examples/plugins/Cargo.toml",
-        read: |text| cargo_manifest_version(text, "among-example-plugins"),
-        write: |text, version| set_cargo_manifest_version(text, version),
-    },
-    Location {
-        path: "examples/plugins/Cargo.lock",
-        read: |text| cargo_lock_version(text, "among-example-plugins"),
-        write: |text, version| set_cargo_lock_version(text, "among-example-plugins", version),
     },
     Location {
         path: SPEC,

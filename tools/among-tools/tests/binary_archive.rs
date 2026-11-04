@@ -7,19 +7,11 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
     let root = storage::private_directory(&std::env::temp_dir(), "among-raw-archive")?;
     let payload = root.join("payload");
     fs::create_dir_all(payload.join("usr/bin"))?;
-    fs::create_dir_all(payload.join("usr/share/among/plugins"))?;
     fs::create_dir_all(payload.join("usr/share/doc/among-terminal/THIRD_PARTY"))?;
     let mut elf = [0u8; 20];
     elf[..6].copy_from_slice(b"\x7fELF\x02\x01");
     elf[18] = 62;
-    for relative in [
-        "usr/bin/among",
-        "usr/share/among/plugins/clock",
-        "usr/share/among/plugins/system-status",
-        "usr/share/among/plugins/pane-pwd",
-    ] {
-        fs::write(payload.join(relative), elf)?;
-    }
+    fs::write(payload.join("usr/bin/among"), elf)?;
     for name in ["LICENSE", "NOTICE", "THIRD_PARTY/inventory.json"] {
         fs::write(
             payload.join("usr/share/doc/among-terminal").join(name),
@@ -80,7 +72,11 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
     )?
     .contains("Libraries are NOT bundled"));
     assert!(members.contains_key(Path::new("THIRD_PARTY/inventory.json")));
-    assert_eq!(members.len(), 8);
+    assert_eq!(members.len(), 5);
+    assert!(
+        members.keys().all(|path| !path.starts_with("plugins")),
+        "a fresh archive must carry no plugin executables"
+    );
     let extracted = root.join("extracted");
     binary_archive::extract_checked(
         &record,
@@ -120,6 +116,7 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
         "changed-executable",
         "missing-license",
         "unexpected-file",
+        "obsolete-bundled-plugin",
         "duplicate-executable",
         "symlink",
         "misleading-instructions",
@@ -139,7 +136,7 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
             }
             let mut header = tar::Header::new_gnu();
             header.set_size(bytes.len() as u64);
-            header.set_mode(if path.starts_with("bin") || path.starts_with("plugins") {
+            header.set_mode(if path.starts_with("bin") {
                 0o755
             } else {
                 0o644
@@ -149,7 +146,7 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
         }
         if matches!(
             scenario,
-            "unexpected-file" | "duplicate-executable" | "symlink"
+            "unexpected-file" | "obsolete-bundled-plugin" | "duplicate-executable" | "symlink"
         ) {
             let mut header = tar::Header::new_gnu();
             header.set_size(0);
@@ -161,10 +158,10 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
             header.set_cksum();
             builder.append_data(
                 &mut header,
-                if scenario == "duplicate-executable" {
-                    "bin/among"
-                } else {
-                    "foreign"
+                match scenario {
+                    "duplicate-executable" => "bin/among",
+                    "obsolete-bundled-plugin" => "plugins/clock",
+                    _ => "foreign",
                 },
                 std::io::empty(),
             )?;
@@ -206,6 +203,22 @@ fn actual_archive_retains_exact_executables_notices_and_explicit_runtime_require
     )
     .is_err());
     assert!(binary_archive::create(&payload, "v0.1.0", "universal", "amd64", "", &output).is_err());
+    // A payload that still bundles plugin executables is refused outright.
+    fs::create_dir_all(payload.join("usr/share/among/plugins"))?;
+    fs::write(payload.join("usr/share/among/plugins/clock"), elf)?;
+    let mixed = root.join("mixed");
+    fs::create_dir(&mixed)?;
+    assert!(binary_archive::create(
+        &payload,
+        "v0.1.0-rc.7",
+        "ubuntu24.04",
+        "amd64",
+        "libgtk-4-1",
+        &mixed
+    )
+    .is_err());
+    assert_eq!(fs::read_dir(&mixed)?.count(), 0);
+    fs::remove_dir_all(payload.join("usr/share/among"))?;
     fs::write(output.join(&name), b"corrupted")?;
     assert!(
         binary_archive::validate(&record, &output, "v0.1.0-rc.7", "ubuntu24.04", "amd64").is_err()
@@ -223,19 +236,11 @@ fn candidate_checksums_verify_the_deb_and_the_archive_with_sha256sum() -> Result
     let root = storage::private_directory(&std::env::temp_dir(), "among-candidate-sums")?;
     let payload = root.join("payload");
     fs::create_dir_all(payload.join("usr/bin"))?;
-    fs::create_dir_all(payload.join("usr/share/among/plugins"))?;
     fs::create_dir_all(payload.join("usr/share/doc/among-terminal/THIRD_PARTY"))?;
     let mut elf = [0u8; 20];
     elf[..6].copy_from_slice(b"\x7fELF\x02\x01");
     elf[18] = 62;
-    for relative in [
-        "usr/bin/among",
-        "usr/share/among/plugins/clock",
-        "usr/share/among/plugins/system-status",
-        "usr/share/among/plugins/pane-pwd",
-    ] {
-        fs::write(payload.join(relative), elf)?;
-    }
+    fs::write(payload.join("usr/bin/among"), elf)?;
     for name in ["LICENSE", "NOTICE", "THIRD_PARTY/inventory.json"] {
         fs::write(
             payload.join("usr/share/doc/among-terminal").join(name),

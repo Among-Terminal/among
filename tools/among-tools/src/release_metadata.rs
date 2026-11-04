@@ -92,7 +92,7 @@ pub fn artwork(root: &Path) -> Result<()> {
 }
 pub fn validate(
     metadata: &Value,
-    manifests: &[toml::Value; 2],
+    manifest: &toml::Value,
     xml: &str,
     desktop: &str,
 ) -> Result<Vec<String>> {
@@ -117,8 +117,18 @@ pub fn validate(
     )?;
     let part = &metadata["parts"]["among"];
     require(
-        part["rust-channel"] == "1.98.1" && part["rust-path"] == json!([".", "examples/plugins"]),
+        part["rust-channel"] == "1.98.1" && part["rust-path"] == json!(["."]),
         "Snap Rust version/path differs",
+    )?;
+    // No step of any part may place anything into the application data
+    // directory (build, stage and prime scripts, organize, stage lists).
+    require(
+        !metadata["parts"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .any(|(_, part)| crate::rpm::mentions_application_data(&part.to_string())),
+        "Snap must not install plugin executables; official plugins come from their repository",
     )?;
     require(
         !part.get("rust-cargo-parameters").is_some_and(|value| {
@@ -162,23 +172,17 @@ pub fn validate(
         ),
         "strict installed schemas compilation absent",
     )?;
-    let mut versions = Vec::new();
-    for manifest in manifests {
-        let package = manifest
-            .get("package")
-            .ok_or("product manifest package absent")?;
-        require(
-            package.get("license").and_then(toml::Value::as_str) == Some("Apache-2.0"),
-            "product/Snap licenses differ",
-        )?;
-        versions.push(
-            package
-                .get("version")
-                .and_then(toml::Value::as_str)
-                .ok_or("product version absent")?,
-        );
-    }
-    require(versions[0] == versions[1], "product/plugin versions differ")?;
+    let package = manifest
+        .get("package")
+        .ok_or("product manifest package absent")?;
+    require(
+        package.get("license").and_then(toml::Value::as_str) == Some("Apache-2.0"),
+        "product/Snap licenses differ",
+    )?;
+    let version = package
+        .get("version")
+        .and_then(toml::Value::as_str)
+        .ok_or("product version absent")?;
     let document = roxmltree::Document::parse(xml)?;
     let component = document.root_element();
     let text = |name| {
@@ -208,7 +212,7 @@ pub fn validate(
         .find(|node| node.has_tag_name("releases"))
         .and_then(|node| node.children().find(|node| node.has_tag_name("release")));
     require(
-        release.and_then(|node| node.attribute("version")) == Some(versions[0]),
+        release.and_then(|node| node.attribute("version")) == Some(version),
         "AppStream version differs",
     )?;
     let mut section = "";
@@ -262,13 +266,10 @@ pub fn run(root: &Path, scratch: &Path) -> Result<()> {
         )?)?)
     };
     let metadata = deb_workflow::read(&read("snap/snapcraft.yaml")?)?;
-    let manifests = [
-        toml::from_str(&read("Cargo.toml")?)?,
-        toml::from_str(&read("examples/plugins/Cargo.toml")?)?,
-    ];
+    let manifest = toml::from_str(&read("Cargo.toml")?)?;
     let scripts = validate(
         &metadata,
-        &manifests,
+        &manifest,
         &read("data/com.github.among-terminal.metainfo.xml")?,
         &read("data/com.github.among-terminal.desktop")?,
     )?;

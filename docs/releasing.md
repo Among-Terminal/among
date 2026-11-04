@@ -344,7 +344,7 @@ fix: merge a new release pull request and use its new version.
 
 `among-tools check-release-metadata .` (run by `Checks`) reads every place that
 spells the version and fails when one differs or is missing: `Cargo.toml` and
-`Cargo.lock`, `examples/plugins/Cargo.toml` and `Cargo.lock`,
+`Cargo.lock`,
 `packaging/rpm/among.spec` (`Version:`) and the newest AppStream `<release>`.
 `release-prepare` rewrites the same list, so a location cannot be added to one
 and forgotten in the other. Not locations: `tools/among-tools` (its own version,

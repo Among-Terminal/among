@@ -75,13 +75,12 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustup override set 1.98.1
           dirname "$(rustup which cargo)" >> "$GITHUB_PATH"
-      - name: Three independent Cargo packages
+      - name: Two independent Cargo packages
         run: sh scripts/check-packages.sh
       - name: Prepare complete locked notice graphs
         # host builds do not acquire every target-specific source in the notice inventory.
         run: |
           cargo fetch --locked --manifest-path Cargo.toml
-          cargo fetch --locked --manifest-path examples/plugins/Cargo.toml
           cargo fetch --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Verify locked offline Cargo notices
         id: notices
@@ -196,7 +195,12 @@ jobs:
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-desktop . target/release/among
       - name: Independent Linux measurements
-        run: tools/among-tools/target/release/among-tools check-resource-measurements examples/plugins/target/release/system-status
+        run: |
+          set -euo pipefail
+          # Measure the system-status executable that the real installation
+          # step above put in the profile, pinned to the public artifact.
+          profile="$(awk '/^Published profile: / { count++; sub(/^Published profile: /, ""); path=$0 } END { if (count != 1) exit 1; print path }' "$AMONG_CHECK_ROOT/published-install.log")"
+          tools/among-tools/target/release/among-tools check-resource-measurements "$profile"
       - name: Original installer ENOSPC assertions on a dedicated bounded tmpfs
         run: |
           docker build --file tools/among-tools/containers/Dockerfile.display --tag among-installer-enospc:ci tools/among-tools/containers

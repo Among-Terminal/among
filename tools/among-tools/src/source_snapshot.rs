@@ -9,8 +9,6 @@ use std::path::Path;
 pub const FILES: &[&str] = &[
     "Cargo.toml",
     "Cargo.lock",
-    "examples/plugins/Cargo.toml",
-    "examples/plugins/Cargo.lock",
     "LICENSE",
     "NOTICE",
     "README.md",
@@ -47,9 +45,6 @@ pub const DIRECTORIES: &[&str] = &[
     "docs",
     "THIRD_PARTY",
     ".github",
-    "examples/plugins/src",
-    "examples/plugins/tests",
-    "examples/plugins/examples",
     "tools/among-tools/src",
     "tools/among-tools/tests",
     "tools/among-tools/examples",

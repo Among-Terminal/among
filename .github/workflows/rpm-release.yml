@@ -130,7 +130,6 @@ jobs:
           tar --exclude-vcs \
               --exclude='./target' \
               --exclude='./tools/among-tools/target' \
-              --exclude='./examples/plugins/target' \
               --exclude='./.opencode' \
               --exclude='./.github' \
               --transform "s,^\./,$staging/," \
@@ -205,8 +204,10 @@ jobs:
           # loader cannot run.
           workdir=$(mktemp -d)
           rpm2cpio "$binary" | (cd "$workdir" && cpio -idm --quiet)
-          for binary_path in "$workdir"/usr/bin/among "$workdir"/usr/share/among/plugins/clock \
-              "$workdir"/usr/share/among/plugins/system-status "$workdir"/usr/share/among/plugins/pane-pwd; do
+          # Official plugins are installed from their own repository; a fresh
+          # package carries none.
+          test ! -e "$workdir"/usr/share/among || { echo 'the package ships plugin payload under /usr/share/among' >&2; exit 1; }
+          for binary_path in "$workdir"/usr/bin/among; do
             test -f "$binary_path" || { echo "missing packaged executable $binary_path" >&2; exit 1; }
             machine=$(od -An -tx1 -j18 -N2 "$binary_path" | tr -d ' \n')
             case "${{ matrix.architecture }}:$machine" in
@@ -248,7 +249,7 @@ jobs:
           fi
           # Allowlist: every owned path must be one the spec names. This is
           # what catches an accidental stray file a name blocklist misses.
-          grep -vE '^(/etc/|/usr/share/doc/|/usr/share/licenses/among($|/)|/usr/bin/among$|/usr/share/among($|/plugins($|/[^/]+$))|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
+          grep -vE '^(/etc/|/usr/share/doc/|/usr/share/licenses/among($|/)|/usr/bin/among$|/usr/share/applications/[^/]+$|/usr/share/icons/hicolor/scalable/apps/[^/]+$|/usr/share/metainfo/[^/]+$)' \
             "$AMONG_CHECK_ROOT"/rpm-files.txt > "$AMONG_CHECK_ROOT"/rpm-unexpected.txt || true
           if test -s "$AMONG_CHECK_ROOT"/rpm-unexpected.txt; then
             echo 'the payload owns files the spec does not declare' >&2

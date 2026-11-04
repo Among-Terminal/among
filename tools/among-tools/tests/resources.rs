@@ -53,12 +53,24 @@ fn malformed_or_invalid_observations_are_not_success() -> among_tools::Result<()
         assert!(resources::memory_percent(memory).is_err());
     }
     assert!(resources::disk_percent("root 100 30 70 30% /home").is_err());
-    let response = json!({"request_id":2,"fragments":[{},{},{}]});
+    let response = json!({"type":"status","session":"resource-check-session",
+        "generation":"resource-check-generation","request_id":2,"fragments":[{},{},{}]});
     assert!(resources::response(&serde_json::to_vec(&response)?, 1).is_err());
     assert_eq!(
         resources::response(&serde_json::to_vec(&response)?, 2)?.len(),
         3
     );
+    // A reply of another type, session or generation is a stale or foreign
+    // reply and never counts as the measurement.
+    for (key, value) in [
+        ("type", "other"),
+        ("session", "stale-session"),
+        ("generation", "stale-generation"),
+    ] {
+        let mut changed = response.clone();
+        changed[key] = value.into();
+        assert!(resources::response(&serde_json::to_vec(&changed)?, 2).is_err());
+    }
     assert!(resources::response(b"{malformed}", 1).is_err());
     assert!(resources::response(br#"{"request_id":1,"fragments":[]}"#, 1).is_err());
     Ok(())
@@ -71,13 +83,26 @@ fn actual_cli_refuses_failed_and_missing_plugins_without_a_pass_receipt() -> amo
     // developer's own check directory and independent of the caller's HOME.
     let checks = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("among-resources-refusal-{}", std::process::id()));
-    for binary in ["/bin/false", "/missing-resource-plugin"] {
+    // A profile that is missing, empty or not an observed official-plugin
+    // profile has no pinned executable, so nothing is measured.
+    let empty = checks.join("empty-profile");
+    std::fs::create_dir_all(&empty)?;
+    for profile in [
+        "/missing-resource-profile",
+        "/bin",
+        empty.to_str().ok_or("path is not UTF-8")?,
+    ] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
             .env("AMONG_CHECK_ROOT", &checks)
-            .args(["check-resource-measurements", binary])
+            .args(["check-resource-measurements", profile])
             .output()?;
-        assert!(!output.status.success());
+        assert!(!output.status.success(), "{profile}");
         assert!(!String::from_utf8(output.stdout)?.contains("PASS"));
+        assert!(resources::pinned_executable(std::path::Path::new(profile)).is_err());
+    }
+    // An executable that fails or does not exist is no measurement either.
+    for binary in ["/bin/false", "/missing-resource-plugin"] {
+        assert!(resources::measure(std::path::Path::new(binary), &checks).is_err());
     }
     if checks.exists() {
         std::fs::remove_dir_all(&checks)?;

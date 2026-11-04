@@ -29,25 +29,26 @@ among-tools check-stable-source /path/to/reviewed-tag-checkout provenance.json a
 The first checks member safety, exact inventory hashes and mandatory source/vendor
 inputs. The second binds exact binary/source digests. The third compares selected
 original inputs to actual tag Git blobs and permits only the stable-grade recipe
-overlay. None establishes full native-source compliance. Vendor all three locked
-dependency graphs when constructing original source:
+overlay. None establishes full native-source compliance. Vendor both locked
+dependency graphs when constructing original source. The official plugins
+(clock, system-status, pane-pwd) are built and delivered from
+`Among-Terminal/among-plugins`, with their own sources, locks and notices; no
+plugin implementation or Cargo graph is part of this snapshot:
 
 ```sh
-cargo vendor --locked --sync examples/plugins/Cargo.toml --sync tools/among-tools/Cargo.toml /path/to/new-vendor
+cargo vendor --locked --sync tools/among-tools/Cargo.toml /path/to/new-vendor
 among-tools source-snapshot . /path/to/new-vendor /path/to/new-original-source.tar
 ```
 
 The snapshot takes exactly these inputs from the source root, the list
 `source-snapshot` carries in `tools/among-tools/src/source_snapshot.rs`:
 
-- files `Cargo.toml`, `Cargo.lock`, `examples/plugins/Cargo.toml`,
-  `examples/plugins/Cargo.lock`, `LICENSE`, `NOTICE`, `README.md`,
+- files `Cargo.toml`, `Cargo.lock`, `LICENSE`, `NOTICE`, `README.md`,
   `CONTRIBUTING.md`, `examples/check-clipboard.rs`, `examples/fake-plugin.rs`
   and, for the project tooling, `tools/among-tools/Cargo.toml`,
   `tools/among-tools/Cargo.lock` and `tools/among-tools/README.md`;
 - every regular file below `packaging`, `tests`, `src`, `data`, `snap`,
-  `scripts`, `docs`, `THIRD_PARTY`, `.github`, `examples/plugins/src`,
-  `examples/plugins/tests`, `examples/plugins/examples` and, for the project
+  `scripts`, `docs`, `THIRD_PARTY`, `.github` and, for the project
   tooling, `tools/among-tools/src`, `tools/among-tools/tests`,
   `tools/among-tools/examples` and `tools/among-tools/containers`, skipping
   `__pycache__` directories.
@@ -104,11 +105,10 @@ GTK4/libadwaita/VTE development packages matching the recipe. The snapshot's
 
 ```sh
 cargo build --release --locked --offline
-cargo build --manifest-path examples/plugins/Cargo.toml --release --locked --offline
 cargo build --manifest-path tools/among-tools/Cargo.toml --release --locked --offline
 ```
 
-Run all three commands from the original-source directory so the
+Run both commands from the original-source directory so the
 vendor configuration is discovered. Build/install changes only in a disposable
 VM or container unless you intentionally approve changes to your own machine.
 For the Snap, use the included recipe with Snapcraft 8.14.0, Rust 1.98.1 and

@@ -49,9 +49,19 @@ fn actual_cli_retains_exact_private_errors_but_only_exports_bounded_safe_metadat
     for mode in ["check", "generate"] {
         for (index, manifest) in notices::MANIFESTS.iter().enumerate() {
             let checks = fixture.0.join(format!("checks-{mode}-{index}"));
-            let mut raw = if index == 0 {
+            // Three diagnostic shapes over the two graphs: the locked crate is
+            // named, the download is unavailable, and an unrecognised failure
+            // is withheld.
+            let kind = if index == 0 {
+                0
+            } else if mode == "check" {
+                1
+            } else {
+                2
+            };
+            let mut raw = if kind == 0 {
                 b"error: failed to download `fixture v1.0.0`\nCaused by:\n --offline was specified\n".to_vec()
-            } else if index == 1 {
+            } else if kind == 1 {
                 b"error: failed to download `private-token v1.0.0`\nCaused by:\n --offline was specified\n".to_vec()
             } else {
                 b"error: unrecognized external failure\n".to_vec()
@@ -101,12 +111,12 @@ fn actual_cli_retains_exact_private_errors_but_only_exports_bounded_safe_metadat
             assert_eq!(public["manifest"], *manifest);
             assert_eq!(public["status"], format!("exit status: {}", 37 + index));
             assert_eq!(public["stderr_bytes"], raw.len());
-            if index == 0 {
+            if kind == 0 {
                 assert_eq!(
                     public["diagnostic"],
                     "offline metadata requires download of locked crate fixture v1.0.0"
                 );
-            } else if index == 1 {
+            } else if kind == 1 {
                 assert_eq!(
                     public["diagnostic"],
                     "offline metadata requires an unavailable download"

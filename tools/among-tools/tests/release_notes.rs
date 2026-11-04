@@ -57,6 +57,13 @@ fn a_release_candidate_without_highlights_links_every_file_once_at_its_tag() -> 
     assert!(body.contains(RUN));
     assert!(body.contains("sha256sum --check --ignore-missing SHA256SUMS"));
     assert!(body.contains("under X11 (Xvfb with Openbox)"));
+    // Packages carry no plugins; the notes must point at the built-in source
+    // instead of claiming bundled, disabled-by-default plugins.
+    assert!(body.contains("No package carries plugins"));
+    assert!(body.contains("Official plugins for Among Terminal"));
+    assert!(body.contains("Among-Terminal/among-plugins"));
+    assert!(!body.contains("Plugins are disabled by default"));
+    assert!(!body.contains("focus, status plugins"));
     assert!(body.contains("GNOME and Wayland sessions\nare not part of these checks"));
     fs::remove_dir_all(root)?;
     Ok(())

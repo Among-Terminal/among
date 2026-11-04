@@ -159,13 +159,7 @@ fn actual_cli_refuses_missing_authentication_before_output_creation() -> Result<
 }
 
 /// The Snap members whose bytes the audited prime must match.
-const PAYLOAD: [&str; 5] = [
-    "bin/among",
-    "usr/share/among/plugins/clock",
-    "usr/share/among/plugins/system-status",
-    "usr/share/among/plugins/pane-pwd",
-    "meta/snap.yaml",
-];
+const PAYLOAD: [&str; 2] = ["bin/among", "meta/snap.yaml"];
 
 fn write_payload(root: &std::path::Path) -> Result<()> {
     for name in PAYLOAD {
@@ -193,7 +187,7 @@ fn squash(directory: &std::path::Path, image: &std::path::Path) -> Result<()> {
 
 /// The association binds sources to the binary that was audited. The
 /// comparison reads the members out of an actual SquashFS image, so a Snap
-/// whose executable, plugin or metadata bytes differ from the audited prime,
+/// whose executable or metadata bytes differ from the audited prime,
 /// or that lacks one of them, is refused, and a matching one passes.
 #[test]
 #[ignore = "builds SquashFS images with mksquashfs from squashfs-tools; package-build containers lack it, the Checks ignored-test runner runs it"]
@@ -210,13 +204,10 @@ fn snap_members_are_compared_with_the_audited_prime_bytes() -> Result<()> {
     squash(&payload, &snap)?;
     delivery_package::compare_snap_payload(&snap, &prime, &f.0)?;
 
-    fs::write(
-        prime.join("usr/share/among/plugins/clock"),
-        b"rebuilt plugin",
-    )?;
+    fs::write(prime.join("bin/among"), b"rebuilt executable")?;
     let refusal = delivery_package::compare_snap_payload(&snap, &prime, &f.0)
         .err()
-        .ok_or("a changed plugin was accepted")?;
+        .ok_or("a changed executable was accepted")?;
     assert_eq!(
         refusal.to_string(),
         "Snap differs from audited prime executable/metadata bytes"
@@ -239,6 +230,52 @@ fn snap_members_are_compared_with_the_audited_prime_bytes() -> Result<()> {
         .err()
         .ok_or("a prime without the executable was accepted")?;
     assert_eq!(refusal.to_string(), "missing regular native source member");
+    Ok(())
+}
+
+/// The listing check sees files nobody named: any entry at or below the
+/// application data directory refuses the Snap, a lookalike sibling does not.
+#[test]
+fn a_snap_listing_with_plugin_entries_is_refused() -> Result<()> {
+    let clean = "squashfs-root\nsquashfs-root/bin\nsquashfs-root/bin/among\n\
+        squashfs-root/meta/snap.yaml\nsquashfs-root/usr/share/among-data/readme\n";
+    delivery_package::reject_plugin_entries(clean)?;
+    for entry in [
+        "squashfs-root/usr/share/among",
+        "squashfs-root/usr/share/among/plugins",
+        "squashfs-root/usr/share/among/plugins/clock",
+        "usr/share/among/ci-marker",
+    ] {
+        let listing = format!("{clean}{entry}\n");
+        let refusal = delivery_package::reject_plugin_entries(&listing)
+            .err()
+            .ok_or_else(|| format!("{entry} was accepted"))?;
+        assert!(refusal.to_string().contains("bundles plugins"), "{refusal}");
+    }
+    Ok(())
+}
+
+/// The same refusal on a real SquashFS image: a Snap whose bytes match the
+/// audited prime but that also carries a plugin is refused.
+#[test]
+#[ignore = "builds SquashFS images with mksquashfs from squashfs-tools; package-build containers lack it, the Checks ignored-test runner runs it"]
+fn a_real_snap_carrying_a_plugin_is_refused_even_when_members_match() -> Result<()> {
+    let f = Fixture(storage::private_directory(
+        &std::env::temp_dir(),
+        "among-delivery-plugin-snap",
+    )?);
+    let payload = f.0.join("payload");
+    let prime = f.0.join("prime");
+    write_payload(&payload)?;
+    write_payload(&prime)?;
+    fs::create_dir_all(payload.join("usr/share/among/plugins"))?;
+    fs::write(payload.join("usr/share/among/plugins/clock"), b"plugin")?;
+    let snap = f.0.join("bundled.snap");
+    squash(&payload, &snap)?;
+    let refusal = delivery_package::compare_snap_payload(&snap, &prime, &f.0)
+        .err()
+        .ok_or("a Snap with a bundled plugin was accepted")?;
+    assert!(refusal.to_string().contains("bundles plugins"), "{refusal}");
     Ok(())
 }
 

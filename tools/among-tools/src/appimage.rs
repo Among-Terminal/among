@@ -58,12 +58,10 @@ pub fn stage(
     destination: &Path,
 ) -> Result<()> {
     crate::release_metadata::artwork(root)?;
-    for name in ["among", "clock", "system-status", "pane-pwd"] {
-        deb::elf_architecture(
-            &storage::safe_path(binaries, Path::new(name))?,
-            architecture,
-        )?;
-    }
+    deb::elf_architecture(
+        &storage::safe_path(binaries, Path::new("among"))?,
+        architecture,
+    )?;
     if !launcher.symlink_metadata()?.is_file()
         || launcher.metadata()?.permissions().mode() & 0o111 == 0
     {

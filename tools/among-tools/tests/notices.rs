@@ -23,7 +23,7 @@ fn graph(f: &Fixture) -> Value {
 }
 
 #[test]
-fn verbatim_license_and_notice_bytes_deduplicate_across_all_three_graphs() -> Result<()> {
+fn verbatim_license_and_notice_bytes_deduplicate_across_both_graphs() -> Result<()> {
     let f = fixture()?;
     let graphs = notices::MANIFESTS.map(|manifest| (manifest, graph(&f)));
     let (outputs, count) = notices::inventory(&graphs, &f.0)?;
@@ -40,11 +40,7 @@ fn verbatim_license_and_notice_bytes_deduplicate_across_all_three_graphs() -> Re
     assert_eq!(inventory["schema"], 1);
     assert_eq!(
         inventory["packages"][0]["trees"],
-        json!([
-            "Cargo.toml",
-            "examples/plugins/Cargo.toml",
-            "tools/among-tools/Cargo.toml"
-        ])
+        json!(["Cargo.toml", "tools/among-tools/Cargo.toml"])
     );
     assert_eq!(
         inventory["packages"][0]["texts"][0]["sha256"],
@@ -97,8 +93,8 @@ fn missing_license_unsafe_evidence_and_conflicting_graphs_fail() -> Result<()> {
 }
 
 #[test]
-fn actual_cli_uses_three_locked_metadata_calls_separates_stderr_and_detects_stale_bytes(
-) -> Result<()> {
+fn actual_cli_uses_two_locked_metadata_calls_separates_stderr_and_detects_stale_bytes() -> Result<()>
+{
     let f = fixture()?;
     let graph = f.0.join("graph.json");
     fs::write(&graph, serde_json::to_vec(&self::graph(&f))?)?;
@@ -136,6 +132,39 @@ fn actual_cli_uses_three_locked_metadata_calls_separates_stderr_and_detects_stal
         b"modified",
     )?;
     assert!(!run("check")?.status.success());
+    assert!(run("generate")?.status.success());
+    assert!(run("check")?.status.success());
+
+    // A text left behind by a dependency that no locked graph uses any more
+    // is evidence for nothing shipped: check refuses it, generate removes it.
+    let stale = f.0.join("output/texts/removed-crate-9.9.9");
+    fs::create_dir_all(&stale)?;
+    fs::write(stale.join("LICENSE-MIT"), b"left over")?;
+    let refused = run("check")?;
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("texts/removed-crate-9.9.9/LICENSE-MIT"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(stale.exists());
+    assert!(run("generate")?.status.success());
+    assert!(!stale.exists());
+    assert!(f
+        .0
+        .join("output/texts/fixture-crate-1.0.0/NOTICE")
+        .is_file());
+    assert!(run("check")?.status.success());
+
+    // A directory that cannot be read must not hide its files from the check.
+    let locked = f.0.join("output/texts/locked-crate-1.0.0");
+    fs::create_dir_all(&locked)?;
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))?;
+    let unreadable = run("check")?;
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))?;
+    assert!(!unreadable.status.success());
+    fs::remove_dir(&locked)?;
+    assert!(run("check")?.status.success());
     Ok(())
 }
 
@@ -393,7 +422,7 @@ fn actual_cli_generates_and_checks_supplemental_bytes_before_any_publication() -
 #[test]
 fn lock_conflicts_and_missing_grants_cannot_be_replaced_by_source_declarations() -> Result<()> {
     let (f, graph, mut index) = supplemental_fixture()?;
-    let lock = f.0.join("examples/plugins/Cargo.lock");
+    let lock = f.0.join("tools/among-tools/Cargo.lock");
     let original = fs::read_to_string(&lock)?;
     fs::write(
         &lock,

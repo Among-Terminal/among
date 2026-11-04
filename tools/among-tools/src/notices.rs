@@ -8,11 +8,7 @@ use std::time::Duration;
 
 mod supplemental;
 
-pub const MANIFESTS: [&str; 3] = [
-    "Cargo.toml",
-    "examples/plugins/Cargo.toml",
-    "tools/among-tools/Cargo.toml",
-];
+pub const MANIFESTS: [&str; 2] = ["Cargo.toml", "tools/among-tools/Cargo.toml"];
 
 fn locked_download_identity(root: &Path, manifest: &str, diagnostic: &str) -> Option<String> {
     let identity = diagnostic.lines().find_map(|line| {
@@ -207,11 +203,70 @@ pub fn inventory(
     supplemental.finish()?;
     let count = records.len();
     let mut bytes = serde_json::to_vec_pretty(
-        &json!({"schema":1,"scope":"all three locked Cargo graphs, including build and target-specific dependencies","packages":records}),
+        &json!({"schema":1,"scope":"both locked Cargo graphs, including build and target-specific dependencies","packages":records}),
     )?;
     bytes.push(b'\n');
     outputs.insert("inventory.json".into(), bytes);
     Ok((outputs, count))
+}
+
+/// Files below `destination/texts` that the generated outputs do not name,
+/// sorted. A link or special file there is refused: the tree is evidence.
+pub fn unreferenced_texts(
+    destination: &Path,
+    outputs: &BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<String>> {
+    fn walk(root: &Path, relative: &Path, found: &mut Vec<String>) -> Result<()> {
+        let directory = root.join(relative);
+        // Only a texts tree that does not exist counts as empty; an unreadable
+        // directory must not hide its files from the check.
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let relative = relative.join(entry.file_name());
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                walk(root, &relative, found)?;
+            } else if kind.is_file() {
+                found.push(
+                    relative
+                        .to_str()
+                        .ok_or("third-party text path is not UTF-8")?
+                        .to_owned(),
+                );
+            } else {
+                return Err(
+                    format!("third-party text {relative:?} is a link or special file").into(),
+                );
+            }
+        }
+        Ok(())
+    }
+    let mut found = Vec::new();
+    walk(destination, Path::new("texts"), &mut found)?;
+    found.retain(|path| !outputs.contains_key(path));
+    found.sort();
+    Ok(found)
+}
+
+fn remove_unreferenced_texts(destination: &Path, stale: &[String]) -> Result<()> {
+    for relative in stale {
+        let path = storage::safe_path(destination, Path::new(relative))?;
+        fs::remove_file(&path)?;
+        // Drop the directory too once nothing is left in it.
+        let mut parent = path.parent();
+        while let Some(directory) = parent {
+            if directory == destination.join("texts") || fs::remove_dir(directory).is_err() {
+                break;
+            }
+            parent = directory.parent();
+        }
+    }
+    Ok(())
 }
 
 pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Result<()> {
@@ -273,8 +328,21 @@ pub fn run(root: &Path, destination: &Path, check: bool, scratch: &Path) -> Resu
             storage::atomic_write(destination, Path::new(relative), bytes, 0o644)?;
         }
     }
+    // A text left by a dependency that no locked graph uses any more is not
+    // evidence for anything shipped; it would only go on being delivered.
+    let stale = unreferenced_texts(destination, &outputs)?;
+    if check && !stale.is_empty() {
+        return Err(format!(
+            "third-party texts not referenced by the inventory: {}",
+            stale.join(", ")
+        )
+        .into());
+    }
+    if !check {
+        remove_unreferenced_texts(destination, &stale)?;
+    }
     println!(
-        "{} {count} dependency records and {} verbatim texts from three locked graphs",
+        "{} {count} dependency records and {} verbatim texts from the locked graphs",
         if check { "Checked" } else { "Generated" },
         outputs
             .keys()

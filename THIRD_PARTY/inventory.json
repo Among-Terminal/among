@@ -25,25 +25,6 @@
     },
     {
       "license": "MIT OR Apache-2.0",
-      "name": "android_system_properties",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/android_system_properties-0.1.6/LICENSE-APACHE",
-          "sha256": "216486f29671a4262efe32af6d84a75bef398127f8c5f369b5c8305983887a06"
-        },
-        {
-          "path": "texts/android_system_properties-0.1.6/LICENSE-MIT",
-          "sha256": "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.1.6"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
       "name": "asn1-rs",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "texts": [
@@ -166,8 +147,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "1.5.1"
     },
@@ -255,7 +235,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "2.13.2"
@@ -294,8 +273,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "3.20.3"
     },
@@ -354,25 +332,6 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "texts": [
         {
-          "path": "texts/cc-1.6.0/LICENSE-APACHE",
-          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
-        },
-        {
-          "path": "texts/cc-1.6.0/LICENSE-MIT",
-          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "1.6.0"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
-      "name": "cc",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
           "path": "texts/cc-1.9.0/LICENSE-APACHE",
           "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
         },
@@ -421,7 +380,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.5"
@@ -464,21 +422,6 @@
         "Cargo.toml"
       ],
       "version": "0.10.2"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
-      "name": "chrono",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/chrono-0.4.45/LICENSE.txt",
-          "sha256": "946c9835d8034d24404f8cfec5f4654cee5dad17e944afc3d06d742cf2882831"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.4.45"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -548,8 +491,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.8.7"
     },
@@ -770,7 +712,6 @@
         }
       ],
       "trees": [
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "0.3.14"
@@ -813,25 +754,6 @@
         "tools/among-tools/Cargo.toml"
       ],
       "version": "0.2.29"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
-      "name": "find-msvc-tools",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/find-msvc-tools-0.1.14/LICENSE-APACHE",
-          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
-        },
-        {
-          "path": "texts/find-msvc-tools-0.1.14/LICENSE-MIT",
-          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.1.14"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -939,8 +861,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.3.34"
     },
@@ -1016,8 +937,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.3.34"
     },
@@ -1036,8 +956,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.3.34"
     },
@@ -1546,44 +1465,6 @@
       "version": "0.1.21"
     },
     {
-      "license": "MIT OR Apache-2.0",
-      "name": "iana-time-zone",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/iana-time-zone-0.1.65/LICENSE-APACHE",
-          "sha256": "696759d65dfe558ff7d9f031c76db19ec5c0767470fb67c4e8d990820d1e99c9"
-        },
-        {
-          "path": "texts/iana-time-zone-0.1.65/LICENSE-MIT",
-          "sha256": "da28ccc6b158fc2d8cccc74e99794b1cff1d29bd7bbeb019442fcf0c04c6cad9"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.1.65"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
-      "name": "iana-time-zone-haiku",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/iana-time-zone-haiku-0.1.2/LICENSE-APACHE",
-          "sha256": "696759d65dfe558ff7d9f031c76db19ec5c0767470fb67c4e8d990820d1e99c9"
-        },
-        {
-          "path": "texts/iana-time-zone-haiku-0.1.2/LICENSE-MIT",
-          "sha256": "da28ccc6b158fc2d8cccc74e99794b1cff1d29bd7bbeb019442fcf0c04c6cad9"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.1.2"
-    },
-    {
       "license": "Unicode-3.0",
       "name": "icu_collections",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -1808,7 +1689,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.18"
@@ -2010,8 +1890,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.3.106"
     },
@@ -2080,7 +1959,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "0.2.190"
@@ -2108,7 +1986,6 @@
         }
       ],
       "trees": [
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "0.12.1"
@@ -2143,8 +2020,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.4.34"
     },
@@ -2187,7 +2063,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "2.8.3"
@@ -2374,8 +2249,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.2.19"
     },
@@ -2413,8 +2287,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "1.21.4"
     },
@@ -2520,8 +2393,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.2.17"
     },
@@ -2613,7 +2485,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.107"
@@ -2691,7 +2562,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.47"
@@ -2955,7 +2825,6 @@
         }
       ],
       "trees": [
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.1.5"
@@ -3126,8 +2995,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "1.0.23"
     },
@@ -3257,7 +3125,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.229"
@@ -3278,7 +3145,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.229"
@@ -3299,7 +3165,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.229"
@@ -3320,7 +3185,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.151"
@@ -3412,8 +3276,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "2.0.1"
     },
@@ -3481,8 +3344,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.4.12"
     },
@@ -3573,8 +3435,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "2.0.119"
     },
@@ -3594,7 +3455,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "3.0.6"
@@ -4200,7 +4060,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.26"
@@ -4413,8 +4272,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.2.129"
     },
@@ -4452,8 +4310,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.2.129"
     },
@@ -4472,8 +4329,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.2.129"
     },
@@ -4492,8 +4348,7 @@
         }
       ],
       "trees": [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml"
+        "Cargo.toml"
       ],
       "version": "0.2.129"
     },
@@ -4571,63 +4426,6 @@
     },
     {
       "license": "MIT OR Apache-2.0",
-      "name": "windows-core",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/windows-core-0.62.2/license-apache-2.0",
-          "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-        },
-        {
-          "path": "texts/windows-core-0.62.2/license-mit",
-          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.62.2"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
-      "name": "windows-implement",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/windows-implement-0.60.2/license-apache-2.0",
-          "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-        },
-        {
-          "path": "texts/windows-implement-0.60.2/license-mit",
-          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.60.2"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
-      "name": "windows-interface",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/windows-interface-0.59.3/license-apache-2.0",
-          "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-        },
-        {
-          "path": "texts/windows-interface-0.59.3/license-mit",
-          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.59.3"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
       "name": "windows-link",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "texts": [
@@ -4642,48 +4440,9 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "0.2.1"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
-      "name": "windows-result",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/windows-result-0.4.1/license-apache-2.0",
-          "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-        },
-        {
-          "path": "texts/windows-result-0.4.1/license-mit",
-          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.4.1"
-    },
-    {
-      "license": "MIT OR Apache-2.0",
-      "name": "windows-strings",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "texts": [
-        {
-          "path": "texts/windows-strings-0.5.1/license-apache-2.0",
-          "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
-        },
-        {
-          "path": "texts/windows-strings-0.5.1/license-mit",
-          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
-        }
-      ],
-      "trees": [
-        "examples/plugins/Cargo.toml"
-      ],
-      "version": "0.5.1"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -4720,7 +4479,6 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "0.61.2"
@@ -5120,12 +4878,11 @@
       ],
       "trees": [
         "Cargo.toml",
-        "examples/plugins/Cargo.toml",
         "tools/among-tools/Cargo.toml"
       ],
       "version": "1.0.23"
     }
   ],
   "schema": 1,
-  "scope": "all three locked Cargo graphs, including build and target-specific dependencies"
+  "scope": "both locked Cargo graphs, including build and target-specific dependencies"
 }

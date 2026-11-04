@@ -10,8 +10,8 @@ retain the command name; registration remains owner-only and may fail if the
 name is unavailable. Its grade is deliberately `devel`, so this candidate cannot
 be promoted to stable. The Rust plugin builds both package paths with locked
 dependencies and toolchain 1.98.1; package versions must match before injection.
-Examples are bundled under `usr/share/among/plugins` and never auto-installed into
-the user's home. Native payload source/license collection and installed runtime
+No plugin is bundled: official plugins are installed from their own repository
+through Preferences → Plugins. Native payload source/license collection and installed runtime
 validation are unfinished; the YAML is not evidence of a successful build.
 The actual candidate build is recorded in the release change's `verification.md`;
 classic lint passed; the desktop icon-lookup warning was fixed and the candidate

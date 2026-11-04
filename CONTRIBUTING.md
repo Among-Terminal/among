@@ -73,10 +73,6 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --release --locked
-cargo fmt --check --manifest-path examples/plugins/Cargo.toml
-cargo clippy --locked --all-targets --manifest-path examples/plugins/Cargo.toml -- -D warnings
-cargo test --locked --manifest-path examples/plugins/Cargo.toml
-cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
 cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --example notice-plugin
 cargo fmt --check --manifest-path tools/among-tools/Cargo.toml
 cargo clippy --locked --all-targets --manifest-path tools/among-tools/Cargo.toml -- -D warnings
@@ -91,9 +87,12 @@ appstreamcli validate --no-net --strict data/com.github.among-terminal.metainfo.
 ```
 
 `scripts/check-packages.sh` performs the format, Clippy, test and release-build
-checks for all three packages; the commands above are what it runs. The three
-packages are independent: the application and its example plugins never depend
-on the tooling package, and tooling tests do not link GTK or need a display.
+checks for both packages; the commands above are what it runs. The two
+packages are independent: the application never depends on the tooling package,
+and tooling tests do not link GTK or need a display. The official plugins
+(clock, system-status, pane-pwd) are built, tested and released from
+[`Among-Terminal/among-plugins`](https://github.com/Among-Terminal/among-plugins);
+this repository neither builds nor ships them.
 
 On X11 with Openbox, private D-Bus, xdotool, xprop and ImageMagick installed,
 build the application, tools and the host test executable, then drive real windows

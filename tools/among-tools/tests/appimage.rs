@@ -16,7 +16,7 @@ fn staging_preserves_attribution_selects_launcher_and_refuses_wrong_native_archi
     let mut elf = [0u8; 20];
     elf[..6].copy_from_slice(b"\x7fELF\x02\x01");
     elf[18] = 62;
-    for name in ["among", "clock", "system-status", "pane-pwd", "launcher"] {
+    for name in ["among", "launcher"] {
         let path = binaries.join(name);
         fs::write(&path, elf)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
@@ -67,9 +67,11 @@ fn staging_preserves_attribution_selects_launcher_and_refuses_wrong_native_archi
         fs::read(destination.join("usr/share/doc/among-terminal/THIRD_PARTY/inventory.json"))?,
         fs::read(root.join("THIRD_PARTY/inventory.json"))?
     );
-    assert!(destination
-        .join("usr/share/among/plugins/system-status")
-        .is_file());
+    assert!(
+        !destination.join("usr/share/among/plugins").exists(),
+        "a fresh AppImage payload must not bundle official plugins"
+    );
+    among_tools::deb::reject_bundled_plugins(&destination)?;
     for file in ["among-tools", "among-uninstall"] {
         assert!(!destination.join(Path::new("usr/bin").join(file)).exists());
     }

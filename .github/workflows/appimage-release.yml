@@ -73,10 +73,9 @@ jobs:
           chmod 755 rustup-init
           ./rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.1
           echo '/opt/among-cargo/bin' >> "$GITHUB_PATH"
-      - name: Build the application, plugins and tooling
+      - name: Build the application and tooling
         run: |
           cargo build --release --locked
-          cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Capture actual source-bound installed plugin profile for packaged rendering
         run: |
@@ -95,9 +94,7 @@ jobs:
       - name: Stage the payload and fetch the pinned helpers
         run: |
           mkdir "$RUNNER_TEMP/binaries"
-          cp target/release/among examples/plugins/target/release/clock \
-            examples/plugins/target/release/system-status examples/plugins/target/release/pane-pwd \
-            "$RUNNER_TEMP/binaries/"
+          cp target/release/among "$RUNNER_TEMP/binaries/"
           tools=tools/among-tools/target/release/among-tools
           "$tools" stage-appimage . "$RUNNER_TEMP/binaries" tools/among-tools/target/release/among-apprun \
             "$BUILD_ARCH" "$RUNNER_TEMP/Among.AppDir"

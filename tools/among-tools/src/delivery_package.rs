@@ -220,7 +220,23 @@ pub fn package(inputs: &Inputs<'_>, output: &Path, scratch: &Path) -> Result<Val
     write_bundle(inputs, output, &trust)
 }
 
-/// Read the executable, plugin and metadata members out of the actual Snap
+/// Refuses a Snap whose `unsquashfs -l` listing holds the plugin directory or
+/// anything below it. Official plugins are installed from their own repository,
+/// and the listing, unlike the member comparison, sees files nobody listed.
+/// A sibling such as `usr/share/among-data` is a different directory.
+pub fn reject_plugin_entries(listing: &str) -> Result<()> {
+    let found = listing
+        .lines()
+        .map(|line| line.trim_end())
+        .map(|line| line.strip_prefix("squashfs-root/").unwrap_or(line))
+        .find(|path| crate::deb::is_application_data_path(path));
+    match found {
+        Some(path) => Err(format!("Snap payload bundles plugins: {path}").into()),
+        None => Ok(()),
+    }
+}
+
+/// Read the executable and metadata members out of the actual Snap
 /// with `unsquashfs` and require the bytes the audit saw in prime.
 ///
 /// The association published next to the Snap claims these sources build
@@ -231,16 +247,20 @@ pub fn compare_snap_payload(snap: &Path, prime: &Path, scratch: &Path) -> Result
         ("PATH".into(), "/usr/bin:/bin".into()),
         ("LC_ALL".into(), "C.UTF-8".into()),
     ]);
-    for (index, name) in [
-        "bin/among",
-        "usr/share/among/plugins/clock",
-        "usr/share/among/plugins/system-status",
-        "usr/share/among/plugins/pane-pwd",
-        "meta/snap.yaml",
-    ]
-    .iter()
-    .enumerate()
-    {
+    let listing = base.join("listing");
+    let mut lister = OwnedProcess::spawn_split(
+        Path::new("/usr/bin/unsquashfs"),
+        &["-l", snap.to_str().ok_or("Snap path not UTF-8")?],
+        &env,
+        &base,
+        &File::create(&listing)?,
+        &File::create(base.join("listing.stderr"))?,
+    )?;
+    if !lister.wait(Duration::from_secs(60))?.success() {
+        return Err("Snap listing failed".into());
+    }
+    reject_plugin_entries(&String::from_utf8(fs::read(listing)?)?)?;
+    for (index, name) in ["bin/among", "meta/snap.yaml"].iter().enumerate() {
         let actual = base.join(format!("member-{index}"));
         let errors = File::create(base.join(format!("member-{index}.stderr")))?;
         let mut process = OwnedProcess::spawn_split(

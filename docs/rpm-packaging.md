@@ -30,8 +30,8 @@ QEMU/binfmt to build the other architecture.
 ## What the build job checks
 
 - The spec (`packaging/rpm/among.spec`): one value for each single-valued
-  header, no architecture tag, no path or plugin listed twice, the package owns
-  `/usr/share/among`, and `LICENSE`, `NOTICE` and `THIRD_PARTY` exist in the
+  header, no architecture tag, no path listed twice, nothing built, installed or
+  owned under `/usr/share/among` (official plugins are not packaged), and `LICENSE`, `NOTICE` and `THIRD_PARTY` exist in the
   tree and are packaged with `%license`. `%doc` files are skipped by
   `tsflags=nodocs`, which Fedora container images set.
 - Library floors: `pkgconfig(gtk4) >= 4.12`, `pkgconfig(libadwaita-1) >= 1.5`
@@ -49,9 +49,9 @@ QEMU/binfmt to build the other architecture.
   every generated shared-library requirement has a provider in the Fedora
   repositories.
 - The packaged `LICENSE`, `NOTICE` and `THIRD_PARTY` are byte-identical to the
-  tag, and the notice texts match the three locked Cargo graphs. Native
+  tag, and the notice texts match the two locked Cargo graphs. Native
   libraries are Fedora's packages and carry their own licenses; none is
-  shipped. The notice inventory covers all three Cargo graphs, which includes
+  shipped. The notice inventory covers both Cargo graphs, which includes
   crates of the release tooling that the package does not contain.
 
 ## Installed checks in release CI
@@ -65,8 +65,9 @@ after installation.
 As an unprivileged user in a private Xvfb/Openbox session, against
 `/usr/bin/among`, it then runs: the system desktop entry launched through GIO
 with application ID, icon and shell input; focus; keyboard divider resizing in
-all four directions; plugin status with the packaged example plugins copied
-into a user plugin directory and enabled there; and consented session
+all four directions; plugin status from the source-bound official plugin
+profile replayed through the packaged executable (the package itself carries no
+plugin); and consented session
 restoration with a restored split layout, a pane command that keeps running
 while its workspace is hidden, and a pointer pane move. Editing preferences in
 the installed application is not checked: the existing preferences check
@@ -149,7 +150,7 @@ These are the operations the installed check runs, with `-y` added there.
 ### Coexisting with other copies
 
 The package installs `/usr/bin/among`, its desktop entry, icon, AppStream
-metadata, the example plugins under `/usr/share/among/plugins` and license
+metadata and license
 materials under `/usr/share/licenses/among`. A Cargo-built `among`, the
 per-user source installation or a Snap are separate files and remain after the
 package is removed. To start the system package explicitly:

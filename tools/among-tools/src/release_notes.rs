@@ -125,7 +125,10 @@ chmod +x among-terminal-amd64.AppImage
 ```
 
 Use the file name you downloaded. Start **Among Terminal** from the applications
-menu, or run `among`. Plugins are disabled by default. The binary archive does
+menu, or run `among`. No package carries plugins: install the official ones from the
+built-in source named Official plugins for Among Terminal (repository
+Among-Terminal/among-plugins) in Preferences, Plugins; they stay disabled until you
+review their access and enable them. The binary archive does
 not bundle libraries; see the [installation guide]({guide}#binary-archive) for it,
 for AppImage menu integration, updates and removal.
 
@@ -142,7 +145,8 @@ sha256sum --check --ignore-missing SHA256SUMS
 Before this release was created, every DEB and RPM was installed in a clean
 container of its distribution on both architectures, without compilers, and
 started as an unprivileged user under X11 (Xvfb with Openbox): desktop launch,
-shell input, focus, status plugins and session restoration, then an upgrade
+shell input, focus, source-bound official plugin status replayed through the installed
+program and session restoration (the packages themselves carry no plugins), then an upgrade
 from an older package, removal and reinstallation. The AppImage was started on
 clean Debian 13, Ubuntu 24.04 and Fedora 43 hosts. GNOME and Wayland sessions
 are not part of these checks.

@@ -49,9 +49,9 @@ receipt fails so that stale evidence cannot silently satisfy another graph.
 ## Offline consumer
 
 Both `among-tools third-party-notices . THIRD_PARTY generate` and `check` use
-`cargo metadata --locked --offline` for all three packages. The consumer checks:
+`cargo metadata --locked --offline` for both packages. The consumer checks:
 
-- consistent archive checksums in the three lockfiles and exact metadata identity;
+- consistent archive checksums in the two lockfiles and exact metadata identity;
 - actual registry-cache archive SHA-256, or cargo-vendor's matching package receipt;
 - current published VCS bytes/commit/path and byte-identical upstream package source;
 - bounded, nonempty, regular input files, safe relative paths, no symlinks, unique
