@@ -74,7 +74,13 @@ fn create_if_missing(parent: &File, name: &CString) -> Result<(), Problem> {
     Ok(())
 }
 
-/// A directory the user owns that nobody else can write to.
+/// A directory the user owns; the plugin's own directory must also be private.
+///
+/// The directories above the leaf may be group-writable: with the usual
+/// desktop umask of `002` the data home and `among` are created that way, and
+/// refusing them would refuse every plugin. A replacement made by someone with
+/// write access is caught by the owner check on each descriptor that was
+/// opened without following links.
 fn check_owned(directory: &File, leaf: bool) -> Result<(), Problem> {
     let metadata = directory
         .metadata()
@@ -84,10 +90,7 @@ fn check_owned(directory: &File, leaf: bool) -> Result<(), Problem> {
             "plugin data directory is not a directory owned by the current user",
         ));
     }
-    let mode = metadata.mode() & 0o7777;
-    // the plugin's own directory is private; the ones above it only have to
-    // be closed to other writers.
-    if (leaf && mode != 0o700) || mode & 0o7022 != 0 {
+    if leaf && metadata.mode() & 0o7777 != 0o700 {
         return Err(Problem(
             "plugin data directory permissions are wider than the owner's",
         ));
@@ -98,8 +101,8 @@ fn check_owned(directory: &File, leaf: bool) -> Result<(), Problem> {
 /// Opens or creates `<data_home>/among/plugin-data/<namespace>/<plugin_id>`.
 ///
 /// Links are refused everywhere on the path. From the data home down every
-/// directory must be owned by the user and closed to other writers, and the
-/// leaf must be exactly mode `0700`.
+/// directory must be owned by the user, and the leaf must be exactly mode
+/// `0700`.
 pub fn open(data_home: &Path, namespace: &str, plugin_id: &str) -> Result<DataDir, Problem> {
     if !data_home.is_absolute() {
         return Err(Problem("plugin data home must be an absolute path"));
@@ -254,15 +257,24 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_above_the_leaf_writable_by_others_is_refused() {
-        let scratch = Scratch::new("open-parent");
+    fn directories_above_the_leaf_may_be_group_writable_as_a_002_umask_makes_them() {
+        let scratch = Scratch::new("group-writable-parents");
         open(&scratch.0, "12", "clock").unwrap();
-        std::fs::set_permissions(
+        // the data home and every directory above the leaf as `umask 002` and
+        // other parts of the application create them.
+        for directory in [
+            scratch.0.clone(),
+            scratch.0.join("among"),
+            scratch.0.join("among/plugin-data"),
             scratch.0.join("among/plugin-data/12"),
-            std::fs::Permissions::from_mode(0o777),
-        )
-        .unwrap();
-        assert!(open(&scratch.0, "12", "clock").is_err());
+        ] {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o775)).unwrap();
+        }
+        let opened = open(&scratch.0, "12", "clock").unwrap();
+        assert_eq!(
+            std::fs::metadata(&opened.path).unwrap().mode() & 0o7777,
+            0o700
+        );
     }
 
     #[test]

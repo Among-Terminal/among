@@ -493,7 +493,9 @@ What a confined plugin can do:
   `$XDG_DATA_HOME/among/plugin-data/<repository-id>/<plugin-id>/` (development
   installs: `development/<plugin-id>`) with mode `0700`, creating every component
   without following links and refusing the start when a component is a link, is
-  owned by another user or the directory is wider than `0700`. Its path is in
+  owned by another user or the plugin's own directory is not exactly mode `0700`
+  (the directories above it may be group-writable, as a `002` umask makes them).
+  Its path is in
   `AMONG_PLUGIN_DATA_DIR`. Uninstalling a plugin keeps this directory and its
   contents; removing the data is a separate action that does not exist yet.
 - Use the protocol on stdin and stdout. Nothing else is open: every other
