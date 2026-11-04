@@ -171,6 +171,10 @@ fn a_plugin_cannot_re_enter_the_package_unnoticed() -> Result<()> {
             "for plugin in clock system-status pane-pwd; do\n    true\ndone\n",
         ),
         ("%{_bindir}/among\n", "%{_datadir}/among/plugins\n"),
+        (
+            "%{_bindir}/among\n",
+            "%{_prefix}/share/among/plugins/clock\n",
+        ),
         ("%{_bindir}/among\n", "%dir %{_datadir}/among\n"),
     ] {
         assert!(original.contains(anchor), "{anchor:?}");
@@ -182,6 +186,18 @@ fn a_plugin_cannot_re_enter_the_package_unnoticed() -> Result<()> {
     }
 
     write_spec(&root, &original)?;
+    assert!(rpm::check(&root, &rpm::spec_path(&root)).is_ok());
+
+    // A comment that explains the removed directory installs nothing.
+    let anchor = "%{_bindir}/among\n";
+    write_spec(
+        &root,
+        &original.replacen(
+            anchor,
+            &format!("{anchor}# plugins used to live in /usr/share/among/plugins\n"),
+            1,
+        ),
+    )?;
     assert!(rpm::check(&root, &rpm::spec_path(&root)).is_ok());
     fs::remove_dir_all(root)?;
     Ok(())
@@ -375,6 +391,8 @@ fn library_floors_follow_the_binding_api_level_and_cannot_be_understated() -> Re
 fn only_the_application_data_directory_is_forbidden_not_a_lookalike_sibling() -> Result<()> {
     for refused in [
         "%{_datadir}/among",
+        "%{_prefix}/share/among/plugins/clock",
+        "%{_datarootdir}/among/plugins",
         "%{_datadir}/among/plugins",
         "%dir %{_datadir}/among\n",
         "mkdir -p %{buildroot}%{_datadir}/among/plugins",

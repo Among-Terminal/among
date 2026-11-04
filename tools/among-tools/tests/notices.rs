@@ -155,6 +155,16 @@ fn actual_cli_uses_two_locked_metadata_calls_separates_stderr_and_detects_stale_
         .join("output/texts/fixture-crate-1.0.0/NOTICE")
         .is_file());
     assert!(run("check")?.status.success());
+
+    // A directory that cannot be read must not hide its files from the check.
+    let locked = f.0.join("output/texts/locked-crate-1.0.0");
+    fs::create_dir_all(&locked)?;
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))?;
+    let unreadable = run("check")?;
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))?;
+    assert!(!unreadable.status.success());
+    fs::remove_dir(&locked)?;
+    assert!(run("check")?.status.success());
     Ok(())
 }
 

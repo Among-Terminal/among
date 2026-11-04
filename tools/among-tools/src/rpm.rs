@@ -158,7 +158,16 @@ const APPLICATION_ID: &str = "com.github.among-terminal";
 /// shares the prefix, such as `%{_datadir}/among-terminal-data`, is a
 /// different directory and is allowed.
 pub fn mentions_application_data(text: &str) -> bool {
-    ["%{_datadir}/among", "usr/share/among"].iter().any(|name| {
+    // `%{_datadir}` expands to `%{_prefix}/share`, which `%{_datarootdir}`
+    // names as well; all of them land in /usr/share/among.
+    [
+        "%{_datadir}/among",
+        "%{_datarootdir}/among",
+        "%{_prefix}/share/among",
+        "usr/share/among",
+    ]
+    .iter()
+    .any(|name| {
         text.match_indices(name).any(|(start, _)| {
             text[start + name.len()..]
                 .chars()
@@ -313,7 +322,11 @@ pub fn check(root: &Path, spec: &Path) -> Result<Value> {
             if starts_section {
                 break;
             }
-            body.push(line);
+            // A comment is not package content: it may mention a path it
+            // explains without installing it.
+            if !line.trim_start().starts_with('#') {
+                body.push(line);
+            }
         }
         Ok(body.join("\n"))
     };

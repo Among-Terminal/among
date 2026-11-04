@@ -218,8 +218,12 @@ pub fn unreferenced_texts(
 ) -> Result<Vec<String>> {
     fn walk(root: &Path, relative: &Path, found: &mut Vec<String>) -> Result<()> {
         let directory = root.join(relative);
-        let Ok(entries) = fs::read_dir(&directory) else {
-            return Ok(());
+        // Only a texts tree that does not exist counts as empty; an unreadable
+        // directory must not hide its files from the check.
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
         };
         for entry in entries {
             let entry = entry?;
