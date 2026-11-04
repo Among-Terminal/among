@@ -50,7 +50,7 @@ impl Default for Setup<'_> {
     }
 }
 
-fn kernel_offers_full_protection() -> bool {
+pub(super) fn kernel_offers_full_protection() -> bool {
     let best = crate::plugin::sandbox::level::probe().best();
     if best.is_full() {
         return true;

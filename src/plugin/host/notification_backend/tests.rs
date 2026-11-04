@@ -64,6 +64,19 @@ impl Fixture {
         enabled: bool,
         alter: impl FnOnce(&mut Value, &std::path::Path),
     ) -> Self {
+        Self::build(grants, attached, enabled, alter, false)
+    }
+
+    /// `confine` starts every plugin of this host under the real Landlock and
+    /// seccomp confinement, with its data directory below `data-home` in the
+    /// fixture root, instead of in the writable package directory.
+    fn build(
+        grants: &[&str],
+        attached: bool,
+        enabled: bool,
+        alter: impl FnOnce(&mut Value, &std::path::Path),
+        confine: bool,
+    ) -> Self {
         let root = std::env::var_os("AMONG_CHECK_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -116,6 +129,12 @@ impl Fixture {
             Admission::default(),
             attached.then(|| backend.clone()),
         );
+        if confine {
+            let data_home = root.join("data-home");
+            std::fs::create_dir(&data_home).unwrap();
+            std::fs::set_permissions(&data_home, std::fs::Permissions::from_mode(0o700)).unwrap();
+            host.confine_in_tests(data_home);
+        }
         host.update_context(
             vec![10, 20],
             Context {
@@ -1670,4 +1689,85 @@ fn disable_revokes_live_action_authority_even_while_a_renderer_snapshot_borrow_i
         .received()
         .iter()
         .any(|frame| frame["type"] == "notification_action"));
+}
+
+/// Writes one control message where the confined example plugin reads it: its
+/// own data directory, because the installed package is read-only there.
+fn confined_send(data_dir: &std::path::Path, command: u64, message: &Value) {
+    let temporary = data_dir.join(format!("pending-{command}.json"));
+    std::fs::write(&temporary, message.to_string()).unwrap();
+    std::fs::rename(temporary, data_dir.join(format!("input-{command}.json"))).unwrap();
+}
+
+fn confined_frames(data_dir: &std::path::Path, kind: &str) -> Vec<Value> {
+    std::fs::read_to_string(data_dir.join("received.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|frame| frame["type"] == kind)
+        .collect()
+}
+
+/// A producer and a delivery provider, both started under the real Landlock and
+/// seccomp confinement, still exchange the documented frames with the host: the
+/// confinement leaves the protocol on stdin/stdout and the plugin's own data
+/// directory usable, which is all these roles need.
+#[test]
+fn producer_ui_and_delivery_provider_work_under_real_confinement() {
+    if !super::super::confinement_tests::kernel_offers_full_protection() {
+        return;
+    }
+    let mut fixture = Fixture::build(
+        &["notifications.produce", "notifications.ui"],
+        true,
+        true,
+        |_, _| {},
+        true,
+    );
+    fixture.admitted();
+    let producer_dir = fixture.root.join("data-home/among/plugin-data/12/sample");
+    let record = fixture.host.confinement_record(KEY).unwrap();
+    assert!(record.applied.as_ref().unwrap().protection.is_full());
+    assert!(record.applied.as_ref().unwrap().report.seccomp_loaded);
+    assert!(
+        !fixture.package.join("received.jsonl").exists(),
+        "the read-only package must not receive the transcript"
+    );
+
+    fixture.add_provider(13, &["notifications.deliver"]);
+    let provider_dir = fixture.root.join("data-home/among/plugin-data/13/sample");
+    let provider = fixture.host.confinement_record("github:13/sample").unwrap();
+    assert!(provider.applied.as_ref().unwrap().protection.is_full());
+    fixture.provider_policy(13, "first", Eligibility::Always, true);
+
+    confined_send(
+        &producer_dir,
+        1,
+        &json!({"type":"notification_contribution","session":"$session","generation":"$generation",
+            "contribution":{"id":"notice","revision":1,"scope":{"slot":"app_header","target":{"kind":"application"}},
+                "text":"confined contribution","style":"dim","actions":[{"id":"open","label":"Open"}]}}),
+    );
+    fixture.wait(|fixture| fixture.backend.borrow().contributions(Instant::now()).len() == 1);
+    confined_send(
+        &producer_dir,
+        2,
+        &json!({"type":"notification_event","session":"$session","generation":"$generation",
+            "event":{"sequence":1,"target":{"kind":"application"},"message":"confined event"}}),
+    );
+    fixture.wait(|fixture| {
+        fixture
+            .backend
+            .borrow()
+            .completions()
+            .iter()
+            .any(|completion| completion.status == Status::Result(DeliveryOutcome::Accepted))
+    });
+    let jobs = confined_frames(&provider_dir, "deliver");
+    assert_eq!(jobs.len(), 1);
+    let event = &jobs[0]["delivery"]["event"];
+    assert_eq!(event["kind"], "managed_notification");
+    assert_eq!(event["origin"]["identity"], KEY);
+    assert_eq!(event["message"], "confined event");
+    assert_eq!(jobs[0]["delivery"]["channel"], "first");
+    assert!(event["source"].is_null());
 }

@@ -36,6 +36,13 @@ fn write_owned(path: &str, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
 }
 
 fn main() -> std::io::Result<()> {
+    // A confined start makes the installed package read-only and names the one
+    // writable directory in the environment; every control and transcript file
+    // lives there. An unconfined fixture start sets no variable and keeps using
+    // the package directory it was started in.
+    if let Some(directory) = std::env::var_os("AMONG_PLUGIN_DATA_DIR") {
+        std::env::set_current_dir(directory)?;
+    }
     let mut input = std::io::stdin();
     let flags = unsafe { libc::fcntl(input.as_raw_fd(), libc::F_GETFL) };
     if flags < 0
