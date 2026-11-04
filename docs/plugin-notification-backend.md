@@ -1,19 +1,33 @@
-# Managed notification backend — explicit integration under review
+# Managed notification backend
 
-This is an implemented backend boundary plus an ordinary-app integration on the
-current test branch, **not accepted notification enablement**. Plain
-`PluginHost::new` / `with_start_gate` construction still offers no notification
-roles; the application explicitly uses `with_notification_backend` with its VTE
-core. General reads declared full-identity/channel inventory and persists choices
-independently of plugin enablement, retaining unavailable choices and unknown data.
-Compilation or serialization does not establish native notification acceptance.
+This is the backend boundary between the shared notification core and managed
+plugin processes, and its integration into the application. Plain
+`PluginHost::new` / `with_start_gate` construction offers no notification roles;
+the application attaches the backend with `with_notification_backend` and its VTE
+core at startup. General reads the declared full-identity/channel inventory and
+persists choices independently of plugin enablement, retaining unavailable choices
+and unknown data. A plugin holds a notification role only through the explicit
+role review described below. Plugins installed from a local catalogue under the
+development flag (`development/<plugin>`) register like release installations.
 
-Independent review of `ca73e6e` found three open P2 blockers: active provider
-envelopes can be evicted at the 64-record bound, targetless producers share one
-coalescing/cooldown key, and the permanent producer retirement after any delivery
-assignment (including not-enqueued) lacks an approved dual-role contract. The API
-author owns the first two/core-kind repairs and the owner-chosen strict role split.
-The common UI does not waive or duplicate those repairs.
+Implemented and covered by tests that run in CI against real plugin processes:
+
+- active provider envelopes are retained under bounded fresh-source traffic
+  (`active_provider_envelope_is_retained_under_bounded_fresh_source_traffic`);
+- targetless producers coalesce and cool down by their exact registered origin and
+  share the core's bounded, fair queue
+  (`targetless_origin_fanout_uses_the_same_bounded_fair_global_queue`);
+- the producer and delivery roles are strictly separated at review, preflight and
+  admission, and a plugin that requires both is refused without execution;
+- the ordinary application, General and the renderer are exercised together by
+  `ordinary_app_provider_controls_and_declarative_actions_use_one_live_core` and
+  `combined::every_channel_keeps_its_own_policy_failure_and_restart`.
+
+Recorded decisions of 2026-11-04: the audio helper's 250 ms exit limit after the
+end of its protocol stays as it is (a helper that does not leave in time is killed
+and the sound reported failed; it fails closed), and `package-source-delivery` is
+not part of the 0.2.0 release candidate. Installed DEB and RPM output is observed
+only at the release-candidate tag.
 
 `src/plugin_notifications.rs` is GTK-free state and shared-core scheduling.
 `src/plugin/host/notification_backend.rs` connects it to actual supervised managed
@@ -166,9 +180,9 @@ queued activations. Activation has a 250-ms per-contribution cooldown.
 `withdraw_notification` with session/generation/`id` withdraws one contribution.
 Current applied settings acknowledgements also invalidate old contribution/action
 state without releasing old status/configuration/delivery reply credits.
-`contributions(now)` is a renderer snapshot, **not a widget renderer**. Its consumer
-must preserve existing title/Restore/stripes and implement native accessibility;
-those presentation gates remain open.
+`contributions(now)` is a renderer snapshot, not a widget renderer. The application's
+renderer (`src/app/notification_ui.rs`) consumes it for the allowed areas, keeps the
+existing title, Restore and stripes, and gives each action a native accessible name.
 
 ## Actual provider jobs and outcomes
 
@@ -293,6 +307,6 @@ CARGO_BUILD_JOBS=1 cargo test --locked --test plugin_notification_model
 
 The ignored `native_pty_bell_real_provider_and_keyboard_remain_responsive_during_flood`
 test requires `among-tools ci-x11` with its owned display/private HOME/XDG profile.
-It tests an explicit backend plus real VTE PTYs/provider/keyboard, **not** ordinary
-app/General/rendering integration. Full three-package gates, notices, strict specs,
-independent review and latest-head GitHub CI are separate acceptance requirements.
+It tests an explicit backend plus real VTE PTYs/provider/keyboard; the ordinary
+application, General and rendering are covered by the notification UI tests named
+above.
