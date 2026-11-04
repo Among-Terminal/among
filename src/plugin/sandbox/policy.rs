@@ -222,3 +222,326 @@ pub fn digest(features: &std::collections::BTreeSet<String>) -> String {
     checksum.update(text.as_bytes());
     checksum.string().expect("a finished checksum has a string")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn names() -> BTreeSet<&'static str> {
+        denied().map(|rule| rule.name).collect()
+    }
+
+    fn rule(name: &str) -> &'static Denied {
+        denied()
+            .find(|rule| rule.name == name)
+            .unwrap_or_else(|| panic!("`{name}` is no longer filtered"))
+    }
+
+    fn strings(list: &[&'static str]) -> BTreeSet<&'static str> {
+        list.iter().copied().collect()
+    }
+
+    #[test]
+    fn the_filtered_calls_are_exactly_the_reviewed_list() {
+        // written out here, not derived from the table: removing or adding a
+        // call must be a decision that shows up in this list too.
+        let mut expected = strings(&[
+            "socket",
+            "socketpair",
+            "io_uring_setup",
+            "io_uring_enter",
+            "io_uring_register",
+            "ptrace",
+            "process_vm_readv",
+            "process_vm_writev",
+            "pidfd_open",
+            "pidfd_getfd",
+            "pidfd_send_signal",
+            "process_madvise",
+            "kcmp",
+            "kill",
+            "tkill",
+            "tgkill",
+            "rt_sigqueueinfo",
+            "rt_tgsigqueueinfo",
+            "perf_event_open",
+            "bpf",
+            "userfaultfd",
+            "keyctl",
+            "add_key",
+            "request_key",
+            "mount",
+            "umount2",
+            "pivot_root",
+            "move_mount",
+            "open_tree",
+            "mount_setattr",
+            "fsopen",
+            "fsconfig",
+            "fsmount",
+            "fspick",
+            "fchmod",
+            "fchmodat",
+            "fchmodat2",
+            "fchown",
+            "fchownat",
+            "setxattr",
+            "lsetxattr",
+            "fsetxattr",
+            "setxattrat",
+            "removexattr",
+            "lremovexattr",
+            "fremovexattr",
+            "removexattrat",
+            "utimensat",
+            "prlimit64",
+            "sched_setaffinity",
+            "sched_setscheduler",
+            "sched_setparam",
+            "sched_setattr",
+            "migrate_pages",
+            "move_pages",
+            "setpriority",
+            "ioprio_set",
+        ]);
+        if cfg!(target_arch = "x86_64") {
+            expected.extend(["chmod", "chown", "lchown", "utime", "utimes", "futimesat"]);
+        }
+        assert_eq!(names(), expected);
+    }
+
+    fn always_denied(list: &[&str]) {
+        for name in list {
+            assert!(
+                rule(name).allowed_when.is_empty(),
+                "{name} must be denied for every argument"
+            );
+        }
+    }
+
+    #[test]
+    fn sockets_of_every_family_and_the_io_uring_detour_are_denied() {
+        always_denied(&[
+            "socket",
+            "socketpair",
+            "io_uring_setup",
+            "io_uring_enter",
+            "io_uring_register",
+        ]);
+    }
+
+    #[test]
+    fn inspecting_other_processes_is_denied() {
+        always_denied(&[
+            "ptrace",
+            "process_vm_readv",
+            "process_vm_writev",
+            "pidfd_open",
+            "pidfd_getfd",
+            "process_madvise",
+            "kcmp",
+        ]);
+    }
+
+    #[test]
+    fn every_way_to_send_a_signal_is_denied_without_an_exception_for_the_own_pid() {
+        always_denied(&[
+            "kill",
+            "tkill",
+            "tgkill",
+            "rt_sigqueueinfo",
+            "rt_tgsigqueueinfo",
+            "pidfd_send_signal",
+        ]);
+    }
+
+    #[test]
+    fn kernel_facilities_that_widen_the_attack_surface_are_denied() {
+        always_denied(&[
+            "perf_event_open",
+            "bpf",
+            "userfaultfd",
+            "keyctl",
+            "add_key",
+            "request_key",
+        ]);
+    }
+
+    #[test]
+    fn the_mount_family_is_denied() {
+        always_denied(&[
+            "mount",
+            "umount2",
+            "pivot_root",
+            "move_mount",
+            "open_tree",
+            "mount_setattr",
+            "fsopen",
+            "fsconfig",
+            "fsmount",
+            "fspick",
+        ]);
+    }
+
+    #[test]
+    fn mode_owner_attribute_and_time_changes_are_denied_for_every_path() {
+        always_denied(&[
+            "fchmod",
+            "fchmodat",
+            "fchmodat2",
+            "fchown",
+            "fchownat",
+            "setxattr",
+            "lsetxattr",
+            "fsetxattr",
+            "setxattrat",
+            "removexattr",
+            "lremovexattr",
+            "fremovexattr",
+            "removexattrat",
+            "utimensat",
+        ]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_legacy_x86_64_metadata_calls_are_denied_too() {
+        always_denied(&["chmod", "chown", "lchown", "utime", "utimes", "futimesat"]);
+    }
+
+    #[test]
+    fn calls_that_name_a_process_are_allowed_only_with_the_calling_process_as_target() {
+        for name in [
+            "prlimit64",
+            "sched_setaffinity",
+            "sched_setscheduler",
+            "sched_setparam",
+            "sched_setattr",
+            "migrate_pages",
+            "move_pages",
+        ] {
+            assert_eq!(
+                rule(name).allowed_when,
+                [ArgEquals { index: 0, value: 0 }],
+                "{name} is allowed only with pid 0"
+            );
+        }
+    }
+
+    #[test]
+    fn priority_changes_are_allowed_only_for_the_calling_process() {
+        assert_eq!(
+            rule("setpriority").allowed_when,
+            [
+                ArgEquals { index: 0, value: 0 },
+                ArgEquals { index: 1, value: 0 }
+            ],
+            "PRIO_PROCESS with who == 0 only: PRIO_PGRP and PRIO_USER with 0 reach other processes"
+        );
+        assert_eq!(
+            rule("ioprio_set").allowed_when,
+            [
+                ArgEquals { index: 0, value: 1 },
+                ArgEquals { index: 1, value: 0 }
+            ],
+            "IOPRIO_WHO_PROCESS with who == 0 only"
+        );
+    }
+
+    #[test]
+    fn only_the_native_architecture_is_accepted_and_x32_is_known_on_x86_64() {
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(AUDIT_ARCH, 0xC000_003E, "AUDIT_ARCH_X86_64");
+            assert_eq!(X32_SYSCALL_BIT, 1 << 30, "__X32_SYSCALL_BIT");
+        }
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(AUDIT_ARCH, 0xC000_00B7, "AUDIT_ARCH_AARCH64");
+    }
+
+    #[test]
+    fn the_filesystem_policy_is_the_reviewed_set() {
+        assert_eq!(
+            SYSTEM_READ,
+            [
+                "/usr",
+                "/lib",
+                "/lib64",
+                "/etc/ld.so.cache",
+                "/etc/localtime"
+            ]
+        );
+        assert_eq!(
+            SYSTEM_METRICS_READ,
+            ["/proc/stat", "/proc/meminfo", "/proc/loadavg"]
+        );
+        assert_eq!(FULL_LANDLOCK_ABI, 3);
+    }
+
+    #[test]
+    fn only_the_system_metrics_feature_adds_read_access() {
+        let none = BTreeSet::new();
+        assert!(grant_reads(&none).is_empty());
+        let others: BTreeSet<String> = ["status", "settings", "context.cwd", "events.terminal"]
+            .map(String::from)
+            .into();
+        assert!(grant_reads(&others).is_empty());
+        let metrics: BTreeSet<String> =
+            ["status".to_string(), SYSTEM_METRICS_FEATURE.to_string()].into();
+        assert_eq!(grant_reads(&metrics), SYSTEM_METRICS_READ);
+    }
+
+    #[test]
+    fn the_digest_is_stable_and_names_the_grants_that_were_applied() {
+        let none = BTreeSet::new();
+        let metrics: BTreeSet<String> = [SYSTEM_METRICS_FEATURE.to_string()].into();
+        assert_eq!(digest(&none), digest(&none));
+        assert_eq!(digest(&none).len(), 64);
+        assert!(digest(&none).bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(digest(&none), digest(&metrics));
+        // features that add no access do not change what was applied.
+        let status: BTreeSet<String> = ["status".to_string()].into();
+        assert_eq!(digest(&none), digest(&status));
+    }
+
+    #[test]
+    fn call_numbers_match_the_kernel_headers_installed_on_this_machine() {
+        // x86-64 numbers are in the architecture header; arm64 uses the
+        // generic table. a name absent from an older header is reported, not
+        // assumed.
+        let (path, file) = if cfg!(target_arch = "x86_64") {
+            (
+                "/usr/include/x86_64-linux-gnu/asm/unistd_64.h",
+                std::fs::read_to_string("/usr/include/x86_64-linux-gnu/asm/unistd_64.h"),
+            )
+        } else {
+            (
+                "/usr/include/asm-generic/unistd.h",
+                std::fs::read_to_string("/usr/include/asm-generic/unistd.h"),
+            )
+        };
+        let Ok(header) = file else {
+            eprintln!("NOT VERIFIED: {path} is not installed; call numbers were not compared");
+            return;
+        };
+        let mut missing = Vec::new();
+        for rule in denied() {
+            let wanted = format!("#define __NR_{} ", rule.name);
+            let number = header.lines().find_map(|line| {
+                line.strip_prefix(&wanted)
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .and_then(|number| number.parse::<c_long>().ok())
+            });
+            match number {
+                Some(number) => {
+                    assert_eq!(number, rule.number, "{} differs from {path}", rule.name)
+                }
+                None => missing.push(rule.name),
+            }
+        }
+        if !missing.is_empty() {
+            eprintln!("NOT VERIFIED against {path} (absent from this header version): {missing:?}");
+        }
+    }
+}

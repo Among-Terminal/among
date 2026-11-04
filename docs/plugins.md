@@ -498,6 +498,10 @@ What a confined plugin can do:
   contents; removing the data is a separate action that does not exist yet.
 - Use the protocol on stdin and stdout. Nothing else is open: every other
   descriptor of the host is closed on `exec`.
+- Not read `/proc`, including `/proc/self`, unless it holds `system.metrics` and
+  then only the three files that grant names. A language runtime that insists on
+  reading `/proc/self/...` at startup must tolerate the refusal; the Rust standard
+  library does.
 
 What it cannot do, each answered with `EPERM` or `EACCES`:
 
