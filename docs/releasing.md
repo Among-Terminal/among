@@ -262,8 +262,10 @@ pausing nightlies; preserve stable controls and prior provenance.
 
 ## 4a. The release cycle
 
-A release goes through a release pull request, a tag and a draft. Nothing in
-this chain publishes: the owner merges the pull request and publishes the draft.
+A release goes through a release pull request, a release candidate tag, the
+stable tag and a draft. Nothing in this chain happens by itself: merging the
+pull request creates no tag, each tag is a separate manual run, and only the
+owner publishes the draft.
 
 1. **Titles drive the version.** Pull requests merge by squash only, so `main`
    holds one commit per pull request, titled as a Conventional Commit (see
@@ -309,36 +311,63 @@ this chain publishes: the owner merges the pull request and publishes the draft.
    on any other pull request, and `pr-title` and `check-release-metadata` verify
    the title and that every version location agrees.
 5. **Merge by hand.** Squash-merging puts a commit titled
-   `chore(release): X.Y.Z` on `main`.
-6. **Tag and draft.** `.github/workflows/release-tag.yml` runs on that push.
-   A read-only job builds the tool and runs `among-tools release-tag`, which
-   checks the title, that `Cargo.toml` at that commit carries the version, that
-   the highlights file exists and is not empty, that the version is above every
-   stable tag and that an existing tag points at the same commit. Only then the
-   write job (no checkout) creates `vX.Y.Z` with the repository token and starts
-   `release-draft.yml` on the tag by `workflow_dispatch`. A tag made with the
+   `chore(release): X.Y.Z` on `main`. The merge creates no tag and starts no
+   draft; it is inert until the owner dispatches the next step.
+6. **Validate the merge.** `.github/workflows/release-tag.yml` runs on that push.
+   A read-only job builds the tool and runs `among-tools release-tag ... push`,
+   which checks the title, that `Cargo.toml` at that commit carries the version,
+   that the highlights file exists and is not empty, that the version is above
+   every stable tag and that an existing `vX.Y.Z` points at the same commit. It
+   only reports (`validated`); the write job does not run. A broken release
+   commit therefore fails its own run. The decision job builds the tool on every
+   push to `main`; if that build or the decision fails for a release commit,
+   fix the cause and re-run the failed workflow run of that push.
+7. **Candidate, then stable.** Both tags are made by running **Release tag** by
+   hand on `main`, each time as a separate decision of the owner (see
+   [Release candidates](#release-candidates-and-the-stable-release)). The write
+   job (no checkout) creates the tag with the repository token and starts
+   `release-draft.yml` on it by `workflow_dispatch`. A tag made with the
    repository token starts no `push` workflow, which is why the draft is
    started explicitly. The draft workflow's `verify-ref` job refuses a manual
-   start unless the ref is a `v*` tag whose commit `main` contains. The
-   decision job builds the tool on every push to `main`; if that build or the
-   decision fails for a release commit, fix the cause and re-run the failed
-   workflow run of that push (the decision and the tag creation are
-   idempotent, an existing tag at the same commit is accepted).
-7. **Publish by hand** after downloading and verifying the draft (section 5).
+   start unless the ref is a `v*` tag whose commit `main` contains.
+8. **Publish by hand** after downloading and verifying the draft (section 5).
 
 The workflow uses job-level permissions (`contents: write`, `actions: write`)
 and no personal token, GitHub App or secret; the repository setting
 "Allow GitHub Actions to create and approve pull requests" stays off.
 
-### Release candidates
+### Release candidates and the stable release
 
-To test the exact commit before publishing, run the **Release tag** workflow by
-hand on `main` with the input `candidate` set to `N` (for example `1`). It
-creates `vX.Y.Z-rc.N` on the commit of the stable tag `vX.Y.Z` and starts the
-draft workflow on it; the draft is a prerelease. Candidate tags need the stable
-tag to exist, so merge the release pull request first, and do not publish the
-stable draft until the candidate has been accepted. Repeat with `N+1` after a
-fix: merge a new release pull request and use its new version.
+The owner tests the exact commit before the stable release exists. Run the
+**Release tag** workflow by hand on `main` (Actions, Run workflow) with one of
+these inputs:
+
+| Input | Effect |
+|---|---|
+| `candidate` = `N` (for example `1`) | Tags the release commit `vX.Y.Z-rc.N` and starts the draft workflow on it; the draft is a prerelease. |
+| `stable` ticked | Tags the release commit `vX.Y.Z` and starts the stable draft. Allowed only when a `vX.Y.Z-rc.N` tag already points at that same commit, so the stable bytes are the tested bytes. |
+| `release_commit` (optional) | The release commit to act on, 7 to 40 lowercase hexadecimal digits. By default the tip of `main` must itself be the release commit; name the commit when `main` has moved on since it. It must be contained in `main`. |
+
+Give `candidate` or `stable`, never both. The tag always goes on the release
+commit itself (the tip of `main` or the commit named in `release_commit`), never
+on a later commit. The release commit must pass the same checks as on the push:
+title, `Cargo.toml` version, non-empty highlights and a version above every
+stable tag.
+
+Refusals, each with its reason in the run log:
+
+- a candidate once `vX.Y.Z` exists (the stable release is made from an accepted
+  candidate, never before it);
+- a stable tag without a candidate of that version on the same commit, or a
+  candidate that is on another commit;
+- a tag that already exists at another commit (a tag never moves);
+- a commit that `main` does not contain, or that is not a release commit.
+
+Repeating a run for a tag that already exists at the same commit is accepted and
+only makes sure its draft started, so a failed dispatch can be re-run. After a
+fix, prepare a new release pull request, merge it and tag `rc.N+1` on its
+release commit; the stable tag then goes on the commit of the candidate the
+owner accepted.
 
 ### Version locations
 

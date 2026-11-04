@@ -31,16 +31,22 @@ fn only_a_push_to_main_or_a_manual_run_starts_it() -> Result<()> {
     let document = workflow()?;
     assert_eq!(document["on"]["push"], json!({"branches":["main"]}));
     let inputs = &document["on"]["workflow_dispatch"]["inputs"];
-    assert_eq!(inputs.as_object().map(|map| map.len()), Some(1));
+    assert_eq!(inputs.as_object().map(|map| map.len()), Some(3));
     assert_eq!(inputs["candidate"]["type"], "string");
     assert_eq!(inputs["candidate"]["required"], false);
+    assert_eq!(inputs["stable"]["type"], "boolean");
+    assert_eq!(inputs["stable"]["required"], false);
+    // A stable tag must never be made by a default-valued run.
+    assert_eq!(inputs["stable"]["default"], false);
+    assert_eq!(inputs["release_commit"]["type"], "string");
+    assert_eq!(inputs["release_commit"]["required"], false);
     assert_eq!(document["on"].as_object().map(|map| map.len()), Some(2));
     assert_eq!(document["permissions"], json!({}));
-    // One group per commit and candidate: a shared group would drop a queued
+    // One group per commit and request: a shared group would drop a queued
     // release run.
     assert_eq!(
         document["concurrency"]["group"],
-        "release-tag-${{ github.sha }}-${{ inputs.candidate }}"
+        "release-tag-${{ github.sha }}-${{ inputs.candidate }}-${{ inputs.stable }}-${{ inputs.release_commit }}"
     );
     assert_eq!(document["concurrency"]["cancel-in-progress"], false);
     Ok(())
@@ -63,8 +69,21 @@ fn the_decision_job_can_only_read_and_the_write_job_runs_no_checked_out_code() -
     assert_eq!(checkout["with"]["persist-credentials"], false);
     let shell = script(decide)?;
     assert!(shell.contains("release-tag . push \"$GITHUB_SHA\""));
-    assert!(shell.contains("release-tag . candidate \"$CANDIDATE\""));
-    assert!(shell.contains("[ \"$GITHUB_REF\" = refs/heads/main ]"));
+    for required in [
+        "release-tag . candidate \"$CANDIDATE\" \"$RELEASE_COMMIT\"",
+        "release-tag . stable \"$RELEASE_COMMIT\"",
+        "[ \"$GITHUB_REF\" = refs/heads/main ]",
+        "give either candidate or stable, not both",
+        "give candidate=N or stable=true",
+    ] {
+        assert!(shell.contains(required), "missing: {required}");
+    }
+    // The inputs reach the shell only through the environment.
+    assert!(!shell.contains("${{"), "an expression is interpolated");
+    let env = &steps[2]["env"];
+    assert_eq!(env["CANDIDATE"], "${{ inputs.candidate }}");
+    assert_eq!(env["STABLE"], "${{ inputs.stable }}");
+    assert_eq!(env["RELEASE_COMMIT"], "${{ inputs.release_commit }}");
 
     let tag = &jobs["tag"];
     assert_eq!(
