@@ -73,6 +73,11 @@ jobs:
       tag: ${{ steps.decision.outputs.tag }}
       sha: ${{ steps.decision.outputs.sha }}
     steps:
+      # A manual run can be started on any ref; refuse before checking out or
+      # building anything from a branch other than main.
+      - name: Run only on main
+        run: |
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "run this workflow on main, not on $GITHUB_REF" >&2; exit 1; }
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
@@ -98,7 +103,6 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ]; then
             "$tool" release-tag . push "$GITHUB_SHA" | tee "$RUNNER_TEMP/decision"
           else
-            [ "$GITHUB_REF" = refs/heads/main ] || { echo "run this workflow on main, not on $GITHUB_REF" >&2; exit 1; }
             if [ -n "$CANDIDATE" ] && [ "$STABLE" = true ]; then
               echo "give either candidate or stable, not both" >&2; exit 1
             elif [ -n "$CANDIDATE" ]; then
@@ -132,6 +136,13 @@ jobs:
           repo="$GITHUB_REPOSITORY"
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "unexpected tag '$TAG'" >&2; exit 1; }
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit '$SHA'" >&2; exit 1; }
+          # The write job does not trust the decision alone: the commit must be
+          # main itself or an ancestor of it (compare status identical or behind).
+          status=$(gh api "repos/$repo/compare/main...$SHA" --jq .status)
+          case "$status" in
+            identical|behind) ;;
+            *) echo "$SHA is not contained in main (compare status '$status')" >&2; exit 1 ;;
+          esac
           if [ "$ACTION" = create ]; then
             # A "re-run failed jobs" keeps the decision of the first attempt, so
             # the tag may exist by now: accept it at the same commit, never move it.

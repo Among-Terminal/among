@@ -60,7 +60,13 @@ fn the_decision_job_can_only_read_and_the_write_job_runs_no_checked_out_code() -
     let decide = &jobs["decide"];
     assert_eq!(decide["permissions"], json!({"contents":"read"}));
     let steps = decide["steps"].as_array().ok_or("steps")?;
-    let checkout = &steps[0];
+    // The branch guard is the first step: nothing is checked out or built
+    // before a manual run on a ref other than main is refused.
+    let guard = steps[0]["run"].as_str().ok_or("guard step")?;
+    assert!(guard.contains("[ \"$GITHUB_REF\" = refs/heads/main ] ||"));
+    assert!(guard.contains("exit 1"));
+    assert!(steps[0].get("uses").is_none());
+    let checkout = &steps[1];
     assert!(checkout["uses"]
         .as_str()
         .is_some_and(|uses| uses.starts_with("actions/checkout@")));
@@ -79,7 +85,14 @@ fn the_decision_job_can_only_read_and_the_write_job_runs_no_checked_out_code() -
     }
     // The inputs reach the shell only through the environment.
     assert!(!shell.contains("${{"), "an expression is interpolated");
-    let env = &steps[2]["env"];
+    // The guard is not repeated after the build, where it would be too late.
+    let decision_step = &steps[3];
+    assert_eq!(decision_step["id"], "decision");
+    assert!(!decision_step["run"]
+        .as_str()
+        .ok_or("run")?
+        .contains("refs/heads/main"));
+    let env = &decision_step["env"];
     assert_eq!(env["CANDIDATE"], "${{ inputs.candidate }}");
     assert_eq!(env["STABLE"], "${{ inputs.stable }}");
     assert_eq!(env["RELEASE_COMMIT"], "${{ inputs.release_commit }}");
@@ -126,6 +139,10 @@ fn the_write_job_only_creates_the_decided_tag_and_starts_the_draft() -> Result<(
     for required in [
         "^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$",
         "^[0-9a-f]{40}$",
+        // The write job re-checks that the commit is main or its ancestor.
+        "compare/main...$SHA\" --jq .status",
+        "identical|behind) ;;",
+        "is not contained in main",
         "if [ \"$ACTION\" = create ]; then",
         "git/refs\" -f \"ref=refs/tags/$TAG\" -f \"sha=$SHA\"",
         // A rerun of failed jobs finds the tag already made: same commit is
@@ -137,6 +154,12 @@ fn the_write_job_only_creates_the_decided_tag_and_starts_the_draft() -> Result<(
     ] {
         assert!(shell.contains(required), "missing: {required}");
     }
+    let compare = shell.find("compare/main...$SHA").ok_or("no compare")?;
+    let create = shell.find("git/refs\" -f").ok_or("no ref creation")?;
+    assert!(
+        compare < create,
+        "the ancestry check must precede the tag creation"
+    );
     for forbidden in [
         "gh release",
         "draft=false",
