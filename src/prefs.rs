@@ -337,6 +337,104 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an isolated GTK display"]
+    fn the_card_marks_reduced_protection_and_offers_consent_only_while_a_start_waits() {
+        use crate::plugin::sandbox::level::{consent_message, Protection};
+        adw::init().expect("isolated GTK display");
+        fn context(overview: crate::plugin::host::Overview) -> PreferencesContext {
+            PreferencesContext {
+                general: None,
+                package_action: Rc::new(|_, _, _| {}),
+                retained_settings: Rc::new(|| Ok(Vec::new())),
+                delete_retained_settings: Rc::new(|_| Err("no retained settings".into())),
+                installations_changed: Rc::new(|| {}),
+                on_closed: Rc::new(|| {}),
+                storage_status: gtk::StringList::new(&[]),
+                bindings: Rc::new(RefCell::new(Bindings::defaults())),
+                plugin_inventory: Rc::new(move || vec![overview.clone()]),
+                plugin_details: Rc::new(|_| None),
+                save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
+                plugin_configuration: Rc::new(|_| Configuration::NotApplied),
+                restart_plugin: Rc::new(|_, _, _| {}),
+                enable_plugin: Rc::new(|_, _| {}),
+                disable_plugin: Rc::new(|_| {}),
+                allow_reduced_protection: Rc::new(|_, _| Ok(())),
+                bindings_changed: Rc::new(|| {}),
+            }
+        }
+        fn collect<T: IsA<gtk::Widget> + gtk::glib::object::IsClass>(
+            widget: &gtk::Widget,
+            found: &mut Vec<T>,
+        ) {
+            if let Ok(item) = widget.clone().downcast::<T>() {
+                found.push(item);
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                collect::<T>(&widget, found);
+                child = widget.next_sibling();
+            }
+        }
+        // the card of one plugin: its subtitle and its consent button, if any.
+        let card = |overview: crate::plugin::host::Overview| {
+            let page = plugins_page(&context(overview));
+            let mut rows = Vec::new();
+            collect::<adw::ActionRow>(page.upcast_ref(), &mut rows);
+            let row = rows
+                .into_iter()
+                .find(|row| row.title() == "sample")
+                .expect("the plugin's card");
+            let mut buttons = Vec::new();
+            collect::<gtk::Button>(row.upcast_ref(), &mut buttons);
+            let consent = buttons
+                .into_iter()
+                .find(|button| button.label().as_deref() == Some("Allow reduced protection…"))
+                .expect("the card always carries the consent button; only its visibility changes");
+            (
+                row.subtitle().unwrap_or_default().to_string(),
+                consent.is_visible(),
+            )
+        };
+
+        let offered = Protection::Reduced { abi: 2 };
+        let mut refused = crate::plugin::host::Overview::fixture(
+            "sample",
+            PluginState::Unavailable {
+                reason: consent_message(offered, None),
+            },
+            true,
+        );
+        refused.protection = Some(format!("Not started: {}", consent_message(offered, None)));
+        refused.consent_offer = Some(offered);
+        let (subtitle, button) = card(refused);
+        assert!(subtitle.contains(
+            "the kernel supports only Landlock ABI 2 (required: ABI 3, kernel 6.2 or newer); \
+             the plugin was not started."
+        ));
+        assert!(button, "a refused start offers the consent action");
+
+        let mut full = crate::plugin::host::Overview::fixture("sample", PluginState::Running, true);
+        full.protection = Some("Protection: full (Landlock ABI 6 and seccomp)".into());
+        let (subtitle, button) = card(full);
+        assert!(subtitle.contains("Protection: full (Landlock ABI 6 and seccomp)"));
+        assert!(!subtitle.contains("reduced"));
+        assert!(!button, "full protection needs no consent");
+
+        let mut reduced =
+            crate::plugin::host::Overview::fixture("sample", PluginState::Running, true);
+        reduced.protection = Some(format!(
+            "Protection: {} · running with reduced protection",
+            offered.label()
+        ));
+        let (subtitle, button) = card(reduced);
+        assert!(subtitle.contains("running with reduced protection"));
+        assert!(
+            !button,
+            "an allowed plugin shows the permanent mark, not the action"
+        );
+    }
+
+    #[test]
     fn plugin_states_are_described_for_the_user() {
         assert!(describe_state(&PluginState::Running).contains("Running"));
         assert!(describe_state(&PluginState::Disabled).contains("Disabled"));

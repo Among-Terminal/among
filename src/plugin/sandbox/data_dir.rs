@@ -20,10 +20,17 @@ pub struct DataDir {
 /// The directory below which per-plugin data lives: `$XDG_DATA_HOME/among`,
 /// with `$HOME/.local/share` as the fallback the managed store also uses.
 pub fn data_home() -> Option<PathBuf> {
-    std::env::var_os("XDG_DATA_HOME")
+    data_home_from(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+}
+
+fn data_home_from(
+    xdg_data_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    xdg_data_home
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .or_else(|| home.map(|home| PathBuf::from(home).join(".local/share")))
 }
 
 const TOP: &str = "among";
@@ -155,6 +162,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn the_data_home_prefers_xdg_then_home_and_is_absent_without_both() {
+        use std::ffi::OsString;
+        let some = |text: &str| Some(OsString::from(text));
+        assert_eq!(
+            data_home_from(some("/xdg"), some("/home/u")),
+            Some(PathBuf::from("/xdg"))
+        );
+        // an empty value counts as unset, as the managed store treats it.
+        assert_eq!(
+            data_home_from(some(""), some("/home/u")),
+            Some(PathBuf::from("/home/u/.local/share"))
+        );
+        assert_eq!(
+            data_home_from(None, some("/home/u")),
+            Some(PathBuf::from("/home/u/.local/share"))
+        );
+        assert_eq!(data_home_from(None, None), None);
+        assert_eq!(data_home_from(some(""), None), None);
     }
 
     #[test]
