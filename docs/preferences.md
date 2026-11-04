@@ -188,6 +188,14 @@ The plugin's card shows the level it actually runs with:
 | `Unavailable` with `the kernel cannot load a seccomp filter; the plugin is not started` | Never starts, with or without consent. |
 | `Unavailable` naming a link, owner or permission | The plugin's data directory could not be created safely. |
 
+The **Review plugin access** dialog opens with a sentence that follows the level
+this kernel offers. At full protection it says the plugin gets no network and no
+files except its data directory and the system runtime. With Landlock below ABI 3
+it adds that the plugin can still empty (truncate) a file you can write. With the
+seccomp filter alone it says plainly that file access is not restricted and the
+plugin can read and write every file your account can. Where the filter cannot be
+loaded it says the plugin cannot be started.
+
 **Allow reduced protection…** opens a confirmation that names the level. The choice
 is saved per plugin in `managed-plugins.json` as `protection_consent`
 (`reduced:1`, `reduced:2` or `seccomp-only`). It covers that level and any stronger

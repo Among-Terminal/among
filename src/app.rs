@@ -4510,8 +4510,12 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>,
     let parent = parent
         .cloned()
         .unwrap_or_else(|| ctx.window.clone().upcast());
-    let dialog=adw::AlertDialog::builder().heading("Review plugin access")
-        .body("This executable runs as your user inside a kernel sandbox where the kernel supports one: it gets no network and no files except its own data directory. The access below is what Among sends it and, for system metrics, a few read-only files. Install only code you trust. Required access must be accepted; optional access starts off.").build();
+    let dialog = adw::AlertDialog::builder()
+        .heading("Review plugin access")
+        .body(crate::plugin::sandbox::level::review_intro(
+            crate::plugin::sandbox::level::probe().best(),
+        ))
+        .build();
     dialog.add_response("cancel", "Cancel");
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));

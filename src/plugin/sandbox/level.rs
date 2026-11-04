@@ -206,9 +206,63 @@ pub fn consent_message(offered: Protection, previously_consented: Option<Protect
     )
 }
 
+/// What the sandbox restricts at `level`, in the words the access review shows
+/// before the user accepts a plugin. The sentence must not promise a file
+/// restriction the level does not have, because the user decides on it.
+pub fn restrictions_summary(level: Protection) -> &'static str {
+    match level {
+        Protection::Full { .. } => {
+            "it gets no network and no files except its own data directory and the system runtime it needs to start"
+        }
+        Protection::Reduced { .. } => {
+            "it gets no network and cannot read or write files outside its own data directory and the system runtime, except that this kernel's Landlock cannot stop it from emptying (truncating) a file you can write"
+        }
+        Protection::SeccompOnly => {
+            "it gets no network and no control over other processes, but this kernel has no usable Landlock, so its file access is NOT restricted: it can read and write every file your account can"
+        }
+        Protection::Unprotected => {
+            "this kernel cannot load a seccomp filter, so the plugin cannot be started at all"
+        }
+    }
+}
+
+/// The introduction of the access review for a kernel offering `level`.
+pub fn review_intro(level: Protection) -> String {
+    format!(
+        "This executable runs as your user inside a kernel sandbox. On this kernel {}. \
+         The access below is what Among sends it and, for system metrics, a few read-only files. \
+         Install only code you trust. Required access must be accepted; optional access starts off.",
+        restrictions_summary(level)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_access_review_states_what_each_level_really_restricts() {
+        let full = review_intro(Protection::Full { abi: 6 });
+        assert!(full.contains("no files except its own data directory"));
+        assert!(!full.contains("NOT restricted"));
+
+        for abi in [1, 2] {
+            let reduced = review_intro(Protection::Reduced { abi });
+            assert!(reduced.contains("outside its own data directory"));
+            assert!(reduced.contains("truncating"));
+            assert!(!reduced.contains("no files except"));
+        }
+
+        let seccomp_only = review_intro(Protection::SeccompOnly);
+        assert!(seccomp_only.contains("file access is NOT restricted"));
+        assert!(seccomp_only.contains("every file your account can"));
+        assert!(!seccomp_only.contains("no files except"));
+        assert!(!seccomp_only.contains("outside its own data directory"));
+
+        let none = review_intro(Protection::Unprotected);
+        assert!(none.contains("cannot be started"));
+        assert!(!none.contains("no files except"));
+    }
 
     const fn probe(landlock_abi: Option<u32>, seccomp: bool) -> Probe {
         Probe {
