@@ -183,7 +183,8 @@ pub(super) enum Reach {
     /// The official plugins compile their own repository identity
     /// (`github:1431055733/<id>`) into the handshake check. The host offers
     /// `development/<id>` for a local install, so the process is launched and
-    /// then closes its channel: the host faults it with exactly this reason.
+    /// then closes its channel: the host faults it, with the reason that its
+    /// stdout closed or that the process exited.
     ClosesChannel,
 }
 
@@ -214,8 +215,11 @@ pub(super) fn starts_under_the_flag(ctx: &Window, key: &str, reach: Reach) {
             .map(|(_, state)| state);
         match (reach, state) {
             (Reach::Admitted, Some(PluginState::Running)) => break,
+            // The worker checks for the process exit and reads stdout in the same
+            // pass, so a plugin that ends itself is reported by whichever it
+            // sees first; both mean the process was launched and then ended.
             (Reach::ClosesChannel, Some(PluginState::Faulted { reason }))
-                if reason == "plugin stdout closed" =>
+                if matches!(reason.as_str(), "plugin stdout closed" | "plugin exited") =>
             {
                 break
             }

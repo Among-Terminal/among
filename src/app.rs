@@ -6745,6 +6745,21 @@ mod tests {
                 .find(|row| row.title() == title)
                 .unwrap()
         }
+        /// The review opens after the key event is dispatched; a slow runner can
+        /// need longer than one pump. Fails if it never opens.
+        fn await_review(prefs: &adw::PreferencesWindow) {
+            let end = std::time::Instant::now() + Duration::from_secs(10);
+            while prefs.visible_dialog().is_none() {
+                assert!(
+                    std::time::Instant::now() < end,
+                    "the access review did not open"
+                );
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         fn accept_review(prefs: &adw::PreferencesWindow) {
             let Some(dialog) = prefs.visible_dialog() else {
                 return;
@@ -6934,8 +6949,12 @@ mod tests {
             );
             assert!(!switch.is_active());
             assert!(switch.grab_focus());
+            // The key goes to the focused window, so let the focus change reach
+            // the display first; then wait for the review that the key opens.
+            pump();
             xdo(&["key", "space"]);
             pump();
+            await_review(&prefs);
             accept_review(&prefs);
             assert!(switch.is_active());
             assert_eq!(
