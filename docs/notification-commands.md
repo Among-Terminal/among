@@ -79,6 +79,11 @@ no invented credential substitute or hidden credential-forwarding API.
 
 The program nevertheless has the user's ordinary filesystem/network authority.
 It can deliberately invoke another program or access files allowed to that user.
+The session variables above are themselves authority: with the session bus and the
+display, the command acts with the user's session rights, for example it can ask
+the keyring or a user service over D-Bus, or talk to the display server. "Does not
+inherit credentials" means no token variable or agent socket is copied, not that
+the command is cut off from what the session can reach.
 **Process supervision and environment minimization are not an OS sandbox.**
 
 ## Process ownership and budgets

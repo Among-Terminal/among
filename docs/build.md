@@ -113,11 +113,12 @@ cargo test --locked
 ```
 
 A full `cargo test` builds the example programs that tests start as real
-processes (`notification-plugin`, `effect-authority-helper`, `fake-plugin`) and
-the command fixture. A run limited to one target, such as `cargo test --bin
-among`, does not; run `cargo build --locked --examples --bins` first, or those
-tests fail with "build --example <name> first". `cargo test` runs without a
-display. The VTE binding helpers that touch GTK —
+processes (`notification-plugin`, `effect-authority-helper`, `fake-plugin`). A
+run limited to one target, such as `cargo test --bin among`, does not; run
+`cargo build --locked --examples` first, or those tests fail with "build
+--example <name> first". The command fixture is not built by Cargo at all: the
+integration tests compile it with `rustc` (see `docs/testing.md`). `cargo test`
+runs without a display. The VTE binding helpers that touch GTK —
 `ShortcutTrigger::parse_string`, `CallbackAction::new`, `GtkSnapshot` — assert
 that GTK is initialised, so they are kept out of the test paths and exercised
 through the running application instead.
