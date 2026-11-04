@@ -91,9 +91,46 @@ const IDENTITY: &str = "github:1431055733/system-status";
 const SESSION: &str = "resource-check-session";
 const GENERATION: &str = "resource-check-generation";
 
+/// Features the plugin needs to run at all, and the larger set the check
+/// grants in its hello: the plugin answers with the part of it that it uses.
+const REQUIRED_FEATURES: [&str; 2] = ["status", "system.metrics"];
+const GRANTED_FEATURES: [&str; 5] = [
+    "status",
+    "system.metrics",
+    "settings",
+    "context.terminals",
+    "context.cwd",
+];
+
 fn hello() -> Value {
     json!({"type":"managed_hello","major":1,"minor":2,"identity":IDENTITY,
-        "session":SESSION,"generation":GENERATION,"features":["status","system.metrics"]})
+        "session":SESSION,"generation":GENERATION,"features":GRANTED_FEATURES})
+}
+
+/// Whether a plugin's hello echo admits it, as the host decides: same
+/// protocol, identity and binding, and features that are a subset of what was
+/// granted and still hold every required feature.
+pub fn hello_reply_accepted(reply: &Value) -> bool {
+    let sent = hello();
+    [
+        "type",
+        "major",
+        "minor",
+        "identity",
+        "session",
+        "generation",
+    ]
+    .iter()
+    .all(|key| reply[*key] == sent[*key])
+        && reply["features"].as_array().is_some_and(|features| {
+            features.iter().all(|feature| {
+                feature
+                    .as_str()
+                    .is_some_and(|f| GRANTED_FEATURES.contains(&f))
+            }) && REQUIRED_FEATURES
+                .iter()
+                .all(|required| features.iter().any(|feature| feature == required))
+        })
 }
 
 pub fn response(bytes: &[u8], id: u64) -> Result<Vec<Value>> {
@@ -209,12 +246,29 @@ pub fn pinned_executable(profile: &Path) -> Result<PathBuf> {
     let inputs = release::profile_inputs(profile)?;
     let catalogue = release::catalogue(profile, &inputs)?;
     let architecture = crate::platform::discover()?.architecture;
-    let (_, artifact) = release::select(&catalogue, &architecture)?
+    let (version, artifact) = release::select(&catalogue, &architecture)?
         .into_iter()
         .find(|(version, _)| version["manifest"]["id"] == "system-status")
         .ok_or("the release catalogue holds no system-status artifact")?;
+    // The observation entry binds this profile to the release it was taken
+    // from and fixes the bytes of the selection; a bare directory tree without
+    // it is not an observed installation.
+    let observation = storage::parse_json(&bounded(profile, "profile.json", 64 * 1024)?)?;
+    if observation["kind"] != "observed_published_installation_profile"
+        || observation["source_revision"] != inputs["source_revision"]
+        || observation["catalogue_revision"] != inputs["catalogue_revision"]
+        || observation["architecture"] != architecture.as_str()
+    {
+        return Err("the profile observation differs from the release it names".into());
+    }
     let managed = storage::safe_path(profile, Path::new("managed"))?;
-    let installed = storage::parse_json(&bounded(&managed, "installed.json", 256 * 1024)?)?;
+    let selection = bounded(&managed, "installed.json", 256 * 1024)?;
+    if observation["installed_size"] != selection.len()
+        || observation["installed_sha256"] != storage::sha256(selection.as_slice())?.as_str()
+    {
+        return Err("the installed selection differs from the observed profile".into());
+    }
+    let installed = storage::parse_json(&selection)?;
     let receipts = installed["installations"]
         .as_array()
         .ok_or("installed selection lacks installations")?
@@ -236,10 +290,16 @@ pub fn pinned_executable(profile: &Path) -> Result<PathBuf> {
         &format!("{package}/among-plugin.json"),
         256 * 1024,
     )?;
-    if storage::sha256(manifest.as_slice())? != text(receipt, "manifest_sha256")?
+    let manifest_digest = storage::sha256(manifest.as_slice())?;
+    if manifest_digest != text(receipt, "manifest_sha256")?
         || artifact["sha256"] != receipt["package_sha256"]
     {
         return Err("installed system-status differs from its selected receipt".into());
+    }
+    // The receipt is the installer's own record; the catalogue is the reviewed
+    // release, so the manifest must also be the one the catalogue declares.
+    if manifest_digest != text(version, "manifest_sha256")? {
+        return Err("installed system-status manifest differs from the catalogue".into());
     }
     let manifest = storage::parse_json(&manifest)?;
     let entrypoint = text(&manifest, "entrypoint")?;
@@ -283,8 +343,8 @@ pub fn measure(binary: &Path, scratch: &Path) -> Result<Value> {
     fcntl(&stdout, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
     writeln!(stdin, "{}", hello())?;
     stdin.flush()?;
-    if storage::parse_json(&read_line(&mut stdout)?)? != hello() {
-        return Err("plugin did not accept the managed handshake unchanged".into());
+    if !hello_reply_accepted(&storage::parse_json(&read_line(&mut stdout)?)?) {
+        return Err("plugin did not admit itself with the required features".into());
     }
     let start = Instant::now();
     let before = cpu_counters(&fs::read_to_string("/proc/stat")?)?;
@@ -379,12 +439,63 @@ mod tests {
             storage::parse_json(&fs::read(self.root().join("managed/installed.json"))?)
         }
 
+        /// Writes the selection and records it in the observation, as the
+        /// real observation does.
         fn write_installed(&self, document: &Value) -> Result<()> {
+            self.write_unobserved(document)?;
+            self.observe()
+        }
+
+        fn write_unobserved(&self, document: &Value) -> Result<()> {
             fs::write(
                 self.root().join("managed/installed.json"),
                 serde_json::to_vec(document)?,
             )?;
             Ok(())
+        }
+
+        fn observe(&self) -> Result<()> {
+            let selection = fs::read(self.root().join("managed/installed.json"))?;
+            fs::write(
+                self.root().join("profile.json"),
+                serde_json::to_vec(&json!({
+                    "kind":"observed_published_installation_profile",
+                    "source_revision":self.fixture.inputs["source_revision"],
+                    "catalogue_revision":self.fixture.inputs["catalogue_revision"],
+                    "architecture":self.fixture.inputs["architecture"],
+                    "installed_size":selection.len(),
+                    "installed_sha256":storage::sha256(selection.as_slice())?,
+                }))?,
+            )?;
+            Ok(())
+        }
+
+        /// Replaces the catalogue the profile names and re-seals its size and
+        /// digest, so that only the catalogue's content differs.
+        fn change_catalogue(&mut self, change: impl FnOnce(&mut Value)) -> Result<()> {
+            change(&mut self.fixture.catalogue);
+            let bytes = serde_json::to_vec(&self.fixture.catalogue)?;
+            fs::write(self.root().join("among-plugins.json"), &bytes)?;
+            self.fixture.inputs["catalogue_size"] = bytes.len().into();
+            self.fixture.inputs["catalogue_sha256"] = storage::sha256(bytes.as_slice())?.into();
+            for asset in self.fixture.inputs["release_snapshot"]["assets"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+                .filter(|asset| asset["name"] == "among-plugins.json")
+            {
+                asset["size"] = bytes.len().into();
+                asset["sha256"] = storage::sha256(bytes.as_slice())?.into();
+            }
+            self.fixture.save()
+        }
+
+        fn system_status_version(catalogue: &mut Value) -> Result<&mut Value> {
+            catalogue["plugins"]
+                .as_array_mut()
+                .and_then(|plugins| plugins.iter_mut().find(|p| p["id"] == "system-status"))
+                .map(|plugin| &mut plugin["versions"][0])
+                .ok_or_else(|| "fixture lacks system-status".into())
         }
 
         fn change_receipt(&self, key: &str, value: Value) -> Result<()> {
@@ -395,11 +506,137 @@ mod tests {
     }
 
     #[test]
-    fn the_exact_public_artifact_is_pinned() -> Result<()> {
+    fn the_exact_catalogue_artifact_is_pinned() -> Result<()> {
         let profile = Profile::new()?;
         let pinned = pinned_executable(profile.root())?;
         assert_eq!(pinned.canonicalize()?, profile.executable().canonicalize()?);
         Ok(())
+    }
+
+    #[test]
+    fn a_manifest_that_agrees_with_the_receipt_but_not_the_catalogue_is_refused() -> Result<()> {
+        let profile = Profile::new()?;
+        let package = profile
+            .executable()
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("package directory absent")?
+            .to_path_buf();
+        // A different manifest with the same entrypoint, recorded consistently
+        // in the receipt: only the catalogue can tell it is foreign.
+        let mut manifest: Value =
+            storage::parse_json(&fs::read(package.join("among-plugin.json"))?)?;
+        manifest["description"] = "not the reviewed manifest".into();
+        let bytes = serde_json::to_vec(&manifest)?;
+        fs::write(package.join("among-plugin.json"), &bytes)?;
+        profile.change_receipt("manifest_sha256", json!(storage::sha256(bytes.as_slice())?))?;
+        let error = pinned_executable(profile.root())
+            .err()
+            .ok_or("a manifest foreign to the catalogue was accepted")?;
+        assert!(
+            error.to_string().contains("differs from the catalogue"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_catalogue_member_that_is_not_executable_refuses_the_pin() -> Result<()> {
+        let mut profile = Profile::new()?;
+        profile.change_catalogue(|catalogue| {
+            if let Ok(version) = Profile::system_status_version(catalogue) {
+                for artifact in version["artifacts"].as_array_mut().into_iter().flatten() {
+                    for member in artifact["members"].as_array_mut().into_iter().flatten() {
+                        if member["path"] == "bin/plugin" {
+                            member["executable"] = false.into();
+                        }
+                    }
+                }
+            }
+        })?;
+        let error = pinned_executable(profile.root())
+            .err()
+            .ok_or("an executable the catalogue calls plain data was accepted")?;
+        assert!(
+            error
+                .to_string()
+                .contains("differs from the catalogue artifact"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_profile_without_its_observation_cannot_be_pinned() -> Result<()> {
+        // No observation entry at all.
+        let profile = Profile::new()?;
+        fs::remove_file(profile.root().join("profile.json"))?;
+        assert!(pinned_executable(profile.root()).is_err());
+
+        // An observation of another kind, release or architecture.
+        for (key, value) in [
+            ("kind", json!("something_else")),
+            ("source_revision", json!("b".repeat(40))),
+            ("catalogue_revision", json!("c".repeat(40))),
+            ("architecture", json!("riscv64")),
+        ] {
+            let profile = Profile::new()?;
+            let mut observation: Value =
+                storage::parse_json(&fs::read(profile.root().join("profile.json"))?)?;
+            observation[key] = value;
+            fs::write(
+                profile.root().join("profile.json"),
+                serde_json::to_vec(&observation)?,
+            )?;
+            let error = pinned_executable(profile.root())
+                .err()
+                .ok_or_else(|| format!("an observation with a foreign {key} was accepted"))?;
+            assert!(
+                error.to_string().contains("observation differs"),
+                "{key}: {error}"
+            );
+        }
+
+        // A selection edited after it was observed.
+        let profile = Profile::new()?;
+        let mut selection = profile.installed()?;
+        selection["note"] = "edited after the observation".into();
+        profile.write_unobserved(&selection)?;
+        let error = pinned_executable(profile.root())
+            .err()
+            .ok_or("a selection changed after its observation was accepted")?;
+        assert!(
+            error
+                .to_string()
+                .contains("differs from the observed profile"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_hello_echo_may_narrow_the_granted_features_but_not_the_required_ones() {
+        let accepted = |features: Value| {
+            let mut reply = hello();
+            reply["features"] = features;
+            hello_reply_accepted(&reply)
+        };
+        // The host answers with what the plugin uses out of what was granted.
+        assert!(accepted(json!(["status", "system.metrics"])));
+        assert!(accepted(json!(["status", "system.metrics", "settings"])));
+        assert!(accepted(json!(GRANTED_FEATURES)));
+        // A required feature dropped, or one that was never granted.
+        assert!(!accepted(json!(["status"])));
+        assert!(!accepted(json!(["system.metrics", "settings"])));
+        assert!(!accepted(json!(["status", "system.metrics", "network"])));
+        assert!(!accepted(json!("status")));
+        // The binding and identity must come back unchanged.
+        for key in ["identity", "session", "generation", "type"] {
+            let mut reply = hello();
+            reply["features"] = json!(["status", "system.metrics"]);
+            reply[key] = "other".into();
+            assert!(!hello_reply_accepted(&reply), "{key}");
+        }
     }
 
     #[test]

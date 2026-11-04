@@ -88,13 +88,18 @@ fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() 
         format!("{install}usr/share/among/plugins\n"),
         format!("{install}usr/share/among\n"),
         format!("{install}usr/share/among/anything\n"),
+        format!("{install}./usr/share/among/plugins\n"),
+        format!("{install}/usr/share/among/plugins\n"),
+        format!("{install}.//usr/share/among\n"),
+        format!("{install}target/clock usr/share/among/plugins\n"),
+        format!("{install}target/clock\t./usr/share/among/plugins/clock\n"),
     ] {
         fs::write(root.join("packaging/debian/among-terminal.install"), bad)?;
         assert!(deb::check_source_inputs(root).is_err());
     }
     fs::write(
         root.join("packaging/debian/among-terminal.install"),
-        format!("{install}usr/share/among-terminal-data/file\n"),
+        format!("{install}./usr/share/among-terminal-data/file target/x usr/share/among-data\n"),
     )?;
     deb::check_source_inputs(root)?;
     fs::write(

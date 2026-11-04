@@ -55,9 +55,10 @@ substitute for trusting the build job and artifact transport.
 
 Logs and `runtime-record.json` identify the package SHA-256, source, target and
 executed checks. The record explicitly says `release_acceptance: false`: this
-initial subset is not the full acceptance gate. The live-status regression now
-copies the installed example executables into a synthetic external-plugin
-directory and explicitly enables them. The session regression uses the installed
+initial subset is not the full acceptance gate. The package carries no plugins. The
+live-status regression replays a source-bound official plugin profile observed
+on the build host through the installed program (an observation of the
+installed package itself is not claimed). The session regression uses the installed
 binary to exercise consent, restored directories and divider ratios, a divider
 drag, pane moves and background activity, without Cargo. Private hosted execution passed these scoped
 GUI/focus/status/Sessions checks on all four native targets. Full package and

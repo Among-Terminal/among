@@ -117,7 +117,9 @@ snapshot, offers **Cached** and **Refresh**, and has no **Remove source** button
   use; a failed or cancelled refresh leaves the previous cache and every installed
   plugin unchanged.
 - **Cached** opens the retained snapshot without a network request and is
-  available only when a snapshot exists.
+  available only when a snapshot exists and the source itself is available (a
+  source shown as unavailable, for example after a publisher mismatch, keeps it
+  disabled).
 - On a first launch without network access the row has no retained snapshot
   ("No retained snapshot; refresh when online"): **Cached** is disabled and the
   catalogue stays unavailable until a refresh succeeds. Nothing is installed in

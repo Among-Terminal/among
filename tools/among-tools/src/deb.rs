@@ -17,6 +17,11 @@ pub const APPLICATION_DATA_DIRECTORY: &str = "usr/share/among";
 /// True for the application data directory itself and anything below it, but
 /// not for a sibling that merely shares the prefix, such as `usr/share/among-x`.
 pub fn is_application_data_path(path: &str) -> bool {
+    // `./usr/share/among` and `/usr/share/among` name the same place.
+    let mut path = path;
+    while let Some(rest) = path.strip_prefix("./").or_else(|| path.strip_prefix('/')) {
+        path = rest;
+    }
     path == APPLICATION_DATA_DIRECTORY
         || path
             .strip_prefix(APPLICATION_DATA_DIRECTORY)
@@ -172,7 +177,12 @@ pub fn check_source_inputs(root: &Path) -> Result<()> {
         root,
         Path::new("packaging/debian/among-terminal.install"),
     )?)?;
-    if install.lines().map(str::trim).any(is_application_data_path) {
+    // A line is `source [destination]`; either word may name the directory.
+    if install
+        .lines()
+        .flat_map(str::split_whitespace)
+        .any(is_application_data_path)
+    {
         return Err("Debian install list packages files below usr/share/among".into());
     }
     let manifest: toml::Value = toml::from_str(&fs::read_to_string(storage::safe_path(

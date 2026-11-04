@@ -153,20 +153,19 @@ fn is_metadata_directive(token: &str) -> bool {
 
 const APPLICATION_ID: &str = "com.github.among-terminal";
 
-/// True when `text` names `/usr/share/among` (or its `%{_datadir}` spelling)
-/// itself or a path below it. A sibling that only shares the prefix, such as
-/// `%{_datadir}/among-terminal-data`, is a different directory and is allowed.
+/// True when `text` names `usr/share/among` (absolute, relative or in its
+/// `%{_datadir}` spelling) itself or a path below it. A sibling that only
+/// shares the prefix, such as `%{_datadir}/among-terminal-data`, is a
+/// different directory and is allowed.
 pub fn mentions_application_data(text: &str) -> bool {
-    ["%{_datadir}/among", "/usr/share/among"]
-        .iter()
-        .any(|name| {
-            text.match_indices(name).any(|(start, _)| {
-                text[start + name.len()..]
-                    .chars()
-                    .next()
-                    .is_none_or(|next| !(next.is_alphanumeric() || matches!(next, '-' | '_' | '.')))
-            })
+    ["%{_datadir}/among", "usr/share/among"].iter().any(|name| {
+        text.match_indices(name).any(|(start, _)| {
+            text[start + name.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !(next.is_alphanumeric() || matches!(next, '-' | '_' | '.')))
         })
+    })
 }
 
 /// Parse the `Key:` headers of the preamble, skipping comments and section

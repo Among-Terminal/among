@@ -120,10 +120,14 @@ pub fn validate(
         part["rust-channel"] == "1.98.1" && part["rust-path"] == json!(["."]),
         "Snap Rust version/path differs",
     )?;
+    // No step of any part may place anything into the application data
+    // directory (build, stage and prime scripts, organize, stage lists).
     require(
-        !part["override-build"]
-            .as_str()
-            .is_some_and(|build| build.contains("usr/share/among/plugins")),
+        !metadata["parts"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .any(|(_, part)| crate::rpm::mentions_application_data(&part.to_string())),
         "Snap must not install plugin executables; official plugins come from their repository",
     )?;
     require(

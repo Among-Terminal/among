@@ -89,7 +89,7 @@ fn each_original_recipe_consistency_boundary_refuses_mutated_effective_values() 
         release_metadata::validate(&valid, &manifests, XML, DESKTOP)?.len(),
         2
     );
-    for mutation in 0..17 {
+    for mutation in 0..20 {
         let mut changed = valid.clone();
         match mutation {
             0 => changed["name"] = "other".into(),
@@ -119,6 +119,26 @@ fn each_original_recipe_consistency_boundary_refuses_mutated_effective_values() 
             15 => changed["parts"]["among"]["override-prime"] = "true".into(),
             16 => {
                 changed["parts"]["among"]["override-build"] = "install -Dm755 \"$CRAFT_PART_INSTALL/bin/clock\" \"$CRAFT_PART_INSTALL/usr/share/among/plugins/clock\"\n".into()
+            }
+            // The stage script keeps its required schema step and also drops a
+            // plugin into the application data directory.
+            17 => {
+                let stage = changed["parts"]["among"]["override-stage"]
+                    .as_str()
+                    .ok_or("fixture stage script absent")?
+                    .to_owned();
+                changed["parts"]["among"]["override-stage"] = format!(
+                    "{stage}install -Dm755 bin/clock \"$CRAFT_PART_INSTALL/usr/share/among/plugins/clock\"\n"
+                )
+                .into();
+            }
+            18 => {
+                changed["parts"]["among"]["organize"] =
+                    json!({"clock": "usr/share/among/plugins/clock"})
+            }
+            19 => {
+                changed["parts"]["plugins"] = json!({"plugin": "nil",
+                    "override-build": "cp clock $CRAFT_PART_INSTALL/usr/share/among/clock"})
             }
             _ => return Err("unknown fixture mutation".into()),
         }
