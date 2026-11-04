@@ -37,6 +37,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 tokio = { version = "1", features = ["rt", "net", "time", "macros"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = { version = "0.4", default-features = false }
+landlock = "0.4.7"
 
 [dev-dependencies]
 rcgen = "0.14"

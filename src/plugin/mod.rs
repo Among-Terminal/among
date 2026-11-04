@@ -19,6 +19,7 @@ pub mod manifest;
 pub mod origin;
 mod process;
 pub mod protocol;
+pub mod sandbox;
 pub mod schema;
 mod transport;
 
