@@ -28,7 +28,7 @@ parts:
     plugin: rust
     source: .
     rust-channel: "1.98.1"
-    rust-path: [".", examples/plugins]
+    rust-path: ["."]
     # The Rust plugin already passes --locked to cargo install; do not duplicate it.
     rust-inherit-ldflags: true
     build-attributes: [enable-patchelf]
@@ -87,9 +87,6 @@ parts:
       CARGO_TARGET_DIR="$CRAFT_PART_BUILD/among-tools-target" cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
       version="$("$CRAFT_PART_BUILD/among-tools-target/release/among-tools" package-version .)"
       craftctl set version="$version"
-      for plugin in clock system-status pane-pwd; do
-        install -Dm755 "$CRAFT_PART_INSTALL/bin/$plugin" "$CRAFT_PART_INSTALL/usr/share/among/plugins/$plugin"
-      done
       install -Dm644 data/com.github.among-terminal.desktop "$CRAFT_PART_INSTALL/usr/share/applications/com.github.among-terminal.desktop"
       sed -i 's|^Icon=com.github.among-terminal$|Icon=usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg|' "$CRAFT_PART_INSTALL/usr/share/applications/com.github.among-terminal.desktop"
       install -Dm644 data/com.github.among-terminal.metainfo.xml "$CRAFT_PART_INSTALL/usr/share/metainfo/com.github.among-terminal.metainfo.xml"

@@ -278,17 +278,11 @@ pub fn run(
         Duration::from_secs(60),
     )?;
     reject_checker_payload(&extracted)?;
-    for name in deb::EXECUTABLES {
-        let relative = if name == "among" {
-            "usr/bin/among".into()
-        } else {
-            format!("usr/share/among/plugins/{name}")
-        };
-        deb::elf_architecture(
-            &storage::safe_path(&extracted, Path::new(&relative))?,
-            architecture,
-        )?;
-    }
+    deb::reject_bundled_plugins(&extracted)?;
+    deb::elf_architecture(
+        &storage::safe_path(&extracted, Path::new("usr/bin/among"))?,
+        architecture,
+    )?;
     let entry = extracted.join(format!("usr/share/applications/{}.desktop", deb::APP_ID));
     execute(
         "/usr/bin/desktop-file-validate",

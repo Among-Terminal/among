@@ -252,17 +252,15 @@ pub fn stable(
         return Err("release requires a full immutable SHA-1 commit".into());
     }
     git(repo, &["merge-base", "--is-ancestor", "--", &source, main])?;
-    for manifest in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
-        let data = git(repo, &["show", &format!("{source}:{manifest}")])?;
-        let document: toml::Value = toml::from_str(&data)?;
-        if document
-            .get("package")
-            .and_then(|value| value.get("version"))
-            .and_then(toml::Value::as_str)
-            != Some(version)
-        {
-            return Err(format!("tag does not match {manifest}").into());
-        }
+    let data = git(repo, &["show", &format!("{source}:Cargo.toml")])?;
+    let document: toml::Value = toml::from_str(&data)?;
+    if document
+        .get("package")
+        .and_then(|value| value.get("version"))
+        .and_then(toml::Value::as_str)
+        != Some(version)
+    {
+        return Err("tag does not match Cargo.toml".into());
     }
     let mut digests = BTreeMap::new();
     for asset in assets {

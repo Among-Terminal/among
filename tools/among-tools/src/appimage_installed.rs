@@ -269,6 +269,7 @@ pub fn run(
             return Err("extraction did not produce squashfs-root/AppRun".into());
         }
         add_check(&mut evidence, "no-fuse-extracted-without-fusermount")?;
+        crate::deb::reject_bundled_plugins(&extracted)?;
         let mut unresolved = String::new();
         // Every bundled ELF library, including pixbuf loaders and GTK modules
         // in subdirectories, plus the application itself.

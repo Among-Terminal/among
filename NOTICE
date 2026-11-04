@@ -1,5 +1,7 @@
 Among Terminal
-Original project code and example plugins are licensed under Apache-2.0.
+Original project code is licensed under Apache-2.0. Packages of this project
+carry no plugins; the official plugins are separate packages from
+https://github.com/Among-Terminal/among-plugins with their own notices.
 
 Third-party Rust dependencies retain their own licenses and attribution in
 THIRD_PARTY/inventory.json and THIRD_PARTY/texts/. Native GTK, libadwaita, VTE

@@ -193,12 +193,11 @@ fn released_repository(root: &Path) -> Result<String> {
     git(root, &["init", "-q", "-b", "main"])?;
     git(root, &["config", "user.name", "Synthetic Fixture"])?;
     git(root, &["config", "user.email", "fixture@example.invalid"])?;
-    for name in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
-        let path = root.join(name);
-        fs::create_dir_all(path.parent().ok_or("fixture parent absent")?)?;
-        fs::write(path, "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\n")?;
-    }
-    git(root, &["add", "Cargo.toml", "examples/plugins/Cargo.toml"])?;
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\n",
+    )?;
+    git(root, &["add", "Cargo.toml"])?;
     git(
         root,
         &["-c", "commit.gpgSign=false", "commit", "-qm", "release"],

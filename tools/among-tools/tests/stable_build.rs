@@ -20,9 +20,10 @@ impl Fixture {
             fs::create_dir_all(path.parent().ok_or("fixture parent absent")?)?;
             fs::write(path, b"fixture\n")?;
         }
-        for name in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
-            fs::write(f.root().join(name), "[package]\nversion=\"0.1.0\"\n")?;
-        }
+        fs::write(
+            f.root().join("Cargo.toml"),
+            "[package]\nversion=\"0.1.0\"\n",
+        )?;
         fs::create_dir(f.root().join("snap"))?;
         fs::write(f.root().join("snap/snapcraft.yaml"), RECIPE)?;
         fs::write(
@@ -48,7 +49,9 @@ impl Fixture {
 fn actual_cli_changes_only_grade_preserves_original_source_and_rejects_changed_output() -> Result<()>
 {
     let f = Fixture::new()?;
-    let example = f.root().join("examples/plugins/examples/install.rs");
+    let example = f
+        .root()
+        .join("tools/among-tools/examples/fixture-example.rs");
     fs::create_dir_all(example.parent().ok_or("example parent absent")?)?;
     fs::write(&example, b"fn main() {}\n")?;
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
@@ -66,7 +69,7 @@ fn actual_cli_changes_only_grade_preserves_original_source_and_rejects_changed_o
     let record = stable_build::check(&f.output())?;
     assert_eq!(record["version"], "0.1.0");
     assert!(record["original_inputs"]
-        .get("examples/plugins/examples/install.rs")
+        .get("tools/among-tools/examples/fixture-example.rs")
         .is_some());
     assert_eq!(
         fs::read_to_string(f.root().join("snap/snapcraft.yaml"))?,
@@ -81,7 +84,10 @@ fn actual_cli_changes_only_grade_preserves_original_source_and_rejects_changed_o
         RECIPE.replace("grade: devel", "grade: stable")
     );
     assert_eq!(
-        fs::read(f.output().join("examples/plugins/examples/install.rs"))?,
+        fs::read(
+            f.output()
+                .join("tools/among-tools/examples/fixture-example.rs")
+        )?,
         fs::read(example)?
     );
     assert!(!f.output().join(".secret").exists());
@@ -113,12 +119,12 @@ fn invalid_tags_versions_destinations_and_source_links_preserve_owner_state() ->
         assert!(!f.output().exists());
     }
     fs::write(
-        f.root().join("examples/plugins/Cargo.toml"),
+        f.root().join("Cargo.toml"),
         "[package]\nversion=\"0.2.0\"\n",
     )?;
     assert!(f.prepare().is_err());
     fs::write(
-        f.root().join("examples/plugins/Cargo.toml"),
+        f.root().join("Cargo.toml"),
         "[package]\nversion=\"0.1.0\"\n",
     )?;
     assert!(stable_build::prepare(&f.root(), &f.root().join("build"), "v0.1.0").is_err());

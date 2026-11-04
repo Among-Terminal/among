@@ -51,7 +51,7 @@ fn attribution(builder: &mut tar::Builder<File>, root: &Path, relative: &Path) -
 }
 
 fn instructions(tag: &str, target: &str, architecture: &str, dependencies: &str) -> String {
-    format!("Among Terminal {tag}\nTarget: {target}, {architecture}; not a universal or self-contained Linux binary.\nRequired distribution packages: {dependencies}\n\nExtract this archive and run ./bin/among. No compiler or Rust toolchain is needed.\nLibraries are NOT bundled: install the distribution runtime dependencies above.\nPrefer the DEB if you want APT to install dependencies and a desktop launcher.\nOptional plugin executables are in plugins/ and remain disabled by default.\nMatching source and licence information accompanies the GitHub release.\n")
+    format!("Among Terminal {tag}\nTarget: {target}, {architecture}; not a universal or self-contained Linux binary.\nRequired distribution packages: {dependencies}\n\nExtract this archive and run ./bin/among. No compiler or Rust toolchain is needed.\nLibraries are NOT bundled: install the distribution runtime dependencies above.\nPrefer the DEB if you want APT to install dependencies and a desktop launcher.\nPlugins are not bundled: install official plugins from the built-in official source in Preferences, Plugins; they stay disabled until you review and enable them.\nMatching source and licence information accompanies the GitHub release.\n")
 }
 
 /// The archive name a tag, distribution and architecture produce. Release
@@ -81,17 +81,11 @@ pub fn create(
                 .into(),
         );
     }
-    for name in deb::EXECUTABLES {
-        let relative = if name == "among" {
-            "usr/bin/among".into()
-        } else {
-            format!("usr/share/among/plugins/{name}")
-        };
-        deb::elf_architecture(
-            &storage::safe_path(payload, Path::new(&relative))?,
-            architecture,
-        )?;
-    }
+    deb::reject_bundled_plugins(payload)?;
+    deb::elf_architecture(
+        &storage::safe_path(payload, Path::new("usr/bin/among"))?,
+        architecture,
+    )?;
     let filename = filename(tag, target, architecture)?;
     if output.join(&filename).symlink_metadata().is_ok() {
         return Err("binary archive output must be new".into());
@@ -104,24 +98,12 @@ pub fn create(
             .create_new(true)
             .open(&tar_path)?;
         let mut builder = tar::Builder::new(file);
-        for name in deb::EXECUTABLES {
-            let relative = if name == "among" {
-                "usr/bin/among".into()
-            } else {
-                format!("usr/share/among/plugins/{name}")
-            };
-            let name = if name == "among" {
-                "bin/among".into()
-            } else {
-                format!("plugins/{name}")
-            };
-            add(
-                &mut builder,
-                &name,
-                &fs::read(storage::safe_path(payload, Path::new(&relative))?)?,
-                0o755,
-            )?;
-        }
+        add(
+            &mut builder,
+            "bin/among",
+            &fs::read(storage::safe_path(payload, Path::new("usr/bin/among"))?)?,
+            0o755,
+        )?;
         let notices = storage::safe_path(payload, Path::new("usr/share/doc/among-terminal"))?;
         for name in ["LICENSE", "NOTICE", "THIRD_PARTY"] {
             attribution(&mut builder, &notices, Path::new(name))?;
@@ -204,21 +186,15 @@ fn expected_members(payload: &Path) -> Result<BTreeMap<String, (String, u32)>> {
         Ok(())
     }
     let mut members = BTreeMap::new();
-    for name in deb::EXECUTABLES {
-        let (archive, original) = if name == "among" {
-            ("bin/among".into(), "usr/bin/among".into())
-        } else {
-            (
-                format!("plugins/{name}"),
-                format!("usr/share/among/plugins/{name}"),
-            )
-        };
-        let original = storage::safe_path(payload, Path::new(&original))?;
-        if !original.symlink_metadata()?.is_file() {
-            return Err("reference executable is not regular".into());
-        }
-        members.insert(archive, (storage::sha256(File::open(original)?)?, 0o755));
+    deb::reject_bundled_plugins(payload)?;
+    let original = storage::safe_path(payload, Path::new("usr/bin/among"))?;
+    if !original.symlink_metadata()?.is_file() {
+        return Err("reference executable is not regular".into());
     }
+    members.insert(
+        "bin/among".into(),
+        (storage::sha256(File::open(original)?)?, 0o755),
+    );
     let notices_root = storage::safe_path(payload, Path::new("usr/share/doc/among-terminal"))?;
     for name in ["LICENSE", "NOTICE", "THIRD_PARTY"] {
         notices(&notices_root, Path::new(name), &mut members)?;
@@ -269,14 +245,7 @@ fn extract_tar(
     {
         return Err("archive is missing exact package executables or attribution".into());
     }
-    for name in deb::EXECUTABLES {
-        let relative = if name == "among" {
-            "bin/among".into()
-        } else {
-            format!("plugins/{name}")
-        };
-        deb::elf_architecture(&destination.join(relative), architecture)?;
-    }
+    deb::elf_architecture(&destination.join("bin/among"), architecture)?;
     Ok(())
 }
 

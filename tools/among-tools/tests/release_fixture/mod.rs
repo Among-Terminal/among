@@ -52,20 +52,6 @@ pub fn write_version_files(root: &Path, version: &str) -> Result<()> {
     )?;
     write(
         root,
-        "examples/plugins/Cargo.toml",
-        &format!(
-            "[package]\nname = \"among-example-plugins\"\nversion = \"{version}\"\n\n[workspace]\n"
-        ),
-    )?;
-    write(
-        root,
-        "examples/plugins/Cargo.lock",
-        &format!(
-            "version = 4\n\n[[package]]\nname = \"among-example-plugins\"\nversion = \"{version}\"\n"
-        ),
-    )?;
-    write(
-        root,
         "packaging/rpm/among.spec",
         &format!(
             "Name:           among\nVersion:        {version}\nRelease:        1%{{?dist}}\n\n%changelog\n\

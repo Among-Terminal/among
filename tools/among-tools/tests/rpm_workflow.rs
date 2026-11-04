@@ -335,8 +335,8 @@ fn the_source_tarball_is_written_into_the_rpmbuild_sourcedir() -> Result<()> {
         "the tarball is not placed in the rpmbuild source directory"
     );
     assert!(
-        text.contains("--exclude='./examples/plugins/target'"),
-        "a nested Cargo target directory would be shipped in the source tarball"
+        !text.contains("examples/plugins"),
+        "the removed plugin Cargo package must not be referenced by the RPM workflow"
     );
     Ok(())
 }

@@ -51,8 +51,13 @@ fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() 
     let root = &f.0;
     fs::create_dir(root.join("packaging"))?;
     fs::create_dir(root.join("packaging/debian"))?;
-    let rules="cargo +1.98.1 build --release --locked --bins\ncargo +1.98.1 build --release --locked --bins --manifest-path examples/plugins/Cargo.toml\n";
+    let rules = "cargo +1.98.1 build --release --locked --bins\n";
     fs::write(root.join("packaging/debian/rules"), rules)?;
+    let install = "usr/bin/among\nusr/share/applications/com.github.among-terminal.desktop\n";
+    fs::write(
+        root.join("packaging/debian/among-terminal.install"),
+        install,
+    )?;
     fs::write(
         root.join("packaging/debian/control"),
         "Maintainer: Among Terminal <hello+amongterminal@highload.zone>\nRules-Requires-Root: no\n",
@@ -71,11 +76,36 @@ fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() 
         rules.replace("--locked", ""),
         format!("{rules}scripts/install.sh\n"),
         format!("{rules}install-plugins.sh\n"),
+        format!("{rules}cargo build --manifest-path examples/plugins/Cargo.toml\n"),
     ] {
         fs::write(root.join("packaging/debian/rules"), bad)?;
         assert!(deb::check_source_inputs(root).is_err());
     }
     fs::write(root.join("packaging/debian/rules"), rules)?;
+    // Nothing may be installed below the application data directory, while a
+    // lookalike sibling directory is not that directory.
+    for bad in [
+        format!("{install}usr/share/among/plugins\n"),
+        format!("{install}usr/share/among\n"),
+        format!("{install}usr/share/among/anything\n"),
+        format!("{install}./usr/share/among/plugins\n"),
+        format!("{install}/usr/share/among/plugins\n"),
+        format!("{install}.//usr/share/among\n"),
+        format!("{install}target/clock usr/share/among/plugins\n"),
+        format!("{install}target/clock\t./usr/share/among/plugins/clock\n"),
+    ] {
+        fs::write(root.join("packaging/debian/among-terminal.install"), bad)?;
+        assert!(deb::check_source_inputs(root).is_err());
+    }
+    fs::write(
+        root.join("packaging/debian/among-terminal.install"),
+        format!("{install}./usr/share/among-terminal-data/file target/x usr/share/among-data\n"),
+    )?;
+    deb::check_source_inputs(root)?;
+    fs::write(
+        root.join("packaging/debian/among-terminal.install"),
+        install,
+    )?;
     fs::write(
         root.join("docs/install.md"),
         "cargo install --git wrong --locked among\ncargo uninstall among\n",
@@ -294,22 +324,13 @@ fn selected_payload_rejects_changed_modes_bytes_missing_extra_and_symlink_files(
 impl Fixture {
     fn new() -> Result<Self> {
         let base = storage::private_directory(&std::env::temp_dir(), "among-deb-fixture")?;
-        for name in [
-            "data",
-            "examples",
-            "examples/plugins",
-            "THIRD_PARTY",
-            "binaries",
-            "home",
-        ] {
+        for name in ["data", "THIRD_PARTY", "binaries", "home"] {
             fs::create_dir(base.join(name))?;
         }
-        for path in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
-            fs::write(
-                base.join(path),
-                "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\n",
-            )?;
-        }
+        fs::write(
+            base.join("Cargo.toml"),
+            "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\n",
+        )?;
         fs::write(
             base.join("data/com.github.among-terminal.metainfo.xml"),
             "<component><releases><release version=\"0.1.0\"/></releases></component>",
@@ -480,13 +501,9 @@ fn four_native_identities_and_all_original_stable_version_refusals() -> Result<(
     Ok(())
 }
 #[test]
-fn both_manifests_metadata_and_elf_targets_are_checked() -> Result<()> {
+fn manifest_metadata_and_elf_targets_are_checked() -> Result<()> {
     let f = Fixture::new()?;
-    for path in [
-        "Cargo.toml",
-        "examples/plugins/Cargo.toml",
-        "data/com.github.among-terminal.metainfo.xml",
-    ] {
+    for path in ["Cargo.toml", "data/com.github.among-terminal.metainfo.xml"] {
         let path = f.0.join(path);
         let before = fs::read_to_string(&path)?;
         fs::write(&path, before.replace("0.1.0", "0.2.0"))?;
@@ -515,16 +532,20 @@ fn both_manifests_metadata_and_elf_targets_are_checked() -> Result<()> {
 fn stage_exact_payload_modes_attribution_and_desktop_without_user_installer_state() -> Result<()> {
     let f = Fixture::new()?;
     let destination = f.0.join("staging");
-    assert_eq!(deb::stage(&f.0, &f.0.join("binaries"), &destination)?, 11);
+    assert_eq!(deb::stage(&f.0, &f.0.join("binaries"), &destination)?, 8);
     for name in deb::EXECUTABLES {
-        let path = destination.join(if name == "among" {
-            "usr/bin/among".into()
-        } else {
-            format!("usr/share/among/plugins/{name}")
-        });
+        let path = destination.join("usr/bin").join(name);
         assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o755);
         assert_eq!(fs::read(path)?, fs::read(f.0.join("binaries").join(name))?);
     }
+    // Official plugins are installed from their own repository, so a fresh
+    // package payload has no plugin directory and the inventory check agrees.
+    assert!(!destination.join("usr/share/among").exists());
+    deb::reject_bundled_plugins(&destination)?;
+    fs::create_dir_all(destination.join("usr/share/among/plugins"))?;
+    fs::write(destination.join("usr/share/among/plugins/clock"), b"x")?;
+    assert!(deb::reject_bundled_plugins(&destination).is_err());
+    fs::remove_dir_all(destination.join("usr/share/among"))?;
     for name in ["inventory.json", "license.txt"] {
         let path = destination
             .join("usr/share/doc/among-terminal/THIRD_PARTY")
@@ -560,7 +581,7 @@ fn staging_refuses_missing_nonexec_empty_symlink_and_attribution_links_before_ou
         let f = Fixture::new()?;
         let binary = f.0.join("binaries/among");
         match failure {
-            "missing" => fs::remove_file(f.0.join("binaries/clock"))?,
+            "missing" => fs::remove_file(&binary)?,
             "nonexec" => fs::set_permissions(&binary, fs::Permissions::from_mode(0o644))?,
             "empty" => fs::write(&binary, b"")?,
             "symlink" => {

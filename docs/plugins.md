@@ -104,6 +104,32 @@ Only committed managed installation records supply inventory. Copying a file int
 manifest on disk does not install or authorize it. Missing/changed manifests refuse
 execution without a fallback. Refusal does not delete unrelated files or settings.
 
+### Installing official plugins
+
+Among packages (DEB, RPM, Snap, AppImage and the binary archive) carry no
+plugins. The official ones (clock, system-status, pane-pwd) come from the
+repository `Among-Terminal/among-plugins` through the always-present registered
+source **Official plugins for Among Terminal** in Preferences → Plugins. Its row
+shows the repository and publisher identity and the age of the retained
+snapshot, offers **Cached** and **Refresh**, and has no **Remove source** button.
+
+- **Refresh** reads the current metadata over the network and keeps it for offline
+  use; a failed or cancelled refresh leaves the previous cache and every installed
+  plugin unchanged.
+- **Cached** opens the retained snapshot without a network request and is
+  available only when a snapshot exists and the source itself is available (a
+  source shown as unavailable, for example after a publisher mismatch, keeps it
+  disabled).
+- On a first launch without network access the row has no retained snapshot
+  ("No retained snapshot; refresh when online"): **Cached** is disabled and the
+  catalogue stays unavailable until a refresh succeeds. Nothing is installed in
+  the meantime.
+
+From the opened catalogue choose a compatible version and use **Install
+disabled**, then review the access request and enable the plugin as described
+above. Showing the row, refreshing or opening a cached catalogue never installs,
+enables or grants access to anything.
+
 ### Plugin development mode
 
 Start Among with `among --plugin-development` to test plugins before an

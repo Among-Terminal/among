@@ -6,7 +6,45 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::Path;
 
 pub const APP_ID: &str = "com.github.among-terminal";
-pub const EXECUTABLES: [&str; 4] = ["among", "clock", "system-status", "pane-pwd"];
+/// The packaged executables. Official plugins are installed separately from
+/// their own repository, so no plugin executable is part of a host package.
+pub const EXECUTABLES: [&str; 1] = ["among"];
+
+/// The directory a package used to fill with plugin executables. A host
+/// package ships nothing there, so nothing at all may be below it.
+pub const APPLICATION_DATA_DIRECTORY: &str = "usr/share/among";
+
+/// True for the application data directory itself and anything below it, but
+/// not for a sibling that merely shares the prefix, such as `usr/share/among-x`.
+pub fn is_application_data_path(path: &str) -> bool {
+    // `./usr/share/among` and `/usr/share/among` name the same place.
+    let mut path = path;
+    while let Some(rest) = path.strip_prefix("./").or_else(|| path.strip_prefix('/')) {
+        path = rest;
+    }
+    path == APPLICATION_DATA_DIRECTORY
+        || path
+            .strip_prefix(APPLICATION_DATA_DIRECTORY)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Refuses a package payload that still carries the application data
+/// directory (where plugins used to be bundled), instead of accepting a mixed
+/// old and new distribution.
+pub fn reject_bundled_plugins(root: &Path) -> Result<()> {
+    if root
+        .join(APPLICATION_DATA_DIRECTORY)
+        .symlink_metadata()
+        .is_ok()
+    {
+        return Err(format!(
+            "package payload carries /{APPLICATION_DATA_DIRECTORY}; \
+             official plugins are installed from their repository, not bundled"
+        )
+        .into());
+    }
+    Ok(())
+}
 
 pub fn stable_version(tag: &str) -> Result<&str> {
     let version = tag
@@ -55,19 +93,17 @@ pub fn identity(root: &Path, tag: &str, target: &str, architecture: &str) -> Res
     if !matches!(target, "debian13" | "ubuntu24.04") || !matches!(architecture, "amd64" | "arm64") {
         return Err("unsupported distribution or architecture".into());
     }
-    for manifest in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
-        let document: toml::Value = toml::from_str(&fs::read_to_string(storage::safe_path(
-            root,
-            Path::new(manifest),
-        )?)?)?;
-        if document
-            .get("package")
-            .and_then(|package| package.get("version"))
-            .and_then(toml::Value::as_str)
-            != Some(version)
-        {
-            return Err(format!("tag version differs from {manifest}").into());
-        }
+    let document: toml::Value = toml::from_str(&fs::read_to_string(storage::safe_path(
+        root,
+        Path::new("Cargo.toml"),
+    )?)?)?;
+    if document
+        .get("package")
+        .and_then(|package| package.get("version"))
+        .and_then(toml::Value::as_str)
+        != Some(version)
+    {
+        return Err("tag version differs from Cargo.toml".into());
     }
     let text = fs::read_to_string(storage::safe_path(
         root,
@@ -125,7 +161,7 @@ pub fn check_source_inputs(root: &Path) -> Result<()> {
         Path::new("packaging/debian/control"),
     )?)?;
     if !rules.contains("cargo +1.98.1 build --release --locked --bins\n")
-        || !rules.contains("--locked --bins --manifest-path examples/plugins/Cargo.toml")
+        || rules.contains("examples/plugins")
         || rules.contains("install-plugins.sh")
         || rules.contains("scripts/install.sh")
         || !control.contains("Maintainer: Among Terminal <hello+amongterminal@highload.zone>")
@@ -134,6 +170,20 @@ pub fn check_source_inputs(root: &Path) -> Result<()> {
         return Err(
             "Debian build inputs lost locked native builds or user-installer isolation".into(),
         );
+    }
+    // The install list is the other place a package gains files: nothing may
+    // be installed below the application data directory.
+    let install = fs::read_to_string(storage::safe_path(
+        root,
+        Path::new("packaging/debian/among-terminal.install"),
+    )?)?;
+    // A line is `source [destination]`; either word may name the directory.
+    if install
+        .lines()
+        .flat_map(str::split_whitespace)
+        .any(is_application_data_path)
+    {
+        return Err("Debian install list packages files below usr/share/among".into());
     }
     let manifest: toml::Value = toml::from_str(&fs::read_to_string(storage::safe_path(
         root,
@@ -319,14 +369,7 @@ pub fn stage(root: &Path, binaries: &Path, destination: &Path) -> Result<usize> 
         if bytes.is_empty() {
             return Err("empty package executable".into());
         }
-        files.insert(
-            if name == "among" {
-                "usr/bin/among".into()
-            } else {
-                format!("usr/share/among/plugins/{name}")
-            },
-            bytes,
-        );
+        files.insert(format!("usr/bin/{name}"), bytes);
     }
     for (target, source) in [
         (
@@ -390,7 +433,7 @@ pub fn stage(root: &Path, binaries: &Path, destination: &Path) -> Result<usize> 
             destination,
             Path::new(name),
             bytes,
-            if name == "usr/bin/among" || name.starts_with("usr/share/among/plugins/") {
+            if name == "usr/bin/among" {
                 0o755
             } else {
                 0o644

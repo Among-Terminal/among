@@ -102,7 +102,7 @@ among
 
 Cargo builds the current development version and installs the executable in
 its bin directory, normally `~/.cargo/bin` (which must be on `PATH`). This does
-not install a desktop launcher, icon or example plugins. Repeat the install
+not install a desktop launcher, icon or plugins. Repeat the install
 command with `--force` to update; use `cargo uninstall among` to remove it.
 
 ## Verifying a clean build
@@ -144,12 +144,10 @@ and Rust 1.98.1:
 
 ```sh
 cargo build --release --locked
-cargo build --release --locked --manifest-path examples/plugins/Cargo.toml
 cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
 tools=tools/among-tools/target/release/among-tools
 mkdir binaries
-cp target/release/among examples/plugins/target/release/clock \
-  examples/plugins/target/release/system-status examples/plugins/target/release/pane-pwd binaries/
+cp target/release/among binaries/
 "$tools" stage-appimage . binaries tools/among-tools/target/release/among-apprun amd64 Among.AppDir
 "$tools" fetch-appimage-tools amd64 appimage-tools
 "$tools" build-appimage Among.AppDir appimage-tools amd64 "$("$tools" package-version .)" appimage-candidate

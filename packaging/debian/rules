@@ -12,12 +12,10 @@ override_dh_auto_configure:
 
 override_dh_auto_build:
 	cargo +1.98.1 build --release --locked --bins
-	cargo +1.98.1 build --release --locked --bins --manifest-path examples/plugins/Cargo.toml
 	cargo +1.98.1 build --release --locked --bins --manifest-path tools/among-tools/Cargo.toml
 
 override_dh_auto_test:
 	cargo +1.98.1 test --locked
-	cargo +1.98.1 test --locked --manifest-path examples/plugins/Cargo.toml
 	cargo +1.98.1 test --locked --manifest-path tools/among-tools/Cargo.toml
 
 override_dh_auto_install:

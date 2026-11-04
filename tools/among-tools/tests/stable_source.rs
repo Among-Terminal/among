@@ -26,9 +26,10 @@ impl Fixture {
             fs::create_dir_all(path.parent().ok_or("fixture parent absent")?)?;
             fs::write(path, b"fixture\n")?;
         }
-        for name in ["Cargo.toml", "examples/plugins/Cargo.toml"] {
-            fs::write(f.repo().join(name), "[package]\nversion=\"0.1.0\"\n")?;
-        }
+        fs::write(
+            f.repo().join("Cargo.toml"),
+            "[package]\nversion=\"0.1.0\"\n",
+        )?;
         fs::write(
             f.repo().join("LICENSE"),
             b"\xffbinary license integrity fixture\n\n",

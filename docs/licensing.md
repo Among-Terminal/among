@@ -2,7 +2,7 @@
 
 ## Original work
 
-Among Terminal's original host, independent example plugins, scripts and original
+Among Terminal's original host, scripts and original
 artwork use [Apache-2.0](../LICENSE). Contributor
 submissions are made under the same license unless explicitly agreed otherwise.
 The AppStream metadata in `data/com.github.among-terminal.metainfo.xml` is explicitly
@@ -24,8 +24,8 @@ lockfile update; run `among-tools third-party-notices . THIRD_PARTY check` befor
 distribution, using the prebuilt Rust tooling in an isolated container. Metadata
 resolution is locked and offline; populate the registry cache or authenticated
 vendor sources before running either command.
-[The inventory](../THIRD_PARTY/inventory.json) covers all three locked Cargo graphs
-(application, example plugins and independent tools),
+[The inventory](../THIRD_PARTY/inventory.json) covers both locked Cargo graphs
+(application and independent tools),
 including build-time and platform-specific packages. It preserves the declared
 SPDX expressions and byte-for-byte upstream license/notice texts with SHA-256
 digests; no synthetic attribution or blanket Apache label is applied.

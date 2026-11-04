@@ -119,9 +119,12 @@ tar -xzf among-terminal-ubuntu24.04-arm64.tar.gz -C ~/among
 ```
 
 No compiler, Rust toolchain or Among package is needed. The archive adds no
-applications-menu entry. The example plugins are in `~/among/plugins/`; they
-stay disabled until you install and enable them as described in
-[plugins](plugins.md#installing). To remove Among, delete `~/among`. Settings,
+applications-menu entry. The archive bundles no plugins. Install the official
+ones from the built-in source in Preferences → Plugins (see
+[plugins](plugins.md#installing)); on a first launch without network access the
+catalogue is shown as unavailable until a refresh succeeds. Installed plugins
+stay disabled until you review their access and enable them. To remove Among,
+delete `~/among`. Settings,
 sessions and separately installed plugins are preserved.
 
 ## AppImage
@@ -262,9 +265,10 @@ or the explicit manual desktop entry above. If a native DEB is installed,
 prefer AppImageLauncher's distinct entry: a manual entry with the native ID can
 override its launcher. Among does not silently create host registration files.
 
-The example plugins are inside the image in `usr/share/among/plugins/`;
-`--appimage-extract 'usr/share/among/plugins/*'` copies them out for
-installation as described in [plugins](plugins.md#installing). To remove Among,
+The image bundles no plugins. Install the official ones from the built-in
+source in Preferences → Plugins, as described in
+[plugins](plugins.md#installing); they stay disabled until you enable them.
+To remove Among,
 delete the AppImage file and, if you added them, the desktop entry and icon
 above. Settings, sessions and separately installed plugins are preserved.
 
@@ -350,5 +354,5 @@ Rollback of changed files can itself fail if storage becomes full or unwritable;
 the installer reports those errors rather than claiming recovery. Originals
 whose bytes and mode already match the saved state do not need to be rewritten.
 
-Optional plugins remain a separate installation:
-`sh scripts/install-plugins.sh --enable-new`; see [plugins](plugins.md#installing).
+Optional plugins remain a separate installation from the built-in official
+source in Preferences → Plugins; see [plugins](plugins.md#installing).

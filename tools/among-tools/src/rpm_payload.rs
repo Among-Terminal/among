@@ -135,7 +135,7 @@ pub fn check_notices(root: &Path, payload: &Path, requires: &str) -> Result<Valu
         "license_directory": format!("/{LICENSE_DIRECTORY}"),
         "rust_components_noticed": shipped.len(),
         "system_native_libraries": system,
-        "scope": "packaged LICENSE/NOTICE/THIRD_PARTY bytes equal the tagged source; native libraries are required from Fedora, none is shipped; the notice inventory covers all three locked Cargo graphs, a superset of the crates linked into the packaged executables",
+        "scope": "packaged LICENSE/NOTICE/THIRD_PARTY bytes equal the tagged source; native libraries are required from Fedora, none is shipped; the notice inventory covers both locked Cargo graphs, a superset of the crates linked into the packaged executables",
     }))
 }
 
