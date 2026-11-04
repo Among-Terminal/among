@@ -10,7 +10,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::process::{nonblocking, ExactExec, INTERVAL};
+use super::process::{nonblocking, own_session_environment, ExactExec, INTERVAL};
 use super::protocol::{self, Payload, Report, MAX_REPORT};
 use super::{
     Completion, Configuration, Outcome, OwnedDirectory, Reason, CLEANUP_DEADLINE, CLEANUP_GRACE,
@@ -209,20 +209,28 @@ impl Attempt {
             return None;
         }
         let mut command = Command::new(&work.helper);
-        let exact =
-            match ExactExec::new(&work.helper, &[SUPERVISOR_ARGUMENT.into()], &work.cwd.home) {
-                Ok(exact) => exact,
-                Err(_) => {
-                    send(&work, Outcome::NotStarted(Reason::SpawnFailed), 0, true);
-                    return None;
-                }
-            };
+        // Only the session variables of Among's own environment go on to the
+        // supervisor, and from it to the command.
+        let session = own_session_environment();
+        let exact = match ExactExec::new(
+            &work.helper,
+            &[SUPERVISOR_ARGUMENT.into()],
+            &work.cwd.home,
+            &session,
+        ) {
+            Ok(exact) => exact,
+            Err(_) => {
+                send(&work, Outcome::NotStarted(Reason::SpawnFailed), 0, true);
+                return None;
+            }
+        };
         command
             .arg(SUPERVISOR_ARGUMENT)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("LANG", "C.UTF-8")
             .env("HOME", &work.cwd.home)
+            .envs(session.iter().map(|(name, value)| (name, value)))
             // cwd is resolved in the forked child, before CLOEXEC closes this fd.
             .current_dir(format!("/proc/self/fd/{}", work.cwd.file.as_raw_fd()))
             .process_group(0)

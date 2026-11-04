@@ -3,6 +3,18 @@
 These controls are for automated application tests, not normal use.
 Use an isolated test session: input automation must never target personal terminals.
 
+## Fixtures to build before `cargo test`
+
+Some tests start the example programs as real processes: `notification-plugin`
+(the managed notification backend tests and the notification UI tests),
+`effect-authority-helper` (`tests/command_effect_authority.rs`) and `fake-plugin`
+(the plugin host tests), and the ignored graphical tests use the
+`notification-command-fixture` binary. A full `cargo test --locked` builds them
+first. A run limited to one target (`cargo test --bin among`, `--lib`,
+`--test <name>`) builds only that target, and the tests that need an example
+then fail at once with "build --example notification-plugin first" or a similar
+message. Before such a run, execute `cargo build --locked --examples --bins`.
+
 `among-tools ci-x11 among-tools check-plugin-development <among-binary>` starts
 real Among processes on the one session bus of that run. It checks that a
 secondary `--plugin-development` exits 2 with its diagnostic while an ordinary

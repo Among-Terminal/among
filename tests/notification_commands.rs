@@ -11,6 +11,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[path = "support/notification_command.rs"]
 mod support;
 
+/// The variables Among passes on from its own environment; the unit tests of the
+/// command supervisor own the list, this copy states the documented contract.
+const SESSION_VARIABLES: [&str; 5] = [
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+];
+
 fn directory(parent: &Path, name: &str) -> PathBuf {
     let path = parent.join(name);
     fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
@@ -210,6 +220,11 @@ fn real_commands_enforce_data_policy_limits_cancellation_and_reaping() {
     );
     let source = host.attach(1).unwrap();
     // synthetic credentials and a non-CLOEXEC descriptor must not reach the child.
+    // No session variable is set here, so this run shows the absent case: the
+    // command gets exactly PATH, LANG and HOME.
+    for name in SESSION_VARIABLES {
+        std::env::remove_var(name);
+    }
     std::env::set_var("AMONG_COMMAND_SECRET", "synthetic-never-inherit");
     std::env::set_var("AWS_SECRET_ACCESS_KEY", "synthetic-never-inherit");
     let secret_path = root.join("synthetic-private-fd");
@@ -283,7 +298,42 @@ fn real_commands_enforce_data_policy_limits_cancellation_and_reaping() {
         moved_cwd.to_str().unwrap()
     );
     runtime.remove(&mut host, channel);
-    println!("PASS inert invalid/off/ineligible/stale requests; literal argv, bounded identity-only JSON, actual EOF, exact environment, no inherited secret fd, fd-anchored owned cwd");
+
+    // The present case: the session variables of Among's own environment reach
+    // the command, and nothing else does, not even other secret-looking ones.
+    std::env::set_var("DISPLAY", ":77");
+    std::env::set_var("XDG_RUNTIME_DIR", "/run/user/4242");
+    std::env::set_var("SSH_AUTH_SOCK", "/tmp/synthetic-agent");
+    let session_record = directory(&root, "session");
+    let session_source = host.attach(7).unwrap();
+    let session_channel = start(
+        &mut runtime,
+        &mut host,
+        &fixture,
+        &session_record,
+        "record",
+        session_source,
+    );
+    let complete = poll_until(
+        &mut runtime,
+        &mut host,
+        session_channel,
+        Duration::from_secs(5),
+    );
+    assert_eq!(complete.outcome, Outcome::Exited(0));
+    let session_pid = pids(&session_record)[0];
+    assert_eq!(
+        fs::read_to_string(session_record.join(format!("env-{session_pid}.bin"))).unwrap(),
+        format!(
+            "DISPLAY=:77\0HOME={}\0LANG=C.UTF-8\0PATH=/usr/bin:/bin\0XDG_RUNTIME_DIR=/run/user/4242",
+            moved_cwd.display()
+        )
+    );
+    runtime.remove(&mut host, session_channel);
+    for name in SESSION_VARIABLES.into_iter().chain(["SSH_AUTH_SOCK"]) {
+        std::env::remove_var(name);
+    }
+    println!("PASS inert invalid/off/ineligible/stale requests; literal argv, bounded identity-only JSON, actual EOF, exact environment (fixed variables, plus only the session ones when present), no inherited secret fd, fd-anchored owned cwd");
 
     for (mode, expected) in [
         ("exit7", Outcome::Exited(7)),

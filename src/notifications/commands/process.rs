@@ -1,6 +1,8 @@
-//! fresh exec isolates subreaping and signal handling from GTK and plugin children.
+//! The supervisor of one configured command. It runs in a fresh exec of the
+//! host, which isolates subreaping and signal handling from GTK and plugin
+//! children, and it builds the command's exact environment.
 
-use std::ffi::CString;
+use std::ffi::{CString, OsString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
@@ -17,6 +19,41 @@ use super::{Outcome, Reason, CLEANUP_DEADLINE, CLEANUP_GRACE, DEADLINE, MAX_OUTP
 static STOP: AtomicBool = AtomicBool::new(false);
 pub(super) const INTERVAL: Duration = Duration::from_millis(10);
 
+/// The only variables a command inherits from Among's own environment, so that
+/// a notifier can find the user's session: the runtime directory, the session
+/// bus and the display. Nothing else is passed; the rest of the environment
+/// can carry tokens and agent sockets.
+pub(super) const SESSION_VARIABLES: [&str; 5] = [
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+];
+const MAX_SESSION_VALUE: usize = 4096;
+
+/// The session variables found by `lookup`, in the order of
+/// [`SESSION_VARIABLES`]. A variable that is absent, empty, over 4 KiB or holds
+/// a NUL byte is left out.
+pub(super) fn session_environment(
+    lookup: impl Fn(&str) -> Option<OsString>,
+) -> Vec<(&'static str, OsString)> {
+    SESSION_VARIABLES
+        .iter()
+        .filter_map(|name| {
+            let value = lookup(name)?;
+            let bytes = value.as_bytes();
+            (!bytes.is_empty() && bytes.len() <= MAX_SESSION_VALUE && !bytes.contains(&0))
+                .then_some((*name, value))
+        })
+        .collect()
+}
+
+/// The session variables of this process.
+pub(super) fn own_session_environment() -> Vec<(&'static str, OsString)> {
+    session_environment(|name| std::env::var_os(name))
+}
+
 pub(super) struct ExactExec {
     program: CString,
     arguments: Vec<CString>,
@@ -31,7 +68,12 @@ unsafe impl Send for ExactExec {}
 unsafe impl Sync for ExactExec {}
 
 impl ExactExec {
-    pub fn new(program: &Path, arguments: &[String], home: &Path) -> io::Result<Self> {
+    pub fn new(
+        program: &Path,
+        arguments: &[String],
+        home: &Path,
+        session: &[(&str, OsString)],
+    ) -> io::Result<Self> {
         let invalid = || io::Error::other("invalid exact exec input");
         let program = CString::new(program.as_os_str().as_bytes()).map_err(|_| invalid())?;
         let mut argv_owned = vec![program.clone()];
@@ -40,11 +82,19 @@ impl ExactExec {
         }
         let mut home_variable = b"HOME=".to_vec();
         home_variable.extend_from_slice(home.as_os_str().as_bytes());
-        let environment = vec![
+        let mut environment = vec![
             CString::new(b"PATH=/usr/bin:/bin".as_slice()).map_err(|_| invalid())?,
             CString::new(b"LANG=C.UTF-8".as_slice()).map_err(|_| invalid())?,
             CString::new(home_variable).map_err(|_| invalid())?,
         ];
+        for (name, value) in session {
+            if !SESSION_VARIABLES.contains(name) {
+                return Err(invalid());
+            }
+            let mut variable = format!("{name}=").into_bytes();
+            variable.extend_from_slice(value.as_bytes());
+            environment.push(CString::new(variable).map_err(|_| invalid())?);
+        }
         let mut argv: Vec<_> = argv_owned
             .iter()
             .map(|argument| argument.as_ptr())
@@ -198,10 +248,14 @@ pub(super) fn supervise() -> u8 {
             return 0;
         }
     };
+    // The supervisor was started with only the session variables of Among's
+    // environment, so what it sees here is what the host chose to pass on.
+    let session = own_session_environment();
     let exact = match ExactExec::new(
         Path::new(&request.config.executable),
         &request.config.arguments,
         &cwd,
+        &session,
     ) {
         Ok(exact) => exact,
         Err(_) => {
@@ -214,6 +268,7 @@ pub(super) fn supervise() -> u8 {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LANG", "C.UTF-8")
+        .envs(session.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

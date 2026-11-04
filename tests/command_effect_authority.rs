@@ -272,11 +272,25 @@ impl Case {
     }
 }
 
+/// Removes the test's directory when the test ends, unless the caller named the
+/// directory with `AMONG_COMMAND_TEST_ROOT` to keep the evidence.
+struct Evidence {
+    root: PathBuf,
+    keep: bool,
+}
+
+impl Drop for Evidence {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
 #[test]
 fn migrated_runtime_remove_and_drop_revoke_exec_readers_and_actual_service_without_owner_poll() {
-    let parent = std::env::var_os("AMONG_COMMAND_TEST_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let named = std::env::var_os("AMONG_COMMAND_TEST_ROOT").map(PathBuf::from);
+    let parent = named.clone().unwrap_or_else(std::env::temp_dir);
     fs::create_dir_all(&parent).unwrap();
     let root = directory(
         &parent,
@@ -289,6 +303,10 @@ fn migrated_runtime_remove_and_drop_revoke_exec_readers_and_actual_service_witho
                 .as_nanos()
         ),
     );
+    let _evidence = Evidence {
+        root: root.clone(),
+        keep: named.is_some(),
+    };
     println!(
         "actual Runtime/service + exec reader evidence: {}",
         root.display()

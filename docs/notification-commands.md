@@ -67,9 +67,13 @@ Identities are process/session-local host values, not saved addresses. No PTY te
 typed input, title, cwd, process details, terminal command line, executable,
 arguments or environment is included in the event document.
 
-The executed command receives exactly `PATH=/usr/bin:/bin`, `LANG=C.UTF-8` and
-`HOME` pointing to the actual owned cwd. It does not inherit the caller's tokens,
-SSH agent, terminal environment, display/session bus or credentials. Non-stdio
+The executed command receives `PATH=/usr/bin:/bin`, `LANG=C.UTF-8` and `HOME`
+pointing to the actual owned cwd, and the session locations a notifier needs:
+`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY` and
+`XAUTHORITY`. Each of those is passed through from Among's own environment only
+when it is set there, non-empty, at most 4 KiB and free of a NUL byte; an absent
+one is absent for the command too. Nothing else is passed. It does not inherit
+the caller's tokens, SSH agent, terminal environment or credentials. Non-stdio
 descriptors are marked close-on-exec. Required secrets are unsupported; there is
 no invented credential substitute or hidden credential-forwarding API.
 

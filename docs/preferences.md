@@ -26,6 +26,9 @@ Policy edits apply immediately. The command's absolute executable and literal
 arguments (a JSON string array) require **Save command**. Empty executable clears
 configuration and disables the channel. Saving or enabling does not run a command
 or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
+The command's environment is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`,
+`DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` when
+Among's own environment sets them, and nothing else.
 See [the command contract](notification-commands.md) for authority and cleanup limits.
 
 **Use local WAV** reads and validates asynchronously; only an accepted immutable
@@ -43,12 +46,10 @@ remain editable and are labelled unavailable, not delivered. A generic registry
 supplies typed policy/admission ownership. The ordinary application now connects
 the managed backend to the same live core and displays declared channel metadata,
 plugin enablement and admitted-owner state without starting code on inspection.
-New channels default off. This is an integration under review, not acceptance:
-active-envelope retention, targetless origin fairness and owner-chosen strict
-producer/delivery role separation are joined but still require independent review
-of the combined source. Managed-origin command consumers retain owned backend
-authority; the audio owner retains/rechecks it on the shared tick, but off-thread
-audio revocation still awaits the compatible helper admission seam.
+New channels default off. Managed-origin command consumers retain owned backend
+authority; the audio owner retains and rechecks it on the shared tick and cancels
+a sound whose authority was revoked, whether by disabling the channel, removing
+the source pane or a stopped provider.
 
 **Managed notification roles** makes access review reachable even with valid
 existing consent. A process may have producer, delivery or neither authority;

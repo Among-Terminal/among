@@ -14,55 +14,6 @@ struct Active {
     core: Weak<RefCell<Host>>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn old_operation_notices_cannot_replace_new_preview_diagnostics() {
-        let shared = Shared {
-            audio: None,
-            active: RefCell::new(None),
-            ready: Cell::new(false),
-            loading_owner: Cell::new(None),
-            status: RefCell::new("New Preview requested; output unconfirmed".into()),
-            latest_playback: Cell::new(Some(42)),
-            busy: Cell::new(false),
-        };
-        for notice in [
-            Notice::Cancelled { id: 17 },
-            Notice::DecoderEnded { id: 17 },
-            Notice::Failed {
-                id: 17,
-                reason: "stale failure",
-            },
-            Notice::Requested {
-                id: 17,
-                kind: among::audio::PlaybackKind::Event,
-            },
-        ] {
-            shared.observe_notice(notice);
-            assert_eq!(
-                *shared.status.borrow(),
-                "New Preview requested; output unconfirmed"
-            );
-        }
-        shared.observe_notice(Notice::Requested {
-            id: 42,
-            kind: among::audio::PlaybackKind::Preview,
-        });
-        assert_eq!(
-            *shared.status.borrow(),
-            "Playback requested; output is not confirmed"
-        );
-        shared.observe_notice(Notice::Cancelled { id: 42 });
-        assert!(shared
-            .status
-            .borrow()
-            .contains("explicitly press Preview again"));
-    }
-}
-
 pub(super) struct Shared {
     pub audio: Option<Audio>,
     active: RefCell<Option<Active>>,
@@ -303,5 +254,54 @@ impl Shared {
                     Notice::SelectionFailed { error, .. } => error.to_string(),
                 };
         *self.status.borrow_mut() = text;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_operation_notices_cannot_replace_new_preview_diagnostics() {
+        let shared = Shared {
+            audio: None,
+            active: RefCell::new(None),
+            ready: Cell::new(false),
+            loading_owner: Cell::new(None),
+            status: RefCell::new("New Preview requested; output unconfirmed".into()),
+            latest_playback: Cell::new(Some(42)),
+            busy: Cell::new(false),
+        };
+        for notice in [
+            Notice::Cancelled { id: 17 },
+            Notice::DecoderEnded { id: 17 },
+            Notice::Failed {
+                id: 17,
+                reason: "stale failure",
+            },
+            Notice::Requested {
+                id: 17,
+                kind: among::audio::PlaybackKind::Event,
+            },
+        ] {
+            shared.observe_notice(notice);
+            assert_eq!(
+                *shared.status.borrow(),
+                "New Preview requested; output unconfirmed"
+            );
+        }
+        shared.observe_notice(Notice::Requested {
+            id: 42,
+            kind: among::audio::PlaybackKind::Preview,
+        });
+        assert_eq!(
+            *shared.status.borrow(),
+            "Playback requested; output is not confirmed"
+        );
+        shared.observe_notice(Notice::Cancelled { id: 42 });
+        assert!(shared
+            .status
+            .borrow()
+            .contains("explicitly press Preview again"));
     }
 }

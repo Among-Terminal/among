@@ -285,3 +285,80 @@ fn cleanup_poll_consumes_framed_selection_and_progresses_through_the_full_9005_t
         .all(|(bytes, calls)| bytes.get() <= MAX_CHILD_BYTES && calls.get() <= MAX_CHILD_BYTES));
     println!("Cleanup::poll: {passes} bounded passes selected/reaped all 9005 synthetic children, one pre-reap group KILL, no signals sent");
 }
+
+#[test]
+fn only_the_listed_session_variables_are_taken_and_absent_ones_are_left_out() {
+    let source: std::collections::BTreeMap<&str, OsString> = [
+        ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+        ("DISPLAY", ":0"),
+        ("XAUTHORITY", "/run/user/1000/xauth"),
+        ("SSH_AUTH_SOCK", "/tmp/agent"),
+        ("GITHUB_TOKEN", "secret"),
+        ("HOME", "/home/someone"),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name, OsString::from(value)))
+    .collect();
+    let taken = session_environment(|name| source.get(name).cloned());
+    assert_eq!(
+        taken.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        [
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "DISPLAY",
+            "XAUTHORITY"
+        ],
+        "WAYLAND_DISPLAY is absent and nothing outside the list is taken"
+    );
+    assert!(session_environment(|_| None).is_empty());
+}
+
+#[test]
+fn unusable_session_values_are_left_out() {
+    let values = [
+        ("XDG_RUNTIME_DIR", OsString::new()),
+        ("DISPLAY", OsString::from("bad\0value")),
+        (
+            "WAYLAND_DISPLAY",
+            OsString::from("x".repeat(MAX_SESSION_VALUE + 1)),
+        ),
+        ("XAUTHORITY", OsString::from("x".repeat(MAX_SESSION_VALUE))),
+    ];
+    let taken = session_environment(|name| {
+        values
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|(_, value)| value.clone())
+    });
+    assert_eq!(taken.len(), 1);
+    assert_eq!(taken[0].0, "XAUTHORITY");
+}
+
+#[test]
+fn the_command_environment_is_the_fixed_variables_plus_the_given_session_ones() {
+    let session = [("DISPLAY", OsString::from(":7"))];
+    let exact = ExactExec::new(
+        Path::new("/usr/bin/true"),
+        &[],
+        Path::new("/home/owned"),
+        &session,
+    )
+    .unwrap();
+    let environment: Vec<_> = exact
+        .environment
+        .iter()
+        .map(|variable| variable.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        environment,
+        [
+            "PATH=/usr/bin:/bin",
+            "LANG=C.UTF-8",
+            "HOME=/home/owned",
+            "DISPLAY=:7"
+        ]
+    );
+    let unlisted = [("SSH_AUTH_SOCK", OsString::from("/tmp/agent"))];
+    assert!(ExactExec::new(Path::new("/usr/bin/true"), &[], Path::new("/h"), &unlisted).is_err());
+}
