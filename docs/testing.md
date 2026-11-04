@@ -3,6 +3,23 @@
 These controls are for automated application tests, not normal use.
 Use an isolated test session: input automation must never target personal terminals.
 
+## Fixtures to build before `cargo test`
+
+Some tests start the example programs as real processes: `notification-plugin`
+(the managed notification backend tests and the notification UI tests),
+`effect-authority-helper` (`tests/command_effect_authority.rs`) and `fake-plugin`
+(the plugin host tests). A full `cargo test --locked` builds the examples first.
+A run limited to one target (`cargo test --bin among`, `--lib`, `--test <name>`)
+builds only that target, and the tests that need an example then fail at once
+with "build --example notification-plugin first" or a similar message. Before
+such a run, execute `cargo build --locked --examples`.
+
+The ignored graphical tests also use `target/debug/notification-command-fixture`.
+Cargo does not build it: the integration tests (`notification_commands`,
+`command_effect_authority`) compile `tests/fixtures/notification-command.rs` with
+`rustc` and copy the result there. It exists after a full `cargo test --locked` or
+after those two integration tests have run, not after `cargo build`.
+
 `among-tools ci-x11 among-tools check-plugin-development <among-binary>` starts
 real Among processes on the one session bus of that run. It checks that a
 secondary `--plugin-development` exits 2 with its diagnostic while an ordinary
@@ -104,7 +121,13 @@ Script actions include `split_pane`, `close_pane`, `new_workspace`, `focus_left`
 `preferences` and `next_workspace`.
 `workspace_N` activates workspace N, counting from 1. `type:<command>` sends text
 to the focused terminal; `feed:<pane>:<command>` targets a numbered pane.
-In these commands, `~` represents a space.
+In these commands, `~` represents a space. `activate:<widget-name>` presses a
+named widget in any open window, such as `notification-audio-preview`. Only the
+application executable can do this for audio: a test binary cannot host the
+decoder helper, so its Preview produces no sound. `focus:<widget-name>` hands a
+named control to the keyboard, and `await:<mark>` holds the script until the file
+`<script>.<mark>` exists, so a harness can send real keys or type text at that
+point.
 `collapse-sidebar`, `expand-sidebar` and `request-close` exercise window controls.
 
 `scroll:<pane>:<delta>` hands one touch surface delta to the same handler a real
@@ -136,6 +159,27 @@ describe the drag target; `sidebar_resize_rect=[edge:x+y+WxH]` and
 client-side shadow offsets, so real pointer events can target the narrow edge.
 `notices_recorded` counts logged terminal/plugin notices, not visible pop-ups.
 
+Bell backend probes report `bell_events`, `bell_application_active`,
+`bell_viewed`, per-pane `bell_panes` (unread/pulse state), current-member
+`bell_workspaces` aggregates and bounded `bell_diagnostics`. These are backend
+observations, not evidence that notification stripes or audio were presented.
+See [the implemented bell boundary and pending adapters](terminal-bell-backend.md).
+
+The ignored application test
+`app::bell_tests::live_bells_follow_terminal_focus_lifetime_and_owned_windows`
+requires the isolated X11 harness, a window manager and xdotool. It drives actual
+PTY bells and OSC terminators, native Preferences/menu focus, hidden terminals,
+Restore, unrelated-window activation and stale source callbacks. It checks
+backend state and real focus, not notification rendering or audio output.
+
+The command integration test `cargo test --locked --test notification_commands`
+compiles its synthetic Rust executable and retains process/stdin/environment
+evidence under `AMONG_COMMAND_TEST_ROOT` (or `target/notification-command-tests`).
+It uses the production ten-second deadline and 32-KiB combined output budget.
+Run it before the ignored native command-input test described in the
+[command backend contract](notification-commands.md), so the isolated display
+can use the cached fixture without needing a compiler in its stripped environment.
+
 See [contributor checks](../CONTRIBUTING.md#checking-changes) for isolated X11 tests.
 
 ## Where checks keep their evidence
@@ -157,6 +201,23 @@ The display harness passes `AMONG_CHECK_ROOT` to every command it runs. The
 application's ignored graphical tests refuse to start unless their
 configuration directory lies below that root, so they never touch personal
 configuration. CI workflows set the root explicitly.
+
+## Notification accessibility consumers
+
+Checks selects the unique application test executable from real Cargo records
+and runs four exact notification UI cases on individual owned displays: the
+positive/negative accessibility guard, provider controls/actions, explicit role
+review/restoration and visual attention/geometry. The ordinary package tests
+prepare the command fixture; the workflow also builds the notification plugin.
+Missing fixtures, absent/ambiguous test selection, a failed process or anything
+other than one passing test per invocation fails the step.
+
+These tests set `GTK_A11Y=test` before GTK initialization and require an actual
+AT context and property before comparing accessible values. An outer environment
+variable is not sufficient because the generic display runner disables a11y by
+default. The ordinary ignored-test suite is still mandatory and unchanged;
+these targeted cases do not replace its other tests or establish audio output,
+packaged behavior or whole-release acceptance.
 
 ## Published-plugin native checks
 

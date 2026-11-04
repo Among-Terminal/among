@@ -31,7 +31,7 @@ fn exact_source_versions_payload_changes_and_verbatim_notices_are_observed_witho
     let name = "usr/share/doc/synthetic-library/copyright";
     fs::write(prime.join(name), NOTICE)?;
     let archive = storage::deterministic_tar(&BTreeMap::from([(name.into(), NOTICE.to_vec())]))?;
-    let (files, notices, references) =
+    let (files, notices, references, _) =
         inventory::payload(archive.as_slice(), &prime, &output, "synthetic-library")?;
     assert_eq!(
         inventory::source_identity(
@@ -62,7 +62,7 @@ fn exact_source_versions_payload_changes_and_verbatim_notices_are_observed_witho
     std::os::unix::fs::symlink(f.0.join("foreign"), &license)?;
     assert!(native_notices::check(&document, &prime).is_err());
     fs::write(prime.join(name), b"changed copyright")?;
-    let (changed, _, _) =
+    let (changed, _, _, _) =
         inventory::payload(archive.as_slice(), &prime, &output, "synthetic-library")?;
     assert_eq!(changed[0]["modified"], true);
     assert!(native_notices::check(&document, &prime).is_err());
@@ -134,7 +134,7 @@ fn conventional_dpkg_root_and_directory_entries_are_not_unsafe_file_members() ->
         NOTICE,
     )?;
     let archive = archive.into_inner()?;
-    let (files, notices, _) = inventory::payload(
+    let (files, notices, _, _) = inventory::payload(
         archive.as_slice(),
         &prime,
         &f.0.join("output"),
@@ -318,5 +318,51 @@ fn actual_cli_refuses_duplicate_and_unstaged_real_packages() -> Result<()> {
         "among-tools: Debian input has no observable regular files in prime"
     );
     assert!(!f.0.join("audit").exists());
+    Ok(())
+}
+
+// Debian packages from one source often replace /usr/share/doc/PACKAGE with a
+// link to a sibling's directory. Such a package has no copyright of its own, and
+// the audit must name the owner instead of refusing the whole staged set.
+#[test]
+fn a_linked_doc_directory_names_the_package_that_owns_the_notices() -> Result<()> {
+    let f = fixture()?;
+    fs::create_dir_all(f.0.join("prime/usr/lib"))?;
+    fs::write(f.0.join("prime/usr/lib/library.so"), b"library")?;
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut library = tar::Header::new_gnu();
+    library.set_size(7);
+    library.set_mode(0o644);
+    library.set_cksum();
+    builder.append_data(&mut library, "usr/lib/library.so", &b"library"[..])?;
+    let mut link = tar::Header::new_gnu();
+    link.set_entry_type(tar::EntryType::Symlink);
+    link.set_size(0);
+    link.set_cksum();
+    builder.append_link(&mut link, "usr/share/doc/libfixture1", "libfixture-common")?;
+    let archive = builder.into_inner()?;
+    let (staged, notices, _, shared) = inventory::payload(
+        archive.as_slice(),
+        &f.0.join("prime"),
+        &f.0.join("output"),
+        "libfixture1",
+    )?;
+    assert_eq!(staged.len(), 1);
+    assert!(notices.is_empty());
+    assert_eq!(shared.as_deref(), Some("libfixture-common"));
+    Ok(())
+}
+
+// A staged library whose copyright lives in an unstaged package ships without
+// that text. The inventory records it; accepting the notices must refuse.
+#[test]
+fn notices_owned_by_an_unstaged_package_block_the_notice_gate() -> Result<()> {
+    let f = fixture()?;
+    let document = json!({"schema":1,"packages":[{"package":"libfixture1","notices":[]}],
+        "unresolved_notices":[{"package":"libfixture1","notices_in_unstaged":"libbase"}]});
+    let error = native_notices::check(&document, &f.0.join("prime"))
+        .err()
+        .ok_or("unresolved notices were accepted")?;
+    assert!(error.to_string().contains("libbase"));
     Ok(())
 }

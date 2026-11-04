@@ -364,8 +364,11 @@ The [complete vocabulary example](../examples/managed-manifest.json) is parsed
 by the production parser in tests. It is data, not a ready-built plugin package.
 Static metadata and local settings can be inspected without executing code.
 API 1.2 is the supported managed profile below. There is no manifestless/legacy
-execution path. Notification production, notification UI and delivery features
-remain unsupported and are not advertised.
+execution path, and a managed package never falls back to one. The application
+attaches the [notification backend](plugin-notification-backend.md) to its terminal
+core at startup and advertises the notification roles; a plugin holds one only
+through the explicit role review described there. A host built without that
+backend, as the plain constructors are, offers no notification roles.
 
 Manifest `id` is lowercase ASCII letters/digits/hyphens, at most 64 bytes.
 `version`, `name` and `description` are bounded display metadata, not authority.

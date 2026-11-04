@@ -9,6 +9,11 @@ The AppStream metadata in `data/com.github.among-terminal.metainfo.xml` is expli
 CC0-1.0 for catalog reuse; its project_license still identifies the application
 as Apache-2.0. The original icon is Apache-2.0, not a copied theme asset.
 
+The built-in alert WAV is also original Apache-2.0 work, generated without
+third-party recordings/samples. Its complete deterministic Rust source and
+byte-for-byte regeneration test are in `tools/among-tools/examples/generate-alert.rs`;
+see `data/audio/README.md`.
+
 Third-party code is not relicensed by the project. New external contributions
 require a provenance review, and copied or adapted code must retain attribution.
 
@@ -95,10 +100,12 @@ replacement/runtime compliance. It refuses missing inputs or an existing output
 directory rather than substituting installed-host metadata or overwriting evidence.
 Container fixtures: `cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test native_inventory --test native_notices`.
 
-Once exact source packages have been downloaded through authenticated Ubuntu APT
-metadata, check their preserved inventory against the binary input inventory:
+Download the exact source packages through authenticated Ubuntu APT metadata, as
+root in a disposable Ubuntu 24.04 container, then check their preserved inventory
+against the binary input inventory. None of this needs a tag:
 
 ```sh
+among-tools collect-snap-sources <native-audit>/inventory.json <new-source-directory>
 among-tools check-snap-sources <native-audit>/inventory.json <source-download-directory>
 cargo test --locked --manifest-path tools/among-tools/Cargo.toml --test native_sources
 ```
@@ -175,6 +182,25 @@ against its descriptor. The AppImage workflow keeps the result as the
 attach these sources with it. Libraries the AppImage takes from the host
 (listed in the audit record as `host_libraries`) are not bundled and need no
 source delivery from this project.
+
+## Native audio additions
+
+GTK media and GStreamer modules/helpers are native distribution components,
+not Cargo dependencies covered by `THIRD_PARTY/inventory.json`. AppImage's actual
+ELF attribution/source collection includes the nested media module, declared
+WAV plugins, scanner and transitive libraries; Snap's exact prime/DEB inventory
+must be regenerated after staging media/base/good packages.
+
+The GTK media implementation has LGPL-2.1-or-later terms. The GStreamer WAV
+parser/scaletempo sources state LGPL-2.0-or-later; PulseAudio sink sources state
+LGPL-2.1-or-later. Retain the authentic full package copyright files: whole
+packages and transitive dependencies can contain additional licences, tools,
+data and source obligations. Do not relabel their aggregate payload as simply
+"LGPL" or claim corresponding-source coverage from a successful playback test.
+Full matching source archives, packaging patches/build instructions, notices,
+common texts and applicable replacement/debugging checks remain per-artifact
+requirements. An unavailable exact source version fails source collection;
+silently substituting a newer archive is not an acceptable repair.
 
 ## AppImage build helpers
 

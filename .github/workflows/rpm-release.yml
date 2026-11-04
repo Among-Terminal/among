@@ -407,7 +407,7 @@ jobs:
         run: |
           dnf install -y git ca-certificates glib2 desktop-file-utils appstream libappstream-glib \
             xorg-x11-server-Xvfb xorg-x11-xauth xprop xdpyinfo xwininfo openbox dbus-x11 \
-            xdotool procps-ng ImageMagick util-linux shadow-utils
+            xdotool procps-ng ImageMagick util-linux shadow-utils pulseaudio pulseaudio-utils
           mkdir -p "$AMONG_CHECK_ROOT"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

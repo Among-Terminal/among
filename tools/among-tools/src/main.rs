@@ -45,6 +45,11 @@ Usage:
   among-tools check-context-menu <among-binary> <prebuilt-clipboard-helper> <light|dark>
   among-tools check-context-menu-snap <prebuilt-clipboard-helper> <light|dark> [--github-hosted]
   among-tools check-snap-runtime [--github-hosted]
+  among-tools bind-audio-probe <probe> <artifact> <source-sha> <architecture> <new-directory>
+  among-tools check-audio-package <appimage|snap-core24|snap-installed> <artifact> <probe-directory> <source-sha> <architecture> <new-output>
+  among-tools check-audio-native <audio-probe> <new-output>
+  among-tools check-general-audio <among-binary>
+  among-tools check-audio-retirement <checked-package-run> <artifact> <retirement-probe-directory> <source-sha> <architecture> <new-output>
   among-tools deb-release-inputs <source-root> <stable-tag> <debian13|ubuntu24.04> <amd64|arm64>
   among-tools stage-deb <source-root> <binaries> <new-destination>
   among-tools deb-tag-source <source-root>
@@ -74,6 +79,7 @@ Usage:
   among-tools select-nightly <repository-dir> <owner/repo> <new-output.json> [--now ISO]
   among-tools package-version <source-root>
   among-tools check-native-source-unpack <sources> <new-output>
+  among-tools collect-snap-sources <native-inventory.json> <new-output>
   among-tools check-snap-sources <native-inventory.json> <sources>
   among-tools check-apt-provenance <metadata> <native-inventory.json> <sources>
   among-tools collect-apt-provenance <new-output>
@@ -100,6 +106,47 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
+        [command, prepared, artifact, checkers, source, architecture, output]
+            if command == "check-audio-retirement" =>
+        {
+            among_tools::audio_package::retirement(
+                Path::new(prepared),
+                Path::new(artifact),
+                Path::new(checkers),
+                source,
+                architecture,
+                Path::new(output),
+            )?;
+        }
+        [command, probe, artifact, source, architecture, output]
+            if command == "bind-audio-probe" =>
+        {
+            among_tools::audio_package::bind(
+                Path::new(probe),
+                Path::new(artifact),
+                source,
+                architecture,
+                Path::new(output),
+            )?;
+        }
+        [command, kind, artifact, probe, source, architecture, output]
+            if command == "check-audio-package" =>
+        {
+            among_tools::audio_package::run(
+                kind,
+                Path::new(artifact),
+                Path::new(probe),
+                source,
+                architecture,
+                Path::new(output),
+            )?;
+        }
+        [command, binary] if command == "check-general-audio" => {
+            among_tools::audio_general::run(Path::new(binary), &among_tools::scratch::root()?)?;
+        }
+        [command, probe, output] if command == "check-audio-native" => {
+            among_tools::audio_package::run_native(Path::new(probe), Path::new(output))?;
+        }
         [command, source, version, output] if command == "package-metainfo" => {
             among_tools::release_metadata::write_package_metainfo(
                 Path::new(source),
@@ -376,6 +423,10 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                     &among_tools::scratch::root()?
                 )?)?
             );
+        }
+        [command, native, output] if command == "collect-snap-sources" => {
+            let native = among_tools::storage::parse_json(&std::fs::read(native)?)?;
+            among_tools::native_sources::collect(&native, Path::new(output))?;
         }
         [command, native, sources] if command == "check-snap-sources" => {
             let native = among_tools::storage::parse_json(&std::fs::read(native)?)?;

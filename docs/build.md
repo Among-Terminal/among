@@ -11,6 +11,11 @@ behavior; Wayland, Snap and Flatpak runtime acceptance remains unexecuted.
 sudo apt install libgtk-4-dev libvte-2.91-gtk4-dev libadwaita-1-dev
 ```
 
+The selectable-audio adapter additionally needs the runtime media/codec route:
+`libgtk-4-media-gstreamer` and `gstreamer1.0-plugins-good` on Debian/Ubuntu.
+GTK's optional recommendations are not sufficient on a no-recommends host.
+See [audio ownership and testing boundaries](audio.md).
+
 Verify:
 
 ```sh
@@ -107,7 +112,13 @@ cargo build --release --locked
 cargo test --locked
 ```
 
-`cargo test` runs without a display. The VTE binding helpers that touch GTK —
+A full `cargo test` builds the example programs that tests start as real
+processes (`notification-plugin`, `effect-authority-helper`, `fake-plugin`). A
+run limited to one target, such as `cargo test --bin among`, does not; run
+`cargo build --locked --examples` first, or those tests fail with "build
+--example <name> first". The command fixture is not built by Cargo at all: the
+integration tests compile it with `rustc` (see `docs/testing.md`). `cargo test`
+runs without a display. The VTE binding helpers that touch GTK —
 `ShortcutTrigger::parse_string`, `CallbackAction::new`, `GtkSnapshot` — assert
 that GTK is initialised, so they are kept out of the test paths and exercised
 through the running application instead.
@@ -155,6 +166,14 @@ MIME cache or SVG pixbuf loader, audits the bundled libraries and extracts the
 finished image to repeat those checks. Every output directory must be new.
 `collect-appimage-sources` changes the container's APT configuration, so it
 refuses to run outside a root container.
+
+Refresh the disposable build container's base runtime packages after APT update,
+before installing build dependencies. An older library can satisfy a new
+dependency's SONAME/minimum version while its exact source version has already
+left the current source index. The workflow upgrades those container packages;
+the audit still records every actual binary/source version. This is not a
+hermetic base-image rebuild, and source collection must still fail rather than
+substitute a different version when an exact source is unavailable.
 
 `fetch-appimage-tools` downloads `linuxdeploy`, `appimagetool`, `runtime` and
 `linuxdeploy-plugin-gtk.sh` only from one immutable release of

@@ -3,6 +3,11 @@
 *.pyc
 __pycache__/
 target/
+/audio-drain-inputs/
+/audio-drain-build/
+/audio-drain-evidence/
+/audio-drain-payloads/
+/audio-drain-fixtures/
 /package-plugin-profile/
 /appimage-checker/
 /clean-snap-input/
