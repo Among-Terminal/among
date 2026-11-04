@@ -54,9 +54,16 @@ The bridge binds to one plugin-host session and refuses a different session.
 Only a bound, usable bridge expands the supported feature set. Managed admission
 still requires a valid receipt, publisher/access review, explicit desired
 enablement, declared features, matching session/process generation and runtime
-negotiation. Grants do not sandbox ordinary user-level plugin processes. Required
-secret settings remain unsupported; no credential storage or environment expansion
-is introduced here.
+negotiation. Notification grants authorize protocol operations only; the sandbox
+policy has no notification rule, so a grant never widens what the process may do
+at the operating-system level. Every managed plugin runs under the confinement
+described in [Confinement](plugins.md#confinement), which also bounds these
+roles: a delivery provider cannot open a socket, so it cannot reach a network
+service or the session bus itself, and a provider that needs one needs an access
+grant that does not exist yet. The confinement does not limit what a plugin sends
+over the protocol, so the limits in this document still apply to every message.
+Required secret settings remain unsupported; no credential storage or environment
+expansion is introduced here.
 
 ### Explicit production/delivery role choice
 
@@ -141,8 +148,13 @@ Production/delivery authority is separated at review/preflight/admission, not
 silently retired after the first assigned or non-enqueued job. A delivery-only
 process cannot produce even if it omits `causal_job`; omission is not proof of
 independent intent. Results remain separate, self-delivery is omitted, and work is
-rate/budget bounded. This is API-mediated feedback prevention, **not** a sandbox or
-a guarantee against out-of-band communication between unsandboxed processes.
+rate/budget bounded. This is API-mediated feedback prevention: it covers
+relationships that pass through this notification API. The
+[confinement](plugins.md#confinement) denies the direct channels between two
+plugins that it lists, but it is a separate mechanism and no guarantee that an
+out-of-band exchange cannot happen: reduced protection that the user accepted
+leaves more file access, and a kernel vulnerability defeats it. The host does not
+detect a fresh-looking event that such an exchange caused.
 Results never become notification events. No automatic retry or reconnect replay.
 
 ## Contribution and action state

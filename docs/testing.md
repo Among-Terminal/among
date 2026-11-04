@@ -8,7 +8,13 @@ Use an isolated test session: input automation must never target personal termin
 Some tests start the example programs as real processes: `notification-plugin`
 (the managed notification backend tests and the notification UI tests),
 `effect-authority-helper` (`tests/command_effect_authority.rs`) and `fake-plugin`
-(the plugin host tests). A full `cargo test --locked` builds the examples first.
+(the plugin host tests). `notification-plugin` keeps its control files and
+transcripts in the directory it starts in, or in `AMONG_PLUGIN_DATA_DIR` when the
+host sets it, which is the case only under the real confinement; the backend test
+`producer_ui_and_delivery_provider_work_under_real_confinement` uses that to run a
+producer and a delivery provider confined (it returns early, printing NOT VERIFIED,
+on a kernel without full protection). A full `cargo test --locked` builds the
+examples first.
 A run limited to one target (`cargo test --bin among`, `--lib`, `--test <name>`)
 builds only that target, and the tests that need an example then fail at once
 with "build --example notification-plugin first" or a similar message. Before
