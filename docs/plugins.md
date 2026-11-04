@@ -492,20 +492,17 @@ What a confined plugin can do:
 - Read and write its own data directory, and (at full protection) nothing else
   outside the system runtime. The host creates
   `$XDG_DATA_HOME/among/plugin-data/<repository-id>/<plugin-id>/` (development
-  installs: `development/<plugin-id>`) with mode `0700`, creating every component
-  without following links and refusing the start when a component is a link, is
-  owned by another user or the plugin's own directory is not exactly mode `0700`
-  (the directories above it may be group-writable, as a `002` umask makes them).
-  Its path is in
-  `AMONG_PLUGIN_DATA_DIR`. Uninstalling a plugin keeps this directory and its
-  contents; removing the data is a separate action that does not exist yet.
-  A link anywhere on that path, including above `XDG_DATA_HOME` such as
-  `~/.local` or `~/.local/share`, makes every plugin Unavailable; the reason names
-  the component. Typical causes are a dotfile manager that links `~/.local` or
-  `~/.local/share` into a repository, and image-based systems where `/home` is a
-  link to `/var/home`. Fix it by making that component a real directory (move the
-  contents and drop the link), or by starting Among with `XDG_DATA_HOME` set to a
-  path that contains no link, for example the target of the link under `/var/home`.
+  installs: `development/<plugin-id>`) with mode `0700`. The data home
+  (`XDG_DATA_HOME`, or `~/.local/share`) may be a symbolic link or lie behind
+  one (a dotfile manager, or `/home` linked to `/var/home`): it is resolved once,
+  and the resolved directory must be owned by the user, checked on the opened
+  directory; its mode may be group-writable, as a `002` umask makes it. Below it
+  every component is created and opened without following links, and the start is
+  refused when a component is a link, is owned by another user or the plugin's
+  own directory is not exactly mode `0700`; the reason names the component. The
+  path in `AMONG_PLUGIN_DATA_DIR` is the resolved one. Uninstalling a plugin keeps
+  this directory and its contents; removing the data is a separate action that
+  does not exist yet.
 - Use the protocol on stdin and stdout. Besides standard error and its own
   executable file (kept open so `exec` can run it), nothing is open: every other
   descriptor of the host is closed on `exec`.

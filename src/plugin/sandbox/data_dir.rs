@@ -1,7 +1,7 @@
-//! the one directory a confined plugin may write to. it is created component
+//! the one directory a confined plugin may write to. the data home is resolved
+//! once (it may be behind links); below it the directory is created component
 //! by component through directory descriptors, so a symbolic link or a
-//! foreign owner anywhere on the way refuses the start instead of redirecting
-//! the plugin's writes.
+//! foreign owner refuses the start instead of redirecting the plugin's writes.
 
 use std::ffi::CString;
 use std::fs::File;
@@ -85,8 +85,8 @@ fn open_directory(parent: &File, name: &CString, shown: &Path) -> Result<File, P
         return Err(Problem(if link {
             format!(
                 "plugin data directory path contains a link or a non-directory at {} \
-                 (replace it by a real directory, or start Among with XDG_DATA_HOME \
-                 pointing at a path without links)",
+                 (links are accepted only in the data home itself; replace this \
+                 one by a real directory)",
                 shown.display()
             )
         } else {
@@ -139,16 +139,28 @@ fn check_owned(directory: &File, leaf: bool, shown: &Path) -> Result<(), Problem
 
 /// Opens or creates `<data_home>/among/plugin-data/<namespace>/<plugin_id>`.
 ///
-/// Links are refused everywhere on the path. From the data home down every
-/// directory must be owned by the user, and the leaf must be exactly mode
-/// `0700`.
+/// The data home may itself be, or lie behind, symbolic links: it is resolved
+/// once and must be a directory owned by the user, checked on its descriptor
+/// (its mode may be group-writable). Below it, links are refused at every
+/// level, every directory must be owned by the user, and the leaf must be
+/// exactly mode `0700`.
 pub fn open(data_home: &Path, namespace: &str, plugin_id: &str) -> Result<DataDir, Problem> {
     if !data_home.is_absolute() {
         return Err(problem("plugin data home must be an absolute path"));
     }
     let mut current = File::open("/").map_err(|_| problem("cannot open the filesystem root"))?;
+    // the base is the one place where links are accepted (dotfile managers,
+    // /home -> /var/home): it is resolved once, here, and everything below is
+    // opened component by component from the resolved path without following
+    // links, so a link swapped in after this point is refused, not followed.
+    let resolved = std::fs::canonicalize(data_home).map_err(|error| {
+        Problem(format!(
+            "plugin data home {} cannot be resolved: {error}",
+            data_home.display()
+        ))
+    })?;
     let mut path = PathBuf::from("/");
-    for part in data_home.components() {
+    for part in resolved.components() {
         match part {
             Component::RootDir => continue,
             Component::Normal(name) => {
@@ -211,6 +223,102 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn a_data_home_behind_links_is_accepted_and_the_resolved_path_is_used() {
+        let scratch = Scratch::new("linked-base");
+        let real = scratch.0.join("var-home");
+        std::fs::create_dir(&real).unwrap();
+        // group-writable, as a 002 umask makes the data home.
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o775)).unwrap();
+        // the base itself is a link, and so is a directory above it.
+        let parent_link = scratch.0.join("home");
+        symlink(&scratch.0, &parent_link).unwrap();
+        let base_link = scratch.0.join("share");
+        symlink(&real, &base_link).unwrap();
+        for given in [base_link.clone(), parent_link.join("share")] {
+            let opened = open(&given, "12", "clock").unwrap();
+            assert_eq!(
+                opened.path,
+                std::fs::canonicalize(&real)
+                    .unwrap()
+                    .join("among/plugin-data/12/clock"),
+                "the plugin is told the resolved path, not the one with links"
+            );
+            assert_eq!(
+                std::fs::metadata(&opened.path).unwrap().mode() & 0o7777,
+                0o700
+            );
+        }
+    }
+
+    #[test]
+    fn a_data_home_resolving_to_a_directory_of_another_user_is_refused() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("NOT VERIFIED: running as root, no foreign-owned directory to observe");
+            return;
+        }
+        let scratch = Scratch::new("foreign-base");
+        let link = scratch.0.join("share");
+        // /usr is owned by root.
+        symlink("/usr", &link).unwrap();
+        let reason = open(&link, "12", "clock").err().unwrap().0;
+        assert!(reason.contains("owned by the current user"), "{reason}");
+        assert!(
+            !Path::new("/usr/among").exists(),
+            "nothing was created there"
+        );
+    }
+
+    #[test]
+    fn a_base_swapped_for_a_link_while_opening_is_never_followed_out() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let scratch = Scratch::new("base-race");
+        let outside = scratch.0.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let area = scratch.0.join("area");
+        std::fs::create_dir(&area).unwrap();
+        std::fs::set_permissions(&area, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let base = area.join("base");
+        std::fs::create_dir(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        open(&base, "12", "clock").unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapper = {
+            let (stop, base, outside) = (stop.clone(), base.clone(), outside.clone());
+            let parked = area.join("parked");
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if std::fs::rename(&base, &parked).is_ok() {
+                        let _ = symlink(&outside, &base);
+                        let _ = std::fs::remove_file(&base);
+                        let _ = std::fs::rename(&parked, &base);
+                    }
+                }
+            })
+        };
+        // a swap before the base is resolved is the user pointing the base
+        // elsewhere, and the resolved path then names the new place. A swap
+        // after it must never leave the descriptor somewhere other than the
+        // path the plugin is told about (or where that directory was moved).
+        let parked = area.join("parked");
+        for _ in 0..3000 {
+            if let Ok(opened) = open(&base, "12", "clock") {
+                let resolved =
+                    std::fs::read_link(format!("/proc/self/fd/{}", opened.directory.as_raw_fd()))
+                        .unwrap();
+                assert!(
+                    resolved == opened.path || resolved.starts_with(&parked),
+                    "the descriptor is at {resolved:?}, not at the reported {:?}",
+                    opened.path
+                );
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapper.join().unwrap();
     }
 
     #[test]
@@ -297,8 +405,8 @@ mod tests {
     }
 
     #[test]
-    fn a_link_at_any_level_refuses_the_start() {
-        for level in 0..5 {
+    fn a_link_below_the_data_home_refuses_the_start() {
+        for level in 1..5 {
             let scratch = Scratch::new(&format!("link{level}"));
             let elsewhere = scratch.0.join("elsewhere");
             std::fs::create_dir(&elsewhere).unwrap();
@@ -329,7 +437,7 @@ mod tests {
                 "level {level} names {}: {reason}",
                 victim.display()
             );
-            assert!(reason.contains("XDG_DATA_HOME"), "{reason}");
+            assert!(reason.contains("only in the data home itself"), "{reason}");
         }
     }
 
