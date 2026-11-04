@@ -300,6 +300,19 @@ fn the_stable_tag_needs_a_candidate_on_the_same_commit() -> Result<()> {
     git(&root, &["tag", "v0.3.0-rc.1"])?;
     assert!(decide_stable(&root, None).is_err());
 
+    // A stable tag already on the commit does not stand in for the candidate:
+    // a repeat run would start the draft of bytes that were never a candidate.
+    git(&root, &["tag", "v0.2.0"])?;
+    let error = refusal(
+        decide_stable(&root, None),
+        "accepted an untested stable tag",
+    )?;
+    assert!(
+        error.contains("no release candidate v0.2.0-rc.N"),
+        "{error}"
+    );
+    git(&root, &["tag", "-d", "v0.2.0"])?;
+
     // A candidate on an earlier commit does not accept a later commit.
     git(&root, &["tag", "v0.2.0-rc.1"])?;
     let later = release_commit(&root, "0.2.0", "chore(release): 0.2.0 (#10)")?;
