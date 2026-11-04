@@ -319,9 +319,10 @@ owner publishes the draft.
    that the highlights file exists and is not empty, that the version is above
    every stable tag and that an existing `vX.Y.Z` points at the same commit. It
    only reports (`validated`); the write job does not run. A broken release
-   commit therefore fails its own run. The decision job builds the tool on every
-   push to `main`; if that build or the decision fails for a release commit,
-   fix the cause and re-run the failed workflow run of that push.
+   commit therefore fails its own run. Re-run the failed workflow run only after
+   a transient build or service failure. A re-run uses the original commit, so a
+   metadata failure (title, `Cargo.toml`, highlights) repeats; fix it with a new
+   release pull request merged to `main`.
 7. **Candidate, then stable.** Both tags are made by running **Release tag** by
    hand on `main`, each time as a separate decision of the owner (see
    [Release candidates](#release-candidates-and-the-stable-release)). The write

@@ -52,11 +52,14 @@ on:
 
 permissions: {}
 
-# One group per commit and request: a single group would let GitHub drop a
-# queued run when a newer one arrives, and a dropped run would leave a release
-# step undone.
+# One group for every run, served in order: each run reads the tags when it
+# starts, so a stable run sees the candidate written before it and a candidate
+# run sees a stable tag written before it. `queue: max` keeps up to 100 pending
+# runs; without it GitHub keeps one pending run per group and cancels the older
+# one, and a cancelled run would leave a release step undone.
 concurrency:
-  group: release-tag-${{ github.sha }}-${{ inputs.candidate }}-${{ inputs.stable }}-${{ inputs.release_commit }}
+  group: release-tag
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -130,8 +133,21 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "unexpected tag '$TAG'" >&2; exit 1; }
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit '$SHA'" >&2; exit 1; }
           if [ "$ACTION" = create ]; then
-            gh api --method POST "repos/$repo/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" > /dev/null
-            echo "Created $TAG at $SHA"
+            # A "re-run failed jobs" keeps the decision of the first attempt, so
+            # the tag may exist by now: accept it at the same commit, never move it.
+            # matching-refs answers an empty list for a missing tag, where a
+            # direct lookup prints an error document on standard output.
+            current=$(gh api "repos/$repo/git/matching-refs/tags/$TAG" \
+              --jq "[.[] | select(.ref == \"refs/tags/$TAG\") | .object.sha][0] // empty")
+            if [ -z "$current" ]; then
+              gh api --method POST "repos/$repo/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" > /dev/null
+              echo "Created $TAG at $SHA"
+            elif [ "$current" = "$SHA" ]; then
+              echo "$TAG already exists at $SHA"
+            else
+              echo "$TAG exists at $current, not at $SHA" >&2
+              exit 1
+            fi
           fi
           # A re-run after a failed dispatch starts the draft; a re-run after a
           # started one does not start it twice.

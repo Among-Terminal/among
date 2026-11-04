@@ -152,6 +152,11 @@ fn a_candidate_is_tagged_on_the_release_commit_without_a_stable_tag() -> Result<
     );
     // A candidate is not tied to the earlier tag: no v0.2.0 exists.
     assert!(git(&root, &["tag", "--list", "v0.2.0"])?.is_empty());
+    // An empty release_commit means "not given": the tip is used.
+    assert_eq!(
+        summary(&decide_candidate(&root, "1", Some(""))?),
+        (Action::Create, "v0.2.0-rc.1", release.as_str())
+    );
 
     git(&root, &["tag", "v0.2.0-rc.1"])?;
     assert_eq!(decide_candidate(&root, "1", None)?.action, Action::Exists);

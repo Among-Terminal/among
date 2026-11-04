@@ -42,12 +42,11 @@ fn only_a_push_to_main_or_a_manual_run_starts_it() -> Result<()> {
     assert_eq!(inputs["release_commit"]["required"], false);
     assert_eq!(document["on"].as_object().map(|map| map.len()), Some(2));
     assert_eq!(document["permissions"], json!({}));
-    // One group per commit and request: a shared group would drop a queued
-    // release run.
-    assert_eq!(
-        document["concurrency"]["group"],
-        "release-tag-${{ github.sha }}-${{ inputs.candidate }}-${{ inputs.stable }}-${{ inputs.release_commit }}"
-    );
+    // One group for every run, served in order, so a stable run sees a
+    // candidate written before it; the long queue keeps GitHub from cancelling
+    // an older pending run, which would leave a release step undone.
+    assert_eq!(document["concurrency"]["group"], "release-tag");
+    assert_eq!(document["concurrency"]["queue"], "max");
     assert_eq!(document["concurrency"]["cancel-in-progress"], false);
     Ok(())
 }
@@ -129,6 +128,11 @@ fn the_write_job_only_creates_the_decided_tag_and_starts_the_draft() -> Result<(
         "^[0-9a-f]{40}$",
         "if [ \"$ACTION\" = create ]; then",
         "git/refs\" -f \"ref=refs/tags/$TAG\" -f \"sha=$SHA\"",
+        // A rerun of failed jobs finds the tag already made: same commit is
+        // accepted, another commit is an error.
+        "git/matching-refs/tags/$TAG\"",
+        "select(.ref == \\\"refs/tags/$TAG\\\")",
+        "elif [ \"$current\" = \"$SHA\" ]; then",
         "gh workflow run release-draft.yml --repo \"$repo\" --ref \"$TAG\"",
     ] {
         assert!(shell.contains(required), "missing: {required}");
