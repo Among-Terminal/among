@@ -6956,7 +6956,19 @@ mod tests {
             pump();
             await_review(&prefs);
             accept_review(&prefs);
-            assert!(switch.is_active());
+            // The row follows the host on a later pass; give a slow runner time
+            // and name the host's states if the switch never turns on.
+            for _ in 0..20 {
+                if switch.is_active() {
+                    break;
+                }
+                pump();
+            }
+            assert!(
+                switch.is_active(),
+                "the switch stayed off after the review was accepted; host states: {:?}",
+                ctx.state.borrow().plugins.listing()
+            );
             assert_eq!(
                 crate::settings::load(&path, crate::settings::Document::ManagedPlugins).unwrap()
                     ["plugins"][CLOCK]["enabled"],
