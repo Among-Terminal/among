@@ -5,7 +5,7 @@
 
 use super::data_dir;
 use super::launch::{Applied, Confinement, Spec};
-use super::level::{self, Protection};
+use super::level;
 use crate::plugin::process::confined_program;
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -15,7 +15,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
 
 pub(super) struct Scratch {
     pub root: PathBuf,
@@ -285,9 +284,6 @@ impl Victim {
     pub fn limits(&self) -> String {
         std::fs::read_to_string(format!("/proc/{}/limits", self.pid())).unwrap()
     }
-    pub fn status(&self) -> String {
-        std::fs::read_to_string(format!("/proc/{}/status", self.pid())).unwrap()
-    }
 }
 
 impl Drop for Victim {
@@ -311,14 +307,19 @@ pub(super) struct Row {
     pub verdict: &'static str,
 }
 
-pub(super) static ROWS: Mutex<Vec<Row>> = Mutex::new(Vec::new());
+thread_local! {
+    // each test runs on its own thread, so concurrent tests never mix rows.
+    static ROWS: std::cell::RefCell<Vec<Row>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 pub(super) fn record(action: &str, control: &Outcome, confined: &Outcome, verdict: &'static str) {
-    ROWS.lock().unwrap().push(Row {
-        action: action.into(),
-        control: control.text(),
-        confined: confined.text(),
-        verdict,
+    ROWS.with_borrow_mut(|rows| {
+        rows.push(Row {
+            action: action.into(),
+            control: control.text(),
+            confined: confined.text(),
+            verdict,
+        })
     });
 }
 
@@ -337,7 +338,7 @@ pub(super) fn write_report(target: &str) {
         if probe.seccomp { "available" } else { "unavailable" },
         std::env::var("AMONG_OUTER_CONFINEMENT").unwrap_or_else(|_| "none declared".into()),
     );
-    let rows = std::mem::take(&mut *ROWS.lock().unwrap());
+    let rows = ROWS.with_borrow_mut(std::mem::take);
     for row in rows.iter() {
         text.push_str(&format!(
             "| {} | {} | {} | {} |\n",
@@ -347,9 +348,4 @@ pub(super) fn write_report(target: &str) {
     let path = Path::new(&directory).join(format!("{target}.md"));
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(path, text).unwrap();
-}
-
-#[allow(dead_code)]
-pub(super) fn protection_of(session: &Session) -> Option<Protection> {
-    session.applied.as_ref().map(|applied| applied.protection)
 }

@@ -25,6 +25,15 @@ fn subtitle(info: &Overview) -> String {
     if let Some(running) = &info.running_version {
         text.push_str(&format!("\nRunning package version {running}"));
     }
+    // a refused start already says why in the state line above.
+    if let Some(protection) = info
+        .protection
+        .as_ref()
+        .filter(|line| line.starts_with("Protection:"))
+    {
+        text.push('\n');
+        text.push_str(protection);
+    }
     if !info.available || info.declared.starts_with("Declared API unavailable:") {
         text.push('\n');
         text.push_str(&info.declared);
@@ -36,6 +45,7 @@ fn subtitle(info: &Overview) -> String {
 struct Row {
     widget: glib::WeakRef<adw::ActionRow>,
     switch: glib::WeakRef<gtk::Switch>,
+    allow: glib::WeakRef<gtk::Button>,
     updating: Rc<Cell<bool>>,
     generation: Option<String>,
 }
@@ -53,6 +63,9 @@ impl Row {
             info.name, info.key
         ))]);
         switch.set_sensitive(info.enabled || info.available);
+        if let Some(allow) = self.allow.upgrade() {
+            allow.set_visible(info.consent_offer.is_some());
+        }
         // even setting the same active value cancels GTK's keyboard-toggle
         // animation before its active-notify can commit the user's choice.
         if switch.is_active() != info.enabled {
@@ -317,6 +330,59 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
         });
         row.add_suffix(&details);
     }
+    let allow = gtk::Button::with_label("Allow reduced protection…");
+    allow.set_valign(gtk::Align::Center);
+    allow.set_visible(info.consent_offer.is_some());
+    allow.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Allow {} ({}) to start with reduced protection",
+        info.name, info.key
+    ))]);
+    allow.connect_clicked({
+        let key = info.key.clone();
+        let inventory = ctx.plugin_inventory.clone();
+        let allow_protection = ctx.allow_reduced_protection.clone();
+        move |button| {
+            // the offer is read again at the click: a stale row cannot grant
+            // a level the kernel no longer offers.
+            let Some((info, offer)) = inventory()
+                .into_iter()
+                .find(|info| info.key == key)
+                .and_then(|info| info.consent_offer.map(|offer| (info, offer)))
+            else {
+                return;
+            };
+            let dialog = adw::AlertDialog::builder()
+                .heading(format!("Run {} with reduced protection?", info.name))
+                .body(format!(
+                    "This kernel can only give the plugin {}. The plugin is still \
+                     denied sockets and process control, but file access is less \
+                     strictly limited. The permission applies to this plugin only \
+                     and is asked again if the protection gets lower.",
+                    offer.label()
+                ))
+                .build();
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("allow", "Allow reduced protection");
+            dialog.set_response_appearance("allow", adw::ResponseAppearance::Destructive);
+            dialog.set_close_response("cancel");
+            let key = key.clone();
+            let allow_protection = allow_protection.clone();
+            dialog.connect_response(None, move |_, response| {
+                if response == "allow" {
+                    if let Err(problem) = allow_protection(&key, &offer.token()) {
+                        eprintln!("among: {problem}");
+                    }
+                }
+            });
+            dialog.present(
+                button
+                    .root()
+                    .and_then(|root| root.downcast::<gtk::Window>().ok())
+                    .as_ref(),
+            );
+        }
+    });
+    row.add_suffix(&allow);
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
     switch.set_active(info.enabled);
@@ -365,6 +431,7 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
     Row {
         widget: row.downgrade(),
         switch: switch.downgrade(),
+        allow: allow.downgrade(),
         updating,
         generation: info.generation.clone(),
     }

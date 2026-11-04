@@ -53,20 +53,6 @@ fn reap(mut child: Child) -> std::process::ExitStatus {
     child.wait().unwrap()
 }
 
-fn failure(error: StartError) -> (String, bool) {
-    match error {
-        StartError::Failed {
-            reason,
-            confinement_failed,
-            ..
-        } => (reason, confinement_failed),
-        StartError::Unproven { reason, child } => {
-            reap(child);
-            (reason, true)
-        }
-    }
-}
-
 #[test]
 fn a_successful_start_reports_the_level_the_child_applied() {
     if !full_protection_available() {

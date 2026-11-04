@@ -360,6 +360,45 @@ fn explicit_recovery_removal_uncertainty_and_reinstall_authority_follow_complete
 }
 
 #[test]
+fn uninstalling_keeps_the_plugin_data_directory_and_its_contents() {
+    use crate::plugin::install::mutation::Action;
+    let root = OwnedRoot::new();
+    let (transaction, receipt) = prepared(&root.0);
+    transaction
+        .commit(receipt.clone(), || Ok(()), || Ok(()))
+        .unwrap();
+    drop(transaction);
+    // the data directory lives in the data home, outside the managed store.
+    let home = std::env::temp_dir().join(format!("among-retained-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir(&home).unwrap();
+    std::fs::set_permissions(&home, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let data = crate::plugin::sandbox::data_dir::open(
+        &home,
+        &receipt.namespace_component(),
+        &receipt.plugin_id,
+    )
+    .unwrap();
+    std::fs::write(data.path.join("state.json"), b"{\"kept\":true}").unwrap();
+    mutate(
+        &root.0,
+        &receipt,
+        Action::Uninstall,
+        None,
+        &|| Ok(()),
+        || Ok(()),
+    )
+    .unwrap();
+    assert!(inventory::read(&root.0).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read(data.path.join("state.json")).unwrap(),
+        b"{\"kept\":true}",
+        "uninstalling a plugin must not delete its data"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
 fn removal_needs_actual_stop_ack_and_failed_commit_preserves_complete_selection() {
     use crate::plugin::install::mutation::{Action, Job};
     let _serial = crate::plugin::install::source::tests::JOB_TESTS

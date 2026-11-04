@@ -38,11 +38,11 @@ fn jump(code: u32, k: u32, jt: u8, jf: u8) -> sock_filter {
     }
 }
 
-const LOAD_WORD: u32 = (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u32;
-const JUMP_EQUAL: u32 = (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u32;
+const LOAD_WORD: u32 = libc::BPF_LD | libc::BPF_W | libc::BPF_ABS;
+const JUMP_EQUAL: u32 = libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K;
 #[cfg(target_arch = "x86_64")]
-const JUMP_SET: u32 = (libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K) as u32;
-const RETURN: u32 = (libc::BPF_RET | libc::BPF_K) as u32;
+const JUMP_SET: u32 = libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K;
+const RETURN: u32 = libc::BPF_RET | libc::BPF_K;
 
 /// A finished filter. Immutable, so a clone shared with a forked child needs
 /// no synchronisation.
@@ -102,6 +102,7 @@ impl Program {
         Self { instructions: out }
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.instructions.len()
     }
@@ -190,7 +191,7 @@ pub(super) mod interpreter {
                     usize::from(instruction.jf)
                 };
             } else if cfg!(target_arch = "x86_64")
-                && code == (libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K) as u32
+                && code == libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K
             {
                 counter += if accumulator & instruction.k != 0 {
                     usize::from(instruction.jt)

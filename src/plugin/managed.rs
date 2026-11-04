@@ -20,11 +20,11 @@ pub const FEATURES: &[&str] = &[
     "context.title",
     "context.process",
     "events.terminal",
-    // Reading system load. The host only reviews and records this grant, as
-    // for any other feature: no code path checks it, and a plugin process
-    // reads whatever its user can read. Limiting a plugin to exactly the load
-    // sources needs an operating-system policy that does not exist yet.
-    "system.metrics",
+    // Reading system load. Beyond being reviewed and recorded like any other
+    // feature, it widens the kernel-enforced sandbox: a plugin holding it may
+    // also read /proc/stat, /proc/meminfo and /proc/loadavg and nothing else
+    // under /proc (`sandbox::policy::SYSTEM_METRICS_READ`).
+    super::sandbox::policy::SYSTEM_METRICS_FEATURE,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

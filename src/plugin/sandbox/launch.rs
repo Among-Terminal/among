@@ -130,10 +130,6 @@ impl Confinement {
         })
     }
 
-    pub fn digest(&self) -> &str {
-        &self.digest
-    }
-
     #[cfg(test)]
     pub fn with_inject(mut self, inject: Inject) -> Self {
         self.inject = inject;
@@ -540,21 +536,21 @@ fn watch(reader: RawFd, state: &Mutex<Watch>, timeout: Duration) -> Collected {
         };
         unsafe { libc::poll(&mut descriptor, 1, POLL_SLICE_MS) };
         let mut buffer = [0u8; 64];
-        let mut at_end = false;
-        loop {
+        // drain what is there; a zero-length read is the end of the stream,
+        // a would-block error only means nothing more has arrived yet.
+        let at_end = loop {
             let count = unsafe { libc::read(reader, buffer.as_mut_ptr().cast(), buffer.len()) };
             if count > 0 {
                 let room = (2 * status::RECORD_BYTES).saturating_sub(bytes.len());
                 bytes.extend_from_slice(&buffer[..(count as usize).min(room)]);
             } else {
-                at_end = count == 0;
-                break;
+                break count == 0;
             }
-        }
+        };
         if pid.is_none() && bytes.len() >= status::RECORD_BYTES {
             pid = status::parse_begin(&bytes).ok();
         }
-        let mut guard = state.lock().expect("watch state");
+        let guard = state.lock().expect("watch state");
         if guard.finished {
             let since = *finished_at.get_or_insert_with(Instant::now);
             if at_end || since.elapsed() > REPORT_GRACE {

@@ -173,3 +173,25 @@ Background registration or process-state changes update rows by identity rather
 than rebuilding focused controls every tick. Opening/searching these views does
 not enable code or save defaults. Repository/install operations are separate from
 this inventory; no download or uninstall is implied by a static card.
+
+## Plugin protection level
+
+Every managed plugin runs in a kernel-enforced sandbox ([Confinement](plugins.md#confinement)).
+The plugin's card shows the level it actually runs with:
+
+| Card | Meaning |
+|---|---|
+| `Protection: full (Landlock ABI N and seccomp)` | The child applied Landlock ABI 3 or newer and the seccomp filter. |
+| `Protection: reduced (…) · running with reduced protection` | The kernel offers less than ABI 3 (or no Landlock) and you allowed it. The mark stays for as long as the plugin runs. |
+| `Unavailable` with `the kernel supports only Landlock ABI N (required: ABI 3, kernel 6.2 or newer); the plugin was not started. Allow starting with reduced protection to run it with …` | The start was refused for lack of your consent. The card shows **Allow reduced protection…**. |
+| `Unavailable` with `the kernel cannot load a seccomp filter; the plugin is not started` | Never starts, with or without consent. |
+| `Unavailable` naming a link, owner or permission | The plugin's data directory could not be created safely. |
+
+**Allow reduced protection…** opens a confirmation that names the level. The choice
+is saved per plugin in `managed-plugins.json` as `protection_consent`
+(`reduced:1`, `reduced:2` or `seccomp-only`). It covers that level and any stronger
+one; if a later start reaches a lower level, the plugin is refused again until you
+allow that one. The card's details list, for the latest start, the identity,
+generation, granted features, the digest of the policy applied, the Landlock ABI and
+enforcement the child reported, whether the seccomp filter loaded and the reason of
+any refusal.

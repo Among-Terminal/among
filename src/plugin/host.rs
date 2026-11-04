@@ -21,7 +21,8 @@ pub const DEVELOPMENT_ONLY: &str =
     "development install: it starts only when Among is started with --plugin-development";
 
 mod confinement;
-pub use confinement::Record as ConfinementRecord;
+#[cfg(test)]
+mod confinement_tests;
 mod environment;
 mod managed_runtime;
 pub use managed_runtime::Configuration;

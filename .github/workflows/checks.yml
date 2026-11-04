@@ -55,6 +55,26 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Kernel and Landlock facts
+        # The runner image changes without notice, so the kernel and the
+        # security modules of every run are kept with its evidence. The
+        # Landlock ABI itself is recorded by the sandbox tests in the report
+        # header (matrix-<arch>.md).
+        run: |
+          set -euo pipefail
+          facts="$RUNNER_TEMP/sandbox-evidence"
+          mkdir -p "$facts"
+          {
+            echo "runner: ${{ matrix.runner }}"
+            echo "kernel: $(uname -r)"
+            echo "machine: $(uname -m)"
+            echo "lsm: $(cat /sys/kernel/security/lsm)"
+            if tr ',' '\n' < /sys/kernel/security/lsm | grep -qx landlock; then
+              echo "landlock listed: yes"
+            else
+              echo "landlock listed: no"
+            fi
+          } | tee "$facts/kernel-facts-${{ matrix.runner }}.txt"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: plugin-candidate-checks
@@ -71,6 +91,10 @@ jobs:
         run: |
           echo "AMONG_CHECK_ROOT=$RUNNER_TEMP/among-checks" >> "$GITHUB_ENV"
           echo "CARGO_HOME=$RUNNER_TEMP/among-checks/ci-cargo" >> "$GITHUB_ENV"
+          # The sandbox tests must fail, not skip, when a runner cannot give
+          # full protection; their tables are kept as evidence.
+          echo "AMONG_REQUIRE_SANDBOX=1" >> "$GITHUB_ENV"
+          echo "AMONG_HOSTILE_REPORT=$RUNNER_TEMP/sandbox-evidence" >> "$GITHUB_ENV"
           mkdir -m 700 "$RUNNER_TEMP/among-checks"
       - name: Pinned Rust toolchain
         run: |
@@ -79,6 +103,42 @@ jobs:
           dirname "$(rustup which cargo)" >> "$GITHUB_PATH"
       - name: Two independent Cargo packages
         run: sh scripts/check-packages.sh
+      - name: Hostile plugin actions as a throwaway user in a disposable container
+        # The user-wide priority controls (setpriority on the process group and
+        # on every process of the user) must never run against a real session,
+        # so their positive controls run only here. Docker's own seccomp
+        # profile can deny some controls (io_uring, pidfd_getfd); those rows
+        # are reported NOT VERIFIED here and are covered by the native run in
+        # the previous step.
+        run: |
+          set -euo pipefail
+          cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/hostile-tests.jsonl"
+          exe="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .target.kind == ["bin"] and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one application test executable") end' "$RUNNER_TEMP/hostile-tests.jsonl")"
+          case "$exe" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -x "$PWD/target/debug/examples/sandbox-hostile"
+          reports="$RUNNER_TEMP/sandbox-evidence/container"
+          mkdir -p -m 777 "$reports"
+          docker run --rm --user 4242:4242 --network none --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env AMONG_HOSTILE_CONTAINER=1 --env AMONG_REQUIRE_SANDBOX=1 \
+            --env AMONG_OUTER_CONFINEMENT=docker-default-seccomp \
+            --env AMONG_HOSTILE_REPORT=/report --env TMPDIR=/scratch \
+            --tmpfs /scratch:rw,exec,mode=1777,size=256m \
+            --mount "type=bind,source=/usr,target=/usr,readonly" \
+            --mount "type=bind,source=/etc/ld.so.cache,target=/etc/ld.so.cache,readonly" \
+            --mount "type=bind,source=$PWD,target=$PWD,readonly" \
+            --mount "type=bind,source=$reports,target=/report" \
+            --workdir "$PWD" \
+            ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 \
+            "$exe" plugin::sandbox::hostile --test-threads=1 --nocapture
+      - name: Keep the sandbox evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sandbox-evidence-${{ matrix.runner }}
+          path: ${{ runner.temp }}/sandbox-evidence
+          if-no-files-found: warn
+          retention-days: 30
       - name: Notification accessibility consumers on owned displays
         run: |
           set -euo pipefail

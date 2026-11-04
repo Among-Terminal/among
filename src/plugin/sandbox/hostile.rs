@@ -15,8 +15,6 @@ enum Expect {
     Ok,
     Errno(&'static str),
     DiedBySignal,
-    /// The process answered with some error rather than dying.
-    AnyError,
 }
 
 impl Expect {
@@ -25,9 +23,6 @@ impl Expect {
             Self::Ok => outcome.succeeded(),
             Self::Errno(errno) => outcome.failed_with(errno),
             Self::DiedBySignal => matches!(outcome, Outcome::Died(Some(_))),
-            Self::AnyError => {
-                matches!(outcome, Outcome::Answered(text) if text.starts_with("err:"))
-            }
         }
     }
 }
@@ -203,7 +198,7 @@ fn every_hostile_action_is_denied_under_confinement_after_succeeding_without_it(
         Need::Required,
     );
     run.pair(
-        "read /etc/hostname-class system file outside the read set",
+        "read /etc/passwd (outside the read set)",
         "read /etc/passwd",
         Expect::Ok,
         Expect::Errno("EACCES"),
@@ -647,6 +642,27 @@ fn the_system_metrics_grant_adds_exactly_three_files() {
 /// Descriptors above stderr must not survive into the plugin.
 #[test]
 fn only_the_standard_descriptors_and_the_executable_survive_exec() {
+    const MARKER: &str = "AMONG_DESCRIPTOR_LEAK_PROCESS";
+    // the test leaks descriptors and raises a limit on purpose, so it runs in
+    // a process of its own where no sibling test can inherit them.
+    if std::env::var_os(MARKER).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "plugin::sandbox::hostile::only_the_standard_descriptors_and_the_executable_survive_exec",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     if !full_protection_available() {
         return;
     }

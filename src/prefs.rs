@@ -27,6 +27,7 @@ pub(crate) type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_
 pub(crate) type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
 type ConfigurationQuery = dyn Fn(&str) -> Configuration;
 type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
+type AllowProtection = dyn Fn(&str, &str) -> Result<(), String>;
 type RestartPlugin = dyn Fn(&str, &str, Option<gtk::Window>);
 type PackageAction = dyn Fn(
     crate::plugin::inventory::Receipt,
@@ -59,6 +60,9 @@ pub struct PreferencesContext {
     pub restart_plugin: Rc<RestartPlugin>,
     pub enable_plugin: Rc<EnablePlugin>,
     pub disable_plugin: Rc<dyn Fn(&str)>,
+    /// Records the user's consent to start a plugin at a reduced protection
+    /// level (identified by the level's token) and tries the start again.
+    pub allow_reduced_protection: Rc<AllowProtection>,
     pub installations_changed: Rc<dyn Fn()>,
     pub package_action: Rc<PackageAction>,
     pub retained_settings: Rc<RetainedSettingsQuery>,
@@ -392,6 +396,7 @@ mod tests {
                 desired.set(false);
                 *disabled.borrow_mut() = PluginState::Disabled;
             }),
+            allow_reduced_protection: Rc::new(|_, _| Err("no kernel in this fixture".into())),
             bindings_changed: Rc::new(|| {}),
         });
         fn find<T: IsA<gtk::Widget> + gtk::glib::object::IsClass>(

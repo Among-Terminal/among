@@ -4103,6 +4103,26 @@ fn open_preferences(ctx: &Window) {
                 report_settings_save(&window, result);
             }
         }),
+        allow_reduced_protection: Rc::new({
+            let state = ctx.state.clone();
+            let window = ctx.handle();
+            move |name: &str, token: &str| {
+                let level = crate::plugin::sandbox::level::Protection::from_token(token)
+                    .ok_or_else(|| "unknown protection level".to_string())?;
+                state
+                    .borrow_mut()
+                    .plugins
+                    .allow_reduced_protection(name, level)
+                    .map_err(|problem| problem.to_string())?;
+                // the consent lives in the plugin's local record, beside its switch.
+                let result = state
+                    .borrow_mut()
+                    .settings
+                    .managed_protection_consent_changed(name, &level.token());
+                report_settings_save(&window, result);
+                Ok(())
+            }
+        }),
         disable_plugin: Rc::new({
             let state = ctx.state.clone();
             let window = ctx.handle();
@@ -7413,6 +7433,7 @@ mod tests {
                         toggled.set(toggled.get() + 1);
                     }
                 }),
+                allow_reduced_protection: Rc::new(|_, _| Err("no kernel in this fixture".into())),
                 bindings_changed: Rc::new(|| {}),
             },
         );

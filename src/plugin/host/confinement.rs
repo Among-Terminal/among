@@ -280,18 +280,13 @@ impl PluginHost {
         }
     }
 
-    /// The protection record of the plugin's latest start.
-    pub fn confinement_record(&self, name: &str) -> Option<Record> {
+    #[cfg(test)]
+    pub(crate) fn confinement_record(&self, name: &str) -> Option<Record> {
         self.plugins[self.find(name)?].confinement.record.clone()
     }
 
-    /// The reduced level a refused start offers, if the user could allow it.
-    pub fn consent_offer(&self, name: &str) -> Option<Protection> {
-        self.plugins[self.find(name)?].confinement.awaiting
-    }
-
-    /// The reduced level the user allowed for this plugin.
-    pub fn consented_protection(&self, name: &str) -> Option<Protection> {
+    #[cfg(test)]
+    pub(crate) fn consented_protection(&self, name: &str) -> Option<Protection> {
         self.plugins[self.find(name)?].confinement.consent
     }
 

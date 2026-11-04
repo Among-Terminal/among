@@ -195,12 +195,18 @@ pub fn run(github_hosted: bool, scratch: &Path) -> Result<PathBuf> {
         .as_bytes(),
         0o755,
     )?;
-    let program = format!(
-        "#!/bin/sh\nexec {} snap-external-plugin\n",
-        quote(tool.to_str().ok_or("tool path not UTF-8")?)
-    );
-    let config =
-        crate::managed_fixture::install(&h.base, "vm-external", program.as_bytes(), &["status"])?;
+    // the plugin runs confined and may execute only its own package, so the
+    // tool is installed beside the script instead of being run from where it
+    // was built.
+    let program = "#!/bin/sh\nexec ./among-tool snap-external-plugin\n";
+    let tool_bytes = fs::read(&tool)?;
+    let config = crate::managed_fixture::install_with(
+        &h.base,
+        "vm-external",
+        program.as_bytes(),
+        &["status"],
+        &[("among-tool", &tool_bytes)],
+    )?;
     let original = fs::read(&config)?;
     let baseline_ld = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
     h.env

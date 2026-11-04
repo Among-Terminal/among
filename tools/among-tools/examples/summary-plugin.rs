@@ -1,15 +1,16 @@
 // A managed subprocess fixture whose workspace summaries change on demand.
 //
 // Every workspace summary it reports is the current content of `summary.txt`
-// in its home directory, so a check can change what the sidebar should show at
-// a moment of its choosing by rewriting that file. Other scopes get no
+// in its data directory (the only place a confined plugin may read besides its
+// installed files), so a check can change what the sidebar should show at a
+// moment of its choosing by rewriting that file. Other scopes get no
 // fragments. The summary is re-collected as often as the host allows.
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 
 fn summary() -> String {
-    std::env::var_os("HOME")
-        .map(|home| std::path::PathBuf::from(home).join("summary.txt"))
+    std::env::var_os("AMONG_PLUGIN_DATA_DIR")
+        .map(|directory| std::path::PathBuf::from(directory).join("summary.txt"))
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|text| text.trim().to_string())
         .unwrap_or_default()

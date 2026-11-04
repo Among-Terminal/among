@@ -14,6 +14,8 @@ mod general;
 #[derive(Default)]
 struct ManagedEdits {
     enabled: Option<bool>,
+    /// The reduced protection level the user allowed, as its stored token.
+    protection_consent: Option<String>,
     installation: Option<String>,
     review: Option<Value>,
     settings: Option<(
@@ -350,6 +352,19 @@ impl PreferencesStorage {
         self.flush_managed().map(|_| ())
     }
 
+    /// Stores the reduced protection level the user allowed for one plugin.
+    pub fn managed_protection_consent_changed(
+        &mut self,
+        key: &str,
+        token: &str,
+    ) -> Result<(), StorageError> {
+        self.pending_managed
+            .entry(key.into())
+            .or_default()
+            .protection_consent = Some(token.into());
+        self.flush_managed().map(|_| ())
+    }
+
     pub fn managed_review_for_installation(
         &mut self,
         key: &str,
@@ -388,6 +403,9 @@ impl PreferencesStorage {
                     }
                     if let Some(installation) = &pending.installation {
                         entry["installation"] = json!(installation);
+                    }
+                    if let Some(token) = &pending.protection_consent {
+                        entry["protection_consent"] = json!(token);
                     }
                     match &pending.review {
                         Some(Value::Null) => {
