@@ -132,7 +132,9 @@ fn fail(label: &str, control: &Outcome, confined: &Outcome, message: &str) -> ! 
 }
 
 /// A SysV segment, message queue and semaphore set and a POSIX message queue
-/// owned by this process, removed again when dropped.
+/// owned by this process, removed again when dropped. An identifier of -1 and
+/// an empty queue name mean "not created", so a setup that stops halfway still
+/// removes what it already made.
 struct SameUserIpc {
     key: i32,
     queue: String,
@@ -142,14 +144,28 @@ struct SameUserIpc {
 }
 
 impl SameUserIpc {
-    fn create() -> Self {
+    /// Creates the four objects, or says which step the environment refused
+    /// (a container may forbid SysV IPC or have no message queue file system).
+    fn create() -> Result<Self, String> {
         let key = 0x5a00_0000 | (std::process::id() as i32 & 0x00ff_ffff);
+        let mut made = Self {
+            key,
+            queue: String::new(),
+            segment: -1,
+            messages: -1,
+            semaphores: -1,
+        };
         let flags = libc::IPC_CREAT | libc::IPC_EXCL | 0o600;
+        let refused = |call: &str| format!("{call}: {}", std::io::Error::last_os_error());
         unsafe {
-            let segment = libc::shmget(key, 4096, flags);
-            assert!(segment >= 0, "shmget: {}", std::io::Error::last_os_error());
-            let address = libc::shmat(segment, std::ptr::null(), 0);
-            assert!(address as isize != -1, "shmat");
+            made.segment = libc::shmget(key, 4096, flags);
+            if made.segment < 0 {
+                return Err(refused("shmget"));
+            }
+            let address = libc::shmat(made.segment, std::ptr::null(), 0);
+            if address as isize == -1 {
+                return Err(refused("shmat"));
+            }
             let secret = c"same-uid-secret";
             std::ptr::copy_nonoverlapping(
                 secret.as_ptr().cast::<u8>(),
@@ -157,17 +173,21 @@ impl SameUserIpc {
                 secret.to_bytes_with_nul().len(),
             );
             libc::shmdt(address);
-            let messages = libc::msgget(key + 1, flags);
-            assert!(messages >= 0, "msgget: {}", std::io::Error::last_os_error());
+            made.messages = libc::msgget(key + 1, flags);
+            if made.messages < 0 {
+                return Err(refused("msgget"));
+            }
             let message = [1i64, 0x4141];
-            assert_eq!(libc::msgsnd(messages, message.as_ptr().cast(), 8, 0), 0);
-            let semaphores = libc::semget(key + 2, 1, flags);
-            assert!(
-                semaphores >= 0,
-                "semget: {}",
-                std::io::Error::last_os_error()
-            );
-            assert_eq!(libc::semctl(semaphores, 0, libc::SETVAL, 7), 0);
+            if libc::msgsnd(made.messages, message.as_ptr().cast(), 8, 0) != 0 {
+                return Err(refused("msgsnd"));
+            }
+            made.semaphores = libc::semget(key + 2, 1, flags);
+            if made.semaphores < 0 {
+                return Err(refused("semget"));
+            }
+            if libc::semctl(made.semaphores, 0, libc::SETVAL, 7) != 0 {
+                return Err(refused("semctl"));
+            }
             let queue = format!("/among-hostile-{}", std::process::id());
             let mut attributes: libc::mq_attr = std::mem::zeroed();
             attributes.mq_maxmsg = 2;
@@ -179,35 +199,37 @@ impl SameUserIpc {
                 0o600 as libc::mode_t,
                 &attributes as *const libc::mq_attr,
             );
-            assert!(
-                descriptor != -1,
-                "mq_open: {}",
-                std::io::Error::last_os_error()
-            );
-            assert_eq!(
-                libc::mq_send(descriptor, b"queued".as_ptr().cast(), 6, 0),
-                0
-            );
+            if descriptor == -1 {
+                return Err(refused("mq_open"));
+            }
+            made.queue = queue;
+            let sent = libc::mq_send(descriptor, b"queued".as_ptr().cast(), 6, 0);
+            let sent_error = refused("mq_send");
             libc::mq_close(descriptor);
-            Self {
-                key,
-                queue,
-                segment,
-                messages,
-                semaphores,
+            if sent != 0 {
+                return Err(sent_error);
             }
         }
+        Ok(made)
     }
 }
 
 impl Drop for SameUserIpc {
     fn drop(&mut self) {
         unsafe {
-            libc::shmctl(self.segment, libc::IPC_RMID, std::ptr::null_mut());
-            libc::msgctl(self.messages, libc::IPC_RMID, std::ptr::null_mut());
-            libc::semctl(self.semaphores, 0, libc::IPC_RMID);
-            let name = std::ffi::CString::new(self.queue.clone()).unwrap();
-            libc::mq_unlink(name.as_ptr());
+            if self.segment >= 0 {
+                libc::shmctl(self.segment, libc::IPC_RMID, std::ptr::null_mut());
+            }
+            if self.messages >= 0 {
+                libc::msgctl(self.messages, libc::IPC_RMID, std::ptr::null_mut());
+            }
+            if self.semaphores >= 0 {
+                libc::semctl(self.semaphores, 0, libc::IPC_RMID);
+            }
+            if !self.queue.is_empty() {
+                let name = std::ffi::CString::new(self.queue.clone()).unwrap();
+                libc::mq_unlink(name.as_ptr());
+            }
         }
     }
 }
@@ -594,43 +616,64 @@ fn every_hostile_action_is_denied_under_confinement_after_succeeding_without_it(
     // named IPC objects of this same user, created here by a process other
     // than the plugin. the control must reach them; under confinement the
     // calls that would reach them are refused.
-    let ipc = SameUserIpc::create();
-    run.pair(
-        "SysV shared memory: read another process's segment",
-        &format!("shm_read {}", ipc.key),
-        Expect::Ok,
-        Expect::Errno("EPERM"),
-        Need::Environment,
-    );
-    run.pair(
-        "SysV shared memory: list segments with SHM_STAT",
-        "shm_stat",
-        Expect::Ok,
-        Expect::Errno("EPERM"),
-        Need::Environment,
-    );
-    run.pair(
-        "SysV message queue: reach another process's queue",
-        &format!("msg_read {}", ipc.key + 1),
-        Expect::Ok,
-        Expect::Errno("EPERM"),
-        Need::Environment,
-    );
-    run.pair(
-        "SysV semaphore set: reach another process's set",
-        &format!("sem_read {}", ipc.key + 2),
-        Expect::Ok,
-        Expect::Errno("EPERM"),
-        Need::Environment,
-    );
-    run.pair(
-        "POSIX message queue: open another process's queue",
-        &format!("mq_read {}", ipc.queue),
-        Expect::Ok,
-        Expect::Errno("EPERM"),
-        Need::Environment,
-    );
-    drop(ipc);
+    match SameUserIpc::create() {
+        Ok(ipc) => {
+            run.pair(
+                "SysV shared memory: read another process's segment",
+                &format!("shm_read {}", ipc.key),
+                Expect::Ok,
+                Expect::Errno("EPERM"),
+                Need::Environment,
+            );
+            run.pair(
+                "SysV shared memory: list segments with SHM_STAT",
+                "shm_stat",
+                Expect::Ok,
+                Expect::Errno("EPERM"),
+                Need::Environment,
+            );
+            run.pair(
+                "SysV message queue: reach another process's queue",
+                &format!("msg_read {}", ipc.key + 1),
+                Expect::Ok,
+                Expect::Errno("EPERM"),
+                Need::Environment,
+            );
+            run.pair(
+                "SysV semaphore set: reach another process's set",
+                &format!("sem_read {}", ipc.key + 2),
+                Expect::Ok,
+                Expect::Errno("EPERM"),
+                Need::Environment,
+            );
+            run.pair(
+                "POSIX message queue: open another process's queue",
+                &format!("mq_read {}", ipc.queue),
+                Expect::Ok,
+                Expect::Errno("EPERM"),
+                Need::Environment,
+            );
+        }
+        Err(why) => {
+            // the environment refused to create the objects the control needs,
+            // so no row can show a denial: say so instead of failing the run.
+            for label in [
+                "SysV shared memory: read another process's segment",
+                "SysV shared memory: list segments with SHM_STAT",
+                "SysV message queue: reach another process's queue",
+                "SysV semaphore set: reach another process's set",
+                "POSIX message queue: open another process's queue",
+            ] {
+                record(
+                    label,
+                    &Outcome::Answered("not run".into()),
+                    &Outcome::Answered("not run".into()),
+                    "NOT VERIFIED (the environment refused to create the objects)",
+                );
+                run.unverified.push(format!("{label}: {why}"));
+            }
+        }
+    }
 
     // new user, mount and network namespaces hold a full capability set inside
     // themselves. the seccomp filter and Landlock domain are inherited and no_new_privs

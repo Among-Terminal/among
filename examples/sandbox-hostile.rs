@@ -225,7 +225,13 @@ fn affinity(pid: i64) -> String {
     // restrict to one CPU this process may already use: a cpuset that
     // excludes CPU 0 would make a fixed choice fail for the wrong reason.
     let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut allowed) };
+    let queried =
+        unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut allowed) };
+    if queried != 0 {
+        // a failed query (for example more CPUs than the fixed mask holds)
+        // would otherwise pick CPU 0 and blame the wrong cause.
+        return status(i64::from(queried));
+    }
     let first = (0..libc::CPU_SETSIZE as usize)
         .find(|cpu| unsafe { libc::CPU_ISSET(*cpu, &allowed) })
         .unwrap_or(0);
