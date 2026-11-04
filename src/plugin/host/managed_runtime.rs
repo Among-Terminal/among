@@ -1540,16 +1540,10 @@ mod tests {
         )
         .unwrap();
         assert!(names.contains("LANG") && names.contains("PATH"));
-        assert!(names.iter().all(|name| matches!(
-            name.as_str(),
-            "HOME"
-                | "PATH"
-                | "LANG"
-                | "XDG_DATA_HOME"
-                | "XDG_CONFIG_HOME"
-                | "XDG_CACHE_HOME"
-                | "XDG_RUNTIME_DIR"
-        )));
+        // user directories never reach a managed child, whatever the parent has.
+        assert!(names
+            .iter()
+            .all(|name| matches!(name.as_str(), "PATH" | "LANG" | "TZ")));
     }
 
     #[test]

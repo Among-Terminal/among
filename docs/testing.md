@@ -66,7 +66,8 @@ must leave every workspace unchanged. A private format that no drop target
 lists is never delivered to Among by GTK, so that case shows that the payload
 changes nothing rather than that a guard refused it. `summary-plugin` is a
 managed fixture and reports
-every workspace summary from `summary.txt` in its home directory; the check
+every workspace summary from `summary.txt` in its `AMONG_PLUGIN_DATA_DIR` (the one
+place a confined plugin can read that the check can also write); the check
 rewrites that file while a pane header is held over another entry and requires
 the shown destination and the old drawn summary to survive until the drop, and
 the new summary to be drawn after it. It repeats the refresh during a drag that
@@ -491,3 +492,70 @@ desktop entry, and leaves that entry visible in the namespace; without it, any
 system entry is masked.
 This tests only the supplied image on the recorded profile, not final DEB/RPM
 acceptance. Missing prerequisites and failed observations are failures, not skips.
+
+## Plugin sandbox (hostile tests)
+
+Managed plugins run under Landlock and a seccomp filter (see
+[plugins.md](plugins.md#confinement)). The tests below run on a real kernel; there is
+no mock of the kernel. `examples/sandbox-hostile.rs` is a managed-plugin fixture that
+attempts, on request, everything a confined plugin must not be able to do. Build it
+first: `cargo build --locked --examples`.
+
+```sh
+AMONG_REQUIRE_SANDBOX=1 AMONG_HOSTILE_REPORT=<directory> \
+  cargo test --locked --bin among -- plugin::sandbox plugin::host::confinement_tests
+```
+
+Every action runs twice: once without confinement, the positive control, which must
+succeed in the same environment, and once through the launch path every managed
+plugin uses. A denial counts as evidence only when its control succeeded. A control
+that cannot run (an `io_uring` disabled by sysctl, a file system without user
+extended attributes, a kernel without 32-bit entry points) marks that row
+`NOT VERIFIED` instead of passing it. `AMONG_REQUIRE_SANDBOX=1` makes a kernel that
+cannot give full protection (Landlock ABI below 3) fail the tests instead of skipping
+them with a `NOT VERIFIED` line. `AMONG_HOSTILE_REPORT` names a directory that
+receives one table per run (`matrix-<arch>.md`, `metrics-<arch>.md`) with the kernel,
+architecture, Landlock ABI and the declared outer confinement
+(`AMONG_OUTER_CONFINEMENT`, for example `docker-default-seccomp`).
+
+Two actions change priority for the whole process group or user (`setpriority` with
+`PRIO_PGRP` and `PRIO_USER` and `who == 0`). Their controls run only when
+`AMONG_HOSTILE_CONTAINER=1` is set, which is allowed only inside a disposable
+container as a throwaway user, never in a real session:
+
+```sh
+docker run --rm --user 4242:4242 -e AMONG_HOSTILE_CONTAINER=1 \
+  -e AMONG_HOSTILE_REPORT=/report <image> <test-binary> plugin::sandbox::hostile
+```
+
+Without the variable those two rows are `NOT VERIFIED (container-only)`; the filter
+semantics for them are also covered by `plugin::sandbox::bpf` unit tests that run the
+generated program against chosen system call data.
+
+Other checks in the same area: `plugin::sandbox::launch_tests` (every failing
+confinement step, a child stuck before `exec`, a missing or short report, an
+allocation between `fork` and `exec`), `plugin::sandbox::data_dir` (links at every
+level, foreign owner, permissions, a component swapped during opening),
+`plugin::sandbox::level` (the decision table), and `plugin::host::confinement_tests`
+(the fixture as a managed plugin: environment, data directory, records, consent,
+`system.metrics`). Kernels that Among cannot reach natively (Landlock ABI 1 or 2,
+no Landlock) are exercised by injecting the probe result; their real behaviour is
+not verified.
+
+`plugin::host::confinement_tests::the_released_official_plugins_still_produce_their_fragments_under_confinement`
+runs the released `clock`, `pane-pwd` and `system-status` binaries as managed plugins. It needs
+`AMONG_OFFICIAL_PLUGINS=<directory>` holding one extracted release package per plugin identifier
+(`clock/`, `pane-pwd/`, `system-status/`). Without the variable it prints `NOT VERIFIED` and passes, except
+under `AMONG_REQUIRE_SANDBOX=1`, where it fails; the `native` CI job extracts the candidate packages of the
+runner's architecture and sets both. Only the `native` job of `checks.yml` runs these tests; the package
+workflows only build the test executables.
+
+When a kernel or `linux-libc-dev` update adds a system call with a name that touches sockets, processes, signals,
+file metadata, mounts, namespaces or privileges, `plugin::sandbox::policy::review_tests` fails until the call is
+either added to the filter in `policy.rs` or listed with its reason in `REVIEWED_ALLOWED`. That is the update step
+for the filter's call list.
+
+The same-user IPC rows (`SysV shared memory`, `SysV message queue`, `SysV semaphore set`, `POSIX message
+queue`) create the objects in the test process, then show that the unconfined fixture reads them (the control)
+and that the confined one is refused with `EPERM`. A control that cannot reach the object marks the row
+`NOT VERIFIED`.

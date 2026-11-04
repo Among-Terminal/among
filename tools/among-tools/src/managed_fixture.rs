@@ -10,6 +10,19 @@ use std::{
 };
 
 pub(crate) fn install(base: &Path, id: &str, program: &[u8], features: &[&str]) -> Result<PathBuf> {
+    install_with(base, id, program, features, &[])
+}
+
+/// Like [`install`], with extra executable files placed beside the program.
+/// A confined plugin can run only what is inside its installed package or the
+/// system runtime, so a fixture that starts another program ships it here.
+pub(crate) fn install_with(
+    base: &Path,
+    id: &str,
+    program: &[u8],
+    features: &[&str],
+    companions: &[(&str, &[u8])],
+) -> Result<PathBuf> {
     let metadata = base.symlink_metadata()?;
     if !metadata.is_dir()
         || metadata.uid() != nix::unistd::geteuid().as_raw()
@@ -58,6 +71,9 @@ pub(crate) fn install(base: &Path, id: &str, program: &[u8], features: &[&str]) 
         "revision":"a".repeat(40),"manifest_sha256":storage::sha256(manifest.as_slice())?,"package_sha256":generation,
         "release_id":1,"asset_id":2,"generation":generation,"installation":token,"source":source});
     storage::atomic_write(&package, Path::new("plugin"), program, 0o700)?;
+    for (name, bytes) in companions {
+        storage::atomic_write(&package, Path::new(name), bytes, 0o700)?;
+    }
     storage::atomic_write(&package, Path::new("among-plugin.json"), &manifest, 0o600)?;
     storage::atomic_write(
         &package,

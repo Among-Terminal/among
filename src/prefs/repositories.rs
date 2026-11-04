@@ -213,7 +213,7 @@ fn present_complete(
     feedback.add(&status);
     let preview = adw::PreferencesGroup::new();
     preview.set_title("Repository metadata");
-    preview.set_description(Some("Read-only preview. Plugins run as your user, not in an OS sandbox. Hashes do not authenticate a publisher."));
+    preview.set_description(Some("Read-only preview. Plugins run as your user inside a kernel sandbox where the kernel supports one. Hashes do not authenticate a publisher."));
     preview.set_visible(false);
     let result = gtk::TextView::builder()
         .editable(false)

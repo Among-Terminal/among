@@ -8,12 +8,13 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::admission::Lease;
 use super::protocol::Request;
+use super::sandbox::launch::{Applied, Confinement, StartError};
 use super::transport::{FrameDecoder, MAX_FRAME_BYTES, MAX_QUEUE_FRAMES};
 
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -30,6 +31,8 @@ mod retirement_tests;
 pub enum Failure {
     Missing(String),
     Fault(&'static str),
+    /// The process could not be confined as required, so the plugin never ran.
+    Unconfined(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -63,6 +66,20 @@ pub fn pinned_program(
     program
 }
 
+/// The pinned program with a confinement attached: the pinned-descriptor hook
+/// runs first, then the one that applies Landlock and seccomp.
+pub fn confined_program(
+    directory: std::fs::File,
+    executable: std::fs::File,
+    lease: Option<Arc<std::fs::File>>,
+    confinement: &mut Confinement,
+) -> Command {
+    let executable_descriptor = executable.as_raw_fd();
+    let mut program = pinned_program(directory, executable, lease);
+    confinement.attach(&mut program, executable_descriptor);
+    program
+}
+
 struct Outbound {
     bytes: Box<[u8]>,
     queued: Instant,
@@ -76,6 +93,7 @@ pub struct Process {
     outstanding: Arc<AtomicUsize>,
     cancel: Arc<AtomicBool>,
     pid: Arc<AtomicU32>,
+    applied: Arc<OnceLock<Applied>>,
     worker: JoinHandle<()>,
     admission: Arc<Lease>,
     #[cfg(test)]
@@ -85,10 +103,33 @@ pub struct Process {
 impl Process {
     #[cfg(test)]
     pub fn start(command: Command) -> io::Result<Self> {
-        Self::start_admitted(command, Arc::new(Lease::new()))
+        Self::start_with(command, Arc::new(Lease::new()), None)
     }
 
-    pub(super) fn start_admitted(mut command: Command, admission: Arc<Lease>) -> io::Result<Self> {
+    /// Test hosts whose fixtures write beside themselves: no confinement.
+    #[cfg(test)]
+    pub(super) fn start_unconfined_admitted(
+        command: Command,
+        admission: Arc<Lease>,
+    ) -> io::Result<Self> {
+        Self::start_with(command, admission, None)
+    }
+
+    /// Starts a process. The confinement is mandatory: the start succeeds only
+    /// when the child proves it applied at least the required protection.
+    pub(super) fn start_admitted(
+        command: Command,
+        admission: Arc<Lease>,
+        confinement: Confinement,
+    ) -> io::Result<Self> {
+        Self::start_with(command, admission, Some(confinement))
+    }
+
+    fn start_with(
+        mut command: Command,
+        admission: Arc<Lease>,
+        confinement: Option<Confinement>,
+    ) -> io::Result<Self> {
         command
             .process_group(0)
             .stdin(Stdio::piped())
@@ -100,6 +141,8 @@ impl Process {
         let cancel = Arc::new(AtomicBool::new(false));
         let outstanding = Arc::new(AtomicUsize::new(0));
         let pid = Arc::new(AtomicU32::new(0));
+        let applied = Arc::new(OnceLock::new());
+        let worker_applied = applied.clone();
         let worker_cancel = cancel.clone();
         let worker_outstanding = outstanding.clone();
         let worker_pid = pid.clone();
@@ -117,14 +160,34 @@ impl Process {
                 if worker_cancel.load(Ordering::Acquire) {
                     return;
                 }
-                let mut child = match start_child(&mut command, &worker_cancel) {
-                    Ok(Some(child)) => child,
-                    Ok(None) => return,
-                    Err(failure) => {
-                        let _ = failure_sender.try_send(failure);
-                        return;
-                    }
-                };
+                let mut child =
+                    match start_child(&mut command, &worker_cancel, confinement.as_ref()) {
+                        Ok(Started::Confirmed(child, proven)) => {
+                            if let Some(proven) = proven {
+                                let _ = worker_applied.set(proven);
+                            }
+                            child
+                        }
+                        Ok(Started::Cancelled) => return,
+                        Ok(Started::Unproven(mut child, reason)) => {
+                            // the process may already run the plugin's code without
+                            // the required confinement: stop it before anything else.
+                            let _ = child.kill();
+                            worker_pid.store(child.id(), Ordering::Release);
+                            let _ = failure_sender.try_send(Failure::Unconfined(reason));
+                            terminate_and_reap(
+                                &mut child,
+                                &worker_admission,
+                                #[cfg(test)]
+                                &worker_proof_control,
+                            );
+                            return;
+                        }
+                        Err(failure) => {
+                            let _ = failure_sender.try_send(failure);
+                            return;
+                        }
+                    };
                 worker_pid.store(child.id(), Ordering::Release);
                 if let Err(reason) = pump(
                     &mut child,
@@ -149,6 +212,7 @@ impl Process {
             outstanding,
             cancel,
             pid,
+            applied,
             worker,
             admission,
             #[cfg(test)]
@@ -158,6 +222,12 @@ impl Process {
 
     pub fn started(&self) -> bool {
         self.pid.load(Ordering::Acquire) != 0
+    }
+
+    /// What the child proved about its confinement; set once the start is
+    /// confirmed, never for an unconfined test start.
+    pub fn applied(&self) -> Option<&Applied> {
+        self.applied.get()
     }
 
     #[cfg(test)]
@@ -241,23 +311,51 @@ impl Drop for Process {
 
 struct BoundedFrame(Vec<u8>);
 
-fn start_child(command: &mut Command, cancel: &AtomicBool) -> Result<Option<Child>, Failure> {
+enum Started {
+    /// A running child; `Some` proof when it was started under a confinement.
+    Confirmed(Child, Option<Applied>),
+    Cancelled,
+    /// A child exists but its confinement is not proven; it must be killed.
+    Unproven(Child, String),
+}
+
+fn start_child(
+    command: &mut Command,
+    cancel: &AtomicBool,
+    confinement: Option<&Confinement>,
+) -> Result<Started, Failure> {
     let started = Instant::now();
     loop {
         if cancel.load(Ordering::Acquire) {
-            return Ok(None);
+            return Ok(Started::Cancelled);
         }
-        match command.spawn() {
-            Ok(child) => return Ok(Some(child)),
+        let attempt = match confinement {
+            None => command
+                .spawn()
+                .map(|child| (child, None))
+                .map_err(|error| (error.raw_os_error(), error.to_string(), false)),
+            Some(confinement) => match confinement.spawn(command) {
+                Ok((child, applied)) => Ok((child, Some(applied))),
+                Err(StartError::Unproven { reason, child }) => {
+                    return Ok(Started::Unproven(child, reason))
+                }
+                Err(StartError::Failed {
+                    reason,
+                    errno,
+                    confinement_failed,
+                }) => Err((errno, reason, confinement_failed)),
+            },
+        };
+        match attempt {
+            Ok((child, applied)) => return Ok(Started::Confirmed(child, applied)),
             // exec refuses an inode still open for writing. retry only ETXTBSY,
-            // off-loop and within the existing admission deadline.
-            Err(error)
-                if error.raw_os_error() == Some(libc::ETXTBSY)
-                    && started.elapsed() < SPAWN_BUSY_TIMEOUT =>
-            {
+            // off-loop and within the existing admission deadline. a failed
+            // confinement step is never retried.
+            Err((Some(libc::ETXTBSY), _, false)) if started.elapsed() < SPAWN_BUSY_TIMEOUT => {
                 std::thread::sleep(Duration::from_millis(IO_INTERVAL_MS as u64))
             }
-            Err(error) => return Err(Failure::Missing(error.to_string())),
+            Err((_, reason, true)) => return Err(Failure::Unconfined(reason)),
+            Err((_, reason, false)) => return Err(Failure::Missing(reason)),
         }
     }
 }

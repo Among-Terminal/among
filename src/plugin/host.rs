@@ -20,6 +20,9 @@ use crate::slots::{Contribution, Fragment, Refresh, SlotStore, Style, Summary};
 pub const DEVELOPMENT_ONLY: &str =
     "development install: it starts only when Among is started with --plugin-development";
 
+mod confinement;
+#[cfg(test)]
+mod confinement_tests;
 mod environment;
 mod managed_runtime;
 pub use managed_runtime::Configuration;
@@ -123,6 +126,7 @@ struct PluginEntry {
     observed: Option<super::manifest::Api>,
     removing: bool,
     removed: bool,
+    confinement: confinement::State,
 }
 
 use std::time::Instant;
@@ -150,6 +154,12 @@ pub struct PluginHost {
     notifications: Option<Rc<std::cell::RefCell<among::plugin_notifications::Backend>>>,
     pending_notification_registrations: BTreeSet<String>,
     workspace_revision: u64,
+    /// Test hosts start plugins unconfined unless given a data home here.
+    #[cfg(test)]
+    test_confinement: Option<std::path::PathBuf>,
+    /// Replaces the kernel probe, to exercise levels this kernel does not offer.
+    #[cfg(test)]
+    test_probe: Option<super::sandbox::level::Probe>,
 }
 
 /// The row order an outstanding status request was asked under. The managed
@@ -237,6 +247,10 @@ impl PluginHost {
             notifications: None,
             pending_notification_registrations: Default::default(),
             workspace_revision: 0,
+            #[cfg(test)]
+            test_confinement: None,
+            #[cfg(test)]
+            test_probe: None,
         };
         host.notifications = notifications.filter(|backend| {
             backend
@@ -321,6 +335,13 @@ impl PluginHost {
             observed: None,
             removing,
             removed: false,
+            confinement: confinement::State {
+                consent: local
+                    .and_then(|local| local.get("protection_consent"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(super::sandbox::level::Protection::from_token),
+                ..Default::default()
+            },
         });
         let index = self.plugins.len() - 1;
         self.declare_notification_channels(index);
@@ -616,6 +637,9 @@ impl PluginHost {
         {
             return false;
         }
+        // a new attempt starts without the previous attempt's record, so a
+        // start that fails early cannot show an older protection level.
+        self.plugins[index].confinement.record = None;
         // no raw command or filename can substitute for an inspected receipt.
         // keep unavailable managed selections visible, but never launch a
         // manifestless process to discover whether it might speak our protocol.
@@ -672,27 +696,16 @@ impl PluginHost {
         }
         self.plugins[index].restart_at = None;
 
-        let mut program = if let Some(entry) = &self.plugins[index].managed {
-            match entry.executable_files() {
-                Ok((directory, executable)) => {
-                    super::process::pinned_program(directory, executable, entry.generation_lease())
-                }
-                Err(problem) => {
-                    self.plugins[index].state = PluginState::Unavailable {
-                        reason: problem.to_string(),
-                    };
-                    return false;
-                }
-            }
-        } else {
-            return false;
-        };
-        if let Err(reason) = environment::configure(&mut program) {
-            self.plugins[index].state = PluginState::Unavailable {
-                reason: reason.into(),
-            };
+        if self.plugins[index].managed.is_none() {
             return false;
         }
+        let launch = match self.launch_program(index) {
+            Ok(launch) => launch,
+            Err(state) => {
+                self.plugins[index].state = state;
+                return false;
+            }
+        };
         let reservation = match self.admission.acquire(&self.plugins[index].spec.name) {
             Ok(reservation) => reservation,
             Err(busy) => {
@@ -710,15 +723,17 @@ impl PluginHost {
                 return false;
             }
         };
-        let spawned = Process::start_admitted(program, reservation);
+        let spawned = launch.start(reservation);
 
         match spawned {
             Ok(process) => {
+                let generation = glib::uuid_string_random().to_string();
+                self.note_generation(index, &generation);
                 self.plugins[index].io = Some(PluginIo {
                     process,
                     started: Instant::now(),
                     handshake_done: false,
-                    generation: glib::uuid_string_random().to_string(),
+                    generation,
                     notification_live: None,
                     package_version: self.plugins[index]
                         .managed
@@ -740,6 +755,7 @@ impl PluginHost {
                     "among: plugin `{}` could not be started: {reason}",
                     self.plugins[index].spec.name
                 );
+                self.record_refusal(index, &reason);
                 self.plugins[index].state = PluginState::Missing { reason };
             }
         }
@@ -853,9 +869,18 @@ impl PluginHost {
                             "could not start plugin",
                         ),
                         Failure::Fault(reason) => self.fault(index, reason),
+                        Failure::Unconfined(reason) => {
+                            self.record_refusal(index, &reason);
+                            self.stop_as(
+                                index,
+                                PluginState::Unavailable { reason },
+                                "could not confine plugin",
+                            );
+                        }
                     }
                 }
             }
+            self.observe_confinement(index);
             if self.plugins[index]
                 .io
                 .as_ref()

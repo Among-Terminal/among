@@ -1,16 +1,38 @@
 //! managed children receive an explicit environment, not the parent's execution
 //! authority. timezone bytes are forwarded, never interpreted by the host.
+//! no user directory is passed: the confined process cannot reach them, and
+//! naming them would suggest otherwise. the one writable place is announced
+//! as AMONG_PLUGIN_DATA_DIR.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::process::Command;
 
 const MAX_TZ_BYTES: usize = 1024;
 const INVALID_TZ: &str = "managed TZ exceeds 1024 bytes or contains ASCII control bytes";
 
-pub(super) fn configure(program: &mut Command) -> Result<(), &'static str> {
+/// The variable that names the plugin's private data directory.
+pub(super) const DATA_DIR_VARIABLE: &str = "AMONG_PLUGIN_DATA_DIR";
+
+pub(super) fn configure(
+    program: &mut Command,
+    data_dir: Option<&Path>,
+) -> Result<(), &'static str> {
     let timezone = std::env::var_os("TZ");
-    configure_timezone(program, timezone.as_deref())
+    configure_with(program, timezone.as_deref(), data_dir)
+}
+
+fn configure_with(
+    program: &mut Command,
+    timezone: Option<&OsStr>,
+    data_dir: Option<&Path>,
+) -> Result<(), &'static str> {
+    configure_timezone(program, timezone)?;
+    if let Some(data_dir) = data_dir {
+        program.env(DATA_DIR_VARIABLE, data_dir);
+    }
+    Ok(())
 }
 
 fn configure_timezone(program: &mut Command, timezone: Option<&OsStr>) -> Result<(), &'static str> {
@@ -24,17 +46,6 @@ fn configure_timezone(program: &mut Command, timezone: Option<&OsStr>) -> Result
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("LANG", "C.UTF-8");
-    for variable in [
-        "HOME",
-        "XDG_DATA_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_RUNTIME_DIR",
-    ] {
-        if let Some(value) = std::env::var_os(variable) {
-            program.env(variable, value);
-        }
-    }
     if let Some(timezone) = timezone {
         program.env("TZ", timezone);
     }
@@ -119,6 +130,16 @@ mod tests {
             .env("TZDIR", "/must-not-be-inherited")
             .env("LD_PRELOAD", "/must-not-be-loaded")
             .env("AMONG_UNSELECTED_ENVIRONMENT", "not-authorized");
+        // the parent carries every user directory variable; none may reach the child.
+        for variable in [
+            "HOME",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR",
+        ] {
+            command.env(variable, "/parent/must-not-be-forwarded");
+        }
         configure_timezone(&mut command, timezone).unwrap();
         let output = capture_for_test(command, &[]);
         let fields = output
@@ -128,17 +149,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(fields.iter().all(|field| {
             let equal = field.iter().position(|byte| *byte == b'=').unwrap();
-            matches!(
-                &field[..equal],
-                b"PATH"
-                    | b"LANG"
-                    | b"HOME"
-                    | b"XDG_DATA_HOME"
-                    | b"XDG_CONFIG_HOME"
-                    | b"XDG_CACHE_HOME"
-                    | b"XDG_RUNTIME_DIR"
-                    | b"TZ"
-            )
+            matches!(&field[..equal], b"PATH" | b"LANG" | b"TZ")
         }));
         assert!(fields.contains(&b"PATH=/usr/local/bin:/usr/bin:/bin".to_vec()));
         assert!(fields.contains(&b"LANG=C.UTF-8".to_vec()));
@@ -152,6 +163,51 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(values.len() <= 1);
         values.first().copied()
+    }
+
+    #[test]
+    fn the_child_gets_exactly_the_data_directory_and_no_user_directory() {
+        let mut command = Command::new("/usr/bin/env");
+        command.arg("-0");
+        for variable in [
+            "HOME",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR",
+        ] {
+            command.env(variable, "/parent/must-not-be-forwarded");
+        }
+        let directory = Path::new("/data/among/plugin-data/12/clock");
+        configure_with(&mut command, Some(OsStr::new("UTC")), Some(directory)).unwrap();
+        let output = capture_for_test(command, &[]);
+        let mut fields = output
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+            .map(|field| String::from_utf8(field.to_vec()).unwrap())
+            .collect::<Vec<_>>();
+        fields.sort();
+        assert_eq!(
+            fields,
+            [
+                "AMONG_PLUGIN_DATA_DIR=/data/among/plugin-data/12/clock",
+                "LANG=C.UTF-8",
+                "PATH=/usr/local/bin:/usr/bin:/bin",
+                "TZ=UTC",
+            ]
+        );
+    }
+
+    #[test]
+    fn configure_announces_the_data_directory_only_when_there_is_one() {
+        let mut with = Command::new("/usr/bin/env");
+        configure_with(&mut with, None, Some(Path::new("/data/x"))).unwrap();
+        assert!(with.get_envs().any(|(key, value)| {
+            key == DATA_DIR_VARIABLE && value == Some(OsStr::new("/data/x"))
+        }));
+        let mut without = Command::new("/usr/bin/env");
+        configure_with(&mut without, None, None).unwrap();
+        assert!(without.get_envs().all(|(key, _)| key != DATA_DIR_VARIABLE));
     }
 
     #[test]

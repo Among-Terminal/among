@@ -25,6 +25,12 @@ pub struct Overview {
     pub state: PluginState,
     pub generation: Option<String>,
     pub running_version: Option<String>,
+    /// The protection line of the latest start, shown on the plugin's card.
+    pub protection: Option<String>,
+    /// Every fact recorded about the latest start's confinement.
+    pub protection_details: Option<String>,
+    /// The reduced level a refused start could be allowed to use.
+    pub consent_offer: Option<crate::plugin::sandbox::level::Protection>,
 }
 
 impl Overview {
@@ -43,6 +49,9 @@ impl Overview {
             state,
             generation: None,
             running_version: None,
+            protection: None,
+            protection_details: None,
+            consent_offer: None,
         }
     }
 
@@ -67,7 +76,7 @@ impl Overview {
                 format!("Observed API {}.{}", api.major, api.minor)
             });
         format!(
-            "{}\n{}{version}\n{} · {observed}{}",
+            "{}\n{}{version}\n{} · {observed}{}{}",
             self.description,
             self.origin,
             self.declared,
@@ -75,7 +84,10 @@ impl Overview {
                 ""
             } else {
                 " · Files unavailable"
-            }
+            },
+            self.protection_details
+                .as_ref()
+                .map_or(String::new(), |details| format!("\n{details}"))
         )
     }
 }
@@ -98,6 +110,13 @@ impl PluginHost {
                     state: plugin.state.clone(),
                     generation: None,
                     running_version: plugin.io.as_ref().and_then(|io| io.package_version.clone()),
+                    protection: plugin.confinement.card_line(plugin.io.is_some()),
+                    protection_details: plugin
+                        .confinement
+                        .record
+                        .as_ref()
+                        .map(|record| record.details()),
+                    consent_offer: plugin.confinement.awaiting,
                 };
                 if let Some(entry) = &plugin.managed {
                     overview.origin = format!("{} · {}", entry.receipt.source_label(), entry.key());

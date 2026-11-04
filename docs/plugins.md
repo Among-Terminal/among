@@ -451,13 +451,16 @@ write grants or start code. Required access must be accepted; unsupported requir
 features refuse startup before execution. Retained review is scoped to publisher,
 repository and declared grants. A publisher change or newly required access needs
 renewed review. Changing grants requires stopping/reaping the current generation.
-These controls limit host-mediated exposure, not the process's OS authority.
+These controls limit what the host sends over the protocol; the operating-system
+limits on the process itself are described under [Confinement](#confinement).
 
 The host rechecks the selected manifest digest and contained executable and pins
-open package/executable descriptors through spawn. It clears the child environment,
-sets `PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C.UTF-8`, and copies only `HOME` and
-`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` when present.
-It also snapshots `TZ` once per managed-child construction. An absent value stays
+open package/executable descriptors through spawn. It clears the child environment
+and sets `PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C.UTF-8` and
+`AMONG_PLUGIN_DATA_DIR` (the plugin's private data directory, see below). `HOME`,
+`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `XDG_RUNTIME_DIR` are not
+passed: the plugin could not use the directories they name, and passing them would
+suggest it can. It also snapshots `TZ` once per managed-child construction. An absent value stays
 absent; an empty value stays explicitly empty. Accepted bytes are copied unchanged,
 without UTF-8 replacement, trimming, path lookup or timezone parsing. The raw value
 may contain at most 1024 bytes and no NUL or ASCII control byte (`0x01`–`0x1f`,
@@ -471,8 +474,109 @@ entries are not implicitly inherited. Passing `TZ` does not promise identical
 interpretation by every plugin runtime, or bound the size/read latency of a
 timezone file a plugin may choose to open. In particular, clock uses its existing
 `chrono::Local` renderer rather than a host timezone parser.
-This is not protection against the plugin independently
-reading files or contacting services as the same user.
+
+### Confinement
+
+Every managed plugin starts inside a kernel-enforced sandbox. Landlock limits the
+filesystem and a seccomp filter denies sockets, process control and file-metadata
+changes. Both are built by the host before the plugin process exists and applied
+inside that process before its entrypoint runs; the plugin cannot lift them, and
+processes it starts inherit them. The host does not accept the start until the
+child reports, through a pipe that closes on `exec`, which protections it applied.
+
+What a confined plugin can do:
+
+- Read and execute its installed generation and the system runtime: `/usr`,
+  `/lib`, `/lib64`, `/etc/ld.so.cache` and `/etc/localtime`. A script plugin
+  therefore needs an interpreter below `/usr`.
+- Read and write its own data directory, and (at full protection) nothing else
+  outside the system runtime. The host creates
+  `$XDG_DATA_HOME/among/plugin-data/<repository-id>/<plugin-id>/` (development
+  installs: `development/<plugin-id>`) with mode `0700`. The data home
+  (`XDG_DATA_HOME`, or `~/.local/share`) may be a symbolic link or lie behind
+  one (a dotfile manager, or `/home` linked to `/var/home`): it is resolved once,
+  and the resolved directory must be owned by the user, checked on the opened
+  directory; its mode may be group-writable, as a `002` umask makes it. Below it
+  every component is created and opened without following links, and the start is
+  refused when a component is a link, is owned by another user or the plugin's
+  own directory is not exactly mode `0700`; the reason names the component. The
+  path in `AMONG_PLUGIN_DATA_DIR` is the resolved one. Uninstalling a plugin keeps
+  this directory and its contents; removing the data is a separate action that
+  does not exist yet.
+- Use the protocol on stdin and stdout. Besides standard error and its own
+  executable file (kept open so `exec` can run it), nothing is open: every other
+  descriptor of the host is closed on `exec`.
+- With Landlock, not read `/proc`, including `/proc/self`, unless it holds
+  `system.metrics` and then only the three files that grant names. A language
+  runtime that insists on reading `/proc/self/...` at startup must tolerate the
+  refusal; the Rust standard library does.
+
+The filesystem limits above are Landlock's. At full protection (ABI 3 or newer)
+nothing outside the data directory is writable. With Landlock ABI 1 or 2 (reduced,
+only after consent) `truncate` is not mediated, so a plugin could empty a file
+outside its data directory that the user can write. With the seccomp filter alone
+(reduced, only after consent) no filesystem rule applies at all: the plugin keeps
+the file access of the user's account, and only the filter's limits hold.
+
+What it cannot do, each answered with `EPERM` or `EACCES`:
+
+- Create any socket (`socket`, `socketpair`), so no TCP, UDP, session bus or other
+  local service, and no `io_uring`, which could open sockets around the filter.
+- Inspect or control other processes: `ptrace`, `process_vm_*`, `pidfd_*`,
+  `process_madvise`, `kcmp` and every way to send a signal are denied. Changing
+  limits, scheduling, priority or CPU affinity is allowed only for the plugin
+  itself (`prlimit64`, `sched_set*`, `setpriority`, `ioprio_set`, `migrate_pages`
+  and `move_pages` with the calling process as target). `abort()` still ends the
+  process.
+- Use named inter-process objects of the user: SysV shared memory, message queues
+  and semaphores (`shm*`, `msg*`, `sem*`) and POSIX message queues (`mq_*`). They
+  have no per-user namespace and can be listed without `/proc`, so a plugin could
+  otherwise reach another process of the same user through them.
+- Change the mode, owner, attributes or times of a file (`chmod`, `chown`,
+  `setxattr`, `utimensat` and their variants), because Landlock does not mediate
+  these; truncate a file it may only read (mediated by Landlock ABI 3).
+- Mount, load BPF programs, create user-fault or performance-event descriptors,
+  or use the kernel key ring.
+- Use another system call ABI: the filter kills the process for any architecture
+  other than the native one and, on x86-64, for the x32 call numbers.
+
+The plugin sees only the data the host sent over the protocol. The sandbox does not
+limit CPU or memory use, and does not protect against a vulnerability in the kernel
+or in the allowed system libraries. A confined plugin can still fill its data
+directory or use CPU until the host stops it.
+
+**System metrics.** The manifest feature `system.metrics`, shown in the access
+review, adds read access to exactly `/proc/stat`, `/proc/meminfo` and
+`/proc/loadavg`. Broad `/proc` access is never granted, because the environment of
+another process of the same user can hold tokens. `statvfs` needs no grant. Changing
+a grant requires stopping the current generation first and applies to the next
+process. The released `system-status` 0.1.0-rc.1 does not declare `system.metrics`,
+so under the sandbox its CPU and MEM bars show N/A; DISK is unaffected. The 0.2.0
+manifest requires the feature, so that version needs the grant at its access review.
+
+**Kernel requirements.** Full protection needs Landlock ABI 3 or newer (Linux 6.2
+or newer) and the seccomp filter. The level actually applied is what the child
+reports, not the distribution or one probe:
+
+| Observed | Level | Start |
+|---|---|---|
+| Landlock ABI 3 or newer, seccomp loaded | full | starts |
+| Landlock ABI 1 or 2, seccomp loaded | reduced | only after you allow it for that plugin |
+| no usable Landlock, seccomp loaded | reduced (seccomp only) | only after you allow it for that plugin |
+| seccomp cannot be loaded | none | never starts, with or without consent |
+
+Without consent a plugin on an older kernel is shown as Unavailable in Preferences
+with the observed level, the required level and an "Allow reduced protection…"
+action. Consent is stored per plugin identity with the level it was given for. A
+later start that reaches a lower level asks again; a higher level starts without
+asking. A plugin the user allowed to run with reduced protection carries a mark on
+its card for as long as that permission is stored, whether the plugin is running or
+stopped.
+
+For every start the host records the plugin identity, generation, granted
+features, a digest of the policy that was applied, the Landlock ABI and enforcement
+the child reported, whether the seccomp filter loaded, and the reason of any
+refusal. Preferences shows these in the plugin's details.
 
 The host starts with:
 
@@ -496,7 +600,7 @@ session ID. Old replies cannot establish admission or acknowledge new settings.
 | `context.title` | Known terminal title, or null |
 | `context.process` | Running state and process-exit events |
 | `events.terminal` | Subscribe to terminal/workspace lifecycle events |
-| `system.metrics` | Declares that the plugin reads system load figures. Shown in the access review and recorded; the host does not yet restrict what the plugin process can read |
+| `system.metrics` | Declares that the plugin reads system load figures. Shown in the access review and recorded; adds read access to `/proc/stat`, `/proc/meminfo` and `/proc/loadavg` under the sandbox (other `/proc` reads fail with `EACCES` at full protection) |
 
 The context fields and terminal events require `context.terminals`. Missing grants omit fields rather than
 fill them with fake values. Without terminal context, status is application-only
@@ -629,8 +733,9 @@ uncertain stop is acknowledged or converted to successful cleanup.
 At most three automatic restarts follow a fault, after 2, 4 and 8
 seconds; an explicit off/on cycle resets that allowance. Incompatible or missing
 executables are not automatically retried. The application and every terminal
-stay usable throughout. This is supervision, not an OS sandbox: descendants that
-deliberately escape the owned group retain the user's ordinary process authority.
+stay usable throughout. Supervision is separate from confinement: descendants that
+deliberately escape the owned group are no longer stopped by the supervisor, though
+they remain inside the sandbox they inherited.
 
 Standard error is discarded by the host. Use a protocol `error` response for a
 diagnostic, or exit nonzero for an unrecoverable failure so the host notices it;
@@ -644,7 +749,14 @@ loop and applies a timeout instead of waiting inline.
 
 ### Third-party plugin quick start
 
-Plugins run as your user, not in a security sandbox. Install only code you trust.
+Plugins run as your user inside the kernel-enforced sandbox described under
+[Confinement](#confinement): no network, no files except the plugin's own data
+directory and its installed package, no control over other processes. The sandbox
+does not defend against kernel vulnerabilities or resource exhaustion, so install
+only code you trust. Write state to `AMONG_PLUGIN_DATA_DIR`, not to the working
+directory (the installed package is read-only) and not to a home directory. A plugin
+that needs more, such as network access, needs a new reviewed grant that does not
+exist yet.
 They can use any language; the host launches the file directly, so scripts need
 a shebang, executable permissions and an installed interpreter. Only protocol
 JSON lines belong on stdout, and every reply must be flushed.
@@ -818,7 +930,8 @@ the committed receipt. Missing or inconsistent source observations refuse the
 read without repairing the receipt or changing user data. Details retain the
 selected package's API-observed release/asset IDs and exact catalogue digest. Matching
 tag commits and asset hashes establish content consistency,
-not build reproducibility, independent publisher authentication or an OS sandbox.
+not build reproducibility or independent publisher authentication. Run-time
+confinement is separate (see Confinement).
 
 Artifacts declare `os: linux`, `architecture: amd64` or `arm64`, a `runtime`
 (`native` with `libc` and numeric `minimum`, or `script` with an explicit installed
@@ -866,8 +979,7 @@ or arm64 machine, executable/PIE type, valid bounded program/section table range
 and an entry address in an executable load segment. At most 128 program headers
 are read. A dynamic interpreter must be a matching installed standard glibc/musl
 loader for that architecture; duplicate/oversized interpreter records fail. This
-is format/runtime consistency, not complete dynamic-symbol/ISA validation or an
-OS sandbox. An incompatible entrypoint never reaches selection, including updates;
+is format/runtime consistency, not complete dynamic-symbol/ISA validation. An incompatible entrypoint never reaches selection, including updates;
 previous selected files, consent and settings remain unchanged.
 
 The store bounds selection to 128 identities/256 KiB, package/staging bytes to
@@ -877,7 +989,7 @@ to 65,536 entries/five seconds; unsafe entries leave a diagnostic/deferred stagi
 directory, never a followed link. Advisory serialization has cancellable off-loop
 waiting bounded to five seconds. It serializes cooperating package writers,
 including updates/removal and recovery. It does not protect against arbitrary same-user
-filesystem modification and is not an OS sandbox.
+filesystem modification of the store.
 
 Full snapshots count against the existing receipt/selection byte budgets.
 A large inventory can reach the byte limit before the identity-count limit;

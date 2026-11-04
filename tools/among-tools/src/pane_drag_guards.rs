@@ -187,7 +187,13 @@ fn refresh_phase(binary: &Path, plugin: &Path, scratch: &Path) -> Result<()> {
         &program,
         &["status", "context.terminals"],
     )?;
-    let summary = h.base.join("home/summary.txt");
+    // the plugin runs confined: its data directory is the only place it can
+    // read from that the check can also write to. The fixture's repository
+    // identity is 12, which names the directory.
+    let data_directory = h.base.join("data/among/plugin-data/12/summaries");
+    std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700)
+        .create(&data_directory)?;
+    let summary = data_directory.join("summary.txt");
     fs::write(&summary, b"before-drag")?;
     h.env.insert("AMONG_SELFCHECK_TICKS".into(), "2400".into());
     h.start("refresh")?;

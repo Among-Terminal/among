@@ -14,6 +14,8 @@ mod general;
 #[derive(Default)]
 struct ManagedEdits {
     enabled: Option<bool>,
+    /// The reduced protection level the user allowed, as its stored token.
+    protection_consent: Option<String>,
     installation: Option<String>,
     review: Option<Value>,
     settings: Option<(
@@ -312,6 +314,7 @@ impl PreferencesStorage {
                 pending.enabled.is_some()
                     || pending.installation.is_some()
                     || pending.review.is_some()
+                    || pending.protection_consent.is_some()
                     || pending.settings.is_some()
             });
         }
@@ -347,6 +350,19 @@ impl PreferencesStorage {
         let pending = self.pending_managed.entry(key.into()).or_default();
         pending.enabled = Some(enabled);
         pending.installation = installation.map(str::to_string);
+        self.flush_managed().map(|_| ())
+    }
+
+    /// Stores the reduced protection level the user allowed for one plugin.
+    pub fn managed_protection_consent_changed(
+        &mut self,
+        key: &str,
+        token: &str,
+    ) -> Result<(), StorageError> {
+        self.pending_managed
+            .entry(key.into())
+            .or_default()
+            .protection_consent = Some(token.into());
         self.flush_managed().map(|_| ())
     }
 
@@ -388,6 +404,9 @@ impl PreferencesStorage {
                     }
                     if let Some(installation) = &pending.installation {
                         entry["installation"] = json!(installation);
+                    }
+                    if let Some(token) = &pending.protection_consent {
+                        entry["protection_consent"] = json!(token);
                     }
                     match &pending.review {
                         Some(Value::Null) => {
