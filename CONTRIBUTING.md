@@ -178,3 +178,28 @@ Plugins run as separate processes on purpose: a plugin that crashes takes only
 itself down. If a plugin can take the application down, that is a bug in the
 host, not the plugin — please report it with the plugin's source and the
 application's stderr.
+
+## Releases
+
+Maintainers release through a pull request that the repository's own tooling
+prepares; nobody edits a version by hand.
+
+- `among-tools release-prepare .` reads the squash-merged pull request titles
+  since the last stable tag, chooses the next version (while the major version is
+  `0`: a breaking change or `feat` raises the minor version, `fix` or `perf`
+  raises the patch version), rewrites every version location, adds the release to
+  `CHANGELOG.md` and prints the title and body of the release pull request.
+- Commits whose title is not a Conventional Commit cannot influence the
+  version. The command lists them and fails until a maintainer names each one
+  with `--accept-untitled`, so nothing is left out silently. The maintainer also
+  adds the hand-written highlights `.github/release-notes/vX.Y.Z.md`; the checks
+  fail without it.
+- A maintainer opens that pull request with their own credentials and merges it
+  by hand. Merging tags the commit and starts the release draft; publishing the
+  draft is a separate, manual decision.
+- `among-tools check-release-metadata .` runs in CI and fails when a version
+  location is missing or differs, so a hand edit of one location is caught.
+- Release candidates, the version rules and the release highlights file are in
+  the [releasing guide](docs/releasing.md#4a-the-release-cycle).
+- Tooling stays Rust only: the release flow uses `among-tools`, `gh` and shell
+  steps in workflows, never a Python interpreter.

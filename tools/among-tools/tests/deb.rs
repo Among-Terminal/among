@@ -395,10 +395,18 @@ fn real_tag_commit_and_main_ancestry_require_release_push_identity() -> Result<(
     environment.insert("GITHUB_SHA".into(), "0".repeat(40));
     assert!(deb::github_tag_source(&f.0, &environment).is_err());
     environment.insert("GITHUB_SHA".into(), source.clone());
+    // A manual start on the tag is built like a push of the tag.
+    environment.insert("GITHUB_EVENT_NAME".into(), "workflow_dispatch".into());
+    assert_eq!(
+        deb::github_tag_source(&f.0, &environment)?,
+        ("v0.1.0".into(), source.clone())
+    );
     for (event, reference) in [
         ("pull_request", "refs/pull/1/merge"),
         ("schedule", "refs/heads/main"),
         ("push", "refs/heads/main"),
+        ("workflow_dispatch", "refs/heads/main"),
+        ("repository_dispatch", "refs/tags/v0.1.0"),
     ] {
         environment.insert("GITHUB_EVENT_NAME".into(), event.into());
         environment.insert("GITHUB_REF".into(), reference.into());

@@ -76,11 +76,20 @@ fn downloads(job: &Value) -> Result<Vec<(String, String)>> {
     Ok(found)
 }
 
+/// Shell text without comment-only lines: a safeguard that only a comment
+/// mentions is not a safeguard.
+fn code(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn script(job: &Value) -> Result<String> {
     let mut text = String::new();
     for step in steps(job)? {
         if let Some(run) = step.get("run") {
-            text.push_str(run.as_str().ok_or("workflow command is not text")?);
+            text.push_str(&code(run.as_str().ok_or("workflow command is not text")?));
             text.push('\n');
         }
     }
@@ -100,8 +109,8 @@ pub fn draft_script(document: &Value) -> Result<String> {
 
 pub fn validate(document: &Value) -> Result<()> {
     require(
-        document["on"] == json!({"push":{"tags":["v*"]}}),
-        "release draft workflow must start only from a release tag push",
+        document["on"] == json!({"push":{"tags":["v*"]},"workflow_dispatch":null}),
+        "release draft workflow must start only from a release tag push or a manual start on a tag",
     )?;
     require(
         document["permissions"] == json!({}),
@@ -119,15 +128,48 @@ pub fn validate(document: &Value) -> Result<()> {
         .ok_or("release draft jobs missing")?;
     require(
         jobs.keys().map(String::as_str).collect::<BTreeSet<_>>()
-            == BTreeSet::from(["deb", "rpm", "appimage", "assemble", "draft"]),
-        "release draft workflow must consist of the package calls, assembly and draft jobs",
+            == BTreeSet::from(["verify-ref", "deb", "rpm", "appimage", "assemble", "draft"]),
+        "release draft workflow must consist of the ref check, the package calls, assembly and draft jobs",
     )?;
     let read = json!({"contents":"read"});
+    let verify = &jobs["verify-ref"];
+    require(
+        verify["permissions"] == read,
+        "the ref check needs read access to the repository only",
+    )?;
+    require(
+        steps(verify)?.iter().any(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|action| action.starts_with("actions/checkout@"))
+                && step["with"]["fetch-depth"] == 0
+                && step["with"]["persist-credentials"] == false
+        }),
+        "the ref check must see the whole history of main without keeping credentials",
+    )?;
+    let check = script(verify)?;
+    for required in [
+        "set -euo pipefail",
+        "!= workflow_dispatch",
+        "refs/tags/v?*) ;;",
+        "git rev-parse \"$GITHUB_REF^{commit}\"",
+        "[ \"$commit\" = \"$GITHUB_SHA\" ]",
+        "git merge-base --is-ancestor \"$GITHUB_SHA\" refs/remotes/origin/main",
+    ] {
+        require(
+            check.contains(required),
+            &format!("the ref check lacks a required safeguard: {required}"),
+        )?;
+    }
     for (name, workflow) in CALLED {
         let job = &jobs[name];
         require(
             job["uses"] == workflow && job["permissions"] == read,
             "each package workflow must be called from this repository with read-only contents",
+        )?;
+        require(
+            needs(job) == BTreeSet::from(["verify-ref".to_string()]),
+            "no package may build before the ref check passed",
         )?;
         require(
             job.get("with").is_none() && job.get("secrets").is_none(),
@@ -208,7 +250,7 @@ pub fn validate(document: &Value) -> Result<()> {
             )?;
         }
     }
-    let publish = draft_script(document)?;
+    let publish = code(&draft_script(document)?);
     for required in [
         "set -euo pipefail",
         "is required on the runner",

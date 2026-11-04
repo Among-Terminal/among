@@ -72,7 +72,8 @@ fn matrix(job: &Value, build: bool) -> Result<BTreeSet<(String, String, String, 
 
 pub fn validate(document: &Value) -> Result<Vec<String>> {
     // The release draft workflow is the single entry point for a tag. A called
-    // workflow runs with the caller's push event, which the builder requires;
+    // workflow runs with the caller's event (a tag push or a manual start on
+    // the tag), which the builder checks;
     // its own tag trigger would build every package a second time.
     require(
         document["on"] == json!({"workflow_call":null}),

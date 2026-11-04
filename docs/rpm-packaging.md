@@ -12,7 +12,8 @@ the workflow builds, not a file you can fetch.
 pushes. The tag's base version must equal the Cargo version; preview tags
 `vX.Y.Z-rc.N` become RPM version `X.Y.Z~rc.N`, which RPM orders before the
 stable `X.Y.Z`. Its only trigger is `workflow_call`: `release-draft.yml`
-starts it for the tag push, the called run sees that push event, and the checked
+starts it for the tag push or for a manual start on the tag (see the releasing
+guide), the called run sees the caller's event, and the checked
 RPMs and SRPMs go into an unpublished release draft
 ([releasing guide, section 5](releasing.md#5-release-drafts-from-a-tag)). There
 is no branch, pull-request, schedule or manual trigger.
