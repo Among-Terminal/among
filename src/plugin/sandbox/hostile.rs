@@ -85,7 +85,14 @@ impl Run<'_> {
                 "{label}: control gave `{}` instead of {control:?}",
                 control_outcome.text()
             );
-            assert!(need == Need::Environment, "required control failed: {note}");
+            if need != Need::Environment {
+                fail(
+                    label,
+                    control_outcome,
+                    confined_outcome,
+                    &format!("required control failed: {note}"),
+                );
+            }
             record(
                 label,
                 control_outcome,
@@ -95,12 +102,18 @@ impl Run<'_> {
             self.unverified.push(note);
             return;
         }
-        assert!(
-            confined.holds(confined_outcome),
-            "{label}: under confinement expected {confined:?}, got `{}` (control: `{}`)",
-            confined_outcome.text(),
-            control_outcome.text()
-        );
+        if !confined.holds(confined_outcome) {
+            fail(
+                label,
+                control_outcome,
+                confined_outcome,
+                &format!(
+                    "{label}: under confinement expected {confined:?}, got `{}` (control: `{}`)",
+                    confined_outcome.text(),
+                    control_outcome.text()
+                ),
+            );
+        }
         record(
             label,
             control_outcome,
@@ -108,6 +121,14 @@ impl Run<'_> {
             "confined as expected",
         );
     }
+}
+
+/// Records the failing row, writes the table so the evidence upload still has
+/// it, then fails the test.
+fn fail(label: &str, control: &Outcome, confined: &Outcome, message: &str) -> ! {
+    record(label, control, confined, "FAILED");
+    write_report(&format!("matrix-{}", std::env::consts::ARCH));
+    panic!("{message}");
 }
 
 fn in_container() -> bool {
@@ -519,20 +540,31 @@ fn every_hostile_action_is_denied_under_confinement_after_succeeding_without_it(
                 "inside a user namespace `{expected}` must hold: {text}"
             );
         }
-        // the control proves the namespace gives these rights when nothing confines it.
-        for allowed in ["mount=ok", "socket=ok", "read=ok", "write=ok"] {
-            assert!(
-                control.text().contains(allowed),
-                "control `{allowed}`: {}",
-                control.text()
+        // the control shows what the namespace gives when nothing confines it.
+        // a host policy such as AppArmor's restriction of unprivileged user
+        // namespaces can still refuse part of it (mount), and then that part
+        // is not verified, although the confined result above holds anyway.
+        let missing: Vec<&str> = ["mount=ok", "socket=ok", "read=ok", "write=ok"]
+            .into_iter()
+            .filter(|allowed| !control.text().contains(allowed))
+            .collect();
+        if missing.is_empty() {
+            record(
+                "inside a new user namespace: mount, socket, read, write",
+                &control,
+                &confined,
+                "confined as expected",
             );
+        } else {
+            record(
+                "inside a new user namespace: mount, socket, read, write",
+                &control,
+                &confined,
+                "NOT VERIFIED for the parts the control was refused (see control column)",
+            );
+            run.unverified
+                .push(format!("userns control did not allow {missing:?}"));
         }
-        record(
-            "inside a new user namespace: mount, socket, read, write",
-            &control,
-            &confined,
-            "confined as expected",
-        );
     } else {
         record(
             "inside a new user namespace: mount, socket, read, write",

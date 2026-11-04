@@ -24,19 +24,26 @@ impl State {
     /// The protection line of the plugin's card. A plugin the user allowed to
     /// run with reduced protection carries the mark whether or not it runs
     /// now, so it is visible for as long as the consent is stored.
-    pub(super) fn card_line(&self) -> Option<String> {
-        let running = self
+    ///
+    /// What a process reached is claimed only while that process is live
+    /// (`live`); a stopped plugin keeps its refusal reason, if any.
+    pub(super) fn card_line(&self, live: bool) -> Option<String> {
+        let reached = self
             .record
             .as_ref()
-            .filter(|record| record.applied.is_some())
+            .filter(|record| live && record.applied.is_some())
             .map(Record::protection_line);
-        match (running, self.consent) {
+        match (reached, self.consent) {
             (Some(line), _) => Some(line),
             (None, Some(consent)) if !consent.is_full() => Some(format!(
                 "Protection: reduced protection allowed ({}) · runs with reduced protection",
                 consent.label()
             )),
-            _ => self.record.as_ref().map(Record::protection_line),
+            _ => self
+                .record
+                .as_ref()
+                .filter(|record| record.applied.is_none())
+                .map(Record::protection_line),
         }
     }
 }

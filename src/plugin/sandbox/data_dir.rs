@@ -28,7 +28,8 @@ fn data_home_from(
 ) -> Option<PathBuf> {
     xdg_data_home
         .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
+        // the XDG specification treats an empty or relative value as invalid.
+        .filter(|path| path.is_absolute())
         .or_else(|| home.map(|home| PathBuf::from(home).join(".local/share")))
 }
 
@@ -263,6 +264,12 @@ mod tests {
             data_home_from(None, some("/home/u")),
             Some(PathBuf::from("/home/u/.local/share"))
         );
+        // a relative value is invalid and ignored.
+        assert_eq!(
+            data_home_from(some("relative/share"), some("/home/u")),
+            Some(PathBuf::from("/home/u/.local/share"))
+        );
+        assert_eq!(data_home_from(some("relative"), None), None);
         assert_eq!(data_home_from(None, None), None);
         assert_eq!(data_home_from(some(""), None), None);
     }

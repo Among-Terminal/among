@@ -507,7 +507,12 @@ fn official(
         .success());
     let mut manifest: Value =
         serde_json::from_slice(&std::fs::read(package.join("among-plugin.json")).unwrap()).unwrap();
-    if declare_metrics {
+    let already_declared = ["required_features", "optional_features"]
+        .iter()
+        .filter_map(|key| manifest[key].as_array())
+        .flatten()
+        .any(|feature| feature == "system.metrics");
+    if declare_metrics && !already_declared {
         // a manifest that declares the grant, as the updated release will.
         manifest["optional_features"] = json!(["system.metrics"]);
     }
@@ -523,9 +528,19 @@ fn official(
     let data_home = root.join("data-home");
     std::fs::create_dir(&data_home).unwrap();
     std::fs::set_permissions(&data_home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // whatever the package requires has to be granted for it to start; the
+    // caller names the optional access it wants on top.
+    let mut granted: BTreeSet<String> = review.iter().map(|feature| feature.to_string()).collect();
+    granted.extend(
+        manifest["required_features"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|feature| feature.as_str().map(str::to_string)),
+    );
     let local = json!({
         "enabled": true,
-        "review": {"owner":"example","repository":"sample","features": review}
+        "review": {"owner":"example","repository":"sample","features": granted}
     });
     let mut host = PluginHost::new();
     host.confine_in_tests(data_home.clone());
@@ -618,14 +633,32 @@ fn the_released_official_plugins_still_produce_their_fragments_under_confinement
     // without the grant the load bars that need /proc cannot be read; the disk
     // bar uses statvfs, which no filesystem rule covers.
     let status_key = "github:1431055733/system-status";
-    let mut status = official("system-status", &["status"], false, &packages);
-    let bars = status.fragments(status_key, "app_header");
-    assert_eq!(bars[0], "CPU N/A");
-    assert_eq!(bars[1], "MEM N/A");
-    assert!(
-        bars[2].starts_with("DISK ") && bars[2].ends_with('%'),
-        "{bars:?}"
-    );
+    // a release whose manifest already requires the grant (the candidate
+    // packages do) cannot be started without it, so that case is only
+    // exercised for a release that does not declare it.
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(packages.join("system-status/among-plugin.json")).unwrap(),
+    )
+    .unwrap();
+    let declares_metrics = ["required_features", "optional_features"]
+        .iter()
+        .filter_map(|key| manifest[key].as_array())
+        .flatten()
+        .any(|feature| feature == "system.metrics");
+    if !declares_metrics {
+        let mut status = official("system-status", &["status"], false, &packages);
+        let bars = status.fragments(status_key, "app_header");
+        assert_eq!(bars[0], "CPU N/A");
+        assert_eq!(bars[1], "MEM N/A");
+        assert!(
+            bars[2].starts_with("DISK ") && bars[2].ends_with('%'),
+            "{bars:?}"
+        );
+    } else {
+        eprintln!(
+            "the packaged system-status declares system.metrics; the no-grant case is skipped"
+        );
+    }
 
     // with a manifest that declares the grant, and the user's grant, the same
     // binary reads exactly the files the grant opens.
@@ -668,4 +701,24 @@ fn a_stopped_plugin_with_a_stored_reduced_consent_still_carries_the_mark() {
         ..Setup::default()
     });
     assert_eq!(plain.host.overview()[0].protection, None);
+}
+
+#[test]
+fn a_stopped_plugin_does_not_claim_the_protection_its_last_process_reached() {
+    if !kernel_offers_full_protection() {
+        return;
+    }
+    let mut confined = confined(Setup::default());
+    confined.answers();
+    assert!(confined.host.overview()[0]
+        .protection
+        .as_deref()
+        .is_some_and(|line| line.starts_with("Protection: full")));
+    confined.host.disable(KEY);
+    confined.wait(|host| host.plugins[0].io.is_none());
+    assert_eq!(
+        confined.host.overview()[0].protection,
+        None,
+        "a stopped plugin has no process whose level could be shown"
+    );
 }

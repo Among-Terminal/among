@@ -270,6 +270,11 @@ impl Confinement {
                 let verdict = begin
                     .map_err(|invalid| invalid.description())
                     .and_then(|pid| {
+                        // a child the watchdog killed is never accepted, even if
+                        // its records happen to be complete.
+                        if killed {
+                            return Err("the plugin did not reach exec in time and was killed");
+                        }
                         if pid != child.id() {
                             return Err("the confinement report came from another process");
                         }

@@ -637,6 +637,9 @@ impl PluginHost {
         {
             return false;
         }
+        // a new attempt starts without the previous attempt's record, so a
+        // start that fails early cannot show an older protection level.
+        self.plugins[index].confinement.record = None;
         // no raw command or filename can substitute for an inspected receipt.
         // keep unavailable managed selections visible, but never launch a
         // manifestless process to discover whether it might speak our protocol.
@@ -752,6 +755,7 @@ impl PluginHost {
                     "among: plugin `{}` could not be started: {reason}",
                     self.plugins[index].spec.name
                 );
+                self.record_refusal(index, &reason);
                 self.plugins[index].state = PluginState::Missing { reason };
             }
         }

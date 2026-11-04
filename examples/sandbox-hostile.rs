@@ -169,6 +169,11 @@ fn sleeping_child() -> libc::pid_t {
 }
 
 fn reap(pid: libc::pid_t) {
+    // a failed fork returns -1, and kill(-1, ...) would signal every process
+    // the fixture may signal.
+    if pid <= 0 {
+        return;
+    }
     unsafe {
         libc::kill(pid, libc::SIGKILL);
         libc::waitpid(pid, std::ptr::null_mut(), 0);

@@ -489,7 +489,8 @@ What a confined plugin can do:
 - Read and execute its installed generation and the system runtime: `/usr`,
   `/lib`, `/lib64`, `/etc/ld.so.cache` and `/etc/localtime`. A script plugin
   therefore needs an interpreter below `/usr`.
-- Read and write its own data directory, and nothing else. The host creates
+- Read and write its own data directory, and (at full protection) nothing else
+  outside the system runtime. The host creates
   `$XDG_DATA_HOME/among/plugin-data/<repository-id>/<plugin-id>/` (development
   installs: `development/<plugin-id>`) with mode `0700`, creating every component
   without following links and refusing the start when a component is a link, is
@@ -505,12 +506,20 @@ What a confined plugin can do:
   link to `/var/home`. Fix it by making that component a real directory (move the
   contents and drop the link), or by starting Among with `XDG_DATA_HOME` set to a
   path that contains no link, for example the target of the link under `/var/home`.
-- Use the protocol on stdin and stdout. Nothing else is open: every other
+- Use the protocol on stdin and stdout. Besides standard error and its own
+  executable file (kept open so `exec` can run it), nothing is open: every other
   descriptor of the host is closed on `exec`.
-- Not read `/proc`, including `/proc/self`, unless it holds `system.metrics` and
-  then only the three files that grant names. A language runtime that insists on
-  reading `/proc/self/...` at startup must tolerate the refusal; the Rust standard
-  library does.
+- With Landlock, not read `/proc`, including `/proc/self`, unless it holds
+  `system.metrics` and then only the three files that grant names. A language
+  runtime that insists on reading `/proc/self/...` at startup must tolerate the
+  refusal; the Rust standard library does.
+
+The filesystem limits above are Landlock's. At full protection (ABI 3 or newer)
+nothing outside the data directory is writable. With Landlock ABI 1 or 2 (reduced,
+only after consent) `truncate` is not mediated, so a plugin could empty a file
+outside its data directory that the user can write. With the seccomp filter alone
+(reduced, only after consent) no filesystem rule applies at all: the plugin keeps
+the file access of the user's account, and only the filter's limits hold.
 
 What it cannot do, each answered with `EPERM` or `EACCES`:
 
@@ -540,9 +549,9 @@ review, adds read access to exactly `/proc/stat`, `/proc/meminfo` and
 `/proc/loadavg`. Broad `/proc` access is never granted, because the environment of
 another process of the same user can hold tokens. `statvfs` needs no grant. Changing
 a grant requires stopping the current generation first and applies to the next
-process. The official `system-status` plugin does not declare `system.metrics` yet,
-so under the sandbox its CPU and MEM bars show N/A until a release that does; DISK
-is unaffected.
+process. The released `system-status` 0.1.0-rc.1 does not declare `system.metrics`,
+so under the sandbox its CPU and MEM bars show N/A; DISK is unaffected. The 0.2.0
+manifest requires the feature, so that version needs the grant at its access review.
 
 **Kernel requirements.** Full protection needs Landlock ABI 3 or newer (Linux 6.2
 or newer) and the seccomp filter. The level actually applied is what the child
@@ -590,7 +599,7 @@ session ID. Old replies cannot establish admission or acknowledge new settings.
 | `context.title` | Known terminal title, or null |
 | `context.process` | Running state and process-exit events |
 | `events.terminal` | Subscribe to terminal/workspace lifecycle events |
-| `system.metrics` | Declares that the plugin reads system load figures. Shown in the access review and recorded; the host does not yet restrict what the plugin process can read |
+| `system.metrics` | Declares that the plugin reads system load figures. Shown in the access review and recorded; adds read access to `/proc/stat`, `/proc/meminfo` and `/proc/loadavg` under the sandbox (other `/proc` reads fail with `EACCES` at full protection) |
 
 The context fields and terminal events require `context.terminals`. Missing grants omit fields rather than
 fill them with fake values. Without terminal context, status is application-only

@@ -59,7 +59,7 @@ pub(super) fn add_actions(
                 .map_or(details_key.as_str(), |info| info.name.as_str()),
         ));
         summary.set_description(Some(
-            "Read-only snapshot; opening details does not run code. Plugins run as your user, not in an OS sandbox.",
+            "Read-only snapshot; opening details does not run code. Plugins run as your user inside a kernel sandbox where the kernel supports one.",
         ));
         if let Some(info) = info {
             detail_row(&summary, "Description", &info.description);

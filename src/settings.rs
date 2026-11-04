@@ -314,6 +314,7 @@ impl PreferencesStorage {
                 pending.enabled.is_some()
                     || pending.installation.is_some()
                     || pending.review.is_some()
+                    || pending.protection_consent.is_some()
                     || pending.settings.is_some()
             });
         }

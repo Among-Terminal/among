@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::plugin::host::Overview;
+use crate::plugin::sandbox::level::Protection;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -280,7 +281,8 @@ fn reconcile(
 
 fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Overview) -> Row {
     let row = adw::ActionRow::new();
-    row.set_subtitle_lines(3);
+    // state, origin, running version, declared API and the protection line.
+    row.set_subtitle_lines(6);
     row.set_title_lines(1);
     if let Some((entry, _)) = (ctx.plugin_details)(&info.key) {
         plugin_settings::add_actions(
@@ -351,13 +353,24 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
             else {
                 return;
             };
+            let files = match offer {
+                Protection::SeccompOnly => {
+                    "This kernel has no usable Landlock, so the plugin keeps every file \
+                     access of your user account: only the seccomp limits apply."
+                }
+                _ => {
+                    "File access is limited to the plugin's data directory and the \
+                     system runtime, except that this kernel does not restrict \
+                     truncating files."
+                }
+            };
             let dialog = adw::AlertDialog::builder()
                 .heading(format!("Run {} with reduced protection?", info.name))
                 .body(format!(
                     "This kernel can only give the plugin {}. The plugin is still \
-                     denied sockets and process control, but file access is less \
-                     strictly limited. The permission applies to this plugin only \
-                     and is asked again if the protection gets lower.",
+                     denied sockets and control of other processes. {files} The \
+                     permission applies to this plugin only and is asked again if \
+                     the protection gets lower.",
                     offer.label()
                 ))
                 .build();
@@ -367,19 +380,27 @@ fn make_row(ctx: &PreferencesContext, group: &adw::PreferencesGroup, info: &Over
             dialog.set_close_response("cancel");
             let key = key.clone();
             let allow_protection = allow_protection.clone();
+            let window = button
+                .root()
+                .and_then(|root| root.downcast::<gtk::Window>().ok());
+            let parent = window.clone();
             dialog.connect_response(None, move |_, response| {
                 if response == "allow" {
                     if let Err(problem) = allow_protection(&key, &offer.token()) {
                         eprintln!("among: {problem}");
+                        // the row may be gone by now, so the message goes to a
+                        // dialog on the window that showed the question.
+                        let failure = adw::AlertDialog::builder()
+                            .heading("Could not allow reduced protection")
+                            .body(problem.as_str())
+                            .build();
+                        failure.add_response("close", "Close");
+                        failure.set_close_response("close");
+                        failure.present(parent.as_ref());
                     }
                 }
             });
-            dialog.present(
-                button
-                    .root()
-                    .and_then(|root| root.downcast::<gtk::Window>().ok())
-                    .as_ref(),
-            );
+            dialog.present(window.as_ref());
         }
     });
     row.add_suffix(&allow);
