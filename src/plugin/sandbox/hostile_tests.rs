@@ -190,7 +190,19 @@ pub(super) fn start(scratch: &Scratch, mode: Mode<'_>) -> Session {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            let mut child = command.spawn().unwrap();
+            let began = std::time::Instant::now();
+            let mut child = loop {
+                match command.spawn() {
+                    Ok(child) => break child,
+                    Err(error)
+                        if error.raw_os_error() == Some(libc::ETXTBSY)
+                            && began.elapsed() < std::time::Duration::from_secs(5) =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    Err(error) => panic!("control start failed: {error}"),
+                }
+            };
             Session {
                 stdin: child.stdin.take(),
                 stdout: BufReader::new(child.stdout.take().unwrap()),
@@ -220,15 +232,28 @@ pub(super) fn start(scratch: &Scratch, mode: Mode<'_>) -> Session {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            let (mut child, applied) = match confinement.spawn(&mut command) {
-                Ok(started) => started,
-                Err(error) => panic!(
-                    "confined start failed: {}",
-                    match error {
-                        super::launch::StartError::Failed { reason, .. } => reason,
-                        super::launch::StartError::Unproven { reason, .. } => reason,
+            let began = std::time::Instant::now();
+            let (mut child, applied) = loop {
+                match confinement.spawn(&mut command) {
+                    Ok(started) => break started,
+                    // as the supervisor does: a fixture copy another test thread
+                    // is still writing, or holds open across its own fork, is
+                    // refused by exec until that descriptor is gone.
+                    Err(super::launch::StartError::Failed {
+                        errno: Some(libc::ETXTBSY),
+                        confinement_failed: false,
+                        ..
+                    }) if began.elapsed() < std::time::Duration::from_secs(5) => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
                     }
-                ),
+                    Err(error) => panic!(
+                        "confined start failed: {}",
+                        match error {
+                            super::launch::StartError::Failed { reason, .. } => reason,
+                            super::launch::StartError::Unproven { reason, .. } => reason,
+                        }
+                    ),
+                }
             };
             Session {
                 stdin: child.stdin.take(),

@@ -13,8 +13,32 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 struct Prepared {
-    confinement: Confinement,
+    confinement: Retrying,
     command: Command,
+}
+
+/// Starts like the production supervisor does, which retries `ETXTBSY`:
+/// another test thread may hold a write descriptor to a fixture copy across
+/// its own `fork`, and `exec` of a file open for writing is refused until that
+/// child has exec'd.
+struct Retrying(Confinement);
+
+impl Retrying {
+    fn spawn(&self, command: &mut Command) -> Result<(Child, super::launch::Applied), StartError> {
+        let started = Instant::now();
+        loop {
+            match self.0.spawn(command) {
+                Err(StartError::Failed {
+                    errno: Some(libc::ETXTBSY),
+                    confinement_failed: false,
+                    ..
+                }) if started.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                other => return other,
+            }
+        }
+    }
 }
 
 fn prepare(
@@ -43,7 +67,7 @@ fn prepare(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     Prepared {
-        confinement,
+        confinement: Retrying(confinement),
         command,
     }
 }
