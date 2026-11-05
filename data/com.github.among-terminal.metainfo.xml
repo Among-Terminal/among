@@ -29,6 +29,55 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.2.0" date="2026-11-05" type="stable">
+      <description>
+        <p>Features</p>
+        <ul>
+          <li>release: tag a release candidate before the stable release (#65)</li>
+          <li>plugin: confine managed plugins with Landlock and seccomp (#63)</li>
+          <li>notifications: consolidate owned audio authority and live consumers (#53)</li>
+          <li>plugins: latest/schema2 installation and plugin development mode (#45)</li>
+          <li>move panes between workspaces by dragging</li>
+          <li>show Split Pane inactive in an expanded pane's menu</li>
+          <li>open terminal links with Ctrl+click</li>
+          <li>reorder workspaces with native sidebar dragging</li>
+          <li>plugins: forward bounded timezone values to managed children</li>
+          <li>plugins: install and manage verified GitHub packages (#33)</li>
+          <li>plugins: preserve typed session edits and confirm generation-bound restarts</li>
+          <li>plugins: preserve identity-scoped inventory and native search</li>
+          <li>plugins: admit managed runtimes with scoped grants and live settings</li>
+          <li>plugins: inspect managed metadata and edit validated offline settings</li>
+          <li>panes: add target-safe restore control to expanded headers</li>
+        </ul>
+        <p>Bug fixes</p>
+        <ul>
+          <li>appimage: carry the runtime notice in every image (#59)</li>
+          <li>appimage: download build tools only from our own release</li>
+          <li>harden pane moves between workspaces after review</li>
+          <li>say that the hash, not the tag, authorizes appimagetool</li>
+          <li>pin appimagetool to the 1.9.1 release</li>
+          <li>keep focus on an expanded pane</li>
+          <li>keep reordered divider targets and strengthen native acceptance</li>
+          <li>retry shared plugin capacity without spending crash restarts</li>
+          <li>admit an identity whose detached reservation expires during pruning</li>
+          <li>retain visible cross-window stop state until reservation clears</li>
+          <li>isolate owned-group retirement across plugin windows</li>
+          <li>tooling: pin tar 0.4.46 and regress archive advisories</li>
+          <li>deps: update Tokio to the patched 1.54.1 release</li>
+          <li>plugins: refresh applied content and reject stale access reviews</li>
+          <li>preferences: bound actual managed document output before replacement</li>
+          <li>preferences: preserve keyboard toggles and release closed plugin rows</li>
+          <li>plugins: retain bounded startup and deterministic pipe regressions</li>
+          <li>plugins: bound cancellable retries for busy executables</li>
+          <li>plugins: withdraw sidebar summaries through Preferences disable</li>
+          <li>plugins: defer status bursts and gate replacement generations</li>
+          <li>plugins: bound transport and supervise process generations off-loop</li>
+          <li>appimage: supply visible launcher thumbnails and test decoded pixels</li>
+          <li>packaging: bind RC metadata and resolve registered file launches</li>
+          <li>packaging: align artwork and AppImageLauncher window identity</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-10-20" type="development">
       <description>
         <p>Release-candidate preparation for desktop artwork and integration corrections.</p>
