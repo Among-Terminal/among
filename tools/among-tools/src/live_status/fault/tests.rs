@@ -103,7 +103,9 @@ fn pinned_inode_selects_worker_thread_child_without_signalling_same_basename_sib
             .map_err(|_| "fixture thread completion cancelled")?;
         Ok(())
     });
-    let mut child = receive.recv_timeout(Duration::from_secs(5))?;
+    // Longer than the budget `launch` gives the child to start, so a slow
+    // start is reported by `launch` itself rather than as a receive timeout.
+    let mut child = receive.recv_timeout(Duration::from_secs(15))?;
     let host = Host::observe(std::process::id())?;
     let executable = File::open(&selected)?;
     let target = target(&host, &executable)?;
