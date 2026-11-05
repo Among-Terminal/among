@@ -348,3 +348,16 @@
 .app-slot-footer label {
     opacity: 0.7;
 }
+
+/* A small rounded tag on the About page (version, build). The tint is the
+ * window foreground at low strength, so the text colour is the ordinary
+ * foreground on a barely lighter or darker ground in light, dark and
+ * high-contrast styles alike. */
+.about-badge {
+    color: @window_fg_color;
+    background-color: alpha(@window_fg_color, 0.1);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 0.85em;
+    font-weight: 600;
+}

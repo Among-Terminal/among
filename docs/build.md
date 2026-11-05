@@ -105,6 +105,32 @@ its bin directory, normally `~/.cargo/bin` (which must be on `PATH`). This does
 not install a desktop launcher, icon or plugins. Repeat the install
 command with `--force` to update; use `cargo uninstall among` to remove it.
 
+## Build identity
+
+Preferences > About shows the version, the short commit and the commit date of
+the build. The compiler reads them from three optional environment variables:
+
+| Variable | Shown as | Without it |
+| --- | --- | --- |
+| `AMONG_BUILD_VERSION` | the version, such as `0.2.0-rc.2` | the version in `Cargo.toml` |
+| `AMONG_BUILD_COMMIT` | the short commit | `unknown` |
+| `AMONG_BUILD_DATE` | the build date, `YYYY-MM-DD` | `unknown` |
+
+There is no build script and no call to git, so a build from a source archive
+without a `.git` directory works and reports `unknown`. An empty variable counts
+as absent. Cargo rebuilds when a variable changes.
+
+`scripts/build-identity.sh <ref-type> <ref-name>` prints the three variables for
+the checked-out commit. The tag is the version only when `<ref-type>` is `tag`.
+The package workflows (AppImage, RPM, Snap) run it before compiling, and the
+Debian builder sets the same values itself. The commit and the date are the
+tagged commit's own, not the build machine's clock, so two builds of one tag
+stay identical. To label a local build:
+
+```sh
+env $(sh scripts/build-identity.sh branch local) cargo build --release --locked
+```
+
 ## Verifying a clean build
 
 ```sh

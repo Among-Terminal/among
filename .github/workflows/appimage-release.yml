@@ -84,6 +84,11 @@ jobs:
           chmod 755 rustup-init
           ./rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.1
           echo '/opt/among-cargo/bin' >> "$GITHUB_PATH"
+      # Exported through the job environment before the first compile, so every
+      # later build in this job embeds the same commit and date. They come from
+      # the checked-out commit, not from the clock.
+      - name: Record the build identity for the About page
+        run: sh scripts/build-identity.sh "$REF_TYPE" "$REF_NAME" >> "$GITHUB_ENV"
       - name: Build the application and tooling
         run: |
           cargo build --release --locked

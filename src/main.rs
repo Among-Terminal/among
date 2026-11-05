@@ -6,6 +6,7 @@
 //! routing, and the plugin pipeline.
 
 mod app;
+mod build_info;
 mod context_menu;
 mod links;
 mod packaged;

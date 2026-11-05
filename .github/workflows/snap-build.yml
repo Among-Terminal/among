@@ -71,12 +71,24 @@ jobs:
           tool=tools/among-tools/target/release/among-tools
           "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" package-plugin-profile "$RUNNER_TEMP/plugin-candidate"
           "$tool" check-package-plugin-profile package-plugin-profile "$EXPECTED_SOURCE"
+      # The About page names the commit and its date. `sudo env` passes only what
+      # it is given, so the values are handed over by name below.
+      - name: Record the build identity for the About page
+        run: sh scripts/build-identity.sh "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
       - name: Build actual native core24 recipe
         id: build
         env:
           BUILD_ARCH: ${{ matrix.arch }}
         run: |
-          sudo env CARGO_BUILD_JOBS=1 snapcraft --destructive-mode --platform "$BUILD_ARCH" --verbose
+          sudo env CARGO_BUILD_JOBS=1 \
+            "AMONG_BUILD_VERSION=$AMONG_BUILD_VERSION" \
+            "AMONG_BUILD_COMMIT=$AMONG_BUILD_COMMIT" \
+            "AMONG_BUILD_DATE=$AMONG_BUILD_DATE" \
+            snapcraft --destructive-mode --platform "$BUILD_ARCH" --verbose
+          # The compiler embeds the values as plain text. A missing commit or
+          # date means snapcraft did not hand its environment to the part build.
+          sudo grep -aqF "$AMONG_BUILD_COMMIT" prime/bin/among
+          sudo grep -aqF "$AMONG_BUILD_DATE" prime/bin/among
           version="$(sudo parts/among/build/among-tools-target/release/among-tools package-version .)"
           test -f "among_${version}_${BUILD_ARCH}.snap"
           sha256sum "among_${version}_${BUILD_ARCH}.snap"

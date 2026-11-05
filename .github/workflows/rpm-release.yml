@@ -120,6 +120,9 @@ jobs:
           epoch=$(git -c "safe.directory=$(pwd -P)" show -s --format=%ct HEAD)
           case "$epoch" in ''|*[!0-9]*) echo 'invalid source commit timestamp' >&2; exit 1 ;; esac
           echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
+          # The About page names the tag, the commit and its date. The values
+          # come from the tagged commit, so the build stays reproducible.
+          sh scripts/build-identity.sh "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
 
       - name: Build the source tarball the spec expects
         run: |
@@ -164,6 +167,9 @@ jobs:
           /usr/sbin/runuser --user among-builder -- /usr/bin/env \
             "PATH=$PATH" "RUSTUP_HOME=$RUSTUP_HOME" "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" \
             "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+            "AMONG_BUILD_VERSION=$AMONG_BUILD_VERSION" \
+            "AMONG_BUILD_COMMIT=$AMONG_BUILD_COMMIT" \
+            "AMONG_BUILD_DATE=$AMONG_BUILD_DATE" \
             /usr/bin/rpmbuild --define "_topdir $AMONG_CHECK_ROOT/rpmbuild" \
                    --define "_build_id_links none" \
                    --define "debug_package %{nil}" \

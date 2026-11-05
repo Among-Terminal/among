@@ -5,8 +5,9 @@ The storage module uses `$XDG_CONFIG_HOME/among`, falling back to
 
 ## General notifications
 
-General is the first and initially visible page, followed by Keyboard and Plugins.
-Page/control automation uses identities (`general`, `keyboard`, `plugins` and
+General is the first and initially visible page, followed by Keyboard, Plugins and
+About. Page/control automation uses identities (`general`, `keyboard`, `plugins`,
+`about` and
 `notification-…` widget names), not the first tab or first switch.
 
 Notification choices use `general.json`, version 1. Missing fields inherit these
@@ -204,3 +205,30 @@ allow that one. The card's details list, for the latest start, the identity,
 generation, granted features, the digest of the policy applied, the Landlock ABI and
 enforcement the child reported, whether the seccomp filter loaded and the reason of
 any refusal.
+
+## About
+
+The last page, named `about`, identifies the build. It shows the logo, the name,
+the version and the build (`Build <short commit> · <date>`), then links to the
+website (`https://among-terminal.github.io/`), the source repository
+(`https://github.com/Among-Terminal/among`) and its issue tracker, and the
+license (Apache-2.0). Opening the page reads only compiled-in values and the
+`os-release` file; the network is used only when you follow a link, and the link
+opens in the desktop's default handler.
+
+The version, commit and date come from the build environment, not from git at
+run time; a build that was not given them shows the version from `Cargo.toml` and
+`unknown`. See [build identity](build.md#build-identity).
+
+**Copy build details** puts four lines on the clipboard for a bug report:
+
+```text
+Among Terminal 0.2.0-rc.2
+Commit: 723e04b
+Built: 2026-11-05
+System: Debian GNU/Linux 13 (trixie)
+```
+
+The system line is `PRETTY_NAME` from `/etc/os-release` (`/usr/lib/os-release`
+when the first cannot be read), or `unknown` when the file has no such line. The row's icon
+turns into a check mark for two seconds to confirm the copy; there is no toast.

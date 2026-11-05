@@ -1,4 +1,4 @@
-//! The preferences window: General notifications, keyboard shortcuts and plugins.
+//! The preferences window: General notifications, keyboard shortcuts, plugins and About.
 //!
 //! Both features have to be inspectable and changeable *by the user*, not just by
 //! editing configuration. Putting them in one window is also what makes the
@@ -14,6 +14,7 @@ use gtk::gdk;
 use crate::plugin::host::{Configuration, PluginState};
 use crate::shortcuts::{self, Action, Bindings};
 
+mod about;
 pub(crate) mod general;
 pub(crate) mod local_catalogue;
 pub(crate) mod notification_role;
@@ -87,6 +88,7 @@ pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
     window.add(&general);
     window.add(&shortcuts_page(&ctx));
     window.add(&plugins_page(&ctx));
+    window.add(&about::page());
     window.set_visible_page(&general);
     window.present();
 }
