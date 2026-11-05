@@ -70,7 +70,7 @@ Usage:
   among-tools check-stable-build <tree>
   among-tools check-release-metadata <source-root>
   among-tools release-prepare <source-root> [--dry-run] [--accept-untitled <sha,sha...>]
-  among-tools release-tag <source-root> push <commit> | candidate <number>
+  among-tools release-tag <source-root> push <commit> | candidate <number> [release-commit] | stable [release-commit]
   among-tools package-metainfo <source.xml> <package-version> <output.xml>
   among-tools check-stable-source <repository> <record.json> <bundle.tar>
   among-tools third-party-notices <source-root> <destination> <generate|check>
@@ -550,12 +550,21 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 }
             }
         }
-        [command, root, mode, argument] if command == "release-tag" => {
+        [command, root, mode, rest @ ..] if command == "release-tag" => {
             let root = Path::new(root);
-            let decision = match mode.as_str() {
-                "push" => among_tools::release_tag::decide_push(root, argument)?,
-                "candidate" => among_tools::release_tag::decide_candidate(root, argument)?,
-                other => return Err(format!("unknown release-tag mode {other}").into()),
+            let decision = match (mode.as_str(), rest) {
+                ("push", [commit]) => among_tools::release_tag::decide_push(root, commit)?,
+                ("candidate", [number]) => {
+                    among_tools::release_tag::decide_candidate(root, number, None)?
+                }
+                ("candidate", [number, release_commit]) => {
+                    among_tools::release_tag::decide_candidate(root, number, Some(release_commit))?
+                }
+                ("stable", []) => among_tools::release_tag::decide_stable(root, None)?,
+                ("stable", [release_commit]) => {
+                    among_tools::release_tag::decide_stable(root, Some(release_commit))?
+                }
+                _ => return Err(format!("unknown release-tag mode {mode} or arguments").into()),
             };
             print!("{}", decision.render());
         }

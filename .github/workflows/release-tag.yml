@@ -2,19 +2,29 @@ name: Release tag
 
 # The release pull request is prepared by `among-tools release-prepare` and
 # merged by the owner (docs/releasing.md). Merging it puts a commit titled
-# `chore(release): X.Y.Z` on main. This workflow recognises that commit, tags it
-# `vX.Y.Z` and starts release-draft.yml on the tag, which builds the packages
-# and fills a GitHub Release draft. Publishing the draft stays the owner's
-# manual decision; nothing here creates or publishes a GitHub Release.
+# `chore(release): X.Y.Z` on main and creates no tag: a push to main only
+# validates that commit, so a broken release commit fails its own run.
+#
+# Tags are made by two manual runs, each the owner's separate decision:
+#   candidate=N  tags the release commit `vX.Y.Z-rc.N` for the owner's testing
+#                and starts a prerelease draft on it;
+#   stable=true  tags `vX.Y.Z` on a release commit that already carries a
+#                candidate of that version, so the stable bytes are the tested
+#                bytes, and starts the stable draft.
+# The optional release_commit input names the release commit when main has moved
+# on since it; by default the tip of main must itself be the release commit.
+# Publishing a draft stays the owner's manual decision; nothing here creates or
+# publishes a GitHub Release.
 #
 # A tag created with the repository token starts no push workflow, so the draft
 # workflow is started with workflow_dispatch on the tag instead. It then runs
 # with the tag as its ref and the tag's commit as its commit.
 #
 # The decision (is this a release commit, does it carry the version and the
-# highlights, is the version above every stable tag, does the tag exist) is made
-# by `among-tools release-tag` in a job that holds no write permission. The job
-# that holds the write token checks out nothing and only carries the decision out.
+# highlights, is the version above every stable tag, does a candidate exist,
+# does the tag exist) is made by `among-tools release-tag` in a job that holds
+# no write permission. The job that holds the write token checks out nothing and
+# only carries the decision out.
 on:
   push:
     branches: [main]
@@ -22,19 +32,34 @@ on:
     inputs:
       candidate:
         description: >-
-          Release candidate number N (required for a manual run): tags the
-          commit of the current stable release tag as v<version>-rc.N and starts
-          its draft.
+          Release candidate number N: tags the release commit as
+          v<version>-rc.N and starts its prerelease draft. Give this or stable.
+        required: false
+        type: string
+      stable:
+        description: >-
+          Tick to tag the stable v<version> on a release commit that already
+          has a v<version>-rc.N tag, and start its draft. Give this or candidate.
+        required: false
+        type: boolean
+        default: false
+      release_commit:
+        description: >-
+          Optional commit (7 to 40 lowercase hexadecimal digits) of the release
+          to act on, when main has moved past it. Default: the tip of main.
         required: false
         type: string
 
 permissions: {}
 
-# One group per commit and candidate: a single group would let GitHub drop a
-# queued run when a newer one arrives, and a dropped run would leave a release
-# commit untagged.
+# One group for every run, served in order: each run reads the tags when it
+# starts, so a stable run sees the candidate written before it and a candidate
+# run sees a stable tag written before it. `queue: max` keeps up to 100 pending
+# runs; without it GitHub keeps one pending run per group and cancels the older
+# one, and a cancelled run would leave a release step undone.
 concurrency:
-  group: release-tag-${{ github.sha }}-${{ inputs.candidate }}
+  group: release-tag
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -48,6 +73,11 @@ jobs:
       tag: ${{ steps.decision.outputs.tag }}
       sha: ${{ steps.decision.outputs.sha }}
     steps:
+      # A manual run can be started on any ref; refuse before checking out or
+      # building anything from a branch other than main.
+      - name: Run only on main
+        run: |
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "run this workflow on main, not on $GITHUB_REF" >&2; exit 1; }
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
@@ -64,6 +94,8 @@ jobs:
           CARGO_HOME: ${{ runner.temp }}/release-cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/release-target
           CANDIDATE: ${{ inputs.candidate }}
+          STABLE: ${{ inputs.stable }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
           set -euo pipefail
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml --bin among-tools
@@ -71,8 +103,15 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ]; then
             "$tool" release-tag . push "$GITHUB_SHA" | tee "$RUNNER_TEMP/decision"
           else
-            [ "$GITHUB_REF" = refs/heads/main ] || { echo "run this workflow on main, not on $GITHUB_REF" >&2; exit 1; }
-            "$tool" release-tag . candidate "$CANDIDATE" | tee "$RUNNER_TEMP/decision"
+            if [ -n "$CANDIDATE" ] && [ "$STABLE" = true ]; then
+              echo "give either candidate or stable, not both" >&2; exit 1
+            elif [ -n "$CANDIDATE" ]; then
+              "$tool" release-tag . candidate "$CANDIDATE" "$RELEASE_COMMIT" | tee "$RUNNER_TEMP/decision"
+            elif [ "$STABLE" = true ]; then
+              "$tool" release-tag . stable "$RELEASE_COMMIT" | tee "$RUNNER_TEMP/decision"
+            else
+              echo "give candidate=N or stable=true" >&2; exit 1
+            fi
           fi
           cat "$RUNNER_TEMP/decision" >> "$GITHUB_OUTPUT"
 
@@ -97,9 +136,29 @@ jobs:
           repo="$GITHUB_REPOSITORY"
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "unexpected tag '$TAG'" >&2; exit 1; }
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit '$SHA'" >&2; exit 1; }
+          # The write job does not trust the decision alone: the commit must be
+          # main itself or an ancestor of it (compare status identical or behind).
+          status=$(gh api "repos/$repo/compare/main...$SHA" --jq .status)
+          case "$status" in
+            identical|behind) ;;
+            *) echo "$SHA is not contained in main (compare status '$status')" >&2; exit 1 ;;
+          esac
           if [ "$ACTION" = create ]; then
-            gh api --method POST "repos/$repo/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" > /dev/null
-            echo "Created $TAG at $SHA"
+            # A "re-run failed jobs" keeps the decision of the first attempt, so
+            # the tag may exist by now: accept it at the same commit, never move it.
+            # matching-refs answers an empty list for a missing tag, where a
+            # direct lookup prints an error document on standard output.
+            current=$(gh api "repos/$repo/git/matching-refs/tags/$TAG" \
+              --jq "[.[] | select(.ref == \"refs/tags/$TAG\") | .object.sha][0] // empty")
+            if [ -z "$current" ]; then
+              gh api --method POST "repos/$repo/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$SHA" > /dev/null
+              echo "Created $TAG at $SHA"
+            elif [ "$current" = "$SHA" ]; then
+              echo "$TAG already exists at $SHA"
+            else
+              echo "$TAG exists at $current, not at $SHA" >&2
+              exit 1
+            fi
           fi
           # A re-run after a failed dispatch starts the draft; a re-run after a
           # started one does not start it twice.

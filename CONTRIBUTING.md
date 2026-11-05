@@ -194,8 +194,11 @@ prepares; nobody edits a version by hand.
   adds the hand-written highlights `.github/release-notes/vX.Y.Z.md`; the checks
   fail without it.
 - A maintainer opens that pull request with their own credentials and merges it
-  by hand. Merging tags the commit and starts the release draft; publishing the
-  draft is a separate, manual decision.
+  by hand. Merging only validates the release commit and creates no tag. A
+  release candidate `vX.Y.Z-rc.N` is tagged by a manual run of the Release tag
+  workflow, which starts its prerelease draft; the stable tag is made by another
+  manual run, only on a commit that already has an accepted candidate.
+  Publishing a draft is a separate, manual decision.
 - `among-tools check-release-metadata .` runs in CI and fails when a version
   location is missing or differs, so a hand edit of one location is caught.
 - Release candidates, the version rules and the release highlights file are in

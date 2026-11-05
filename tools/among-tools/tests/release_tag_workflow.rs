@@ -31,17 +31,22 @@ fn only_a_push_to_main_or_a_manual_run_starts_it() -> Result<()> {
     let document = workflow()?;
     assert_eq!(document["on"]["push"], json!({"branches":["main"]}));
     let inputs = &document["on"]["workflow_dispatch"]["inputs"];
-    assert_eq!(inputs.as_object().map(|map| map.len()), Some(1));
+    assert_eq!(inputs.as_object().map(|map| map.len()), Some(3));
     assert_eq!(inputs["candidate"]["type"], "string");
     assert_eq!(inputs["candidate"]["required"], false);
+    assert_eq!(inputs["stable"]["type"], "boolean");
+    assert_eq!(inputs["stable"]["required"], false);
+    // A stable tag must never be made by a default-valued run.
+    assert_eq!(inputs["stable"]["default"], false);
+    assert_eq!(inputs["release_commit"]["type"], "string");
+    assert_eq!(inputs["release_commit"]["required"], false);
     assert_eq!(document["on"].as_object().map(|map| map.len()), Some(2));
     assert_eq!(document["permissions"], json!({}));
-    // One group per commit and candidate: a shared group would drop a queued
-    // release run.
-    assert_eq!(
-        document["concurrency"]["group"],
-        "release-tag-${{ github.sha }}-${{ inputs.candidate }}"
-    );
+    // One group for every run, served in order, so a stable run sees a
+    // candidate written before it; the long queue keeps GitHub from cancelling
+    // an older pending run, which would leave a release step undone.
+    assert_eq!(document["concurrency"]["group"], "release-tag");
+    assert_eq!(document["concurrency"]["queue"], "max");
     assert_eq!(document["concurrency"]["cancel-in-progress"], false);
     Ok(())
 }
@@ -55,7 +60,13 @@ fn the_decision_job_can_only_read_and_the_write_job_runs_no_checked_out_code() -
     let decide = &jobs["decide"];
     assert_eq!(decide["permissions"], json!({"contents":"read"}));
     let steps = decide["steps"].as_array().ok_or("steps")?;
-    let checkout = &steps[0];
+    // The branch guard is the first step: nothing is checked out or built
+    // before a manual run on a ref other than main is refused.
+    let guard = steps[0]["run"].as_str().ok_or("guard step")?;
+    assert!(guard.contains("[ \"$GITHUB_REF\" = refs/heads/main ] ||"));
+    assert!(guard.contains("exit 1"));
+    assert!(steps[0].get("uses").is_none());
+    let checkout = &steps[1];
     assert!(checkout["uses"]
         .as_str()
         .is_some_and(|uses| uses.starts_with("actions/checkout@")));
@@ -63,8 +74,28 @@ fn the_decision_job_can_only_read_and_the_write_job_runs_no_checked_out_code() -
     assert_eq!(checkout["with"]["persist-credentials"], false);
     let shell = script(decide)?;
     assert!(shell.contains("release-tag . push \"$GITHUB_SHA\""));
-    assert!(shell.contains("release-tag . candidate \"$CANDIDATE\""));
-    assert!(shell.contains("[ \"$GITHUB_REF\" = refs/heads/main ]"));
+    for required in [
+        "release-tag . candidate \"$CANDIDATE\" \"$RELEASE_COMMIT\"",
+        "release-tag . stable \"$RELEASE_COMMIT\"",
+        "[ \"$GITHUB_REF\" = refs/heads/main ]",
+        "give either candidate or stable, not both",
+        "give candidate=N or stable=true",
+    ] {
+        assert!(shell.contains(required), "missing: {required}");
+    }
+    // The inputs reach the shell only through the environment.
+    assert!(!shell.contains("${{"), "an expression is interpolated");
+    // The guard is not repeated after the build, where it would be too late.
+    let decision_step = &steps[3];
+    assert_eq!(decision_step["id"], "decision");
+    assert!(!decision_step["run"]
+        .as_str()
+        .ok_or("run")?
+        .contains("refs/heads/main"));
+    let env = &decision_step["env"];
+    assert_eq!(env["CANDIDATE"], "${{ inputs.candidate }}");
+    assert_eq!(env["STABLE"], "${{ inputs.stable }}");
+    assert_eq!(env["RELEASE_COMMIT"], "${{ inputs.release_commit }}");
 
     let tag = &jobs["tag"];
     assert_eq!(
@@ -108,12 +139,27 @@ fn the_write_job_only_creates_the_decided_tag_and_starts_the_draft() -> Result<(
     for required in [
         "^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$",
         "^[0-9a-f]{40}$",
+        // The write job re-checks that the commit is main or its ancestor.
+        "compare/main...$SHA\" --jq .status",
+        "identical|behind) ;;",
+        "is not contained in main",
         "if [ \"$ACTION\" = create ]; then",
         "git/refs\" -f \"ref=refs/tags/$TAG\" -f \"sha=$SHA\"",
+        // A rerun of failed jobs finds the tag already made: same commit is
+        // accepted, another commit is an error.
+        "git/matching-refs/tags/$TAG\"",
+        "select(.ref == \\\"refs/tags/$TAG\\\")",
+        "elif [ \"$current\" = \"$SHA\" ]; then",
         "gh workflow run release-draft.yml --repo \"$repo\" --ref \"$TAG\"",
     ] {
         assert!(shell.contains(required), "missing: {required}");
     }
+    let compare = shell.find("compare/main...$SHA").ok_or("no compare")?;
+    let create = shell.find("git/refs\" -f").ok_or("no ref creation")?;
+    assert!(
+        compare < create,
+        "the ancestry check must precede the tag creation"
+    );
     for forbidden in [
         "gh release",
         "draft=false",
