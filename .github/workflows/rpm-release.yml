@@ -262,6 +262,15 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare complete locked notice graphs
+        # The notice check resolves both Cargo graphs offline, and the earlier
+        # steps downloaded only what the tooling build needed, so the
+        # application graph has no registry index yet.
+        run: |
+          set -eu
+          cargo fetch --locked --manifest-path Cargo.toml
+          cargo fetch --locked --manifest-path tools/among-tools/Cargo.toml
+
       - name: License notices in the payload match the tagged source and the locked inventory
         run: |
           set -eu
