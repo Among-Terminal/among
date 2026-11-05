@@ -166,8 +166,10 @@
 .workspace-stripe.notification-pulse {
   animation: notification-pulse 500ms ease-in-out infinite;
 }
+/* A shadow of the stripe's own colour, not a wider box: allocation stays 3px,
+ * so the sidebar and terminal geometry do not move when a bell arrives. */
 .workspace-stripe.notification-unread {
-  min-width: 6px;
+  box-shadow: 3px 0 0 0 currentColor;
 }
 
 .workspace-name {

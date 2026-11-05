@@ -1027,11 +1027,6 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         find_with_class(&header, "notification-unread").is_some_and(|widget| widget == stripe),
         "the stripe is the only unread indicator; no exclamation mark remains"
     );
-    // the pulse does not stop after the old one-second window while the
-    // terminal stays unfocused.
-    pump_for(Duration::from_millis(2_500));
-    assert!(backend.attention(first.0).unread && backend.attention(first.0).pulsing);
-    assert!(stripe.has_css_class("notification-pulse"));
     shot("pulse-expanded");
     accessible_label(&header, &format!("Terminal {}, unread bell", first.0));
     accessible_property(
@@ -1050,6 +1045,12 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
             term.column_count()
         )
     );
+    // the pulse does not stop after the old one-second window while the
+    // terminal stays unfocused. This waits only after the geometry check:
+    // a long idle time lets the terminal's own scrollbar settle.
+    pump_for(Duration::from_millis(2_500));
+    assert!(backend.attention(first.0).unread && backend.attention(first.0).pulsing);
+    assert!(stripe.has_css_class("notification-pulse"));
     gtk::Settings::default()
         .unwrap()
         .set_gtk_enable_animations(false);
