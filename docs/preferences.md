@@ -23,8 +23,11 @@ of the originating pane header and of its workspace row pulse without end until 
 terminal is actually focused; the unread state then clears and the pulse stops. The
 line is also thicker while unread, and the unread state has an accessible name.
 When system animations are off the line does not move and stays thicker, and
-turning them off does not acknowledge unread terminals. Workspace hue and terminal
-allocation are not notification state.
+turning them off does not acknowledge unread terminals. With Always selected, a bell
+in the terminal that is already focused only pulses the line for one second: that
+terminal never becomes unread, so it gets no thicker line and no unread name, also
+when animations are off. Workspace hue and terminal allocation are not notification
+state.
 
 Policy edits apply immediately. The command's absolute executable and literal
 arguments (a JSON string array) require **Save command**. Empty executable clears
