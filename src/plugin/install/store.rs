@@ -189,8 +189,7 @@ fn owned(file: File, directory: bool) -> Result<File, Problem> {
     let metadata = file
         .metadata()
         .map_err(|_| Problem("cannot inspect managed-store entry"))?;
-    if metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o7022 != 0
+    if !crate::plugin::data::private_to_user(&metadata, 0o7000)
         || if directory {
             !metadata.is_dir()
         } else {

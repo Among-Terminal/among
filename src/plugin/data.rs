@@ -143,12 +143,39 @@ pub fn owned_directory(path: &Path) -> Result<File, Problem> {
         .metadata()
         .map_err(|_| Problem("cannot inspect package directory"))?;
     // the initial managed store is per-user, not a system-wide install location.
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+    if !private_to_user(&metadata, 0) {
         return Err(Problem(
-            "package directory must be owned and not writable by others",
+            "package directory must be owned by the current user and not writable by others \
+             or by a group other than the user's own",
         ));
     }
     Ok(file)
+}
+
+/// Whether nobody but the current user can change an entry.
+///
+/// The entry must be owned by the effective user and must not be writable by
+/// everyone. Group write is accepted only when the entry's group is the
+/// user's own primary group: `umask 002` (the default on Debian, Ubuntu and
+/// Fedora, where each user has a private group) creates every directory as
+/// `775`, and refusing those would make settings and plugins unusable on the
+/// most common desktop setups. A group that is not the user's own may have
+/// other members, so write access through it stays refused. `special` lists
+/// extra mode bits (setuid, setgid, sticky) the caller refuses.
+pub(crate) fn private_to_user(metadata: &std::fs::Metadata, special: u32) -> bool {
+    metadata.uid() == unsafe { libc::geteuid() }
+        && mode_is_private(
+            metadata.mode(),
+            metadata.gid(),
+            unsafe { libc::getegid() },
+            special,
+        )
+}
+
+fn mode_is_private(mode: u32, group: u32, primary_group: u32, special: u32) -> bool {
+    const GROUP_WRITE: u32 = 0o020;
+    const OTHERS_WRITE: u32 = 0o002;
+    mode & (OTHERS_WRITE | special) == 0 && (mode & GROUP_WRITE == 0 || group == primary_group)
 }
 
 pub fn contained_file(root: &File, relative: &str) -> Result<File, Problem> {
@@ -190,7 +217,7 @@ fn contained(root: &File, relative: &str, directory_only: bool) -> Result<File, 
         let metadata = file
             .metadata()
             .map_err(|_| Problem("cannot inspect package resource"))?;
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o6022 != 0 {
+        if !private_to_user(&metadata, 0o6000) {
             return Err(Problem(
                 "package resource has unsafe ownership or permissions",
             ));
@@ -268,6 +295,98 @@ mod tests {
         let before = value.clone();
         assert!(serialized_size(&value, 1).is_err());
         assert_eq!(value, before);
+    }
+
+    #[test]
+    fn mode_rule_accepts_a_private_group_and_refuses_everything_wider() {
+        const MINE: u32 = 1000;
+        const OTHER: u32 = 100;
+        // (mode, group, special bits refused, accepted)
+        for (mode, group, special, accepted) in [
+            (0o700, OTHER, 0, true),
+            (0o755, OTHER, 0, true),
+            (0o775, MINE, 0, true),
+            (0o770, MINE, 0, true),
+            (0o775, OTHER, 0, false),
+            (0o770, OTHER, 0, false),
+            (0o757, MINE, 0, false),
+            (0o777, MINE, 0, false),
+            (0o702, MINE, 0, false),
+            // setuid, setgid and sticky only count when the caller refuses them.
+            (0o2775, MINE, 0, true),
+            (0o2775, MINE, 0o6000, false),
+            (0o4755, MINE, 0o6000, false),
+            (0o1755, MINE, 0o7000, false),
+            (0o1755, MINE, 0o6000, true),
+        ] {
+            assert_eq!(
+                mode_is_private(mode, group, MINE, special),
+                accepted,
+                "mode {mode:o} group {group} refused-special {special:o}"
+            );
+        }
+    }
+
+    /// A group other than the primary one that the current user belongs to, so
+    /// the test can hand a directory to it without privileges.
+    fn foreign_group() -> Option<u32> {
+        let primary = unsafe { libc::getegid() };
+        let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+        let mut groups = vec![0 as libc::gid_t; usize::try_from(count).ok()?];
+        let count = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
+        groups.truncate(usize::try_from(count).ok()?);
+        groups.into_iter().find(|group| *group != primary)
+    }
+
+    fn directory_with(name: &str, mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("among-data-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    #[test]
+    fn owned_directory_accepts_private_and_own_group_writable_and_refuses_the_rest() {
+        for (name, mode, accepted) in [
+            ("private", 0o700, true),
+            ("readable", 0o755, true),
+            ("own-group", 0o775, true),
+            ("world-writable", 0o757, false),
+            ("open", 0o777, false),
+        ] {
+            let path = directory_with(name, mode);
+            assert_eq!(owned_directory(&path).is_ok(), accepted, "{name}");
+            std::fs::remove_dir_all(&path).unwrap();
+        }
+    }
+
+    #[test]
+    fn owned_directory_refuses_group_write_through_a_foreign_group() {
+        let Some(group) = foreign_group() else {
+            eprintln!("NOT VERIFIED: the user has no group besides the primary one");
+            return;
+        };
+        let path = directory_with("foreign-group", 0o775);
+        let name = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::chown(name.as_ptr(), u32::MAX, group) }, 0);
+        assert!(owned_directory(&path).is_err());
+        // without group write the same foreign group is harmless.
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        assert!(owned_directory(&path).is_ok());
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn owned_directory_refuses_a_directory_owned_by_another_user() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("NOT VERIFIED: running as root, no foreign-owned directory to observe");
+            return;
+        }
+        // the filesystem root belongs to root.
+        assert!(owned_directory(Path::new("/")).is_err());
     }
 
     #[test]
