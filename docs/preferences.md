@@ -209,7 +209,8 @@ any refusal.
 ## About
 
 The last page, named `about`, identifies the build. It shows the logo, the name,
-the version and the build (`Build <short commit> · <date>`), then links to the
+the version and the build (`Build <short commit> · <date>`; a part the build did
+not record is left out, and `Build unknown` shows when it recorded neither), then links to the
 website (`https://among-terminal.github.io/`), the source repository
 (`https://github.com/Among-Terminal/among`) and its issue tracker, and the
 license (Apache-2.0). Opening the page reads only compiled-in values and the

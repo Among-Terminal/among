@@ -8,7 +8,7 @@
 //! when its value changes.
 
 /// Shown when a build did not say where it came from.
-const UNKNOWN: &str = "unknown";
+pub(crate) const UNKNOWN: &str = "unknown";
 
 /// The identity of the running build.
 #[derive(Clone, Debug, PartialEq, Eq)]

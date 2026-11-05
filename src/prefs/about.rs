@@ -36,9 +36,18 @@ const LINKS: [Link; 3] = [
     },
 ];
 
-/// The short line under the name: build identity as the user would read it out.
+/// The build tag under the name: the commit and the date, leaving out whichever
+/// the build did not record, and a single "unknown" when it recorded neither.
 fn build_label(info: &BuildInfo) -> String {
-    format!("Build {} · {}", info.commit, info.date)
+    let known: Vec<&str> = [info.commit.as_str(), info.date.as_str()]
+        .into_iter()
+        .filter(|value| *value != build_info::UNKNOWN)
+        .collect();
+    if known.is_empty() {
+        format!("Build {}", build_info::UNKNOWN)
+    } else {
+        format!("Build {}", known.join(" · "))
+    }
 }
 
 fn version_label(info: &BuildInfo) -> String {
@@ -203,7 +212,11 @@ mod tests {
         assert_eq!(version_label(&info), "Version 0.2.0-rc.2");
         assert_eq!(build_label(&info), "Build 723e04b · 2026-11-05");
         let unknown = build_info::resolve(None, None, None);
-        assert_eq!(build_label(&unknown), "Build unknown · unknown");
+        assert_eq!(build_label(&unknown), "Build unknown");
+        let commit_only = build_info::resolve(None, Some("723e04b"), None);
+        assert_eq!(build_label(&commit_only), "Build 723e04b");
+        let date_only = build_info::resolve(None, None, Some("2026-11-05"));
+        assert_eq!(build_label(&date_only), "Build 2026-11-05");
     }
 
     #[test]
