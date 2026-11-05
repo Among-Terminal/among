@@ -6029,6 +6029,26 @@ mod tests {
                 .map(|paned| (paned.orientation(), paned.position()))
                 .collect()
         }
+        /// The one visible pane header and the terminal under it. Both fill the
+        /// pane's content width, so their widths must agree.
+        fn header_and_terminal(window: &gtk::Window) -> (gtk::Widget, gtk::Widget) {
+            let headers = descendants(window.upcast_ref())
+                .into_iter()
+                .filter(|widget| widget.has_css_class("pane-header") && widget.is_mapped())
+                .collect::<Vec<_>>();
+            assert_eq!(headers.len(), 1, "exactly one pane is shown");
+            let terminal = descendants(&headers[0].parent().unwrap())
+                .into_iter()
+                .find(|widget| widget.is::<vte::Terminal>())
+                .unwrap();
+            (headers[0].clone(), terminal)
+        }
+        /// Left edge and width in window coordinates, padding and border
+        /// included: the allocation the user sees, not the content size.
+        fn extent(window: &gtk::Window, widget: &gtk::Widget) -> (f32, f32) {
+            let bounds = widget.compute_bounds(window).unwrap();
+            (bounds.x(), bounds.width())
+        }
         fn xdo(args: &[&str]) -> String {
             let output = std::process::Command::new("xdotool")
                 .args(args)
@@ -6105,7 +6125,32 @@ mod tests {
         xdo(&["windowactivate", "--sync", id]);
         pump();
         assert!(controls(&window).is_empty());
+        let (normal_header, normal_terminal) = header_and_terminal(&window);
+        let normal_height = normal_header.height();
+        let normal_terminal_height = normal_terminal.height();
+        assert_eq!(
+            extent(&window, &normal_header),
+            extent(&window, &normal_terminal)
+        );
         action(&window, Action::ToggleZoom);
+        {
+            // The Restore control is part of the header, not an addition to
+            // it: expanding must leave the header exactly as tall as before,
+            // exactly as wide as the terminal under it, and the terminal
+            // exactly as tall as before.
+            let (header, terminal) = header_and_terminal(&window);
+            assert_eq!(
+                header.height(),
+                normal_height,
+                "the expanded header grew taller than a normal header"
+            );
+            assert_eq!(extent(&window, &header), extent(&window, &terminal));
+            assert_eq!(terminal.height(), normal_terminal_height);
+            let button = control(&window);
+            let bounds = button.compute_bounds(&header).unwrap();
+            assert!(bounds.y() >= 0.0 && bounds.y() + bounds.height() <= header.height() as f32);
+            println!("PASS expanded header keeps the normal height {normal_height} and the terminal's width, and the terminal keeps its height");
+        }
         control(&window).emit_clicked();
         pump();
         assert!(controls(&window).is_empty());
@@ -6247,6 +6292,18 @@ mod tests {
                 let button = control(&window);
                 let bounds = button.compute_bounds(&window).unwrap();
                 let header_bounds = header.compute_bounds(&window).unwrap();
+                // The fixture slot is taller than a bare header, so it sets the
+                // content height here; the Restore control must add nothing.
+                assert_eq!(
+                    header.height(),
+                    slot.compute_bounds(&window).unwrap().height().round() as i32,
+                    "{theme} {width}: the Restore control grew the header"
+                );
+                assert_eq!(
+                    extent(&window, &header),
+                    extent(&window, &header_and_terminal(&window).1),
+                    "{theme} {width}: the header must not be wider than its pane"
+                );
                 assert!(bounds.x() >= header_bounds.x());
                 assert!(bounds.x() + bounds.width() <= header_bounds.x() + header_bounds.width());
                 assert!(descendants(slot.upcast_ref()).into_iter().any(|widget| {

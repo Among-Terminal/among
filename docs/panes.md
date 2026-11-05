@@ -183,6 +183,11 @@ header. Click it or focus it and press Enter/Space to return to the stored
 layout. An ordinary single-pane workspace has no Restore button unless it was
 explicitly expanded.
 
+The button sits inside the header and does not change its geometry: the header
+has the height of every other pane header, the width of its pane, and the
+terminal below it keeps its height. The title is shortened with an ellipsis
+before the button would be pushed out.
+
 An expanded pane is the only pane on screen and therefore the only focus target:
 `Alt`+arrow directions leave focus on it, and Split is refused until the layout
 is restored. The context menu still lists Split Pane, but the entry is inactive in
