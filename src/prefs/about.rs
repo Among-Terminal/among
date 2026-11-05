@@ -67,10 +67,16 @@ fn header(info: &BuildInfo) -> gtk::Box {
     column.set_margin_bottom(12);
 
     let logo = gtk::Image::from_icon_name("com.github.among-terminal");
-    logo.set_pixel_size(96);
+    logo.set_pixel_size(80);
     // The logo is decoration; the name below carries the meaning.
     logo.set_accessible_role(gtk::AccessibleRole::Presentation);
-    column.append(&logo);
+    // Half of the mark is near black, so it sits on a light tile that keeps it
+    // visible in the dark style.
+    let tile = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    tile.add_css_class("about-logo");
+    tile.set_halign(gtk::Align::Center);
+    tile.append(&logo);
+    column.append(&tile);
 
     let name = gtk::Label::new(Some(APPLICATION_NAME));
     name.add_css_class("title-1");

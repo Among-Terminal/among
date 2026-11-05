@@ -361,3 +361,11 @@
     font-size: 0.85em;
     font-weight: 600;
 }
+
+/* The application mark on the About page. Part of the mark is near black, so
+ * it is drawn on a fixed light tile instead of the window background. */
+.about-logo {
+    background-color: #f4f2ee;
+    border-radius: 24px;
+    padding: 12px;
+}
