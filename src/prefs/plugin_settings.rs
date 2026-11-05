@@ -172,6 +172,7 @@ pub(super) fn add_actions(
         page.add(&package);
         window.add(&page);
         let actions=adw::PreferencesGroup::new();actions.set_title("Package actions");
+        let mut action_buttons=Vec::new();
         for (label,action,available) in [("Recover previous…",crate::plugin::install::mutation::Action::RestorePrevious,current.previous.is_some()),("Uninstall…",crate::plugin::install::mutation::Action::Uninstall,true)] {
             if !available{continue;}
             let row=adw::ActionRow::builder().title(label).build();
@@ -181,8 +182,13 @@ pub(super) fn add_actions(
                 package_action(receipt.clone(),action,button.root().and_then(|root|root.downcast::<gtk::Window>().ok()));
             }});
             row.add_suffix(&button);row.set_activatable_widget(Some(&button));actions.add(&row);
+            action_buttons.push(button);
         }
         page.add(&actions);
+        close_when_not_installed(&window, action_buttons, {
+            let load=current_details.clone();let key=details_key.clone();let receipt=details_receipt.clone();
+            move || load(&key).is_some_and(|(current, _)| current.receipt == receipt)
+        });
         window.present();
     });
     row.add_suffix(&details);
@@ -477,6 +483,34 @@ pub(super) fn add_actions(
     row.add_suffix(&settings);
 }
 
+/// Keeps a plugin's details window honest about the installation it shows.
+/// The window is a snapshot of one installed generation; once that generation
+/// is gone (uninstalled, or replaced by another package) its package actions
+/// can no longer do anything, so they are disabled at once and the window is
+/// closed, which returns the user to the plugin list. `installed` is read
+/// again on each tick, so a removal that is still running, or that fails, leaves
+/// the window as it was.
+pub(super) fn close_when_not_installed(
+    window: &adw::PreferencesWindow,
+    actions: Vec<gtk::Button>,
+    installed: impl Fn() -> bool + 'static,
+) {
+    let window = window.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+        let Some(window) = window.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if installed() {
+            return glib::ControlFlow::Continue;
+        }
+        for button in &actions {
+            button.set_sensitive(false);
+        }
+        window.close();
+        glib::ControlFlow::Break
+    });
+}
+
 fn detail_row(group: &adw::PreferencesGroup, title: &str, value: &str) {
     let row = adw::ActionRow::new();
     row.set_title(title);
@@ -488,4 +522,51 @@ fn detail_row(group: &adw::PreferencesGroup, title: &str, value: &str) {
     row.set_subtitle_lines(0);
     row.set_subtitle_selectable(true);
     group.add(&row);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    #[ignore = "requires an isolated GTK display"]
+    fn details_window_closes_and_disables_its_actions_once_the_plugin_is_gone() {
+        adw::init().expect("isolated GTK display");
+        let window = adw::PreferencesWindow::new();
+        let uninstall = gtk::Button::with_label("Uninstall…");
+        let recover = gtk::Button::with_label("Recover previous…");
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        for button in [&uninstall, &recover] {
+            let row = adw::ActionRow::new();
+            row.add_suffix(button);
+            group.add(&row);
+        }
+        page.add(&group);
+        window.add(&page);
+        let installed = Rc::new(Cell::new(true));
+        close_when_not_installed(&window, vec![uninstall.clone(), recover.clone()], {
+            let installed = installed.clone();
+            move || installed.get()
+        });
+        window.present();
+        let pump = |milliseconds| {
+            let end = std::time::Instant::now() + std::time::Duration::from_millis(milliseconds);
+            while std::time::Instant::now() < end {
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        pump(600);
+        assert!(window.is_visible(), "an installed plugin keeps its window");
+        assert!(uninstall.is_sensitive() && recover.is_sensitive());
+        installed.set(false);
+        pump(600);
+        assert!(
+            !window.is_visible(),
+            "the details of a removed plugin close"
+        );
+        assert!(!uninstall.is_sensitive() && !recover.is_sensitive());
+    }
 }

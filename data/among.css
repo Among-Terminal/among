@@ -153,8 +153,11 @@
   border-radius: 0;
 }
 
-/* opacity, not hue or allocation: terminal geometry remains unchanged. the !
- * and accessible names remain static when system animations are disabled. */
+/* An unread terminal is shown by its stripe, the thin line at the left edge:
+ * thicker while unread, and pulsing without end until the terminal is actually
+ * focused. The pulse changes opacity only, so terminal geometry stays put.
+ * The application removes the pulse class when system animations are off; the
+ * thicker line and the accessible names then remain as a static indication. */
 @keyframes notification-pulse {
   0% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -163,9 +166,8 @@
 .workspace-stripe.notification-pulse {
   animation: notification-pulse 500ms ease-in-out infinite;
 }
-.notification-unread {
-  font-weight: 800;
-  min-width: 10px;
+.workspace-stripe.notification-unread {
+  min-width: 6px;
 }
 
 .workspace-name {

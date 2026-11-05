@@ -1007,7 +1007,6 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         gtk::AccessibleRole::Group
     ));
     let stripe = find_with_class(&header, "workspace-stripe").unwrap();
-    let badge = find_with_class(&header, "notification-unread").unwrap();
     let geometry = (
         term.width(),
         term.height(),
@@ -1023,7 +1022,16 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         || stripe.has_css_class("notification-pulse"),
         "header stripe pulse",
     );
-    assert!(badge.is_visible());
+    assert!(stripe.has_css_class("notification-unread"));
+    assert!(
+        find_with_class(&header, "notification-unread").is_some_and(|widget| widget == stripe),
+        "the stripe is the only unread indicator; no exclamation mark remains"
+    );
+    // the pulse does not stop after the old one-second window while the
+    // terminal stays unfocused.
+    pump_for(Duration::from_millis(2_500));
+    assert!(backend.attention(first.0).unread && backend.attention(first.0).pulsing);
+    assert!(stripe.has_css_class("notification-pulse"));
     shot("pulse-expanded");
     accessible_label(&header, &format!("Terminal {}, unread bell", first.0));
     accessible_property(
@@ -1049,7 +1057,7 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         || !stripe.has_css_class("notification-pulse"),
         "dynamic reduced motion",
     );
-    assert!(badge.is_visible() && backend.attention(first.0).unread);
+    assert!(stripe.has_css_class("notification-unread") && backend.attention(first.0).unread);
     for class in colour.iter() {
         assert!(stripe.has_css_class(class));
     }
@@ -1058,9 +1066,9 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
     rebuild_sidebar(&ctx, true);
     present_attention(&ctx);
     let row = ctx.workspace_list.row_at_index(0).unwrap();
-    assert!(find_with_class(row.upcast_ref(), "notification-unread")
+    assert!(find_with_class(row.upcast_ref(), "workspace-stripe")
         .unwrap()
-        .is_visible());
+        .has_css_class("notification-unread"));
     accessible_label(&row, "project, 2 terminals, 1 unread bells");
     shot("collapsed-sidebar");
     ctx.state.borrow_mut().sidebar_collapsed = false;
@@ -1121,6 +1129,13 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
     wait(
         || !backend.attention(first.0).unread,
         "actual origin focus acknowledgement",
+    );
+    wait(
+        || {
+            !stripe.has_css_class("notification-unread")
+                && !stripe.has_css_class("notification-pulse")
+        },
+        "stripe returns to its resting state after focus",
     );
     xdo(&[
         "type",

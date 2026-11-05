@@ -3,9 +3,12 @@
 The host receives VTE's semantic bell signal, retains session-local attention and
 acknowledges actual terminal viewing. Pane headers and workspace rows consume
 that state in place, including collapsed rows and rename, without rebuilding on
-every bell. Stripe opacity pulses briefly; a static `!` and accessible names do
-not depend on colour or animation. System reduced-motion changes are read on the
-shared tick without discarding unread state or changing workspace hue/terminal size.
+every bell. While a terminal is unread its stripe (the thin line at the left edge
+of the pane header and of the workspace row) is thicker and its opacity pulses
+without end until the terminal is actually focused; there is no `!`. The thicker
+line and accessible names do not depend on colour or animation. System
+reduced-motion changes are read on the shared tick without discarding unread
+state or changing workspace hue/terminal size.
 
 [General Preferences](preferences.md#general-notifications) controls accepted
 visual/audio/optional-command policies and persistence. One shared application
@@ -60,9 +63,11 @@ targetless application event never matches terminal-unfocused policy and never
 creates pane or workspace attention. The core does not itself authorize external
 producers; callers must establish that authority before calling ingress.
 
-The core retains one attention record per live source. A visual event pulses for
-one second, with a two-second source cooldown. Repeated bells do not extend the
-pulse. A viewed always-eligible source can pulse without becoming unread.
+The core retains one attention record per live source. An unread source reports
+`pulsing` until it is acknowledged by actual focus, which clears the unread state
+and any timed pulse together. A viewed always-eligible source pulses for one
+second, with a two-second source cooldown, without becoming unread; repeated
+bells do not extend that pulse.
 Disabling visual policy clears existing emphasis; re-enabling does not replay it.
 Workspace aggregation reads current surviving members supplied by the workspace
 model, never retained list indices, names or colours. No widgets or timers own
