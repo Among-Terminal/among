@@ -228,10 +228,12 @@ pub fn run(binary: &Path, notifier: &Path, scratch: &Path) -> Result<PathBuf> {
             fs::read(configuration(&h))? == bytes,
             "failed save replaced the previous preference",
         )?;
-        require(
-            width(&h)? > selected + 20.0,
-            "failed save discarded the live width",
-        )
+        // Each status report prints the session-only notice several lines
+        // before its sidebar_width line. A reader that stops at the notice
+        // would take the previous report's width, so the width is awaited as
+        // its own condition instead of being sampled once.
+        h.wait(10, |this| Ok(width(this)? > selected + 20.0))
+            .map_err(|error| format!("failed save discarded the live width: {error}").into())
     })();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o700))?;
     failure?;

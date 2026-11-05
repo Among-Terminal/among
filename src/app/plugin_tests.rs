@@ -1402,6 +1402,14 @@ fn eight_pane_collection_is_fair_to_fast_slow_and_interval_zero_sources() {
     let app = application("com.github.among-terminal.plugin-burst-test");
     let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    // The window manager activates the new window on its own schedule. When
+    // that lands after the seven splits below were rebuilt, GTK moves the
+    // keyboard focus from the focused terminal to a paned, and the typed
+    // command never reaches a shell. A single split survives activation, so
+    // this is specific to a deep layout rebuilt before the window is active.
+    // Building the layout on an active window keeps the focus where the
+    // rebuild put it.
+    wait_for(|| ctx.window.is_active(), Duration::from_secs(5));
     for _ in 1..8 {
         split_focused(&ctx);
     }
@@ -1439,6 +1447,16 @@ fn eight_pane_collection_is_fair_to_fast_slow_and_interval_zero_sources() {
     let id = ids.lines().last().unwrap();
     xdo(&["windowactivate", "--sync", id]);
     xdo(&["windowfocus", "--sync", id]);
+    let focused = ctx.state.borrow().workspaces.active().focused;
+    wait_for(
+        || {
+            ctx.state
+                .borrow()
+                .pane(focused)
+                .is_some_and(|pane| pane.terminal().has_focus())
+        },
+        Duration::from_secs(2),
+    );
     xdo(&[
         "type",
         "--clearmodifiers",

@@ -30,8 +30,50 @@ impl Fixture {
             .and_then(|name| name.to_str())
             .ok_or("fixture name absent")?;
         let log = File::create(self.0.join(format!("{name}.log")))?;
-        OwnedProcess::spawn(path, &["30"], &BTreeMap::new(), &self.0, &log)
+        launch(path, &self.0, &log)
     }
+}
+
+/// Start the freshly copied fixture program and return once the child really
+/// is that program.
+///
+/// The tests share one process, so a fork made by a concurrent test can still
+/// hold the write descriptor of a program that was copied a moment ago, and
+/// the kernel then refuses to execute it (`ETXTBSY`) until that other child
+/// reaches its own exec. The refusal is transient, so the start is retried
+/// for a bounded time and any other failure is returned at once.
+///
+/// A successful spawn is not yet proof that the child is the fixture program:
+/// the kernel releases the spawning thread slightly before `/proc/<pid>/exe`
+/// switches from the test binary to the new image. The selection under test
+/// matches on that link, so the child is awaited until it shows the fixture's
+/// inode.
+fn launch(program: &Path, cwd: &Path, log: &File) -> Result<OwnedProcess> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let child = loop {
+        match OwnedProcess::spawn(program, &["30"], &BTreeMap::new(), cwd, log) {
+            Err(error)
+                if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                    error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                }) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            other => break other?,
+        }
+    };
+    let expected = inode(&File::open(program)?)?;
+    while File::open(format!("/proc/{}/exe", child.id()))
+        .ok()
+        .and_then(|exe| inode(&exe).ok())
+        != Some(expected)
+    {
+        if std::time::Instant::now() >= deadline {
+            return Err("fixture child never became the fixture program".into());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Ok(child)
 }
 
 impl Drop for Fixture {
@@ -53,7 +95,7 @@ fn pinned_inode_selects_worker_thread_child_without_signalling_same_basename_sib
     let (finish, finished) = std::sync::mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || -> Result<()> {
         let log = File::create(base.join("worker.log"))?;
-        let child = OwnedProcess::spawn(&program, &["30"], &BTreeMap::new(), &base, &log)?;
+        let child = launch(&program, &base, &log)?;
         send.send(child)
             .map_err(|_| "fixture child receiver closed")?;
         finished
