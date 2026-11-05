@@ -159,7 +159,8 @@ The catalogue supplies the expected manifest digest, package size and SHA-256,
 and the complete member list, and the package then goes through the same
 archive, ELF, member, digest and grant checks as a release package.
 The directory, the catalogue and the package must be owned by you, not
-writable by group or others, and not symbolic links; a package with another
+writable by others, not writable by a group other than your own primary group,
+and not symbolic links; a package with another
 size or digest is refused before it is unpacked. If the catalogue changes
 between review and commit, nothing is installed and you review it again.
 
@@ -374,8 +375,14 @@ Manifest `id` is lowercase ASCII letters/digits/hyphens, at most 64 bytes.
 `version`, `name` and `description` are bounded display metadata, not authority.
 `entrypoint` is a relative executable file, never a shell command. Entrypoints
 and resources cannot use absolute paths, `..`, symlinks, hardlinks or special
-files. The per-user package directory/files must be owned and not writable by
-others. Inspection runs no `--version` probe, hook or downloaded validator.
+files. The per-user package directory/files, the managed store and the
+configuration directory that holds `managed-plugins.json` and `general.json`
+must be owned by you and not writable by others. Group write is accepted only
+when the group is your own primary group: a `002` umask, the default where each
+user has a private group (Debian, Ubuntu, Fedora), creates every directory as
+`775`, and refusing that would make settings and installation fail. Group write
+through any other group, setuid, setgid on entries inside a package, and the
+sticky bit on the store are refused. Inspection runs no `--version` probe, hook or downloaded validator.
 JSON is limited to 256 KiB and depth 32; duplicate keys, feature IDs and channel
 IDs are rejected. There are at most 32 declared features/channels each.
 

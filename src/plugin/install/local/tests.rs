@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
+mod umask;
+
 /// An author's build directory: the catalogue and its package file.
 struct Author {
     directory: PathBuf,
@@ -163,11 +165,11 @@ fn local_packages_keep_every_package_check() {
     let _serial = JOB_TESTS.lock().unwrap();
     for case in [
         "package-link",
-        "package-group-writable",
+        "package-world-writable",
         "package-size",
         "package-digest",
         "package-missing",
-        "directory-group-writable",
+        "directory-world-writable",
         "catalogue-link",
         "member-digest",
     ] {
@@ -181,8 +183,8 @@ fn local_packages_keep_every_package_check() {
                     std::fs::rename(&package, &moved).unwrap();
                     std::os::unix::fs::symlink(&moved, &package).unwrap();
                 }
-                "package-group-writable" => {
-                    std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o664))
+                "package-world-writable" => {
+                    std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o666))
                         .unwrap()
                 }
                 "package-size" => {
@@ -197,9 +199,9 @@ fn local_packages_keep_every_package_check() {
                     std::fs::write(&package, bytes).unwrap();
                 }
                 "package-missing" => std::fs::remove_file(&package).unwrap(),
-                "directory-group-writable" => std::fs::set_permissions(
+                "directory-world-writable" => std::fs::set_permissions(
                     &author.directory,
-                    std::fs::Permissions::from_mode(0o775),
+                    std::fs::Permissions::from_mode(0o757),
                 )
                 .unwrap(),
                 "catalogue-link" => {
