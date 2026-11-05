@@ -447,7 +447,10 @@ staged `SHA256SUMS`: the highlights in `.github/release-notes/<tag>.md`, a
 download table linking every file of this tag once, install and verification
 commands, the scope of the installed checks, source materials, commit and run.
 A stable tag without a non-empty highlights file fails in `assemble`, before any
-release exists; release candidates may omit it. The description travels as the
+release exists. A release candidate opens with a line saying it is a candidate
+for testing and shows its own file `<candidate tag>.md` when there is one, else
+the highlights of the version it is a candidate for (`.github/release-notes/v0.2.0.md`
+for `v0.2.0-rc.1`); with neither it shows the download table alone. The description travels as the
 separate `release-notes` artifact, and the draft job creates the release with it
 as `body` and `generate_release_notes=true`, so GitHub appends the merged pull
 requests grouped by `.github/release.yml`. A repeated run keeps an existing

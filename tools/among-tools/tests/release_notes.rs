@@ -45,7 +45,12 @@ fn a_release_candidate_without_highlights_links_every_file_once_at_its_tag() -> 
         RUN,
         &highlights,
     )?;
-    assert!(body.starts_with("## Download\n"), "{body}");
+    assert!(
+        body.starts_with(
+            "> Release candidate 13 of v0.1.0, published for testing. It is not the stable release.\n\n## Download\n"
+        ),
+        "{body}"
+    );
     for name in all() {
         let url =
             format!("(https://github.com/Among-Terminal/among/releases/download/{tag}/{name})");
@@ -156,8 +161,69 @@ fn the_output_file_must_be_new() -> Result<()> {
         )
     };
     write()?;
-    assert!(fs::read_to_string(&output)?.starts_with("## Download"));
+    assert!(fs::read_to_string(&output)?.starts_with("> Release candidate 13 of v0.1.0"));
     assert!(write().is_err());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn a_candidate_shows_its_own_highlights_else_those_of_its_version() -> Result<()> {
+    let (root, highlights) = staged(&all())?;
+    let render = |tag: &str, highlights: &std::path::Path| {
+        release_notes::render(
+            &root.join("assets"),
+            REPOSITORY,
+            tag,
+            &commit(),
+            RUN,
+            highlights,
+        )
+    };
+    fs::write(highlights.join("v0.2.0.md"), "Version highlights.\n")?;
+    let inherited = render("v0.2.0-rc.2", &highlights)?;
+    assert!(
+        inherited.contains("Release candidate 2 of v0.2.0, published for testing."),
+        "{inherited}"
+    );
+    assert!(
+        inherited.contains("Version highlights.\n\n## Download"),
+        "{inherited}"
+    );
+    fs::write(highlights.join("v0.2.0-rc.2.md"), "Candidate only.\n")?;
+    let own = render("v0.2.0-rc.2", &highlights)?;
+    assert!(own.contains("Candidate only."), "{own}");
+    assert!(!own.contains("Version highlights."), "{own}");
+    let other = render("v0.2.0-rc.3", &highlights)?;
+    assert!(other.contains("Version highlights."), "{other}");
+    assert!(!other.contains("Candidate only."), "{other}");
+    fs::remove_file(highlights.join("v0.2.0.md"))?;
+    fs::remove_file(highlights.join("v0.2.0-rc.2.md"))?;
+    let none = render("v0.2.0-rc.4", &highlights)?;
+    assert!(none.contains("## Download"), "{none}");
+    assert!(!none.contains("Version highlights."), "{none}");
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn a_stable_release_has_no_candidate_notice_and_still_needs_its_own_highlights() -> Result<()> {
+    let (root, highlights) = staged(&all())?;
+    let render = |tag: &str| {
+        release_notes::render(
+            &root.join("assets"),
+            REPOSITORY,
+            tag,
+            &commit(),
+            RUN,
+            &highlights,
+        )
+    };
+    assert!(render("v0.2.0").is_err());
+    fs::write(highlights.join("v0.2.0.md"), "Stable highlights.\n")?;
+    let body = render("v0.2.0")?;
+    assert!(body.starts_with("Stable highlights."), "{body}");
+    assert!(!body.contains("Release candidate"), "{body}");
     fs::remove_dir_all(root)?;
     Ok(())
 }
