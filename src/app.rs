@@ -3241,8 +3241,9 @@ fn rebuild_panes(ctx: &Window) {
 
     let tree = ctx.state.borrow().workspaces.active().nodes.clone();
     let colour = ctx.state.borrow().workspaces.active().colour;
+    let area = (ctx.pane_area.width(), ctx.pane_area.height());
     ctx.pane_area
-        .append(&build_node(ctx, &tree, &mut Vec::new(), colour));
+        .append(&build_node(ctx, &tree, &mut Vec::new(), colour, area));
 }
 
 fn apply_focus(ctx: &Window) {
@@ -3536,7 +3537,22 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
 }
 
 /// Build the widget for one node, carrying the path used to write ratios back.
-fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -> gtk::Widget {
+///
+/// `area` is the pixel size the node is about to occupy, derived from the tree
+/// the same way the split-shape decision derives it. A new `Paned` has no
+/// allocation yet and would otherwise show its default divider position (the
+/// start child's natural size) for the frames before the periodic ratio sync
+/// runs, which reads as the layout jumping every time a workspace is shown.
+/// With a known area the divider is placed before the first allocation; an
+/// unknown area (zero, before the window has been laid out) leaves the
+/// placement to that sync, as before.
+fn build_node(
+    ctx: &Window,
+    node: &Node,
+    path: &mut Vec<usize>,
+    colour: usize,
+    area: (i32, i32),
+) -> gtk::Widget {
     match node {
         // The terminal is taken out of its previous parent before being
         // re-inserted: GTK rejects re-parenting a widget that already has one,
@@ -3550,10 +3566,19 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
         },
         Node::Split {
             orientation,
-            ratio: _,
+            ratio,
             first,
             second,
         } => {
+            let total = match orientation {
+                Orientation::Vertical => area.0,
+                Orientation::Horizontal => area.1,
+            };
+            let (first_size, second_size) = crate::size::split_sizes(total, *ratio);
+            let (first_area, second_area) = match orientation {
+                Orientation::Vertical => ((first_size, area.1), (second_size, area.1)),
+                Orientation::Horizontal => ((area.0, first_size), (area.0, second_size)),
+            };
             let paned = gtk::Paned::new(match orientation {
                 Orientation::Vertical => gtk::Orientation::Horizontal,
                 Orientation::Horizontal => gtk::Orientation::Vertical,
@@ -3574,14 +3599,19 @@ fn build_node(ctx: &Window, node: &Node, path: &mut Vec<usize>, colour: usize) -
             });
 
             path.push(0);
-            let first_widget = build_node(ctx, first, path, colour);
+            let first_widget = build_node(ctx, first, path, colour, first_area);
             path.pop();
             path.push(1);
-            let second_widget = build_node(ctx, second, path, colour);
+            let second_widget = build_node(ctx, second, path, colour, second_area);
             path.pop();
 
             paned.set_start_child(Some(&first_widget));
             paned.set_end_child(Some(&second_widget));
+            if total > 1 {
+                paned.set_position(first_size);
+                extent.set(total);
+                initialized.set(true);
+            }
 
             // GTK reports pixels; the tree stores ratios. Converting on each
             // change keeps the tree authoritative instead of letting the widget
@@ -5983,6 +6013,95 @@ mod tests {
         assert!(!workspace_target_is_current(&set, 0, 2, 9, 10));
         let restored = WorkspaceSet::new(Workspace::new("same".into(), PaneId(2), 0));
         assert!(!workspace_target_is_current(&restored, 0, 2, 9, 10));
+    }
+
+    /// Showing a workspace rebuilds its dividers. Each divider must already
+    /// stand at its stored ratio when the rebuild returns, before any frame is
+    /// drawn; otherwise it shows its default position (the start child's
+    /// natural size) until the periodic ratio sync runs and the layout visibly
+    /// jumps on every switch.
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn switching_to_a_split_workspace_places_dividers_before_the_first_frame() {
+        use super::*;
+
+        fn pump() {
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            while std::time::Instant::now() < deadline {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+            let mut widgets = vec![widget.clone()];
+            let mut child = widget.first_child();
+            while let Some(node) = child {
+                widgets.extend(descendants(&node));
+                child = node.next_sibling();
+            }
+            widgets
+        }
+        fn paneds(window: &gtk::Window) -> Vec<gtk::Paned> {
+            descendants(window.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Paned>().ok())
+                .collect()
+        }
+        fn activate(window: &gtk::Window, action: Action, settle: bool) {
+            window
+                .activate_action(&format!("win.{}", shortcuts::action_name(action)), None)
+                .unwrap();
+            if settle {
+                pump();
+            }
+        }
+        let config = std::env::var_os("XDG_CONFIG_HOME").unwrap();
+        crate::test_isolation::assert_below_check_root(std::path::Path::new(&config));
+        let app = adw::Application::builder()
+            .application_id("com.github.among-terminal.divider-switch-test")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+        pump();
+        let window = app.active_window().unwrap();
+        window.set_default_size(1400, 1000);
+        pump();
+
+        activate(&window, Action::SplitPane, true);
+        for _ in 0..4 {
+            activate(
+                &window,
+                Action::ResizeDivider(crate::shortcuts::Direction::Left),
+                true,
+            );
+        }
+        let ratio = ctx.state.borrow().workspaces.active().nodes.ratio_at(&[]);
+        let ratio = ratio.expect("the workspace has a split");
+        assert!(
+            ratio < 0.45,
+            "the divider was not moved off-centre: {ratio}"
+        );
+        activate(&window, Action::NewWorkspace, true);
+        assert!(paneds(&window).is_empty());
+
+        // No pump after the switch: the check is made the moment the rebuild
+        // returns, which is what the first frame will be drawn from.
+        activate(&window, Action::ActivateWorkspace(0), false);
+        let split = paneds(&window);
+        assert_eq!(split.len(), 1);
+        let ratio = ctx.state.borrow().workspaces.active().nodes.ratio_at(&[]);
+        let area_width = ctx.pane_area.width();
+        assert!(area_width > 0);
+        let expected = crate::size::split_sizes(area_width, ratio.unwrap()).0;
+        assert_eq!(
+            split[0].position(),
+            expected,
+            "the divider was not at its stored ratio when the workspace was shown"
+        );
+        println!("PASS a shown workspace has its divider at {expected} of {area_width} px before any frame");
     }
 
     #[test]
