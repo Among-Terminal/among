@@ -203,8 +203,16 @@ impl Drop for Harness {
 }
 
 impl Harness {
+    /// The application's log as far as it has been written in whole lines.
+    ///
+    /// The application writes each report line to its unbuffered stderr in
+    /// several pieces, so a read can end in the middle of a line. A cut-off
+    /// geometry or width line is indistinguishable from a complete one that
+    /// lacks a pane, and callers would fail on it instead of waiting.
     pub fn text(&self) -> Result<String> {
-        Ok(fs::read_to_string(&self.log)?)
+        let mut text = fs::read_to_string(&self.log)?;
+        text.truncate(complete_lines_len(&text));
+        Ok(text)
     }
     /// Remove the session file this harness owns, if there is one.
     ///
@@ -1033,9 +1041,24 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
     Ok(base)
 }
 
+/// Length of the leading part of `text` that consists of whole lines.
+fn complete_lines_len(text: &str) -> usize {
+    text.rfind('\n').map_or(0, |end| end + 1)
+}
+
 #[cfg(test)]
 mod launcher_tests {
     use super::*;
+
+    #[test]
+    fn a_report_cut_off_mid_line_is_not_read_as_a_complete_report() {
+        let cut = "a: tree_boxes=[1:0+0+10x10 2:10+0+10x10] done\nb: tree_boxes=[1:0+0+10x10 2:";
+        let whole = &cut[..complete_lines_len(cut)];
+        assert_eq!(whole, "a: tree_boxes=[1:0+0+10x10 2:10+0+10x10] done\n");
+        assert_eq!(complete_lines_len("no newline yet"), 0);
+        assert_eq!(complete_lines_len(""), 0);
+        assert_eq!(complete_lines_len("done\n"), 5);
+    }
 
     /// The message is the one a failed Snap run printed while the app was
     /// starting; only that race is retried, a search that finds nothing is not.
