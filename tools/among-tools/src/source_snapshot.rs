@@ -18,6 +18,7 @@ pub const FILES: &[&str] = &[
     "tools/among-tools/README.md",
     "examples/check-clipboard.rs",
     "examples/fake-plugin.rs",
+    "examples/managed-manifest.json",
 ];
 
 pub fn check(path: &Path) -> Result<usize> {

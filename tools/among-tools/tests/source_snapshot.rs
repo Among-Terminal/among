@@ -347,3 +347,47 @@ fn the_snapshot_check_refuses_archives_without_mandatory_inputs() -> Result<()> 
     }
     Ok(())
 }
+
+/// Packages are built and tested from the source snapshot, which carries only
+/// an allowlist. A source file that embeds a file outside that allowlist
+/// compiles in a checkout and fails in every package build, so each
+/// `include_bytes!`/`include_str!` in `src` must name a snapshot member.
+#[test]
+fn every_file_embedded_by_the_sources_reaches_the_snapshot() -> Result<()> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = fs::canonicalize(root)?;
+    let mut stack = vec![root.join("src")];
+    let mut embedded = 0;
+    while let Some(directory) = stack.pop() {
+        for entry in fs::read_dir(&directory)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = fs::read_to_string(&path)?;
+            for macro_name in ["include_bytes!(\"", "include_str!(\""] {
+                for part in text.split(macro_name).skip(1) {
+                    let relative = part.split('"').next().unwrap_or_default();
+                    let parent = path.parent().ok_or("a source file has no directory")?;
+                    let target = fs::canonicalize(parent.join(relative))?;
+                    let name = target.strip_prefix(&root)?.to_string_lossy().into_owned();
+                    embedded += 1;
+                    assert!(
+                        snapshot::FILES.contains(&name.as_str())
+                            || snapshot::DIRECTORIES
+                                .iter()
+                                .any(|directory| name.starts_with(&format!("{directory}/"))),
+                        "{} embeds {name}, which the source snapshot does not carry",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    assert!(embedded > 0, "no embedded file found: the scan is broken");
+    Ok(())
+}
