@@ -50,9 +50,9 @@ fn report(row: &adw::ActionRow, result: Result<Durability, String>) {
 
 pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
-    page.set_name(Some("general"));
-    page.set_title("General");
-    page.set_icon_name(Some("preferences-system-symbolic"));
+    page.set_name(Some("notifications"));
+    page.set_title("Notifications");
+    page.set_icon_name(Some("preferences-system-notifications-symbolic"));
     let Some(ctx) = ctx else {
         let group = adw::PreferencesGroup::new();
         row(

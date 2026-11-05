@@ -1,4 +1,4 @@
-//! The preferences window: General notifications, keyboard shortcuts, plugins and About.
+//! The preferences window: plugins, notifications, keyboard shortcuts and About.
 //!
 //! Both features have to be inspectable and changeable *by the user*, not just by
 //! editing configuration. Putting them in one window is also what makes the
@@ -78,19 +78,48 @@ pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
         .transient_for(parent)
         .modal(false)
         .search_enabled(false)
+        // Wide enough that the four tab labels are shown in full.
+        .default_width(760)
         .build();
     window.set_title(Some("Preferences"));
     let on_closed = ctx.on_closed.clone();
     window.connect_destroy(move |_| on_closed());
 
-    let general = general::page(ctx.general.as_ref());
-    add_storage_status(&general, &ctx);
-    window.add(&general);
+    let plugins = plugins_page(&ctx);
+    let notifications = general::page(ctx.general.as_ref());
+    add_storage_status(&notifications, &ctx);
+    window.add(&plugins);
+    window.add(&notifications);
     window.add(&shortcuts_page(&ctx));
-    window.add(&plugins_page(&ctx));
     window.add(&about::page());
-    window.set_visible_page(&general);
+    window.set_visible_page(&plugins);
+    equalize_tabs(&window);
     window.present();
+}
+
+/// Give every tab of the page switcher the same width.
+///
+/// The stock switcher sizes each tab to its own label, so tabs of different
+/// length leave uneven gaps. The tab buttons are internal to the switcher, so
+/// they are found by their type name; if a libadwaita release renames them the
+/// tabs keep their natural widths, which is only a cosmetic loss.
+fn equalize_tabs(window: &adw::PreferencesWindow) {
+    fn collect(widget: &gtk::Widget, found: &mut Vec<gtk::Widget>) {
+        if widget.type_().name() == "AdwViewSwitcherButton" {
+            found.push(widget.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            collect(&widget, found);
+            child = widget.next_sibling();
+        }
+    }
+    let mut buttons = Vec::new();
+    collect(window.upcast_ref(), &mut buttons);
+    let group = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
+    for button in &buttons {
+        group.add_widget(button);
+    }
 }
 
 fn shortcuts_page(ctx: &PreferencesContext) -> adw::PreferencesPage {

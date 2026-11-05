@@ -3,12 +3,14 @@
 The storage module uses `$XDG_CONFIG_HOME/among`, falling back to
 `$HOME/.config/among` when XDG_CONFIG_HOME is absent or empty.
 
-## General notifications
+## Notifications
 
-General is the first and initially visible page, followed by Keyboard, Plugins and
-About. Page/control automation uses identities (`general`, `keyboard`, `plugins`,
-`about` and
-`notification-…` widget names), not the first tab or first switch.
+The pages are, in order, Plugins, Notifications, Keyboard and About. Plugins is
+the visible page when the window opens. The tabs have equal widths. The
+Notifications page was called General before. Page/control automation uses
+identities (`plugins`, `notifications`, `keyboard`, `about` and
+`notification-…` widget names), not the first tab or first switch. The settings
+document is still `general.json`.
 
 Notification choices use `general.json`, version 1. Missing fields inherit these
 in-memory defaults; opening Preferences never writes this document:
@@ -55,7 +57,7 @@ the source pane or a stopped provider.
 **Managed notification roles** makes access review reachable even with valid
 existing consent. A process may have producer, delivery or neither authority;
 both required roles refuse without execution. Optional roles require an explicit
-selection, while declarative UI remains independent. General shows reviewed and
+selection, while declarative UI remains independent. Notifications shows reviewed and
 actually admitted roles separately. **Save reviewed access** stores the existing
 identity/publisher-scoped `review.features` without enabling code or channels.
 A running plugin must first be explicitly stopped and disabled; after retirement,
@@ -68,7 +70,7 @@ Cancel sound / selection requests cancellation without persisting playback succe
 The owner accepts this explicit-retry UX detail, not decoder safety/platform
 acceptance. A newer Preview diagnostic is not overwritten by older playback IDs.
 
-General edits re-read and merge the relevant fields, preserving unknown keys and
+Notification edits re-read and merge the relevant fields, preserving unknown keys and
 other provider identities. Bounded unique-key JSON and safe owner-controlled paths
 are required; fresh files are private, and safe existing directory permissions
 are not silently changed. Future versions, invalid known fields, symlinks and malformed documents are reported,
