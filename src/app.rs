@@ -4387,7 +4387,11 @@ fn confirm_package_action(
             if response!="apply" || window.state.borrow().exiting{return;}
             let Some(parent)=parent.upgrade().filter(|parent|parent.is_visible()) else {return;};
             let Some((entry,stored))=window.state.borrow().plugins.managed_details(&key).filter(|(entry,_)|entry.receipt==expected) else {return;};
-            let status=adw::AlertDialog::builder().heading("Package operation").body("Starting bounded package operation").build();status.add_response("close","Close");status.set_close_response("close");status.present(Some(&parent));
+            let status=adw::AlertDialog::builder().heading("Package operation").body("Starting bounded package operation").build();status.add_response("close","Close");status.set_close_response("close");
+            // the outcome is shown on the window that opened the details, not on
+            // the details window: that one closes itself as soon as the removed
+            // installation disappears, and would take the message with it.
+            status.present(Some(&parent.transient_for().unwrap_or_else(|| parent.clone())));
             let job=crate::plugin::inventory::root().ok_or(crate::plugin::data::Problem("managed data directory is unavailable")).and_then(|root|Job::start(root,entry.receipt.clone(),action,stored));
             let job=match job {Ok(job)=>job,Err(problem)=>{status.set_heading(Some("Package operation was not started"));status.set_body(problem.0);return;}};
             if uninstall {

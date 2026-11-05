@@ -533,7 +533,10 @@ mod tests {
     #[ignore = "requires an isolated GTK display"]
     fn details_window_closes_and_disables_its_actions_once_the_plugin_is_gone() {
         adw::init().expect("isolated GTK display");
+        let preferences = adw::PreferencesWindow::new();
+        preferences.present();
         let window = adw::PreferencesWindow::new();
+        window.set_transient_for(Some(&preferences));
         let uninstall = gtk::Button::with_label("Uninstall…");
         let recover = gtk::Button::with_label("Recover previous…");
         let page = adw::PreferencesPage::new();
@@ -561,6 +564,15 @@ mod tests {
         pump(600);
         assert!(window.is_visible(), "an installed plugin keeps its window");
         assert!(uninstall.is_sensitive() && recover.is_sensitive());
+        // the outcome of the removal is shown on the window the details belong
+        // to, as the application does, so closing the details cannot take it away.
+        let outcome = adw::AlertDialog::builder()
+            .heading("Plugin uninstalled")
+            .build();
+        outcome.add_response("close", "Close");
+        outcome.present(window.transient_for().as_ref());
+        pump(200);
+        assert!(outcome.is_mapped());
         installed.set(false);
         pump(600);
         assert!(
@@ -568,5 +580,9 @@ mod tests {
             "the details of a removed plugin close"
         );
         assert!(!uninstall.is_sensitive() && !recover.is_sensitive());
+        assert!(
+            outcome.is_mapped() && preferences.is_visible(),
+            "the outcome dialog survives the closing details window"
+        );
     }
 }
