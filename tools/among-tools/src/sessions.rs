@@ -203,8 +203,16 @@ impl Drop for Harness {
 }
 
 impl Harness {
+    /// The application's log as far as it has been written in whole lines.
+    ///
+    /// The application writes each report line to its unbuffered stderr in
+    /// several pieces, so a read can end in the middle of a line. A cut-off
+    /// geometry or width line is indistinguishable from a complete one that
+    /// lacks a pane, and callers would fail on it instead of waiting.
     pub fn text(&self) -> Result<String> {
-        Ok(fs::read_to_string(&self.log)?)
+        let mut text = fs::read_to_string(&self.log)?;
+        text.truncate(complete_lines_len(&text));
+        Ok(text)
     }
     /// Remove the session file this harness owns, if there is one.
     ///
@@ -430,7 +438,9 @@ impl Harness {
     }
     pub fn clean_log(&self, log: &Path) -> Result<()> {
         let text = fs::read_to_string(log)?;
-        for line in text.lines() {
+        // A report still being written can end right after "toast_widgets=",
+        // which would read as an empty value.
+        for line in text[..complete_lines_len(&text)].lines() {
             if let Some((_, value)) = line.split_once("toast_widgets=") {
                 require(
                     value.split_whitespace().next() == Some("0"),
@@ -1033,9 +1043,63 @@ pub fn run(binary: &Path, scratch: &Path) -> Result<PathBuf> {
     Ok(base)
 }
 
+/// Length of the leading part of `text` that consists of whole lines.
+fn complete_lines_len(text: &str) -> usize {
+    text.rfind('\n').map_or(0, |end| end + 1)
+}
+
 #[cfg(test)]
 mod launcher_tests {
     use super::*;
+
+    #[test]
+    fn a_report_cut_off_mid_line_is_not_read_as_a_complete_report() {
+        let cut = "a: tree_boxes=[1:0+0+10x10 2:10+0+10x10] done\nb: tree_boxes=[1:0+0+10x10 2:";
+        let whole = &cut[..complete_lines_len(cut)];
+        assert_eq!(whole, "a: tree_boxes=[1:0+0+10x10 2:10+0+10x10] done\n");
+        assert_eq!(complete_lines_len("no newline yet"), 0);
+        assert_eq!(complete_lines_len(""), 0);
+        assert_eq!(complete_lines_len("done\n"), 5);
+    }
+
+    #[test]
+    fn the_harness_reads_a_log_that_ends_mid_line_only_up_to_the_last_newline() -> Result<()> {
+        let base = storage::private_directory(&std::env::temp_dir(), "among-harness-log-test")?;
+        let log = base.join("app.log");
+        let harness = Harness {
+            base: base.clone(),
+            data: base.join("data"),
+            session: base.join("session.json"),
+            launched: base.join("launched"),
+            app: base.join("app"),
+            env: BTreeMap::new(),
+            process: None,
+            log: log.clone(),
+            window: String::new(),
+        };
+        fs::write(
+            &log,
+            "among[tick1]: tree_boxes=[1:0+0+10x10] toast_widgets=0 x\namong[tick2]: tree_boxes=[1:0+0+10x10 2:",
+        )?;
+        assert_eq!(
+            harness.text()?,
+            "among[tick1]: tree_boxes=[1:0+0+10x10] toast_widgets=0 x\n"
+        );
+        assert_eq!(
+            harness.geometry()?,
+            "among[tick1]: tree_boxes=[1:0+0+10x10] toast_widgets=0 x"
+        );
+        // A report cut off right after the key is not a toast widget.
+        fs::write(
+            &log,
+            "among[tick1]: toast_widgets=0 x\namong[tick2]: toast_widgets=",
+        )?;
+        harness.clean_log(&log)?;
+        fs::write(&log, "among[tick1]: toast_widgets=1 x\n")?;
+        assert!(harness.clean_log(&log).is_err());
+        fs::remove_dir_all(base)?;
+        Ok(())
+    }
 
     /// The message is the one a failed Snap run printed while the app was
     /// starting; only that race is retried, a search that finds nothing is not.
