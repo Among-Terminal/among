@@ -6832,7 +6832,10 @@ mod tests {
             .into_iter()
             .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
             .unwrap();
-        assert_eq!(prefs.visible_page_name().as_deref(), Some("general"));
+        assert_eq!(prefs.visible_page_name().as_deref(), Some("plugins"));
+        // The phases below start from the Notifications page, which used to be
+        // the page shown on open.
+        prefs.set_visible_page_name("notifications");
         if phase.starts_with("invalid-") {
             prefs.set_visible_page_name("keyboard");
             pump();
