@@ -24,6 +24,8 @@ User-visible changes of the application, newest first. Written by `among-tools r
 
 ### Bug fixes
 
+- release: show the version's highlights on a release candidate (#70)
+- packaging: make the Debian and RPM package builds pass their test phases (#69)
 - appimage: carry the runtime notice in every image (#59)
 - appimage: download build tools only from our own release
 - harden pane moves between workspaces after review

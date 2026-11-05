@@ -51,6 +51,8 @@
         </ul>
         <p>Bug fixes</p>
         <ul>
+          <li>release: show the version's highlights on a release candidate (#70)</li>
+          <li>packaging: make the Debian and RPM package builds pass their test phases (#69)</li>
           <li>appimage: carry the runtime notice in every image (#59)</li>
           <li>appimage: download build tools only from our own release</li>
           <li>harden pane moves between workspaces after review</li>
