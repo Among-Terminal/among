@@ -6,6 +6,9 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+/// Mandatory inputs: the snapshot is refused when any is missing. The example
+/// files listed here are the ones other tooling and the snapshot check rely on
+/// by name; the rest of `examples` arrives through `DIRECTORIES`.
 pub const FILES: &[&str] = &[
     "Cargo.toml",
     "Cargo.lock",
@@ -18,6 +21,7 @@ pub const FILES: &[&str] = &[
     "tools/among-tools/README.md",
     "examples/check-clipboard.rs",
     "examples/fake-plugin.rs",
+    "examples/managed-manifest.json",
 ];
 
 pub fn check(path: &Path) -> Result<usize> {
@@ -35,7 +39,12 @@ pub fn check(path: &Path) -> Result<usize> {
     }
     Ok(hashes.len())
 }
+/// Directories whose every regular file is selected. `examples` is here whole
+/// because the package builds run `cargo test`, and the main crate's tests
+/// build and execute the example programs (plugin, sandbox and effect-authority
+/// fixtures, audio helpers) and read `examples/managed-manifest.json`.
 pub const DIRECTORIES: &[&str] = &[
+    "examples",
     "packaging",
     "tests",
     "src",
@@ -101,8 +110,17 @@ fn walk(
                 "{prefix}{}",
                 relative.to_str().ok_or("source path is not UTF-8")?
             );
-            if files.insert(name, file(root, &relative)?).is_some() {
-                return Err("duplicate selected source member".into());
+            let member = file(root, &relative)?;
+            // A mandatory file named in `FILES` may also sit below an allowlisted
+            // directory; the same bytes selected twice are one member, while two
+            // different files claiming one name are refused.
+            match files.get(&name) {
+                Some(existing)
+                    if existing.bytes == member.bytes && existing.mode == member.mode => {}
+                Some(_) => return Err("duplicate selected source member".into()),
+                None => {
+                    files.insert(name, member);
+                }
             }
         }
     }

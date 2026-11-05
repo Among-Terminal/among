@@ -497,3 +497,36 @@ fn the_build_job_checks_source_notices_and_makes_the_bound_lifecycle_fixture() -
     assert!(!installed.contains("rpm-build"));
     Ok(())
 }
+
+/// The job container starts `tail -f /dev/null`, which never reaps orphans.
+/// The process-supervision tests rpmbuild runs in `%check` need a killed
+/// orphan to disappear, so the build job must start its container with an
+/// init process.
+#[test]
+fn the_build_container_runs_an_init_process_that_reaps_orphans() -> Result<()> {
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
+    assert_eq!(
+        document["jobs"]["build"]["container"]["options"].as_str(),
+        Some("--init")
+    );
+    Ok(())
+}
+
+/// The notice check resolves both Cargo graphs offline. The build steps before
+/// it only download what the tooling needs, so the application graph must be
+/// fetched first; without that the check fails with a missing registry index.
+#[test]
+fn the_locked_notice_graphs_are_fetched_before_the_notice_check() -> Result<()> {
+    let text = workflow()?;
+    let fetch_application = text
+        .find("cargo fetch --locked --manifest-path Cargo.toml")
+        .ok_or("the application graph is never fetched")?;
+    let fetch_tools = text
+        .find("cargo fetch --locked --manifest-path tools/among-tools/Cargo.toml")
+        .ok_or("the tooling graph is never fetched")?;
+    let notices = text
+        .find("third-party-notices . ")
+        .ok_or("the notice check is missing")?;
+    assert!(fetch_application < notices && fetch_tools < notices);
+    Ok(())
+}
