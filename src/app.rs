@@ -1894,6 +1894,24 @@ fn script_widget(name: &str) -> Option<gtk::Widget> {
         .find_map(|window| find(window, name))
 }
 
+/// Show the Preferences page that holds `widget`, as a user would before
+/// pressing a control on another tab. Scripts name controls, not pages, so a
+/// control on a hidden tab must be revealed first or it cannot take focus.
+fn reveal_preferences_page(widget: &gtk::Widget) {
+    let Some(page) = widget
+        .ancestor(adw::PreferencesPage::static_type())
+        .and_then(|page| page.downcast::<adw::PreferencesPage>().ok())
+    else {
+        return;
+    };
+    if let Some(window) = widget
+        .root()
+        .and_then(|root| root.downcast::<adw::PreferencesWindow>().ok())
+    {
+        window.set_visible_page(&page);
+    }
+}
+
 fn run_script_step(ctx: &Window, step: &str) {
     // `activate:` presses a named widget in any open window. Test binaries
     // cannot host the audio decoder helper, so a real Preview button press can
@@ -1901,6 +1919,7 @@ fn run_script_step(ctx: &Window, step: &str) {
     if let Some(name) = step.strip_prefix("activate:") {
         match script_widget(name) {
             Some(widget) => {
+                reveal_preferences_page(&widget);
                 widget.activate();
             }
             None => eprintln!("among: script widget {name} not found"),
@@ -1910,7 +1929,10 @@ fn run_script_step(ctx: &Window, step: &str) {
     // `focus:` hands a named control to the keyboard, so a harness can operate
     // it with real key events during an `await:` pause.
     if let Some(name) = step.strip_prefix("focus:") {
-        if !script_widget(name).is_some_and(|widget| widget.grab_focus()) {
+        if !script_widget(name).is_some_and(|widget| {
+            reveal_preferences_page(&widget);
+            widget.grab_focus()
+        }) {
             eprintln!("among: script widget {name} cannot take focus");
         }
         return;
