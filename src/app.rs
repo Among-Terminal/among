@@ -3811,9 +3811,13 @@ fn run_action(ctx: &Window, action: Action) {
         Action::ActivateWorkspace(index) => {
             if ctx.state.borrow_mut().workspaces.activate(index) {
                 rebuild(ctx);
-            } else {
-                // A digit beyond the last workspace does nothing.
             }
+            // A digit beyond the last workspace changes nothing. The marker is
+            // moved in every case: the rebuild leaves the sidebar rows alone
+            // while a rename or a drag owns them, and a repeated press on the
+            // workspace that is already active must still correct a marker
+            // left behind by such a skipped rebuild.
+            mark_active_row(ctx);
         }
         Action::CycleWorkspace(cycle) => {
             let mut state = ctx.state.borrow_mut();
@@ -3823,6 +3827,7 @@ fn run_action(ctx: &Window, action: Action) {
             }
             drop(state);
             rebuild(ctx);
+            mark_active_row(ctx);
         }
         Action::NewWorkspace => new_workspace(ctx),
         Action::SplitPane => split_focused(ctx),
@@ -6102,6 +6107,137 @@ mod tests {
             "the divider was not at its stored ratio when the workspace was shown"
         );
         println!("PASS a shown workspace has its divider at {expected} of {area_width} px before any frame");
+    }
+
+    /// The workspace the model calls active and the one the sidebar marks must
+    /// never disagree, however fast the digits are pressed.
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn the_sidebar_marks_the_workspace_the_digit_shortcuts_activated() {
+        use super::*;
+
+        fn pump_for(milliseconds: u64) {
+            let deadline = std::time::Instant::now() + Duration::from_millis(milliseconds);
+            loop {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        fn activate(window: &gtk::Window, action: Action) {
+            window
+                .activate_action(&format!("win.{}", shortcuts::action_name(action)), None)
+                .unwrap();
+        }
+        /// Model index, indices carrying the marker, selected row index.
+        fn observe(ctx: &Window) -> (usize, Vec<usize>, i32) {
+            let mut marked = Vec::new();
+            let mut row = ctx.workspace_list.first_child();
+            let mut index = 0usize;
+            while let Some(node) = row {
+                if node.has_css_class("active-workspace") {
+                    marked.push(index);
+                }
+                index += 1;
+                row = node.next_sibling();
+            }
+            let selected = ctx
+                .workspace_list
+                .selected_row()
+                .map_or(-1, |row| row.index());
+            (
+                ctx.state.borrow().workspaces.active_index(),
+                marked,
+                selected,
+            )
+        }
+        let config = std::env::var_os("XDG_CONFIG_HOME").unwrap();
+        crate::test_isolation::assert_below_check_root(std::path::Path::new(&config));
+        let app = adw::Application::builder()
+            .application_id("com.github.among-terminal.digit-switch-test")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+        pump_for(500);
+        let window = app.active_window().unwrap();
+        activate(&window, Action::SplitPane);
+        pump_for(200);
+        activate(&window, Action::NewWorkspace);
+        pump_for(200);
+        activate(&window, Action::NewWorkspace);
+        pump_for(200);
+        for step in 0..400usize {
+            let target = (step * 7 + step / 3) % 3;
+            activate(&window, Action::ActivateWorkspace(target));
+            for (when, wait) in [
+                ("at once", 0u64),
+                ("after settling", (step % 5) as u64 * 20),
+            ] {
+                pump_for(wait);
+                let (active, marked, selected) = observe(&ctx);
+                assert_eq!(active, target, "step {step} {when}: model");
+                assert_eq!(marked, vec![target], "step {step} {when}: marker");
+                assert_eq!(selected, target as i32, "step {step} {when}: selection");
+            }
+        }
+        println!("PASS 400 digit switches kept model, marker and selection together");
+
+        // The same through real key events, which reach the shortcut
+        // controller through the focused terminal like a user's keystrokes.
+        let xdo = |args: &[&str]| {
+            let output = std::process::Command::new("xdotool")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let ids = xdo(&[
+            "search",
+            "--onlyvisible",
+            "--pid",
+            &std::process::id().to_string(),
+            "--name",
+            &window.title().unwrap(),
+        ]);
+        let id = ids.lines().last().unwrap().to_string();
+        xdo(&["windowactivate", "--sync", &id]);
+        pump_for(300);
+        for step in 0..200usize {
+            let target = (step * 5 + step / 2) % 3;
+            xdo(&["key", "--clearmodifiers", &format!("alt+{}", target + 1)]);
+            let wait = [0u64, 10, 40, 120, 250][step % 5];
+            pump_for(wait);
+            let (active, marked, selected) = observe(&ctx);
+            assert_eq!(active, target, "key step {step} after {wait} ms: model");
+            assert_eq!(
+                marked,
+                vec![target],
+                "key step {step} after {wait} ms: marker"
+            );
+            assert_eq!(selected, target as i32, "key step {step}: selection");
+        }
+        println!("PASS 200 Alt+digit key presses kept model, marker and selection together");
+
+        // While a rename owns the rows the sidebar is not rebuilt, so a switch
+        // made then must still move the marker, and a repeated press on the
+        // already-active workspace must correct a marker that lagged.
+        ctx.state.borrow_mut().renaming = Some(0);
+        for target in [2usize, 1, 2] {
+            activate(&window, Action::ActivateWorkspace(target));
+            pump_for(60);
+            let (active, marked, selected) = observe(&ctx);
+            assert_eq!(active, target, "during a rename: model");
+            assert_eq!(marked, vec![target], "during a rename: marker");
+            assert_eq!(selected, target as i32, "during a rename: selection");
+        }
+        ctx.state.borrow_mut().renaming = None;
+        println!("PASS the marker follows the active workspace while a rename owns the rows");
     }
 
     #[test]
