@@ -249,7 +249,8 @@ remain mandatory. Transport fixture receipts remain synthetic and do not prove
 repository installation.
 
 Until a release is published, CI checks candidate bytes.
-`plugin-candidate.yml` builds the plugins from one pinned among-plugins commit on
+`plugin-candidate.yml` builds the plugins from one pinned among-plugins commit (the
+one the official `v0.2.0-rc.1` release candidate was built from) on
 amd64 and arm64 with the catalogue, and
 `among-tools prepare-candidate-plugin-inputs <assets> <new-directory>` makes the
 same input directory as `prepare-official-plugin-inputs`, marked `candidate`, with
@@ -315,9 +316,9 @@ dedicated native interoperability workflow enables the feature explicitly;
 ordinary package, native and graphical gates remain unchanged and mandatory.
 
 The workflow checks out the exact companion commit
-`ac16a298b42022d9d62017e5d668e72458ba3b69` (tree
-`4025654ad45b3cc4704908f80d097a7cad3916c6`), the source of the prepared
-official plugin release, verifies its public repository identity,
+`a7aefca1a36125986c8ecc662400d4293c39b3cd` (tree
+`01cfecb8c2f20be46b644aebb14957a4b9fbb3db`), the source of the official plugins
+`v0.2.0-rc.1` release candidate, verifies its public repository identity,
 and builds only its `managed-status` **protocol fixture** and labelled
 `managed-pages` SDK reducer fixture. Production `clock-managed`,
 `system-status-managed` and `pane-pwd-managed` instead come from the separately
