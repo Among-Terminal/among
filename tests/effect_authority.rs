@@ -789,10 +789,13 @@ fn isolated_descriptor_exhaustion_refuses_partial_operations_and_keeps_revoke_in
         unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut descriptors) },
         0
     );
-    descriptors.rlim_cur = descriptors.rlim_max.min(65536);
+    // Every retained handle is one descriptor; the rest is headroom for the
+    // test process itself.
+    let needed = (core::MAX_EFFECT_HANDLES + 2048) as libc::rlim_t;
+    descriptors.rlim_cur = descriptors.rlim_max.min(needed.max(8192));
     assert!(
-        descriptors.rlim_cur >= 16384,
-        "the hard descriptor limit {} is too low for the budget test",
+        descriptors.rlim_cur >= needed,
+        "the hard descriptor limit {} is below the {needed} the budget test needs",
         descriptors.rlim_max
     );
     assert_eq!(

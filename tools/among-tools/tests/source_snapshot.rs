@@ -487,7 +487,9 @@ fn scan(
                     continue;
                 }
             }
-            TokenTree::Punct(p) if p.as_char() == ';' => current = None,
+            // A path belongs to one expression: neither the end of a statement
+            // nor the next call argument may continue it.
+            TokenTree::Punct(p) if matches!(p.as_char(), ';' | ',') => current = None,
             TokenTree::Punct(p) if p.as_char() == '.' => {
                 // `.join("literal")` extends a manifest-based path.
                 if let (Some(base), Some(TokenTree::Ident(method)), Some(TokenTree::Group(group))) =
@@ -500,11 +502,17 @@ fn scan(
                         current = match text.as_slice() {
                             [one] if !unused => {
                                 let next = normalized(&base.join(one));
-                                found.push(Reference {
-                                    file: file.to_path_buf(),
-                                    target: next.clone(),
-                                    kind: "reads",
-                                });
+                                // Only the last join of a chain names the file
+                                // that is read; the steps before it are directories.
+                                let chained = matches!(tokens.get(at + 3), Some(TokenTree::Punct(p)) if p.as_char() == '.')
+                                    && matches!(tokens.get(at + 4), Some(TokenTree::Ident(m)) if m == "join");
+                                if !chained {
+                                    found.push(Reference {
+                                        file: file.to_path_buf(),
+                                        target: next.clone(),
+                                        kind: "reads",
+                                    });
+                                }
                                 Some(next)
                             }
                             _ => None,

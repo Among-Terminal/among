@@ -61,7 +61,10 @@ programs (plugin, sandbox, effect-authority and audio fixtures) and embed
 `examples/managed-manifest.json`. The tests `every_file_embedded_by_the_sources_reaches_the_snapshot`
 and `no_test_reads_a_repository_file_the_snapshot_does_not_carry` in
 `tools/among-tools/tests/source_snapshot.rs` fail when the code of either
-crate embeds or reads a repository file the snapshot does not carry.
+crate embeds a repository file the snapshot does not carry, or reads one
+through a literal path joined onto `env!("CARGO_MANIFEST_DIR")`. Reads through
+a path kept in a variable are not checked by these tests; the package build's
+own `cargo test` run still fails on them.
 
 Each listed file must exist and a listed directory must not be a symlink. The
 vendor tree is added under `vendor/`, then a generated `.cargo/config.toml`
