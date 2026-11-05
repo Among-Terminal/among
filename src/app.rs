@@ -6292,6 +6292,13 @@ mod tests {
                 let button = control(&window);
                 let bounds = button.compute_bounds(&window).unwrap();
                 let header_bounds = header.compute_bounds(&window).unwrap();
+                // The fixture slot is taller than a bare header, so it sets the
+                // content height here; the Restore control must add nothing.
+                assert_eq!(
+                    header.height(),
+                    slot.compute_bounds(&window).unwrap().height().round() as i32,
+                    "{theme} {width}: the Restore control grew the header"
+                );
                 assert_eq!(
                     extent(&window, &header),
                     extent(&window, &header_and_terminal(&window).1),
