@@ -44,14 +44,24 @@ The snapshot takes exactly these inputs from the source root, the list
 `source-snapshot` carries in `tools/among-tools/src/source_snapshot.rs`:
 
 - files `Cargo.toml`, `Cargo.lock`, `LICENSE`, `NOTICE`, `README.md`,
-  `CONTRIBUTING.md`, `examples/check-clipboard.rs`, `examples/fake-plugin.rs`
-  and, for the project tooling, `tools/among-tools/Cargo.toml`,
-  `tools/among-tools/Cargo.lock` and `tools/among-tools/README.md`;
-- every regular file below `packaging`, `tests`, `src`, `data`, `snap`,
+  `CONTRIBUTING.md`, `examples/check-clipboard.rs`, `examples/fake-plugin.rs`,
+  `examples/managed-manifest.json` and, for the project tooling,
+  `tools/among-tools/Cargo.toml`, `tools/among-tools/Cargo.lock` and
+  `tools/among-tools/README.md`; each of these must exist, and the three
+  example files are also reached through the `examples` directory below;
+- every regular file below `examples`, `packaging`, `tests`, `src`, `data`, `snap`,
   `scripts`, `docs`, `THIRD_PARTY`, `.github` and, for the project
   tooling, `tools/among-tools/src`, `tools/among-tools/tests`,
   `tools/among-tools/examples` and `tools/among-tools/containers`, skipping
   `__pycache__` directories.
+
+The `examples` directory is taken whole because the Debian build runs
+`cargo test` on the snapshot tree, and the tests build and execute its
+programs (plugin, sandbox, effect-authority and audio fixtures) and embed
+`examples/managed-manifest.json`. The tests `every_file_embedded_by_the_sources_reaches_the_snapshot`
+and `no_test_reads_a_repository_file_the_snapshot_does_not_carry` in
+`tools/among-tools/tests/source_snapshot.rs` fail when the code of either
+crate embeds or reads a repository file the snapshot does not carry.
 
 Each listed file must exist and a listed directory must not be a symlink. The
 vendor tree is added under `vendor/`, then a generated `.cargo/config.toml`

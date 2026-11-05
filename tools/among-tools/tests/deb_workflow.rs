@@ -157,3 +157,24 @@ fn actual_installed_runner_refuses_local_operations_before_creating_evidence() -
     std::fs::remove_dir(&checks)?;
     Ok(())
 }
+
+/// The job container starts `tail -f /dev/null`, which never reaps orphans.
+/// The process-supervision tests that `debian/rules` runs need a killed orphan
+/// to disappear, so the build job must start its container with an init
+/// process; the installed job keeps the same container selection.
+#[test]
+fn the_build_container_runs_an_init_process_that_reaps_orphans() -> Result<()> {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.github/workflows/deb-release.yml"),
+    )?;
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)?;
+    for job in ["build", "installed"] {
+        assert_eq!(
+            document["jobs"][job]["container"]["options"].as_str(),
+            Some("--init"),
+            "{job}"
+        );
+    }
+    Ok(())
+}

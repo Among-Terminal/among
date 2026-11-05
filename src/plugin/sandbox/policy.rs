@@ -135,6 +135,10 @@ const COMMON: &[Denied] = &[
     always("pivot_root", libc::SYS_pivot_root),
     always("move_mount", libc::SYS_move_mount),
     always("open_tree", libc::SYS_open_tree),
+    // open_tree plus mount_setattr in one call (Linux 6.15). The libc crate
+    // has no constant for it; the number is the same in the x86-64 and the
+    // generic table, which the header comparison test checks on each machine.
+    always("open_tree_attr", 467),
     always("mount_setattr", libc::SYS_mount_setattr),
     always("fsopen", libc::SYS_fsopen),
     always("fsconfig", libc::SYS_fsconfig),
@@ -317,6 +321,7 @@ mod tests {
             "pivot_root",
             "move_mount",
             "open_tree",
+            "open_tree_attr",
             "mount_setattr",
             "fsopen",
             "fsconfig",
@@ -441,6 +446,7 @@ mod tests {
             "pivot_root",
             "move_mount",
             "open_tree",
+            "open_tree_attr",
             "mount_setattr",
             "fsopen",
             "fsconfig",

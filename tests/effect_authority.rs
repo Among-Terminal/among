@@ -777,6 +777,28 @@ fn isolated_descriptor_exhaustion_refuses_partial_operations_and_keeps_revoke_in
         );
         return;
     }
+    // The budget under test is the host's own handle limit, which takes
+    // several thousand descriptors. A shell's default soft limit of 1024 would
+    // end the loop below with EMFILE first, so this disposable child raises
+    // its soft limit to what the hard limit allows.
+    let mut descriptors = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut descriptors) },
+        0
+    );
+    descriptors.rlim_cur = descriptors.rlim_max.min(65536);
+    assert!(
+        descriptors.rlim_cur >= 16384,
+        "the hard descriptor limit {} is too low for the budget test",
+        descriptors.rlim_max
+    );
+    assert_eq!(
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &descriptors) },
+        0
+    );
     let fixture = Fixture::new(true, true, Instant::now());
     let process = fixture.effect.export_process().unwrap();
     let pending_import: Vec<_> = {

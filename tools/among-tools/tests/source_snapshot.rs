@@ -1,8 +1,9 @@
 use among_tools::{source_snapshot as snapshot, storage, Result};
+use proc_macro2::{TokenStream, TokenTree};
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -348,46 +349,284 @@ fn the_snapshot_check_refuses_archives_without_mandatory_inputs() -> Result<()> 
     Ok(())
 }
 
-/// Packages are built and tested from the source snapshot, which carries only
-/// an allowlist. A source file that embeds a file outside that allowlist
-/// compiles in a checkout and fails in every package build, so each
-/// `include_bytes!`/`include_str!` in `src` must name a snapshot member.
-#[test]
-fn every_file_embedded_by_the_sources_reaches_the_snapshot() -> Result<()> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let root = fs::canonicalize(root)?;
-    let mut stack = vec![root.join("src")];
-    let mut embedded = 0;
-    while let Some(directory) = stack.pop() {
-        for entry in fs::read_dir(&directory)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
+/// The part of a path the scanners below resolve, relative to the repository
+/// root, with `.` and `..` folded away so `tools/among-tools/../..` names the
+/// root.
+fn normalized(path: &Path) -> PathBuf {
+    let mut parts = Vec::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
+                parts.pop();
             }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let text = fs::read_to_string(&path)?;
-            for macro_name in ["include_bytes!(\"", "include_str!(\""] {
-                for part in text.split(macro_name).skip(1) {
-                    let relative = part.split('"').next().unwrap_or_default();
-                    let parent = path.parent().ok_or("a source file has no directory")?;
-                    let target = fs::canonicalize(parent.join(relative))?;
-                    let name = target.strip_prefix(&root)?.to_string_lossy().into_owned();
-                    embedded += 1;
-                    assert!(
-                        snapshot::FILES.contains(&name.as_str())
-                            || snapshot::DIRECTORIES
-                                .iter()
-                                .any(|directory| name.starts_with(&format!("{directory}/"))),
-                        "{} embeds {name}, which the source snapshot does not carry",
-                        path.display()
-                    );
+            Component::CurDir => {}
+            other => parts.push(other),
+        }
+    }
+    parts.iter().collect()
+}
+
+fn in_snapshot(name: &str) -> bool {
+    snapshot::FILES.contains(&name)
+        || snapshot::DIRECTORIES
+            .iter()
+            .any(|directory| name == *directory || name.starts_with(&format!("{directory}/")))
+}
+
+/// The unquoted text of a plain string literal token. Escapes and raw strings
+/// are refused so a path that cannot be read exactly never passes silently.
+fn string_literal(literal: &proc_macro2::Literal) -> Option<String> {
+    let text = literal.to_string();
+    let inner = text.strip_prefix('"')?.strip_suffix('"')?;
+    assert!(
+        !inner.contains('\\'),
+        "the source scan does not understand escapes in {text}"
+    );
+    Some(inner.to_string())
+}
+
+fn env_variable(tokens: &[TokenTree], at: usize) -> Option<String> {
+    let (TokenTree::Ident(name), Some(TokenTree::Punct(bang)), Some(TokenTree::Group(group))) =
+        (&tokens[at], tokens.get(at + 1), tokens.get(at + 2))
+    else {
+        return None;
+    };
+    if name != "env" || bang.as_char() != '!' {
+        return None;
+    }
+    match group.stream().into_iter().next() {
+        Some(TokenTree::Literal(literal)) => string_literal(&literal),
+        _ => None,
+    }
+}
+
+/// Every string literal inside a token stream, nested groups included, and
+/// whether the stream names the crate directory through the environment.
+fn literals(stream: TokenStream, found: &mut Vec<String>, manifest: &mut bool) {
+    let tokens: Vec<TokenTree> = stream.into_iter().collect();
+    let mut at = 0;
+    while at < tokens.len() {
+        if let Some(variable) = env_variable(&tokens, at) {
+            assert_eq!(
+                variable, "CARGO_MANIFEST_DIR",
+                "the source scan only understands the crate directory variable"
+            );
+            *manifest = true;
+            at += 3;
+            continue;
+        }
+        match &tokens[at] {
+            TokenTree::Literal(literal) => {
+                if let Some(text) = string_literal(literal) {
+                    found.push(text);
                 }
+            }
+            TokenTree::Group(group) => literals(group.stream(), found, manifest),
+            _ => {}
+        }
+        at += 1;
+    }
+}
+
+struct Reference {
+    file: PathBuf,
+    target: PathBuf,
+    kind: &'static str,
+}
+
+/// Finds, in one token stream, every file the code embeds at compile time
+/// (`include_bytes!`, `include_str!`, `include!`, also inside other macros
+/// and in several lines or `concat!` forms) and, best effort, every
+/// `env!("CARGO_MANIFEST_DIR")` path extended with literal `.join(..)` calls,
+/// which tests use to read repository files at run time. Returns the path an
+/// unfinished manifest expression ends with, so `Path::new(env!(..)).join(..)`
+/// is followed across the group boundary.
+fn scan(
+    stream: TokenStream,
+    file: &Path,
+    manifest: &Path,
+    found: &mut Vec<Reference>,
+) -> Option<PathBuf> {
+    let tokens: Vec<TokenTree> = stream.into_iter().collect();
+    let mut current: Option<PathBuf> = None;
+    let mut at = 0;
+    while at < tokens.len() {
+        if env_variable(&tokens, at).as_deref() == Some("CARGO_MANIFEST_DIR") {
+            current = Some(manifest.to_path_buf());
+            at += 3;
+            continue;
+        }
+        match &tokens[at] {
+            TokenTree::Ident(name)
+                if matches!(
+                    name.to_string().as_str(),
+                    "include_bytes" | "include_str" | "include"
+                ) && matches!(tokens.get(at + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!') =>
+            {
+                if let Some(TokenTree::Group(group)) = tokens.get(at + 2) {
+                    let mut text = Vec::new();
+                    let mut from_manifest = false;
+                    literals(group.stream(), &mut text, &mut from_manifest);
+                    let joined = text.concat();
+                    let base = if from_manifest {
+                        manifest.to_path_buf()
+                    } else {
+                        file.parent().unwrap_or(manifest).to_path_buf()
+                    };
+                    assert!(
+                        !joined.is_empty(),
+                        "{} has an embed the scan cannot resolve",
+                        file.display()
+                    );
+                    found.push(Reference {
+                        file: file.to_path_buf(),
+                        target: normalized(&base.join(joined.trim_start_matches('/'))),
+                        kind: "embeds",
+                    });
+                    at += 3;
+                    continue;
+                }
+            }
+            TokenTree::Punct(p) if p.as_char() == ';' => current = None,
+            TokenTree::Punct(p) if p.as_char() == '.' => {
+                // `.join("literal")` extends a manifest-based path.
+                if let (Some(base), Some(TokenTree::Ident(method)), Some(TokenTree::Group(group))) =
+                    (&current, tokens.get(at + 1), tokens.get(at + 2))
+                {
+                    if method == "join" {
+                        let mut text = Vec::new();
+                        let mut unused = false;
+                        literals(group.stream(), &mut text, &mut unused);
+                        current = match text.as_slice() {
+                            [one] if !unused => {
+                                let next = normalized(&base.join(one));
+                                found.push(Reference {
+                                    file: file.to_path_buf(),
+                                    target: next.clone(),
+                                    kind: "reads",
+                                });
+                                Some(next)
+                            }
+                            _ => None,
+                        };
+                        at += 3;
+                        continue;
+                    }
+                }
+            }
+            TokenTree::Group(group) => {
+                if let Some(inner) = scan(group.stream(), file, manifest, found) {
+                    current = Some(inner);
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    current
+}
+
+fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            rust_files(&path, files)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Scans the whole code of both crates: sources, integration tests and
+/// examples. The root crate runs under `cargo test` in the Debian and RPM
+/// builds from the snapshot, the tools crate runs there too.
+fn references() -> Result<(PathBuf, Vec<Reference>)> {
+    let root = fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))?;
+    let mut found = Vec::new();
+    for (manifest, directories) in [
+        (root.clone(), ["src", "tests", "examples"]),
+        (root.join("tools/among-tools"), ["src", "tests", "examples"]),
+    ] {
+        for directory in directories {
+            let mut files = Vec::new();
+            rust_files(&manifest.join(directory), &mut files)?;
+            for file in files {
+                let stream: TokenStream = fs::read_to_string(&file)?
+                    .parse()
+                    .map_err(|error| format!("{} does not tokenize: {error}", file.display()))?;
+                scan(stream, &file, &manifest, &mut found);
             }
         }
     }
-    assert!(embedded > 0, "no embedded file found: the scan is broken");
+    Ok((root, found))
+}
+
+fn outside_snapshot(root: &Path, found: &[Reference], kind: &str) -> Vec<String> {
+    found
+        .iter()
+        .filter(|reference| reference.kind == kind)
+        .filter_map(|reference| {
+            let name = reference
+                .target
+                .strip_prefix(root)
+                .ok()?
+                .to_string_lossy()
+                .into_owned();
+            // Build output is produced by the build itself, not shipped.
+            let generated = name == "target"
+                || name.starts_with("target/")
+                || name.starts_with("tools/among-tools/target");
+            (!generated && !name.is_empty() && !in_snapshot(&name)).then(|| {
+                format!(
+                    "{} {kind} {name}, which the source snapshot does not carry",
+                    reference.file.display()
+                )
+            })
+        })
+        .collect()
+}
+
+/// Packages are built and tested from the source snapshot, which carries only
+/// an allowlist. Source that embeds a file outside that allowlist compiles in
+/// a checkout and fails in every package build, so each embedded file of
+/// either crate, in any `include_*` form and any layout, must be a snapshot
+/// member.
+#[test]
+fn every_file_embedded_by_the_sources_reaches_the_snapshot() -> Result<()> {
+    let (root, found) = references()?;
+    let embedded: Vec<&Reference> = found.iter().filter(|r| r.kind == "embeds").collect();
+    assert!(
+        embedded.len() > 3,
+        "too few embedded files found ({}): the scan is broken",
+        embedded.len()
+    );
+    // Include macros also appear inside tests with the target on another line;
+    // the managed manifest example is embedded that way.
+    assert!(
+        embedded
+            .iter()
+            .any(|r| r.target.ends_with("examples/managed-manifest.json")),
+        "the scan no longer sees the managed manifest embed"
+    );
+    let missing = outside_snapshot(&root, &found, "embeds");
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+    Ok(())
+}
+
+/// Best effort for run-time reads: a test that joins a literal path onto the
+/// crate directory (`env!("CARGO_MANIFEST_DIR")`, possibly through `..`) must
+/// read a snapshot member, or a package build cannot run that test. Reads
+/// through a path kept in a variable are not followed; the build itself
+/// catches those.
+#[test]
+fn no_test_reads_a_repository_file_the_snapshot_does_not_carry() -> Result<()> {
+    let (root, found) = references()?;
+    assert!(
+        found.iter().filter(|r| r.kind == "reads").count() > 10,
+        "too few run-time reads found: the scan is broken"
+    );
+    let missing = outside_snapshot(&root, &found, "reads");
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
     Ok(())
 }

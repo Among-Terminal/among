@@ -47,8 +47,12 @@ jobs:
             image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
             rust_host: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
+    # The job container's first process is `tail -f /dev/null`, which never
+    # reaps orphans. The process-supervision tests of the main crate expect a
+    # killed orphan to disappear, so the container needs an init process.
     container:
       image: ${{ matrix.image }}
+      options: --init
     env:
       DEBIAN_FRONTEND: noninteractive
       AMONG_CHECK_ROOT: /var/lib/among-checks
@@ -146,6 +150,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       image: ${{ matrix.image }}
+      options: --init
     env:
       DEBIAN_FRONTEND: noninteractive
       AMONG_CHECK_ROOT: /var/lib/among-checks

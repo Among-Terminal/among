@@ -497,3 +497,17 @@ fn the_build_job_checks_source_notices_and_makes_the_bound_lifecycle_fixture() -
     assert!(!installed.contains("rpm-build"));
     Ok(())
 }
+
+/// The job container starts `tail -f /dev/null`, which never reaps orphans.
+/// The process-supervision tests rpmbuild runs in `%check` need a killed
+/// orphan to disappear, so the build job must start its container with an
+/// init process.
+#[test]
+fn the_build_container_runs_an_init_process_that_reaps_orphans() -> Result<()> {
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;
+    assert_eq!(
+        document["jobs"]["build"]["container"]["options"].as_str(),
+        Some("--init")
+    );
+    Ok(())
+}
