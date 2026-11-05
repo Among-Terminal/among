@@ -438,7 +438,9 @@ impl Harness {
     }
     pub fn clean_log(&self, log: &Path) -> Result<()> {
         let text = fs::read_to_string(log)?;
-        for line in text.lines() {
+        // A report still being written can end right after "toast_widgets=",
+        // which would read as an empty value.
+        for line in text[..complete_lines_len(&text)].lines() {
             if let Some((_, value)) = line.split_once("toast_widgets=") {
                 require(
                     value.split_whitespace().next() == Some("0"),
@@ -1058,6 +1060,45 @@ mod launcher_tests {
         assert_eq!(complete_lines_len("no newline yet"), 0);
         assert_eq!(complete_lines_len(""), 0);
         assert_eq!(complete_lines_len("done\n"), 5);
+    }
+
+    #[test]
+    fn the_harness_reads_a_log_that_ends_mid_line_only_up_to_the_last_newline() -> Result<()> {
+        let base = storage::private_directory(&std::env::temp_dir(), "among-harness-log-test")?;
+        let log = base.join("app.log");
+        let harness = Harness {
+            base: base.clone(),
+            data: base.join("data"),
+            session: base.join("session.json"),
+            launched: base.join("launched"),
+            app: base.join("app"),
+            env: BTreeMap::new(),
+            process: None,
+            log: log.clone(),
+            window: String::new(),
+        };
+        fs::write(
+            &log,
+            "among[tick1]: tree_boxes=[1:0+0+10x10] toast_widgets=0 x\namong[tick2]: tree_boxes=[1:0+0+10x10 2:",
+        )?;
+        assert_eq!(
+            harness.text()?,
+            "among[tick1]: tree_boxes=[1:0+0+10x10] toast_widgets=0 x\n"
+        );
+        assert_eq!(
+            harness.geometry()?,
+            "among[tick1]: tree_boxes=[1:0+0+10x10] toast_widgets=0 x"
+        );
+        // A report cut off right after the key is not a toast widget.
+        fs::write(
+            &log,
+            "among[tick1]: toast_widgets=0 x\namong[tick2]: toast_widgets=",
+        )?;
+        harness.clean_log(&log)?;
+        fs::write(&log, "among[tick1]: toast_widgets=1 x\n")?;
+        assert!(harness.clean_log(&log).is_err());
+        fs::remove_dir_all(base)?;
+        Ok(())
     }
 
     /// The message is the one a failed Snap run printed while the app was
