@@ -489,7 +489,9 @@ pub(super) fn add_actions(
 /// can no longer do anything, so they are disabled at once and the window is
 /// closed, which returns the user to the plugin list. `installed` is read
 /// again on each tick, so a removal that is still running, or that fails, leaves
-/// the window as it was.
+/// the window as it was. The result of the operation is shown in a dialog on
+/// this very window; the window stays until that dialog is dismissed, so the
+/// message is not lost.
 pub(super) fn close_when_not_installed(
     window: &adw::PreferencesWindow,
     actions: Vec<gtk::Button>,
@@ -505,6 +507,9 @@ pub(super) fn close_when_not_installed(
         }
         for button in &actions {
             button.set_sensitive(false);
+        }
+        if window.visible_dialog().is_some() {
+            return glib::ControlFlow::Continue;
         }
         window.close();
         glib::ControlFlow::Break
@@ -564,25 +569,31 @@ mod tests {
         pump(600);
         assert!(window.is_visible(), "an installed plugin keeps its window");
         assert!(uninstall.is_sensitive() && recover.is_sensitive());
-        // the outcome of the removal is shown on the window the details belong
-        // to, as the application does, so closing the details cannot take it away.
+        // the outcome of the removal is shown in a dialog on the details window,
+        // as the application does.
         let outcome = adw::AlertDialog::builder()
             .heading("Plugin uninstalled")
             .build();
         outcome.add_response("close", "Close");
-        outcome.present(window.transient_for().as_ref());
+        outcome.present(Some(&window));
         pump(200);
-        assert!(outcome.is_mapped());
+        assert!(window.visible_dialog().is_some());
         installed.set(false);
         pump(600);
         assert!(
-            !window.is_visible(),
-            "the details of a removed plugin close"
+            !uninstall.is_sensitive() && !recover.is_sensitive(),
+            "the package actions of a removed plugin are inactive at once"
         );
-        assert!(!uninstall.is_sensitive() && !recover.is_sensitive());
         assert!(
-            outcome.is_mapped() && preferences.is_visible(),
-            "the outcome dialog survives the closing details window"
+            window.is_visible() && window.visible_dialog().is_some(),
+            "the outcome message is not taken away by the closing window"
         );
+        outcome.force_close();
+        pump(600);
+        assert!(
+            !window.is_visible(),
+            "the details of a removed plugin close once the message is dismissed"
+        );
+        assert!(preferences.is_visible());
     }
 }
