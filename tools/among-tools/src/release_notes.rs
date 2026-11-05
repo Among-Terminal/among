@@ -36,20 +36,39 @@ fn staged_names(assets: &Path) -> Result<BTreeSet<String>> {
     Ok(names)
 }
 
-/// A stable tag must have hand-written highlights; a release candidate may.
+/// A stable tag must have hand-written highlights. A release candidate uses
+/// its own file when one exists and otherwise the highlights of the version it
+/// is a candidate for, so a tester reads what the release will bring.
 fn highlights(directory: &Path, tag: &str) -> Result<Option<String>> {
-    let path = storage::safe_path(directory, Path::new(&format!("{tag}.md")))?;
     let stable = !tag.contains("-rc.");
-    match fs::read_to_string(&path) {
-        Ok(text) if !text.trim().is_empty() => Ok(Some(text.trim().to_string())),
-        Ok(_) if stable => Err(format!("{} is empty", path.display()).into()),
-        Err(error) if stable => Err(format!(
-            "stable tag {tag} needs highlights in {}: {error}",
-            path.display()
-        )
-        .into()),
-        _ => Ok(None),
+    let mut names = vec![tag.to_string()];
+    if let Some((version, _)) = tag.split_once("-rc.") {
+        names.push(version.to_string());
     }
+    for name in &names {
+        let path = storage::safe_path(directory, Path::new(&format!("{name}.md")))?;
+        match fs::read_to_string(&path) {
+            Ok(text) if !text.trim().is_empty() => return Ok(Some(text.trim().to_string())),
+            Ok(_) if stable => return Err(format!("{} is empty", path.display()).into()),
+            Err(error) if stable => {
+                return Err(format!(
+                    "stable tag {tag} needs highlights in {}: {error}",
+                    path.display()
+                )
+                .into())
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// The line that tells a reader of a candidate's page it is not the release.
+fn candidate_notice(tag: &str) -> Option<String> {
+    let (version, number) = tag.split_once("-rc.")?;
+    Some(format!(
+        "> Release candidate {number} of {version}, published for testing. It is not the stable release.\n\n"
+    ))
 }
 
 pub fn render(
@@ -71,6 +90,9 @@ pub fn render(
     };
 
     let mut body = String::new();
+    if let Some(notice) = candidate_notice(tag) {
+        body.push_str(&notice);
+    }
     if let Some(text) = highlights(highlights_directory, tag)? {
         body.push_str(&text);
         body.push_str("\n\n");
