@@ -11,7 +11,7 @@ use super::*;
 use crate::settings::{Document, PreferencesStorage};
 
 const CHILD: &str =
-    "plugin::install::local::tests::umask::lifecycle_under_the_umask_in_the_environment";
+    "plugin::install::local::tests::umask::settings_and_the_plugin_lifecycle_work_under_every_common_umask";
 const CHILD_UMASK: &str = "AMONG_UMASK_TEST_MASK";
 
 struct Home {
@@ -61,10 +61,7 @@ fn foreign_group() -> Option<libc::gid_t> {
 /// Install, record the review and the enabled choice through the real settings
 /// writer, uninstall, run the store recovery the application starts after a
 /// removal, and install the same version again.
-#[test]
-#[ignore = "run by settings_and_the_plugin_lifecycle_work_under_every_common_umask in a child process"]
-fn lifecycle_under_the_umask_in_the_environment() {
-    let mask = u32::from_str_radix(&std::env::var(CHILD_UMASK).unwrap(), 8).unwrap();
+fn lifecycle_under_umask(mask: u32) {
     unsafe { libc::umask(mask as libc::mode_t) };
     let root = OwnedRoot::new();
     let author = Author::new(&root);
@@ -126,22 +123,23 @@ fn lifecycle_under_the_umask_in_the_environment() {
 
 #[test]
 fn settings_and_the_plugin_lifecycle_work_under_every_common_umask() {
+    // started by itself with a umask in the environment, the test is the child
+    // and runs the lifecycle in a process where changing the umask disturbs no
+    // other test.
+    if let Ok(mask) = std::env::var(CHILD_UMASK) {
+        lifecycle_under_umask(u32::from_str_radix(&mask, 8).unwrap());
+        return;
+    }
     for mask in ["002", "022", "077"] {
         let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                CHILD,
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ])
+            .args(["--exact", CHILD, "--test-threads=1", "--nocapture"])
             .env(CHILD_UMASK, mask)
             .output()
             .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
         assert!(
-            child.status.success(),
-            "umask {mask}: {} {}",
-            String::from_utf8_lossy(&child.stdout),
+            child.status.success() && stdout.contains("test result: ok. 1 passed"),
+            "umask {mask}: {stdout} {}",
             String::from_utf8_lossy(&child.stderr)
         );
     }
