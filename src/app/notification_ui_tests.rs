@@ -1131,13 +1131,28 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         || !backend.attention(first.0).unread,
         "actual origin focus acknowledgement",
     );
-    wait(
-        || {
-            !stripe.has_css_class("notification-unread")
-                && !stripe.has_css_class("notification-pulse")
-        },
-        "stripe returns to its resting state after focus",
-    );
+    // looked up again: the pane may have been rebuilt by the zoom and restore above.
+    let resting_stripe = || {
+        let header = terminal(&ctx, first)
+            .parent()
+            .unwrap()
+            .first_child()
+            .unwrap();
+        find_with_class(&header, "workspace-stripe").unwrap()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while {
+        let stripe = resting_stripe();
+        stripe.has_css_class("notification-unread") || stripe.has_css_class("notification-pulse")
+    } {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stripe did not return to rest after focus: classes {:?}, attention {:?}",
+            resting_stripe().css_classes(),
+            backend.attention(first.0)
+        );
+        pump_for(Duration::from_millis(20));
+    }
     xdo(&[
         "type",
         "--clearmodifiers",
