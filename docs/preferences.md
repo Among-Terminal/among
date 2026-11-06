@@ -19,8 +19,18 @@ in-memory defaults; opening Preferences never writes this document:
 {"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"command":{"enabled":false,"eligibility":"application-background"}}}
 ```
 
-Each channel has independent Always, Originating terminal unfocused and Among in
-background conditions. Preferences and native menus count as foreground Among,
+The page has three groups: Visual (**Highlight the terminal**), Sound (**Play a
+sound**) and Command (**Run a command**), plus a Plugin channels group only while
+an installed plugin declares a delivery channel. It carries no status rows or
+explanatory plates. The result of a save shows as a banner at the top only when it
+was not saved or its durability is uncertain; a durable save shows nothing. A value
+that cannot be used is reported on the row that holds it.
+
+Each channel has a **When** row with independent Always, Terminal not in view and
+Among in background conditions. Terminal not in view is the stored
+`originating-terminal-unfocused` value, which also applies while Among is in the
+background (a tooltip on the row says so), and never to an event without a
+terminal. Preferences and native menus count as foreground Among,
 but not as viewing a terminal. A visual alert makes the thin line at the left edge
 of the originating pane header and of its workspace row pulse without end until that
 terminal is actually focused; the unread state then clears and the pulse stops. The
@@ -32,8 +42,9 @@ terminal never becomes unread, so it gets no thicker line and no unread name, al
 when animations are off. Workspace hue and terminal allocation are not notification
 state.
 
-Policy edits apply immediately. The command's absolute executable and literal
-arguments (a JSON string array) require **Save command**. Empty executable clears
+Policy edits apply immediately. The command's absolute program (a text field with a
+file chooser) and literal arguments (a JSON list of strings) require **Save**, in
+the Command group's header. An empty program clears
 configuration and disables the channel. Saving or enabling does not run a command
 or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
 The command's environment is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`,
@@ -41,14 +52,23 @@ The command's environment is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`,
 Among's own environment sets them, and nothing else.
 See [the command contract](notification-commands.md) for authority and cleanup limits.
 
-**Use local WAV** reads and validates asynchronously; only an accepted immutable
-snapshot changes the selected sound and saves its source. Invalid selection does
-not play a fallback or overwrite the last accepted selection. A missing/invalid
-saved local source disables playback until a source is accepted. **Use built-in
-WAV** selects the original bundled sound. **Preview** explicitly plays the accepted
-snapshot even with event audio off, without entering notification ingress or
-changing policy/unread/command/provider state. Playback requests and decoder end
-are not proof of output. See [audio limits and packaging](audio.md).
+The **Sound** row shows the sound's name (`Among alert (built-in)` or the file name,
+with the full path as a tooltip) and three icon buttons. The folder button opens a
+system file dialog filtered to WAV; the path cannot be typed. The chosen file is
+read and validated asynchronously, with a spinner and "Checking the file…" on the
+row, and only an accepted immutable snapshot changes the selected sound and saves
+its source. A file that cannot be used replaces the name with one problem line
+(with a warning mark); the previous valid sound stays selected, nothing is played
+as a fallback and nothing is saved. A missing or invalid saved local source
+disables playback until a source is accepted. The undo button, shown only for a
+custom file, selects the original bundled sound again. Success shows no status
+text. The third button is one slot: **Play** while idle, **Stop** while a sound
+plays or a chosen file is being checked (Stop cancels the check), and disabled with
+the reason as its tooltip when playback is unavailable or the previous decoder could
+not be confirmed stopped. Play explicitly plays the accepted snapshot even with
+event audio off, without entering notification ingress or changing
+policy/unread/command/provider state. Playback requests and decoder end are not
+proof of output. See [audio limits and packaging](audio.md).
 
 Provider choices are keyed by full provider identity and channel ID under
 `notifications.providers[identity].channels[channel]`. Retained unavailable choices
@@ -71,11 +91,13 @@ A running plugin must first be explicitly stopped and disabled; after retirement
 open the review again. Changing a stopped role never restarts it. The Plugins
 manager retains its separate **Accept and enable** path for initial enablement.
 
-Replacing active Preview first cancels and retires the old decoder. A real Busy
-response retains no replacement: wait for confirmation and press Preview again.
-Cancel sound / selection requests cancellation without persisting playback success.
-The owner accepts this explicit-retry UX detail, not decoder safety/platform
-acceptance. A newer Preview diagnostic is not overwritten by older playback IDs.
+Replacing a sound first cancels and retires the old decoder. A real Busy response
+(Play pressed while the old decoder is still retiring) retains no replacement: the
+row says the previous sound is still stopping, and Play must be pressed again after
+the retirement is confirmed. Stop requests cancellation without persisting playback
+success. The owner accepts this explicit-retry UX detail, not decoder
+safety/platform acceptance. A newer Play diagnostic is not overwritten by older
+playback IDs.
 
 Notification edits re-read and merge the relevant fields, preserving unknown keys and
 other provider identities. Bounded unique-key JSON and safe owner-controlled paths

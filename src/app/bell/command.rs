@@ -258,6 +258,7 @@ impl Adapter {
         self.stopped && self.preparation.is_none() && commands::active_count() == 0
     }
 
+    #[cfg(test)]
     pub fn status(&self) -> String {
         if let Some(problem) = self.problem {
             return problem.into();

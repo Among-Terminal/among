@@ -215,8 +215,9 @@ owned display with a private null sink, because a test binary cannot host the
 decoder helper. It judges the captured waveform for: Preview with audio off, and
 Preview beside a configured command channel that must not run; events after the
 General switch and condition are set from the keyboard (enabled, disabled,
-ineligible); a source typed into General's path entry and accepted with its button,
-and a missing or truncated file refused there so the accepted sound stays; a long
+ineligible); a source handed to the Sound row as its file dialog would
+(`choose-wav`), and a missing or truncated file refused there so the accepted sound
+stays; a long
 sound cancelled when closing Preferences returns focus to its terminal; a saved
 file that no longer exists; a truncated file; a decoder killed during a long sound,
 after which Preview still plays; a source pane closed during a long sound; and

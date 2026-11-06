@@ -220,6 +220,9 @@ impl Backend {
         }
         preferences
     }
+    /// The command channel's state and last local result, for tests; the page
+    /// no longer shows it.
+    #[cfg(test)]
     pub(super) fn command_status(&self) -> String {
         let state = self.commands.borrow().status();
         if let Some(completion) = self
@@ -263,7 +266,11 @@ impl Backend {
             }
         }
     }
-    pub(super) fn audio_status(&self) -> String {
+    /// What the sound row should say: nothing, a note for a tooltip, or a problem
+    /// line. A decoder that is still retiring or cannot be cleaned up overrides
+    /// the last recorded notice, because it decides whether Play can work.
+    pub(super) fn audio_report(&self) -> crate::prefs::general::AudioReport {
+        use crate::prefs::general::AudioReport;
         if let Some(snapshot) = self
             .sound
             .audio
@@ -271,12 +278,33 @@ impl Backend {
             .and_then(|audio| audio.decoder_snapshot())
         {
             match snapshot.phase {
-                among::audio::DecoderPhase::Retiring => return "Decoder retirement is pending. Rejected playback is not queued; Preview requires an explicit new request after confirmation.".into(),
-                among::audio::DecoderPhase::Quarantined => return "Decoder cleanup is unconfirmed; capacity is quarantined. No new playback is admitted.".into(),
+                among::audio::DecoderPhase::Retiring => return AudioReport::Info(
+                    "The previous sound is still stopping. A request now is refused, not queued."
+                        .into(),
+                ),
+                among::audio::DecoderPhase::Quarantined => {
+                    return AudioReport::Problem(
+                        "Sound cleanup is not confirmed; no new sound will play.".into(),
+                    )
+                }
                 _ => {}
             }
         }
         self.sound.status.borrow().clone()
+    }
+    /// The report as plain text, for tests.
+    #[cfg(test)]
+    pub(super) fn audio_status(&self) -> String {
+        self.audio_report().text().to_owned()
+    }
+    /// Record that choosing a sound failed, so the row shows one problem line
+    /// until the next choice succeeds.
+    pub(super) fn sound_problem(&self, text: String) {
+        *self.sound.status.borrow_mut() = crate::prefs::general::AudioReport::Problem(text);
+    }
+    /// Clear the problem line after a successful choice.
+    pub(super) fn sound_accepted(&self) {
+        *self.sound.status.borrow_mut() = crate::prefs::general::AudioReport::Idle;
     }
     pub(super) fn preview(&self) -> Result<(), String> {
         if self.closed.get() {
@@ -304,7 +332,8 @@ impl Backend {
                 let sound = self.sound.clone();
                 move |result| {
                     if let Err(problem) = result {
-                        *sound.status.borrow_mut() = problem;
+                        *sound.status.borrow_mut() =
+                            crate::prefs::general::AudioReport::Problem(problem);
                     }
                 }
             }),

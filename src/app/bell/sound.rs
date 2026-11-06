@@ -1,3 +1,4 @@
+use crate::prefs::general::AudioReport;
 use among::{
     audio::{Audio, Notice, Request, Sound},
     notifications::{Authorization, Channel, Event, Focus, Host, Policy},
@@ -19,7 +20,7 @@ pub(super) struct Shared {
     active: RefCell<Option<Active>>,
     pub ready: Cell<bool>,
     pub loading_owner: Cell<Option<Channel>>,
-    pub status: RefCell<String>,
+    pub status: RefCell<AudioReport>,
     latest_playback: Cell<Option<u64>>,
     busy: Cell<bool>,
 }
@@ -36,8 +37,8 @@ impl Shared {
             }
             let audio = Audio::new();
             let status = match &audio {
-                Ok(_) => "Built-in WAV selected; audio events are off by default".into(),
-                Err(error) => error.to_string(),
+                Ok(_) => AudioReport::Idle,
+                Err(error) => AudioReport::Problem(error.to_string()),
             };
             let shared = Rc::new(Self {
                 ready: Cell::new(audio.is_ok()),
@@ -157,8 +158,9 @@ impl Shared {
             }
             Request::Busy => {
                 self.busy.set(true);
-                *self.status.borrow_mut() = "Preview was rejected while busy. Nothing is queued; wait for retirement confirmation and explicitly press Preview again.".into();
-                Err(self.status.borrow().clone())
+                let text = "The previous sound is still stopping. Nothing is queued; press Play again in a moment.";
+                *self.status.borrow_mut() = AudioReport::Problem(text.into());
+                Err(text.into())
             }
             Request::Suppressed => Err("Preview unavailable".into()),
         }
@@ -218,7 +220,9 @@ impl Shared {
             if self.loading_owner.take().is_some() {
                 self.ready.set(false);
             }
-            *self.status.borrow_mut() = "Cancellation requested; decoder retirement is not yet confirmed. No replacement is queued.".into();
+            *self.status.borrow_mut() = AudioReport::Info(
+                "Stopping. The decoder is not yet confirmed retired; nothing is queued.".into(),
+            );
         }
     }
 
@@ -241,19 +245,23 @@ impl Shared {
         if operation.is_some() && operation != self.latest_playback.get() {
             return;
         }
-        let text = match notice {
-                    Notice::Requested { .. } => {
-                        "Playback requested; output is not confirmed".into()
-                    }
-                    Notice::DecoderEnded { .. } => "Decoder ended; output is not confirmed".into(),
-                    Notice::Failed { reason, .. } => reason.into(),
-                    Notice::Cancelled { .. } => {
-                        "Decoder retirement confirmed. No replacement was queued; explicitly press Preview again. External output cannot be undone.".into()
-                    }
-                    Notice::Selected { .. } => "WAV accepted as an immutable snapshot".into(),
-                    Notice::SelectionFailed { error, .. } => error.to_string(),
-                };
-        *self.status.borrow_mut() = text;
+        let report = match notice {
+            Notice::Requested { .. } => {
+                AudioReport::Info("Playback requested; output is not confirmed".into())
+            }
+            Notice::DecoderEnded { .. } => {
+                AudioReport::Info("Decoder ended; output is not confirmed".into())
+            }
+            Notice::Failed { reason, .. } => AudioReport::Problem(reason.into()),
+            Notice::Cancelled { .. } => AudioReport::Info(
+                "Stopped. Nothing was queued; press Play again to start over.".into(),
+            ),
+            Notice::Selected { .. } => {
+                AudioReport::Info("WAV accepted as an immutable snapshot".into())
+            }
+            Notice::SelectionFailed { error, .. } => AudioReport::Problem(error.to_string()),
+        };
+        *self.status.borrow_mut() = report;
     }
 }
 
@@ -268,7 +276,9 @@ mod tests {
             active: RefCell::new(None),
             ready: Cell::new(false),
             loading_owner: Cell::new(None),
-            status: RefCell::new("New Preview requested; output unconfirmed".into()),
+            status: RefCell::new(AudioReport::Info(
+                "New Preview requested; output unconfirmed".into(),
+            )),
             latest_playback: Cell::new(Some(42)),
             busy: Cell::new(false),
         };
@@ -287,7 +297,7 @@ mod tests {
             shared.observe_notice(notice);
             assert_eq!(
                 *shared.status.borrow(),
-                "New Preview requested; output unconfirmed"
+                AudioReport::Info("New Preview requested; output unconfirmed".into())
             );
         }
         shared.observe_notice(Notice::Requested {
@@ -296,12 +306,19 @@ mod tests {
         });
         assert_eq!(
             *shared.status.borrow(),
-            "Playback requested; output is not confirmed"
+            AudioReport::Info("Playback requested; output is not confirmed".into())
         );
         shared.observe_notice(Notice::Cancelled { id: 42 });
-        assert!(shared
-            .status
-            .borrow()
-            .contains("explicitly press Preview again"));
+        assert!(shared.status.borrow().text().contains("press Play again"));
+        // A failure is a problem, not information: the page shows only problems
+        // as text.
+        shared.observe_notice(Notice::Failed {
+            id: 42,
+            reason: "decoder failed",
+        });
+        assert_eq!(
+            *shared.status.borrow(),
+            AudioReport::Problem("decoder failed".into())
+        );
     }
 }

@@ -5,6 +5,7 @@ use among::notifications::{
     preferences::{self, AudioSource, Edit, Preferences},
     Eligibility, Policy,
 };
+use std::cell::RefCell;
 
 type Selected = Box<dyn FnOnce(Result<Durability, String>)>;
 type Select = dyn Fn(AudioSource, Selected);
@@ -19,6 +20,27 @@ pub(crate) enum AudioState {
     Unavailable,
 }
 
+/// What the sound row has to say, as the application records it.
+///
+/// A problem replaces the sound name with one line. A note is only a tooltip,
+/// and nothing is shown after a success, so a working sound stays quiet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AudioReport {
+    Idle,
+    Info(String),
+    Problem(String),
+}
+
+impl AudioReport {
+    /// The text of a note or problem; empty when there is nothing to say.
+    pub(crate) fn text(&self) -> &str {
+        match self {
+            Self::Idle => "",
+            Self::Info(text) | Self::Problem(text) => text,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Context {
     pub query: Rc<dyn Fn() -> Preferences>,
@@ -27,10 +49,25 @@ pub(crate) struct Context {
     pub preview: Rc<dyn Fn() -> Result<(), String>>,
     pub cancel_audio: Rc<dyn Fn()>,
     pub audio_state: Rc<dyn Fn() -> AudioState>,
-    pub status: Rc<dyn Fn() -> (String, String)>,
+    pub audio_report: Rc<dyn Fn() -> AudioReport>,
     pub providers: Rc<dyn Fn() -> Vec<among::plugin_notifications::ChannelView>>,
     pub roles: Rc<dyn Fn() -> Vec<crate::plugin::host::Overview>>,
     pub review_role: Rc<EnablePlugin>,
+}
+
+type ChooseWav = dyn Fn(String);
+
+thread_local! {
+    /// The handler a chosen WAV path reaches. The file dialog calls it, and so
+    /// does the verification script step, so both exercise the same selection.
+    static CHOOSE_WAV: RefCell<Option<std::rc::Weak<ChooseWav>>> = const { RefCell::new(None) };
+}
+
+/// Select a local WAV as if the file dialog had returned `path`. Returns false
+/// when no Notifications page is open to receive it.
+pub(crate) fn choose_wav(path: &str) -> bool {
+    let handler = CHOOSE_WAV.with(|slot| slot.borrow().as_ref().and_then(std::rc::Weak::upgrade));
+    handler.map(|handler| handler(path.to_owned())).is_some()
 }
 
 fn row(group: &adw::PreferencesGroup, title: &str, subtitle: &str) -> adw::ActionRow {
@@ -41,11 +78,89 @@ fn row(group: &adw::PreferencesGroup, title: &str, subtitle: &str) -> adw::Actio
     row
 }
 
-fn report(row: &adw::ActionRow, result: Result<Durability, String>) {
-    row.set_subtitle(&escape_display(match &result {
-        Ok(value) => value.description(),
-        Err(error) => error,
-    }));
+/// Show `text` in the page banner.
+fn announce(banner: &adw::Banner, text: &str) {
+    banner.set_title(&escape_display(text));
+    banner.set_revealed(true);
+}
+
+/// Report the result of a save in the banner: a durable save shows nothing.
+fn report(banner: &adw::Banner, result: Result<Durability, String>) {
+    match result {
+        Ok(Durability::Durable) => banner.set_revealed(false),
+        Ok(other) => announce(banner, other.description()),
+        Err(error) => announce(banner, &format!("Not saved: {error}")),
+    }
+}
+
+/// Mark an entry as holding an invalid value: the message replaces its title
+/// and the row turns red until the text changes. `None` restores the title.
+fn flag(entry: &adw::EntryRow, title: &str, problem: Option<&str>) {
+    match problem {
+        Some(message) => {
+            entry.set_title(&escape_display(message));
+            entry.add_css_class("error");
+        }
+        None => {
+            entry.set_title(title);
+            entry.remove_css_class("error");
+        }
+    }
+}
+
+fn sound_name(source: &AudioSource) -> String {
+    match source {
+        AudioSource::Builtin => "Among alert (built-in)".into(),
+        AudioSource::Local(path) => std::path::Path::new(path)
+            .file_name()
+            .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned()),
+    }
+}
+
+/// A small icon-only button: same size as its neighbours, named for assistive
+/// technology and explained by a tooltip.
+fn icon_button(icon: &str, label: &str, name: &str) -> gtk::Button {
+    let button = gtk::Button::from_icon_name(icon);
+    button.set_widget_name(name);
+    button.set_valign(gtk::Align::Center);
+    button.set_tooltip_text(Some(label));
+    button.update_property(&[gtk::accessible::Property::Label(label)]);
+    button
+}
+
+fn wav_filter() -> gtk::FileFilter {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("WAV audio"));
+    filter.add_mime_type("audio/x-wav");
+    filter.add_mime_type("audio/wav");
+    filter.add_suffix("wav");
+    filter
+}
+
+/// Ask for one file and hand its path to `chosen`. A dismissed dialog does
+/// nothing.
+fn pick_file(
+    anchor: &impl IsA<gtk::Widget>,
+    title: &str,
+    filter: Option<gtk::FileFilter>,
+    chosen: impl Fn(String) + 'static,
+) {
+    let dialog = gtk::FileDialog::new();
+    dialog.set_title(title);
+    if let Some(filter) = filter {
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        dialog.set_filters(Some(&filters));
+        dialog.set_default_filter(Some(&filter));
+    }
+    let window = anchor
+        .root()
+        .and_then(|root| root.downcast::<gtk::Window>().ok());
+    dialog.open(window.as_ref(), None::<&gio::Cancellable>, move |result| {
+        if let Some(path) = result.ok().and_then(|file| file.path()) {
+            chosen(path.to_string_lossy().into_owned());
+        }
+    });
 }
 
 pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
@@ -63,142 +178,71 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
         page.add(&group);
         return page;
     };
-    let feedback = adw::PreferencesGroup::new();
-    feedback.set_title("Notification settings status");
-    let result = row(
-        &feedback,
-        "Local notification changes",
-        "No edits made in this window",
-    );
-    result.set_widget_name("notification-save-status");
+    // A save result is shown only when something went wrong; a durable save
+    // leaves the page unchanged.
+    let banner = adw::Banner::new("");
+    banner.set_widget_name("notification-save-status");
+    let banner_group = adw::PreferencesGroup::new();
+    banner_group.set_visible(false);
+    banner_group.add(&banner);
+    banner.connect_revealed_notify({
+        let group = banner_group.downgrade();
+        move |banner| {
+            if let Some(group) = group.upgrade() {
+                group.set_visible(banner.is_revealed());
+            }
+        }
+    });
+    page.add(&banner_group);
     let current = (ctx.query)();
+
     let visual = adw::PreferencesGroup::new();
-    visual.set_title("Visual attention");
-    visual.set_description(Some("The thin line at the left edge of the originating header and workspace row pulses until that terminal is actually focused. With system reduced motion it stays still and thicker. A bell in the terminal you are already looking at pulses the line for one second and does not mark it unread."));
+    visual.set_title("Visual");
     policy(
         &visual,
-        "Visual alerts",
+        "Highlight the terminal",
         "visual",
         current.visual,
         ctx,
-        &result,
+        &banner,
         Edit::Visual,
     );
     page.add(&visual);
 
     let audio = adw::PreferencesGroup::new();
-    audio.set_title("Audio");
-    audio.set_description(Some("One sound at a time; no queued playback. Preview works while audio events are off and does not create a notification. Replacing a sound first retires its decoder: a Busy request is discarded, never queued. After confirmation, press Preview again explicitly."));
+    audio.set_title("Sound");
     policy(
         &audio,
-        "Audio alerts",
+        "Play a sound",
         "audio",
         current.audio,
         ctx,
-        &result,
+        &banner,
         Edit::Audio,
     );
-    let selected = row(&audio, "Accepted sound", &source_label(&current.sound));
-    selected.set_widget_name("notification-audio-source");
-    let builtin = gtk::Button::with_label("Use built-in WAV");
-    builtin.set_widget_name("notification-audio-builtin");
-    selected.add_suffix(&builtin);
-    let path = adw::EntryRow::new();
-    path.set_title("Local WAV absolute path");
-    path.set_widget_name("notification-audio-path");
-    audio.add(&path);
-    let choose = gtk::Button::with_label("Use local WAV");
-    choose.set_widget_name("notification-audio-select");
-    choose.set_valign(gtk::Align::Center);
-    path.add_suffix(&choose);
-    let playback = row(
-        &audio,
-        "Playback status",
-        "No output is claimed from a playback request or decoder status",
-    );
-    let preview = gtk::Button::with_label("Preview");
-    preview.set_widget_name("notification-audio-preview");
-    preview.update_property(&[gtk::accessible::Property::Label(
-        "Preview accepted notification sound, even when audio alerts are off",
-    )]);
-    preview.set_valign(gtk::Align::Center);
-    playback.add_suffix(&preview);
-    let cancel = gtk::Button::with_label("Cancel sound / selection");
-    cancel.set_widget_name("notification-audio-cancel");
-    cancel.set_valign(gtk::Align::Center);
-    cancel.connect_clicked({
-        let callback = ctx.cancel_audio.clone();
-        move |_| callback()
-    });
-    playback.add_suffix(&cancel);
-    for (button, local) in [(&builtin, false), (&choose, true)] {
-        let ctx = ctx.clone();
-        let path = path.clone();
-        let selected = selected.downgrade();
-        let result = result.downgrade();
-        button.connect_clicked(move |_| {
-            let source = if local {
-                let text = path.text().to_string();
-                if !std::path::Path::new(&text).is_absolute()
-                    || text.len() > 4096
-                    || text.contains('\0')
-                {
-                    if let Some(result) = result.upgrade() {
-                        report(&result, Err("Select a local absolute WAV path".into()));
-                    }
-                    return;
-                }
-                AudioSource::Local(text)
-            } else {
-                AudioSource::Builtin
-            };
-            if let Some(result) = result.upgrade() {
-                result.set_subtitle("Reading and validating WAV off the UI loop…");
-            }
-            let source_label = source_label(&source);
-            let selected = selected.clone();
-            let result = result.clone();
-            (ctx.select)(
-                source,
-                Box::new(move |outcome| {
-                    if outcome.is_ok() {
-                        if let Some(selected) = selected.upgrade() {
-                            selected.set_subtitle(&escape_display(&source_label));
-                        }
-                    }
-                    if let Some(result) = result.upgrade() {
-                        report(&result, outcome);
-                    }
-                }),
-            );
-        });
-    }
-    preview.connect_clicked({
-        let ctx = ctx.clone();
-        let result = result.clone();
-        move |_| {
-            if let Err(error) = (ctx.preview)() {
-                report(&result, Err(error));
-            }
-        }
-    });
+    let (sound_widget, sound) = sound_row(ctx, &banner);
+    audio.add(&sound_widget);
     page.add(&audio);
 
     let commands = adw::PreferencesGroup::new();
-    commands.set_title("External command");
-    commands.set_description(Some("Off and unconfigured by default. Explicit executable plus literal argv; no shell expansion or terminal environment. Commands run with your ordinary user authority, not in an OS sandbox."));
+    commands.set_title("Command");
+    let save = gtk::Button::with_label("Save");
+    save.set_widget_name("notification-command-save");
+    save.add_css_class("flat");
+    save.set_valign(gtk::Align::Center);
+    commands.set_header_suffix(Some(&save));
     let enabled = policy(
         &commands,
-        "Command alerts",
+        "Run a command",
         "command",
         current.command,
         ctx,
-        &result,
+        &banner,
         Edit::CommandPolicy,
     );
     enabled.set_sensitive(current.configuration.is_some());
     let program = adw::EntryRow::new();
-    program.set_title("Executable absolute path");
+    program.set_title(PROGRAM_TITLE);
     program.set_widget_name("notification-command-program");
     program.set_text(
         current
@@ -206,9 +250,26 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
             .as_ref()
             .map_or("", Command::executable),
     );
+    let choose_program = icon_button(
+        "document-open-symbolic",
+        "Choose the program",
+        "notification-command-choose",
+    );
+    program.add_suffix(&choose_program);
+    choose_program.connect_clicked({
+        let program = program.downgrade();
+        move |button| {
+            let program = program.clone();
+            pick_file(button, "Choose the program", None, move |path| {
+                if let Some(program) = program.upgrade() {
+                    program.set_text(&path);
+                }
+            });
+        }
+    });
     commands.add(&program);
     let arguments = adw::EntryRow::new();
-    arguments.set_title("Literal arguments (JSON string array)");
+    arguments.set_title(ARGUMENTS_TITLE);
     arguments.set_widget_name("notification-command-arguments");
     arguments.set_text(
         &current
@@ -218,34 +279,44 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
             .unwrap_or_else(|| "[]".into()),
     );
     commands.add(&arguments);
-    let apply = row(
-        &commands,
-        "Apply command configuration",
-        "An empty executable clears configuration and disables commands. Saving does not run it.",
-    );
-    let save = gtk::Button::with_label("Save command");
-    save.set_widget_name("notification-command-save");
-    save.set_valign(gtk::Align::Center);
-    apply.add_suffix(&save);
+    program.connect_changed(|entry| flag(entry, PROGRAM_TITLE, None));
+    arguments.connect_changed(|entry| flag(entry, ARGUMENTS_TITLE, None));
     save.connect_clicked({
         let ctx = ctx.clone();
-        let result = result.clone();
+        let banner = banner.clone();
+        let program = program.clone();
+        let arguments = arguments.clone();
         move |_| {
+            // An empty program clears the configuration and switches the
+            // command off; saving never runs it.
             let configuration = if program.text().is_empty() {
                 Ok(None)
             } else {
                 serde_json::from_str::<Vec<String>>(&arguments.text())
-                    .map_err(|_| "Arguments must be a JSON string array".to_string())
+                    .map_err(|_| {
+                        flag(
+                            &arguments,
+                            ARGUMENTS_TITLE,
+                            Some("Arguments must be a JSON list of strings"),
+                        );
+                    })
                     .and_then(|argv| {
                         Command::new(std::path::Path::new(program.text().as_str()), argv)
                             .map(Some)
                             .map_err(|_| {
-                                "Use an absolute executable and bounded literal arguments".into()
+                                flag(
+                                    &program,
+                                    PROGRAM_TITLE,
+                                    Some("Use an absolute path and short arguments"),
+                                );
                             })
                     })
             };
-            let outcome = configuration
-                .and_then(|configuration| (ctx.edit)(Edit::CommandConfiguration(configuration)));
+            // An invalid value is reported on its own row, so nothing is sent.
+            let Ok(configuration) = configuration else {
+                return;
+            };
+            let outcome = (ctx.edit)(Edit::CommandConfiguration(configuration));
             if outcome.is_ok() {
                 let accepted = (ctx.query)();
                 enabled.set_sensitive(accepted.configuration.is_some());
@@ -253,17 +324,16 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
                     enabled.set_active(accepted.command.enabled);
                 }
             }
-            report(&result, outcome);
+            report(&banner, outcome);
         }
     });
-    let command_status = row(&commands, "Command runtime", &(ctx.status)().1);
     page.add(&commands);
 
     let providers = adw::PreferencesGroup::new();
-    providers.set_title("Provider channels");
-    row(&providers, "Managed integration under review", "Channels start off. Permission is separate from plugin enablement and access review. Opening or editing this page starts no provider. Independent combined acceptance remains pending; results are local claims, not remote receipts.");
+    providers.set_title("Plugin channels");
+    providers.set_visible(false);
     let provider_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
-    provider_rows_refresh(&providers, ctx, &result, &provider_rows);
+    provider_rows_refresh(&providers, ctx, &banner, &provider_rows);
     page.add(&providers);
     let roles = adw::PreferencesGroup::new();
     roles.set_title("Managed notification roles");
@@ -271,37 +341,20 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
     let role_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
     role_rows_refresh(&roles, ctx, &role_rows);
     page.add(&roles);
-    page.add(&feedback);
-    let status = ctx.status.clone();
-    let audio_state = ctx.audio_state.clone();
-    let preview = preview.downgrade();
-    let cancel = cancel.downgrade();
+
     let providers = providers.downgrade();
     let roles = roles.downgrade();
     let provider_context = ctx.clone();
-    let feedback_row = result.downgrade();
-    let playback = playback.downgrade();
-    let command_status = command_status.downgrade();
+    let banner = banner.downgrade();
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-        let (Some(audio), Some(command)) = (playback.upgrade(), command_status.upgrade()) else {
+        let Some(banner) = banner.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        let (a, c) = status();
-        audio.set_subtitle(&escape_display(&a));
-        if let (Some(preview), Some(cancel)) = (preview.upgrade(), cancel.upgrade()) {
-            let state = audio_state();
-            preview.set_sensitive(matches!(
-                state,
-                AudioState::Ready | AudioState::Active | AudioState::Retiring
-            ));
-            cancel.set_sensitive(matches!(
-                state,
-                AudioState::Reading | AudioState::Active | AudioState::Retiring
-            ));
+        if !sound.refresh() {
+            return glib::ControlFlow::Break;
         }
-        command.set_subtitle(&escape_display(&c));
-        if let (Some(group), Some(result)) = (providers.upgrade(), feedback_row.upgrade()) {
-            provider_rows_refresh(&group, &provider_context, &result, &provider_rows);
+        if let Some(group) = providers.upgrade() {
+            provider_rows_refresh(&group, &provider_context, &banner, &provider_rows);
         }
         if let Some(group) = roles.upgrade() {
             role_rows_refresh(&group, &provider_context, &role_rows);
@@ -309,6 +362,226 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
         glib::ControlFlow::Continue
     });
     page
+}
+
+const PROGRAM_TITLE: &str = "Program";
+const ARGUMENTS_TITLE: &str = "Arguments (JSON list)";
+
+/// The sound row's controls. Only weak references are kept, so the page's
+/// callbacks and timer never keep a closed window alive.
+#[derive(Clone)]
+struct SoundRow {
+    row: glib::WeakRef<adw::ActionRow>,
+    reset: glib::WeakRef<gtk::Button>,
+    play: glib::WeakRef<gtk::Button>,
+    spinner: glib::WeakRef<gtk::Spinner>,
+    /// Warning mark in front of a problem line, so the problem is not carried
+    /// by colour alone.
+    problem: glib::WeakRef<gtk::Image>,
+    ctx: Context,
+}
+
+impl SoundRow {
+    /// Bring the row in line with the current sound, state and report.
+    /// Returns false once the row is gone.
+    fn refresh(&self) -> bool {
+        let (Some(row), Some(reset), Some(play), Some(spinner), Some(mark)) = (
+            self.row.upgrade(),
+            self.reset.upgrade(),
+            self.play.upgrade(),
+            self.spinner.upgrade(),
+            self.problem.upgrade(),
+        ) else {
+            return false;
+        };
+        let state = (self.ctx.audio_state)();
+        let report = (self.ctx.audio_report)();
+        let source = (self.ctx.query)().sound;
+        reset.set_visible(matches!(source, AudioSource::Local(_)));
+        spinner.set_visible(state == AudioState::Reading);
+        spinner.set_spinning(state == AudioState::Reading);
+        let (icon, label, enabled) = match state {
+            AudioState::Ready => ("media-playback-start-symbolic", "Play the sound", true),
+            AudioState::Retiring => (
+                "media-playback-start-symbolic",
+                "Play the sound; the previous one is still stopping",
+                true,
+            ),
+            AudioState::Active => ("media-playback-stop-symbolic", "Stop the sound", true),
+            AudioState::Reading => (
+                "media-playback-stop-symbolic",
+                "Stop checking the file",
+                true,
+            ),
+            AudioState::Unconfirmed => (
+                "media-playback-start-symbolic",
+                "Playback is off: the previous sound could not be confirmed stopped",
+                false,
+            ),
+            AudioState::Unavailable => (
+                "media-playback-start-symbolic",
+                "No sound is ready to play",
+                false,
+            ),
+        };
+        play.set_icon_name(icon);
+        play.set_tooltip_text(Some(label));
+        play.update_property(&[gtk::accessible::Property::Label(label)]);
+        play.set_sensitive(enabled);
+        if state == AudioState::Active {
+            play.add_css_class("suggested-action");
+        } else {
+            play.remove_css_class("suggested-action");
+        }
+        match (&report, state) {
+            (_, AudioState::Reading) => {
+                row.set_subtitle("Checking the file…");
+                mark.set_visible(false);
+                row.set_tooltip_text(None);
+            }
+            (AudioReport::Problem(text), _) => {
+                row.set_subtitle(&escape_display(text));
+                mark.set_visible(true);
+                row.set_tooltip_text(None);
+            }
+            (note, _) => {
+                row.set_subtitle(&escape_display(&sound_name(&source)));
+                mark.set_visible(false);
+                let tooltip = match (&source, note.text()) {
+                    (AudioSource::Local(path), "") => Some(path.clone()),
+                    (_, "") => None,
+                    (_, text) => Some(text.to_owned()),
+                };
+                row.set_tooltip_text(tooltip.as_deref());
+            }
+        }
+        true
+    }
+}
+
+fn sound_row(ctx: &Context, banner: &adw::Banner) -> (adw::ActionRow, SoundRow) {
+    let row = adw::ActionRow::new();
+    row.set_title("Sound");
+    row.set_widget_name("notification-audio-source");
+    let reset = icon_button(
+        "edit-undo-symbolic",
+        "Use the built-in sound",
+        "notification-audio-builtin",
+    );
+    let choose = icon_button(
+        "document-open-symbolic",
+        "Choose a WAV file",
+        "notification-audio-select",
+    );
+    let play = icon_button(
+        "media-playback-start-symbolic",
+        "Play the sound",
+        "notification-audio-preview",
+    );
+    let spinner = gtk::Spinner::new();
+    spinner.set_valign(gtk::Align::Center);
+    spinner.set_visible(false);
+    spinner.update_property(&[gtk::accessible::Property::Label("Checking the file")]);
+    for widget in [
+        spinner.upcast_ref::<gtk::Widget>(),
+        reset.upcast_ref(),
+        choose.upcast_ref(),
+        play.upcast_ref(),
+    ] {
+        row.add_suffix(widget);
+    }
+    let mark = gtk::Image::from_icon_name("dialog-warning-symbolic");
+    mark.set_widget_name("notification-audio-problem");
+    mark.add_css_class("error");
+    mark.set_visible(false);
+    mark.update_property(&[gtk::accessible::Property::Label("Problem with the sound")]);
+    row.add_prefix(&mark);
+    let sound = SoundRow {
+        problem: mark.downgrade(),
+        row: row.downgrade(),
+        reset: reset.downgrade(),
+        play: play.downgrade(),
+        spinner: spinner.downgrade(),
+        ctx: ctx.clone(),
+    };
+
+    // Both the file dialog and the verification step end here. An empty path
+    // selects the built-in sound.
+    let select: Rc<ChooseWav> = Rc::new({
+        let ctx = ctx.clone();
+        let banner = banner.downgrade();
+        let sound = sound.clone();
+        move |text: String| {
+            let source = if text.is_empty() {
+                AudioSource::Builtin
+            } else if !std::path::Path::new(&text).is_absolute()
+                || text.len() > 4096
+                || text.contains('\0')
+            {
+                if let Some(banner) = banner.upgrade() {
+                    announce(&banner, "Choose a WAV file");
+                }
+                return;
+            } else {
+                AudioSource::Local(text)
+            };
+            let banner = banner.clone();
+            let sound = sound.clone();
+            (ctx.select)(
+                source,
+                Box::new(move |outcome| {
+                    if let Some(banner) = banner.upgrade() {
+                        // A refused file is reported on the row; only a failed
+                        // save of an accepted one needs the banner.
+                        match outcome {
+                            Err(_) => banner.set_revealed(false),
+                            ok => report(&banner, ok),
+                        }
+                    }
+                    sound.refresh();
+                }),
+            );
+        }
+    });
+    CHOOSE_WAV.with(|slot| *slot.borrow_mut() = Some(Rc::downgrade(&select)));
+    reset.connect_clicked({
+        let select = select.clone();
+        move |_| select(String::new())
+    });
+    choose.connect_clicked({
+        let select = select.clone();
+        move |button| {
+            let select = select.clone();
+            pick_file(
+                button,
+                "Choose a WAV file",
+                Some(wav_filter()),
+                move |path| select(path),
+            );
+        }
+    });
+    play.connect_clicked({
+        let ctx = ctx.clone();
+        let banner = banner.clone();
+        let sound = sound.clone();
+        move |_| {
+            // One control: it stops while a sound plays or a file is checked,
+            // and plays otherwise. Playing works with the channel off.
+            match (ctx.audio_state)() {
+                AudioState::Active | AudioState::Reading => (ctx.cancel_audio)(),
+                _ => {
+                    if let Err(error) = (ctx.preview)() {
+                        // A busy refusal is already the row's problem line.
+                        if (ctx.audio_report)() == AudioReport::Idle {
+                            announce(&banner, &error);
+                        }
+                    }
+                }
+            }
+            sound.refresh();
+        }
+    });
+    (row, sound)
 }
 
 fn role_rows_refresh(
@@ -361,11 +634,14 @@ fn role_rows_refresh(
 fn provider_rows_refresh(
     group: &adw::PreferencesGroup,
     ctx: &Context,
-    result: &adw::ActionRow,
+    result: &adw::Banner,
     rows: &RefCell<
         std::collections::BTreeMap<among::notifications::providers::Key, adw::SwitchRow>,
     >,
 ) {
+    // The group exists only while there is a channel to configure: an installed
+    // plugin's, or a retained choice of one that is gone, which stays editable.
+    group.set_visible(!(ctx.query)().providers.is_empty());
     let inventory: std::collections::BTreeMap<_, _> = (ctx.providers)()
         .into_iter()
         .filter_map(|channel| {
@@ -409,20 +685,13 @@ fn provider_rows_refresh(
     }
 }
 
-fn source_label(source: &AudioSource) -> String {
-    match source {
-        AudioSource::Builtin => "Built-in original Among alert WAV".into(),
-        AudioSource::Local(path) => path.clone(),
-    }
-}
-
 fn policy(
     group: &adw::PreferencesGroup,
     title: &str,
     identity: &str,
     initial: Policy,
     ctx: &Context,
-    result: &adw::ActionRow,
+    result: &adw::Banner,
     edit: impl Fn(Policy) -> Edit + 'static,
 ) -> adw::SwitchRow {
     let enabled = adw::SwitchRow::new();
@@ -431,11 +700,20 @@ fn policy(
     enabled.set_active(initial.enabled);
     group.add(&enabled);
     let condition = adw::ComboRow::new();
-    condition.set_title(&escape_display(&format!("{title} condition")));
+    condition.set_title("When");
+    // Every group has a row called "When"; assistive technology hears which one.
+    condition
+        .upcast_ref::<gtk::Widget>()
+        .update_property(&[gtk::accessible::Property::Label(&format!("{title}: when"))]);
     condition.set_widget_name(&format!("notification-{identity}-condition"));
+    // The stored value is originating-terminal-unfocused: it also applies while
+    // Among is in the background, which the label cannot say in a few words.
+    condition.set_tooltip_text(Some(
+        "\"Terminal not in view\" also applies while Among is in the background.",
+    ));
     condition.set_model(Some(&gtk::StringList::new(&[
         "Always",
-        "Originating terminal unfocused",
+        "Terminal not in view",
         "Among in background",
     ])));
     condition.set_selected(match initial.eligibility {
@@ -476,4 +754,208 @@ fn policy(
     });
     condition.connect_selected_notify(move |_| apply());
     enabled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_sound_is_named_by_its_file_not_its_directory() {
+        assert_eq!(sound_name(&AudioSource::Builtin), "Among alert (built-in)");
+        assert_eq!(
+            sound_name(&AudioSource::Local("/home/me/sounds/ding.wav".into())),
+            "ding.wav"
+        );
+        // A path without a final component still reads as something.
+        assert_eq!(sound_name(&AudioSource::Local("/".into())), "/");
+    }
+
+    #[test]
+    fn only_a_problem_or_a_note_carries_text() {
+        assert_eq!(AudioReport::Idle.text(), "");
+        assert_eq!(AudioReport::Info("note".into()).text(), "note");
+        assert_eq!(AudioReport::Problem("bad".into()).text(), "bad");
+    }
+
+    /// A context whose audio state and report the test controls.
+    fn context(
+        state: Rc<Cell<AudioState>>,
+        report: Rc<RefCell<AudioReport>>,
+        sound: Rc<RefCell<AudioSource>>,
+        previews: Rc<Cell<u32>>,
+        cancels: Rc<Cell<u32>>,
+    ) -> Context {
+        Context {
+            query: Rc::new(move || Preferences {
+                sound: sound.borrow().clone(),
+                ..Preferences::default()
+            }),
+            edit: Rc::new(|_| Ok(Durability::Durable)),
+            select: Rc::new(|_, finished| finished(Ok(Durability::Durable))),
+            preview: Rc::new(move || {
+                previews.set(previews.get() + 1);
+                Ok(())
+            }),
+            cancel_audio: Rc::new(move || cancels.set(cancels.get() + 1)),
+            audio_state: Rc::new(move || state.get()),
+            audio_report: Rc::new(move || report.borrow().clone()),
+            providers: Rc::new(Vec::new),
+            roles: Rc::new(Vec::new),
+            review_role: Rc::new(|_, _| {}),
+        }
+    }
+
+    fn find<T: IsA<gtk::Widget>>(widget: &gtk::Widget, name: &str) -> T {
+        fn walk(widget: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
+            if widget.widget_name() == name {
+                return Some(widget.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                if let Some(found) = walk(&current, name) {
+                    return Some(found);
+                }
+                child = current.next_sibling();
+            }
+            None
+        }
+        walk(widget, name)
+            .unwrap_or_else(|| panic!("missing control {name}"))
+            .downcast::<T>()
+            .unwrap_or_else(|_| panic!("control {name} has another type"))
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display"]
+    fn the_sound_row_has_one_slot_that_plays_stops_or_is_disabled_with_a_reason() {
+        adw::init().expect("isolated GTK display");
+        let state = Rc::new(Cell::new(AudioState::Ready));
+        let report = Rc::new(RefCell::new(AudioReport::Idle));
+        let sound = Rc::new(RefCell::new(AudioSource::Builtin));
+        let (previews, cancels) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let page = page(Some(&context(
+            state.clone(),
+            report.clone(),
+            sound.clone(),
+            previews.clone(),
+            cancels.clone(),
+        )));
+        let root: &gtk::Widget = page.upcast_ref();
+        let play: gtk::Button = find(root, "notification-audio-preview");
+        let reset: gtk::Button = find(root, "notification-audio-builtin");
+        let row: adw::ActionRow = find(root, "notification-audio-source");
+        let problem: gtk::Image = find(root, "notification-audio-problem");
+        let pump = || {
+            for _ in 0..30 {
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+
+        // Idle with the built-in sound: Play works, nothing to reset, no problem.
+        pump();
+        assert_eq!(
+            play.icon_name().as_deref(),
+            Some("media-playback-start-symbolic")
+        );
+        assert!(play.is_sensitive() && !reset.is_visible() && !problem.is_visible());
+        assert_eq!(row.subtitle().as_deref(), Some("Among alert (built-in)"));
+        play.emit_clicked();
+        assert_eq!((previews.get(), cancels.get()), (1, 0));
+
+        // While a sound plays the same slot stops it instead of previewing.
+        state.set(AudioState::Active);
+        pump();
+        assert_eq!(
+            play.icon_name().as_deref(),
+            Some("media-playback-stop-symbolic")
+        );
+        play.emit_clicked();
+        assert_eq!((previews.get(), cancels.get()), (1, 1));
+
+        // Checking a chosen file shows Stop, which cancels the check.
+        state.set(AudioState::Reading);
+        pump();
+        assert_eq!(
+            play.icon_name().as_deref(),
+            Some("media-playback-stop-symbolic")
+        );
+        assert_eq!(row.subtitle().as_deref(), Some("Checking the file…"));
+        play.emit_clicked();
+        assert_eq!(cancels.get(), 2);
+
+        // A custom file shows its name and the reset control.
+        state.set(AudioState::Ready);
+        *sound.borrow_mut() = AudioSource::Local("/music/ding.wav".into());
+        pump();
+        assert!(reset.is_visible());
+        assert_eq!(row.subtitle().as_deref(), Some("ding.wav"));
+
+        // A problem replaces the name with one line and marks it.
+        *report.borrow_mut() = AudioReport::Problem("Not a WAV file".into());
+        pump();
+        assert_eq!(row.subtitle().as_deref(), Some("Not a WAV file"));
+        assert!(problem.is_visible());
+
+        // Without a confirmed decoder the slot is disabled and says why.
+        *report.borrow_mut() = AudioReport::Idle;
+        state.set(AudioState::Unconfirmed);
+        pump();
+        assert!(!play.is_sensitive());
+        assert!(play
+            .tooltip_text()
+            .is_some_and(|text| text.contains("could not be confirmed")));
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display"]
+    fn the_page_has_short_labels_and_no_explanatory_plates() {
+        adw::init().expect("isolated GTK display");
+        let page = page(Some(&context(
+            Rc::new(Cell::new(AudioState::Ready)),
+            Rc::new(RefCell::new(AudioReport::Idle)),
+            Rc::new(RefCell::new(AudioSource::Builtin)),
+            Rc::new(Cell::new(0)),
+            Rc::new(Cell::new(0)),
+        )));
+        let root: &gtk::Widget = page.upcast_ref();
+        for identity in ["visual", "audio", "command"] {
+            let condition: adw::ComboRow =
+                find(root, &format!("notification-{identity}-condition"));
+            let labels: Vec<String> = (0..3)
+                .map(|index| {
+                    condition
+                        .model()
+                        .and_downcast::<gtk::StringList>()
+                        .and_then(|list| list.string(index))
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(
+                labels,
+                ["Always", "Terminal not in view", "Among in background"]
+            );
+            assert_eq!(condition.title(), "When");
+        }
+        // The save banner stays hidden until a save fails.
+        let banner: adw::Banner = find(root, "notification-save-status");
+        assert!(!banner.is_revealed());
+        // The typed path field and its buttons are gone.
+        for removed in ["notification-audio-path", "notification-audio-cancel"] {
+            let mut found = false;
+            let mut stack = vec![root.clone()];
+            while let Some(widget) = stack.pop() {
+                found |= widget.widget_name() == removed;
+                let mut child = widget.first_child();
+                while let Some(current) = child {
+                    child = current.next_sibling();
+                    stack.push(current);
+                }
+            }
+            assert!(!found, "{removed} should no longer exist");
+        }
+    }
 }

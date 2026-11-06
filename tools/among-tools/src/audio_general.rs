@@ -22,7 +22,6 @@ const RATE: u32 = 48_000;
 const BELL: &str = "type:printf~'\\007'";
 const ENABLED: &str = "focus:notification-audio-enabled";
 const CONDITION: &str = "focus:notification-audio-condition";
-const PATH: &str = "focus:notification-audio-path";
 const DECODER_FLAG: &[u8] = b"--among-audio-decoder-v2";
 /// Holds the script until a sound is audible, so a cancellation that follows
 /// cuts a sound that was playing and not one still being prepared.
@@ -182,43 +181,26 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
             steps: &["preferences", "activate:notification-audio-builtin", BELL],
             expected: Expected::Builtin,
         },
-        // The path is typed into General's own entry and accepted with its own
-        // button, so the file is read, validated and saved by the real control.
+        // The file dialog is a portal, so the chosen path is handed to the sound
+        // row directly; the file is still read, validated and saved by the real
+        // control.
         Scenario {
             name: "source-local",
             audio: audio(true, "always", &json!("builtin")),
-            steps: &[
-                "preferences",
-                PATH,
-                "text:{short}",
-                "activate:notification-audio-select",
-                BELL,
-            ],
+            steps: &["preferences", "choose-wav:{short}", BELL],
             expected: Expected::Local,
         },
         // A file the control refuses must leave the accepted sound in place.
         Scenario {
             name: "source-missing",
             audio: audio(true, "always", &json!("builtin")),
-            steps: &[
-                "preferences",
-                PATH,
-                "text:{missing}",
-                "activate:notification-audio-select",
-                BELL,
-            ],
+            steps: &["preferences", "choose-wav:{missing}", BELL],
             expected: Expected::Builtin,
         },
         Scenario {
             name: "source-truncated",
             audio: audio(true, "always", &json!("builtin")),
-            steps: &[
-                "preferences",
-                PATH,
-                "text:{truncated}",
-                "activate:notification-audio-select",
-                BELL,
-            ],
+            steps: &["preferences", "choose-wav:{truncated}", BELL],
             expected: Expected::Builtin,
         },
         // The bell rings behind Preferences, where its terminal is not viewed.
@@ -284,7 +266,7 @@ fn scenarios(short: &Path, long: &Path, missing: &Path, truncated: &Path) -> Vec
 /// Writes the steps the application runs itself, and returns the ones only this
 /// harness can perform. Each of those becomes a pause the application holds
 /// until the harness has acted.
-fn script(steps: &[&'static str]) -> (String, Vec<&'static str>) {
+fn script(steps: &[&'static str], fixtures: &Fixtures) -> (String, Vec<&'static str>) {
     let mut script = String::new();
     let mut external = Vec::new();
     for step in steps {
@@ -296,7 +278,8 @@ fn script(steps: &[&'static str]) -> (String, Vec<&'static str>) {
             script.push_str(&format!("await:{}\n", external.len()));
             external.push(*step);
         } else {
-            script.push_str(step);
+            // Fixture names such as {short} become real paths here.
+            script.push_str(&fixtures.fill(step));
             script.push('\n');
         }
     }
@@ -445,7 +428,7 @@ fn run_one(
     } else {
         None
     };
-    let (steps, external) = script(scenario.steps);
+    let (steps, external) = script(scenario.steps, fixtures);
     fs::write(base.join("steps"), steps)?;
     harness
         .env
