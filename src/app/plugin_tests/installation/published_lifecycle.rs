@@ -180,7 +180,7 @@ pub(super) fn inspect(
 ) -> adw::PreferencesWindow {
     focus(preferences);
     if !super::candidate::present_inspector(ctx, preferences) {
-        press(&button(preferences, "Inspect repository…"));
+        press(&named_button(preferences, "plugins-add-source"));
     }
     let view = inspector();
     focus(&view);
@@ -670,19 +670,19 @@ pub(super) fn run() {
     for plugin in &catalogue.plugins {
         let row = manager_row(&preferences, &plugin.versions[0].manifest.name);
         focus(&preferences);
-        press(&button(&row, "Details…"));
-        let find_details = || {
-            gtk::Window::list_toplevels()
-                .into_iter()
-                .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-                .find(|window| {
-                    window.title().as_deref() == Some("Plugin details") && window.is_visible()
-                })
-        };
-        wait_for(|| find_details().is_some(), Duration::from_secs(2));
-        let details = find_details().unwrap();
+        press(&named_button(&row, "plugin-info"));
+        // the plugin page is a subpage of the same window.
+        let details = preferences.clone();
+        wait_for(
+            || {
+                widgets(details.upcast_ref())
+                    .iter()
+                    .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
+            },
+            Duration::from_secs(3),
+        );
         focus(&details);
-        press(&button(&details, "Uninstall…"));
+        press(&button(&details, "Uninstall"));
         wait_for(
             || details.visible_dialog().is_some(),
             Duration::from_secs(2),
@@ -696,22 +696,30 @@ pub(super) fn run() {
             .unwrap()
             .iter()
             .any(|entry| entry.receipt.plugin_id == plugin.id));
-        press(&button(&details, "Uninstall…"));
+        press(&button(&details, "Uninstall"));
         wait_for(
             || details.visible_dialog().is_some(),
             Duration::from_secs(2),
         );
         press(&button(&details.visible_dialog().unwrap(), "Uninstall"));
+        // the page closes when the removal commits; no result dialog appears.
         wait_for(
             || {
-                details
-                    .visible_dialog()
-                    .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Plugin uninstalled"))
+                !crate::plugin::inventory::read(&root)
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.receipt.plugin_id == plugin.id)
             },
             Duration::from_secs(5),
         );
-        press(&button(&details.visible_dialog().unwrap(), "Close"));
-        details.destroy();
+        wait_for(
+            || {
+                !widgets(details.upcast_ref())
+                    .iter()
+                    .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
+            },
+            Duration::from_secs(5),
+        );
         assert!(!crate::plugin::inventory::read(&root)
             .unwrap()
             .iter()

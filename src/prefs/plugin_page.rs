@@ -30,6 +30,14 @@ pub(super) fn technical_rows(
     }
     if let Some(info) = info {
         rows.push(("API compatibility", info.declared.clone()));
+        rows.push((
+            "Observed API",
+            info.observed
+                .as_ref()
+                .map_or("Not observed in this session".to_owned(), |api| {
+                    format!("{}.{}", api.major, api.minor)
+                }),
+        ));
     }
     if let Some(problem) = entry
         .inspected

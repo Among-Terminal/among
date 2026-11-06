@@ -172,7 +172,15 @@ fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
     preferences.set_visible_page(&page);
     let open_retained = || {
         focus(&preferences);
-        press(&button(&preferences, "Retained settings…"));
+        // the entry to retained settings is a row, shown only while some exist.
+        let entry = widgets(preferences.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+            .find(|row| row.title() == "Settings of removed plugins")
+            .unwrap();
+        wait_for(|| entry.is_mapped(), Duration::from_secs(3));
+        assert!(entry.grab_focus());
+        xdo(&["key", "--clearmodifiers", "Return"]);
         wait_for(
             || {
                 gtk::Window::list_toplevels().iter().any(|window| {
@@ -220,54 +228,46 @@ fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
     let plugin_row = widgets(preferences.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| {
-            widgets(row.upcast_ref())
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-                .any(|button| button.label().as_deref() == Some("Details…"))
-        })
+        .find(|row| row.widget_name() == KEY)
         .unwrap();
-    press(&button(&plugin_row, "Details…"));
+    press(&named_button(&plugin_row, "plugin-info"));
+    // the plugin page is a subpage of the same window; development-only
+    // package facts are absent from an ordinary run.
     wait_for(
-        || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
-                    window.title().as_deref() == Some("Plugin details") && window.is_visible()
-                })
-            })
-        },
+        || has_label(preferences.upcast_ref(), "Technical details"),
         Duration::from_secs(2),
     );
-    let details = gtk::Window::list_toplevels()
-        .into_iter()
-        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-        .find(|window| window.title().as_deref() == Some("Plugin details") && window.is_visible())
-        .unwrap();
-    focus(&details);
-    assert!(has_label(details.upcast_ref(), "Release tag"));
-    assert!(has_label(details.upcast_ref(), "v1.0"));
-    assert!(has_label(details.upcast_ref(), "Resolved release commit"));
-    press(&button(&details, "Uninstall…"));
+    focus(&preferences);
+    assert!(!has_label(preferences.upcast_ref(), "Release tag"));
+    assert!(!has_label(
+        preferences.upcast_ref(),
+        "Resolved release commit"
+    ));
+    press(&button(&preferences, "Uninstall"));
     wait_for(
-        || details.visible_dialog().is_some(),
+        || preferences.visible_dialog().is_some(),
         Duration::from_secs(2),
     );
-    press(&button(&details.visible_dialog().unwrap(), "Uninstall"));
+    assert!(has_label(
+        preferences.visible_dialog().unwrap().upcast_ref(),
+        "It stops now if it is running. Your settings are kept."
+    ));
+    press(&button(&preferences.visible_dialog().unwrap(), "Uninstall"));
+    // a committed removal closes the page: no result dialog, no toast.
     wait_for(
-        || {
-            details
-                .visible_dialog()
-                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Plugin uninstalled"))
-        },
+        || crate::plugin::inventory::read(&root).unwrap().is_empty(),
+        Duration::from_secs(10),
+    );
+    wait_for(
+        || !has_label(preferences.upcast_ref(), "Technical details"),
         Duration::from_secs(5),
     );
+    assert!(preferences.visible_dialog().is_none());
     assert_eq!(
         crate::settings::load(&config, crate::settings::Document::ManagedPlugins).unwrap(),
         original,
         "native uninstall has not deleted settings or grants"
     );
-    press(&button(&details.visible_dialog().unwrap(), "Close"));
-    details.destroy();
 
     let retained = open_retained();
     let row = retained_row(&retained, KEY);
@@ -463,6 +463,9 @@ fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
 #[test]
 #[ignore = "requires isolated native keyboard input, Rust HTTPS and built managed processes"]
 fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins() {
+    // Recover previous is a package action of the development-mode Technical
+    // details; this process is a development run so the page offers it.
+    assert!(crate::plugin::development::fix(true));
     use crate::plugin::install::{
         source::tests::{install_at, package_route},
         test_managed_package,
@@ -800,6 +803,8 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
+    // the plugin page is a subpage of the Preferences window; the package
+    // actions of a development run sit under its Technical details.
     let open_details = || {
         focus(&preferences);
         let row = widgets(preferences.upcast_ref())
@@ -807,29 +812,22 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
             .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
             .find(|row| row.title() == "Equal display name")
             .unwrap();
-        press(&button(&row, "Details…"));
+        press(&named_button(&row, "plugin-info"));
         wait_for(
             || {
-                gtk::Window::list_toplevels().iter().any(|window| {
-                    window
-                        .downcast_ref::<adw::PreferencesWindow>()
-                        .is_some_and(|window| {
-                            window.title().as_deref() == Some("Plugin details")
-                                && window.is_visible()
-                        })
-                })
+                widgets(preferences.upcast_ref())
+                    .iter()
+                    .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
             },
             Duration::from_secs(3),
         );
-        let details = gtk::Window::list_toplevels()
-            .into_iter()
-            .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-            .find(|window| {
-                window.title().as_deref() == Some("Plugin details") && window.is_visible()
-            })
-            .unwrap();
-        focus(&details);
-        details
+        for widget in widgets(preferences.upcast_ref()) {
+            if let Some(expander) = widget.downcast_ref::<adw::ExpanderRow>() {
+                expander.set_expanded(true);
+            }
+        }
+        focus(&preferences);
+        preferences.clone()
     };
     let details = open_details();
     press(&button(&details, "Recover previous…"));
@@ -846,11 +844,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         "Recover previous",
     ));
     wait_for(
-        || {
-            details
-                .visible_dialog()
-                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Previous package selected"))
-        },
+        || banner_says(&details, "The previous version is selected"),
         Duration::from_secs(5),
     );
     wait_for(
@@ -872,8 +866,15 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         third.package_path(&root).join("executed").exists(),
         "recovery does not claim to reverse independently written effects"
     );
-    press(&button(&details.visible_dialog().unwrap(), "Close"));
-    details.destroy();
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(
+        || {
+            !widgets(details.upcast_ref())
+                .iter()
+                .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
+        },
+        Duration::from_secs(2),
+    );
     wait_for(
         || {
             ctx.state
@@ -919,21 +920,27 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         Duration::from_secs(5),
     );
     let details = open_details();
-    press(&button(&details, "Uninstall…"));
+    press(&button(&details, "Uninstall"));
     wait_for(
         || details.visible_dialog().is_some(),
         Duration::from_secs(2),
     );
     screenshot_dialog(&details.visible_dialog().unwrap(), "uninstall-consent");
     press(&button(&details.visible_dialog().unwrap(), "Uninstall"));
+    // the page closes when the removal commits; no result dialog appears.
     wait_for(
-        || {
-            details
-                .visible_dialog()
-                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Plugin uninstalled"))
-        },
+        || crate::plugin::inventory::read(&root).unwrap().is_empty(),
         Duration::from_secs(8),
     );
+    wait_for(
+        || {
+            !widgets(details.upcast_ref())
+                .iter()
+                .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
+        },
+        Duration::from_secs(5),
+    );
+    assert!(details.visible_dialog().is_none());
     assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());
     assert!(ctx.state.borrow().plugins.managed_details(KEY).is_none());
     assert!(ctx
@@ -1740,12 +1747,20 @@ fn focus(window: &impl IsA<gtk::Window>) -> String {
     id.to_string()
 }
 
+/// The first control with this label, preferring one that is shown: a window
+/// that holds the plugin page as a subpage also holds pages with their own
+/// buttons of the same label.
 fn button(root: &impl IsA<gtk::Widget>, label: &str) -> gtk::Button {
-    widgets(root.as_ref())
+    let all: Vec<_> = widgets(root.as_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some(label))
-        .unwrap()
+        .filter(|button| button.label().as_deref() == Some(label))
+        .collect();
+    all.iter()
+        .find(|button| button.is_mapped())
+        .or(all.first())
+        .unwrap_or_else(|| panic!("no button labelled {label}"))
+        .clone()
 }
 
 fn press(button: &gtk::Button) {
@@ -1862,75 +1877,52 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         .into_iter()
         .find_map(|widget| widget.downcast::<gtk::SearchEntry>().ok())
         .unwrap();
-    let sources = button(&preferences, "Inspect repository…");
+    let sources = named_button(&preferences, "plugins-add-source");
     let source_bounds = contained(&sources, &preferences);
     let search_bounds = contained(&search, &preferences);
     assert!(
-        source_bounds.y() + source_bounds.height() < search_bounds.y(),
-        "repository action belongs to its own source section, not under plugin search"
+        search_bounds.y() + search_bounds.height() < source_bounds.y(),
+        "the add-source control belongs to the Available list, under the plugin search"
     );
-    let details = widgets(page.upcast_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some("Details…"))
-        .unwrap();
+    let details = named_button(&page, "plugin-info");
     contained(&details, &preferences);
     press(&details);
+    // the plugin page is a subpage of the same window.
     wait_for(
-        || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
-                    window.title().as_deref() == Some("Plugin details") && window.is_mapped()
-                })
-            })
-        },
+        || has_label(preferences.upcast_ref(), "Declared API 1.2 supported"),
         Duration::from_secs(2),
     );
-    let details = gtk::Window::list_toplevels()
-        .into_iter()
-        .find_map(|window| {
-            window
-                .downcast::<adw::PreferencesWindow>()
-                .ok()
-                .filter(|window| window.title().as_deref() == Some("Plugin details"))
-        })
-        .unwrap();
     assert!(has_label(
-        details.upcast_ref(),
-        "Declared API 1.2 supported"
-    ));
-    assert!(has_label(
-        details.upcast_ref(),
+        preferences.upcast_ref(),
         "Not observed in this session"
     ));
-    screenshot(&details, "plugin-details");
+    screenshot(&preferences, "plugin-page");
     xdo(&["key", "--clearmodifiers", "Escape"]);
-    wait_for(|| !details.is_visible(), Duration::from_secs(2));
-    focus(&preferences);
-    press(&button(&preferences, "Settings…"));
     wait_for(
         || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
-                    window.title().as_deref() == Some("Plugin settings") && window.is_mapped()
-                })
-            })
+            !widgets(preferences.upcast_ref())
+                .iter()
+                .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
         },
         Duration::from_secs(2),
     );
-    let editor = gtk::Window::list_toplevels()
-        .into_iter()
-        .find_map(|window| {
-            window
-                .downcast::<adw::PreferencesWindow>()
-                .ok()
-                .filter(|window| window.title().as_deref() == Some("Plugin settings"))
-        })
-        .unwrap();
+    focus(&preferences);
+    press(&named_button(&page, "plugin-settings"));
+    let editor = preferences.clone();
+    wait_for(
+        || {
+            widgets(editor.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+                .any(|field| field.title() == "Label" && field.is_mapped())
+        },
+        Duration::from_secs(2),
+    );
     screenshot(&editor, "plugin-settings");
     let field = widgets(editor.upcast_ref())
         .into_iter()
-        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .find(|field| field.title() == "Label")
         .unwrap();
     let save = button(&editor, "Save");
     assert!(contained(&save, &editor).y() < contained(&field, &editor).y());
@@ -1951,10 +1943,10 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         "layout edit"
     );
     let saved = std::fs::read(&config).unwrap();
-    xdo(&["key", "--clearmodifiers", "alt+F4"]);
-    wait_for(|| !editor.is_visible(), Duration::from_secs(2));
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(|| !field.is_mapped(), Duration::from_secs(2));
     focus(&preferences);
-    press(&button(&preferences, "Inspect repository…"));
+    press(&named_button(&preferences, "plugins-add-source"));
     let view = inspector();
     screenshot(&view, "repository-empty");
     assert!(
@@ -1963,13 +1955,11 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
     );
     assert!(!button(&view, "Inspect").is_sensitive());
     assert!(!button(&view, "Cancel request").is_visible());
-    let output = widgets(view.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
-        .unwrap();
     assert!(
-        !output.is_mapped(),
-        "idle state must not contain a blank result panel"
+        !widgets(view.upcast_ref())
+            .iter()
+            .any(|widget| widget.is::<gtk::TextView>()),
+        "the window keeps no raw metadata panel"
     );
     xdo(&["key", "--clearmodifiers", "Escape"]);
     wait_for(|| !view.is_visible(), Duration::from_secs(2));
@@ -2126,7 +2116,7 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
         .unwrap();
     preferences.set_visible_page(&page);
     focus(&preferences);
-    press(&button(&preferences, "Inspect repository…"));
+    press(&named_button(&preferences, "plugins-add-source"));
     wait_for(
         || {
             gtk::Window::list_toplevels()

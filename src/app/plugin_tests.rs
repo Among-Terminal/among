@@ -373,12 +373,10 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
         .filter(|row| row.title() == "Sample")
         .collect();
     assert_eq!(rows.len(), 2);
+    // a row is named by the identity it shows, so equal display names stay apart.
     let selected = rows
         .iter()
-        .find(|row| {
-            row.subtitle()
-                .is_some_and(|text| text.contains("github:13/sample"))
-        })
+        .find(|row| row.widget_name() == "github:13/sample")
         .unwrap()
         .clone();
     let page = selected
@@ -394,47 +392,38 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
         .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
         .unwrap();
     assert!(!switch.is_active());
-    assert!(selected
-        .subtitle()
-        .is_some_and(|text| text.contains("Disabled") && text.contains("another/sample")));
-    let details = widgets(selected.upcast_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some("Details…"))
-        .unwrap();
+    // neither fixture's repository is a registered source, and a row says so.
+    assert!(has_label(selected.upcast_ref(), "source removed"));
+    let icon_button = |row: &adw::ActionRow, name: &str| {
+        widgets(row.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .find(|button| button.widget_name() == name)
+            .unwrap()
+    };
+    let details = icon_button(&selected, "plugin-info");
     assert!(details.grab_focus());
     xdo(&["key", "--clearmodifiers", "space"]);
+    // the plugin page is a subpage of the same window, not another window.
     wait_for(
-        || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
-                    window.title().as_deref() == Some("Plugin details") && window.is_mapped()
-                })
-            })
-        },
+        || has_label(preferences.upcast_ref(), "Declared API 1.2 supported"),
         Duration::from_secs(2),
     );
-    let details = gtk::Window::list_toplevels()
-        .into_iter()
-        .find_map(|window| {
-            window
-                .downcast::<adw::PreferencesWindow>()
-                .ok()
-                .filter(|window| window.title().as_deref() == Some("Plugin details"))
-        })
-        .unwrap();
     assert!(has_label(
-        details.upcast_ref(),
-        "Declared API 1.2 supported"
-    ));
-    assert!(has_label(
-        details.upcast_ref(),
+        preferences.upcast_ref(),
         "Not observed in this session"
     ));
-    assert!(has_label(details.upcast_ref(), "github:13/sample"));
-    focus(&details);
-    xdo(&["key", "--clearmodifiers", "alt+F4"]);
-    wait_for(|| !details.is_visible(), Duration::from_secs(2));
+    assert!(has_label(preferences.upcast_ref(), "github:13/sample"));
+    let access = widgets(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+        .find(|label| label.text() == "Can read")
+        .expect("the plugin page shows what the plugin may read");
+    wait_for(|| access.is_mapped(), Duration::from_secs(2));
+    focus(&preferences);
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(|| !access.is_mapped(), Duration::from_secs(2));
+    assert!(preferences.is_visible(), "Escape returns to the list");
     focus(&preferences);
     let search = widgets(page.upcast_ref())
         .into_iter()
@@ -448,33 +437,25 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
     );
     assert!(selected.is_mapped());
     assert!(switch.grab_focus());
-    let settings = widgets(selected.upcast_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some("Settings…"))
-        .unwrap();
+    let settings = icon_button(&selected, "plugin-settings");
     assert!(settings.grab_focus());
     xdo(&["key", "--clearmodifiers", "space"]);
+    // the settings form is a subpage of the same window.
+    let editor = preferences.clone();
     wait_for(
         || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window
-                    .downcast_ref::<adw::PreferencesWindow>()
-                    .is_some_and(|window| window.title().as_deref() == Some("Plugin settings"))
-            })
+            widgets(editor.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+                .any(|field| field.title() == "Label" && field.is_mapped())
         },
         Duration::from_secs(2),
     );
-    let editor = gtk::Window::list_toplevels()
-        .into_iter()
-        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-        .find(|window| window.title().as_deref() == Some("Plugin settings"))
-        .unwrap();
-    wait_for(|| editor.is_mapped(), Duration::from_secs(2));
     focus(&editor);
     let field = widgets(editor.upcast_ref())
         .into_iter()
-        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .find(|field| field.title() == "Label")
         .unwrap();
     wait_for(|| field.is_mapped(), Duration::from_secs(2));
     assert!(field.grab_focus());
@@ -534,8 +515,10 @@ fn manager_search_same_name_origins_and_background_refresh_preserve_real_control
         .find_map(|widget| widget.downcast::<gtk::Switch>().ok())
         .unwrap();
     assert_eq!(retained_switch, switch);
-    xdo(&["key", "--clearmodifiers", "alt+F4"]);
-    wait_for(|| !editor.is_visible(), Duration::from_secs(2));
+    // going back discards the unsaved text and returns to the list.
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(|| !field.is_mapped(), Duration::from_secs(2));
+    assert!(editor.is_visible());
     focus(&preferences);
     assert!(search.grab_focus());
     xdo(&["key", "--clearmodifiers", "ctrl+a"]);
@@ -902,39 +885,36 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
     let settings = widgets(row.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some("Settings…"))
+        .find(|button| button.widget_name() == "plugin-settings")
         .unwrap();
     focus(&preferences);
     press(&settings);
+    // the settings form is a subpage of the same window.
+    let editor = preferences.clone();
     wait_for(
         || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window
-                    .downcast_ref::<adw::PreferencesWindow>()
-                    .is_some_and(|window| window.title().as_deref() == Some("Plugin settings"))
-            })
+            widgets(editor.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+                .any(|field| field.title() == "Label" && field.is_mapped())
         },
         Duration::from_secs(2),
     );
-    let editor = gtk::Window::list_toplevels()
-        .into_iter()
-        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-        .find(|window| window.title().as_deref() == Some("Plugin settings"))
-        .unwrap();
-    wait_for(|| editor.is_mapped(), Duration::from_secs(2));
     focus(&editor);
     let field = widgets(editor.upcast_ref())
         .into_iter()
-        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .find(|field| field.title() == "Label")
         .unwrap();
     assert!(field.grab_focus());
     xdo(&["key", "--clearmodifiers", "ctrl+a"]);
     xdo(&["type", "--clearmodifiers", "--delay", "0", "runtime edit"]);
     wait_for(|| field.text() == "runtime edit", Duration::from_secs(2));
+    // the Notifications page has its own Save; the plugin's is the mapped one.
     let save = widgets(editor.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some("Save"))
+        .find(|button| button.label().as_deref() == Some("Save") && button.is_mapped())
         .unwrap();
     press(&save);
     wait_for(
@@ -953,7 +933,6 @@ fn managed_access_review_runtime_settings_and_fresh_process_grants_use_real_cont
         ctx.state.borrow().pane(PaneId(1)).unwrap().terminal(),
         &terminal
     );
-    editor.destroy();
     preferences.destroy();
     focus(&ctx.window);
     apply_focus(&ctx);
@@ -1138,12 +1117,30 @@ fn managed_metadata_and_disabled_settings_are_inert_and_persist_real_edits() {
             Duration::from_secs(2),
         );
     }
+    // the settings form is a subpage of the Preferences window.
     fn settings_window() -> adw::PreferencesWindow {
         gtk::Window::list_toplevels()
             .into_iter()
             .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-            .find(|window| window.title().as_deref() == Some("Plugin settings"))
+            .find(|window| window.title().as_deref() == Some("Preferences"))
             .unwrap()
+    }
+    fn plugin_field(editor: &adw::PreferencesWindow) -> adw::EntryRow {
+        let mut child = Some(editor.clone().upcast::<gtk::Widget>());
+        let mut stack = Vec::new();
+        while let Some(widget) = child.take().or_else(|| stack.pop()) {
+            if let Ok(field) = widget.clone().downcast::<adw::EntryRow>() {
+                if field.title() == "Label" {
+                    return field;
+                }
+            }
+            let mut next = widget.last_child();
+            while let Some(sibling) = next {
+                next = sibling.prev_sibling();
+                stack.push(sibling);
+            }
+        }
+        panic!("the plugin settings form is not shown");
     }
     let root = crate::plugin::inventory::root().unwrap();
     crate::test_isolation::assert_below_check_root(&root);
@@ -1221,16 +1218,13 @@ fn managed_metadata_and_disabled_settings_are_inert_and_persist_real_edits() {
     let settings = descendants(row.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some("Settings…"))
+        .find(|button| button.widget_name() == "plugin-settings")
         .unwrap();
     press(&settings);
     let editor = settings_window();
-    wait_for(|| editor.is_mapped(), Duration::from_secs(2));
+    wait_for(|| plugin_field(&editor).is_mapped(), Duration::from_secs(2));
     focus(&editor);
-    let field = descendants(editor.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
-        .unwrap();
+    let field = plugin_field(&editor);
     assert_eq!(field.text(), "default");
     assert_eq!(after_disable, std::fs::read(&local_path).unwrap());
     assert!(field.grab_focus());
@@ -1239,10 +1233,11 @@ fn managed_metadata_and_disabled_settings_are_inert_and_persist_real_edits() {
     // X11 enqueue completion is not GTK dispatch completion. keep the editor's
     // focus until real text events arrive before moving focus onto Save.
     wait_for(|| field.text() == "offline value", Duration::from_secs(2));
+    // the Notifications page has its own Save; the plugin's is the mapped one.
     let save = descendants(editor.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some("Save"))
+        .find(|button| button.label().as_deref() == Some("Save") && button.is_mapped())
         .unwrap();
     press(&save);
     wait_for(
@@ -1266,14 +1261,14 @@ fn managed_metadata_and_disabled_settings_are_inert_and_persist_real_edits() {
     assert_eq!(saved["plugins"]["github:12/sample"]["future"], "keep");
     assert_eq!(saved["plugins"]["github:12/sample"]["enabled"], false);
     assert!(has_label(editor.upcast_ref(), "Saved locally"));
-    editor.destroy();
+    // going back leaves the form; opening it again reads the saved values.
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(|| !field.is_mapped(), Duration::from_secs(2));
     focus(&preferences);
     press(&settings);
     let editor = settings_window();
-    let field = descendants(editor.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
-        .unwrap();
+    wait_for(|| plugin_field(&editor).is_mapped(), Duration::from_secs(2));
+    let field = plugin_field(&editor);
     assert_eq!(
         field.text(),
         "offline value",
@@ -1292,7 +1287,6 @@ fn managed_metadata_and_disabled_settings_are_inert_and_persist_real_edits() {
         std::fs::read(receipt.package_path(&root).join("among-plugin.json")).unwrap()
     );
     println!("PASS real managed Preferences: inert metadata/defaults, desired-on incompatible off via Space, disabled settings edited/saved/reopened, unknown values and legacy bytes preserved, no process or executable probe");
-    editor.destroy();
     preferences.destroy();
     ctx.window.destroy();
 }

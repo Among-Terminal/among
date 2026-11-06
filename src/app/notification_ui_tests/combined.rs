@@ -105,7 +105,8 @@ fn enable(ctx: &Window, prefs: &adw::PreferencesWindow, identity: &str, features
     let row = descendants(page.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| row.subtitle().is_some_and(|text| text.contains(identity)))
+        // a plugin row is named by the identity it shows.
+        .find(|row| row.widget_name().as_str() == identity)
         .unwrap();
     let switch = descendants(row.upcast_ref())
         .into_iter()

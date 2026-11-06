@@ -157,7 +157,8 @@ fn icon_button(icon: &str, tooltip: &str, name: &str) -> gtk::Button {
     button
 }
 
-fn version_markup(name: &str, version: Option<&str>, size: Option<u64>) -> String {
+/// The version and, for a package not installed yet, its download size.
+fn version_text(version: Option<&str>, size: Option<u64>) -> String {
     let mut details = Vec::new();
     if let Some(version) = version {
         details.push(version.to_owned());
@@ -165,15 +166,7 @@ fn version_markup(name: &str, version: Option<&str>, size: Option<u64>) -> Strin
     if let Some(size) = size {
         details.push(glib::format_size(size).to_string());
     }
-    if details.is_empty() {
-        escape_display(name)
-    } else {
-        format!(
-            "{} <span alpha=\"60%\" size=\"small\">{}</span>",
-            escape_display(name),
-            escape_display(&details.join(" · "))
-        )
-    }
+    details.join(" · ")
 }
 
 /// The unsteady state of an installed plugin as one line, or `None` while it
@@ -185,7 +178,7 @@ pub(super) fn status_line(info: &Overview) -> Option<String> {
         other => Some(describe_state(other)),
     };
     state
-        .or_else(|| (!info.available).then(|| "Files unavailable".to_owned()))
+        .or_else(|| (!info.available).then(|| format!("Files unavailable: {}", info.declared)))
         .or_else(|| {
             info.declared
                 .starts_with("Declared API unavailable:")
@@ -198,6 +191,7 @@ pub(super) struct Row {
     pub row: adw::ActionRow,
     icon_holder: gtk::Box,
     warning: gtk::Image,
+    version: gtk::Label,
     source: gtk::Label,
     shield: gtk::Button,
     info: gtk::Button,
@@ -217,12 +211,18 @@ impl Row {
 
     pub(super) fn new(env: &Rc<Env>, key: &str, shown: &Shown<'_>) -> Self {
         let row = adw::ActionRow::new();
+        // the identity names the row, so a view or a test can tell two plugins
+        // with the same display name apart.
+        row.set_widget_name(key);
         row.set_title_lines(1);
         row.set_subtitle_lines(1);
         let icon_holder = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         row.add_prefix(&icon_holder);
         let warning = gtk::Image::from_icon_name("dialog-warning-symbolic");
         warning.set_visible(false);
+        let version = gtk::Label::new(None);
+        version.add_css_class("caption");
+        version.add_css_class("dim-label");
         let source = gtk::Label::new(None);
         source.add_css_class("caption");
         source.add_css_class("dim-label");
@@ -243,6 +243,7 @@ impl Row {
         let slot = SlotWidgets::new();
         for widget in [
             warning.upcast_ref::<gtk::Widget>(),
+            version.upcast_ref(),
             source.upcast_ref(),
             allow.upcast_ref(),
             shield.upcast_ref(),
@@ -263,6 +264,7 @@ impl Row {
             row,
             icon_holder,
             warning,
+            version,
             source,
             shield,
             info,
@@ -414,8 +416,9 @@ impl Row {
             Shown::Available { offer, .. } => offer.size,
             Shown::Installed { .. } => None,
         };
-        self.row
-            .set_title(&version_markup(&name, version.as_deref(), size));
+        self.row.set_title(&escape_display(&name));
+        self.version
+            .set_text(&version_text(version.as_deref(), size));
         // an operation's own line wins over the plugin's steady description.
         let (line, problem) = match &op {
             Some(Op::Running { phase, .. }) => (phase.clone(), false),

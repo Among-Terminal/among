@@ -387,7 +387,8 @@ fn ordinary_app_provider_controls_and_declarative_actions_use_one_live_core() {
         let row = descendants(plugin_page.upcast_ref())
             .into_iter()
             .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-            .find(|row| row.subtitle().is_some_and(|text| text.contains(identity)))
+            // a plugin row is named by the identity it shows.
+            .find(|row| row.widget_name().as_str() == identity)
             .unwrap();
         descendants(row.upcast_ref())
             .into_iter()
@@ -870,7 +871,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
     let row = descendants(page.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| row.subtitle().is_some_and(|text| text.contains(key)))
+        .find(|row| row.widget_name().as_str() == key)
         .unwrap();
     let switch = descendants(row.upcast_ref())
         .into_iter()
