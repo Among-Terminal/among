@@ -138,11 +138,21 @@ impl Registration {
         self.snapshots.first().map(|snapshot| snapshot.retrieved_at)
     }
     pub fn stale_at(&self, now: u64) -> bool {
-        self.retrieved_at().is_none_or(|retrieved| {
-            now.checked_sub(retrieved)
-                .is_none_or(|age| age >= STALE_SECONDS)
-        })
+        self.retrieved_at()
+            .is_none_or(|retrieved| snapshot_is_stale(retrieved, now))
     }
+    /// The newest saved snapshot, decoded and validated again from its stored
+    /// bytes. `None` when the source has never been checked. Reads no network.
+    pub fn cached_inspection(&self) -> Option<Result<Inspection, Problem>> {
+        self.snapshots.first().map(Snapshot::inspection)
+    }
+}
+
+/// Whether a snapshot taken at `retrieved` is a day old or more at `now`. A
+/// clock that went backwards makes the age unknowable, which counts as stale.
+pub fn snapshot_is_stale(retrieved: u64, now: u64) -> bool {
+    now.checked_sub(retrieved)
+        .is_none_or(|age| age >= STALE_SECONDS)
 }
 
 pub fn official_source() -> Registration {

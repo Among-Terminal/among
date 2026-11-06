@@ -262,6 +262,23 @@ impl Inspection {
     }
 }
 
+const NOT_NEWER_LOWER: Problem =
+    Problem("the offered version is lower than the installed one; no downgrade is offered");
+const NOT_NEWER_SAME: Problem = Problem("this version is already installed");
+
+/// The outcome of comparing an offered version with an installed plugin.
+#[derive(Clone, Debug)]
+pub enum UpdateVerdict {
+    /// A newer version that passes every update rule.
+    Update(Box<Selection>),
+    /// The installed version is the offered one or newer.
+    Current,
+    /// An update is not offered for a reason worth showing: unordered
+    /// versions, same version with different bytes, another identity or
+    /// settings that would not migrate.
+    Withheld(Problem),
+}
+
 #[derive(Clone, Debug)]
 pub struct Selection {
     repository_id: u64,
@@ -339,11 +356,7 @@ impl Selection {
         };
         match order {
             std::cmp::Ordering::Greater => return Ok(()),
-            std::cmp::Ordering::Less => {
-                return Err(Problem(
-                    "the offered version is lower than the installed one; no downgrade is offered",
-                ))
-            }
+            std::cmp::Ordering::Less => return Err(NOT_NEWER_LOWER),
             std::cmp::Ordering::Equal => {}
         }
         if entry.receipt.manifest_sha256 != self.version.manifest_sha256
@@ -355,9 +368,26 @@ impl Selection {
             ));
         }
         if !entry.receipt.requires_development() {
-            return Err(Problem("this version is already installed"));
+            return Err(NOT_NEWER_SAME);
         }
         Ok(())
+    }
+
+    /// What the offered version means for an installed plugin of the same
+    /// identity, using exactly the rules of `for_update`. "Nothing newer" is
+    /// told apart from a refusal the user may need to hear about.
+    pub fn update_verdict(
+        self,
+        entry: &crate::plugin::inventory::Entry,
+        stored: Option<&Value>,
+    ) -> UpdateVerdict {
+        match self.for_update(entry, stored) {
+            Ok(selection) => UpdateVerdict::Update(Box::new(selection)),
+            Err(problem) if problem == NOT_NEWER_LOWER || problem == NOT_NEWER_SAME => {
+                UpdateVerdict::Current
+            }
+            Err(problem) => UpdateVerdict::Withheld(problem),
+        }
     }
 
     /// Confirms that this prerelease replaces the installed generation of the
@@ -412,6 +442,15 @@ impl Selection {
 
     pub fn identity(&self) -> String {
         format!("github:{}/{}", self.repository_id, self.version.manifest.id)
+    }
+
+    /// Bytes the package of this selection occupies in the release.
+    pub fn package_size(&self) -> u64 {
+        self.artifact.size
+    }
+
+    pub fn manifest(&self) -> &crate::plugin::manifest::Manifest {
+        &self.version.manifest
     }
 
     pub fn review_description(&self) -> String {
