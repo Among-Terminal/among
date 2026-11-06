@@ -46,6 +46,8 @@ fn preferences(ctx: &Window) -> adw::PreferencesWindow {
     // The tests below drive notification controls, so show that page for them
     // after confirming that Preferences opens on Plugins.
     window.set_visible_page_name("notifications");
+    // The page must be mapped before a control on it can take focus.
+    pump_for(Duration::from_millis(200));
     window
 }
 
@@ -1476,8 +1478,9 @@ fn general_settings_persist_across_real_fresh_processes_and_write_failure() {
             std::fs::create_dir(&path).unwrap();
             toggle(&visual);
             assert!(visual.is_active() && backend.preferences().visual.enabled);
-            let result: adw::ActionRow = named(&prefs, "notification-save-status");
-            assert!(result.subtitle().unwrap().contains("not saved locally"));
+            let banner: adw::Banner = named(&prefs, "notification-save-status");
+            assert!(banner.is_revealed());
+            assert!(banner.title().contains("not saved locally"));
             assert_eq!(std::fs::read(&retained).unwrap(), original);
             std::fs::remove_dir(&path).unwrap();
             std::fs::rename(retained, &path).unwrap();
@@ -1561,13 +1564,18 @@ fn general_audio_controls_and_normal_vte_route() {
         | "focus-revoke"
         | "remove"
         | "disable" => {
-            let path: adw::EntryRow = named(&prefs, "notification-audio-path");
-            let select: gtk::Button = named(&prefs, "notification-audio-select");
-            type_entry(&path, input.to_str().unwrap());
+            // The native file dialog cannot be driven here; choosing a file
+            // reaches the same selection the dialog's result does.
+            let choose = || {
+                assert!(
+                    crate::prefs::general::choose_wav(input.to_str().unwrap()),
+                    "the Notifications page did not receive the chosen file"
+                )
+            };
             if scenario == "stale-selection" {
                 // both real UI actions run before the async read completion;
                 // the older callback must not persist over the newer builtin.
-                select.emit_clicked();
+                choose();
                 let builtin: gtk::Button = named(&prefs, "notification-audio-builtin");
                 builtin.emit_clicked();
                 pump_for(Duration::from_millis(350));
@@ -1582,15 +1590,10 @@ fn general_audio_controls_and_normal_vte_route() {
                 );
                 key_button(&preview);
             } else {
-                key_button(&select);
-                let result: adw::ActionRow = named(&prefs, "notification-save-status");
+                choose();
+                let sound_row: adw::ActionRow = named(&prefs, "notification-audio-source");
                 wait(
-                    || {
-                        !result
-                            .subtitle()
-                            .unwrap()
-                            .contains("Reading and validating")
-                    },
+                    || backend.audio_state() != crate::prefs::general::AudioState::Reading,
                     "bounded asynchronous General WAV selection",
                 );
                 if scenario == "invalid-local" {
@@ -1599,7 +1602,14 @@ fn general_audio_controls_and_normal_vte_route() {
                         backend.preferences().sound,
                         among::notifications::preferences::AudioSource::Builtin
                     );
-                    assert!(!result.subtitle().unwrap().contains("Saved locally"));
+                    // One problem line replaces the sound name and nothing is
+                    // claimed as saved.
+                    let problem: gtk::Image = named(&prefs, "notification-audio-problem");
+                    wait(
+                        || problem.is_visible(),
+                        "the refused file is reported on the sound row",
+                    );
+                    assert!(!sound_row.subtitle().unwrap().contains("Saved locally"));
                 } else {
                     assert_eq!(
                         backend.preferences().sound,

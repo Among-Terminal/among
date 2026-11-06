@@ -1937,6 +1937,15 @@ fn run_script_step(ctx: &Window, step: &str) {
         }
         return;
     }
+    // `choose-wav:<absolute path>` gives the sound row the path its file dialog
+    // would return. A native dialog cannot be driven from a script, and this
+    // reaches the same selection, so real-audio checks can still pick a file.
+    if let Some(path) = step.strip_prefix("choose-wav:") {
+        if !prefs::general::choose_wav(path) {
+            eprintln!("among: no Notifications page is open to receive {path}");
+        }
+        return;
+    }
     // `type:` is a script-only form; everything else is a real action name, so
     // the script can drive anything the keyboard can.
     if let Some(command) = step.strip_prefix("type:") {
@@ -4234,9 +4243,16 @@ fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
             move |source, finished| {
                 let ctx = ctx.handle();
                 let accepted = source.clone();
+                let notes = backend.clone();
                 backend.select_sound(
                     source,
                     Box::new(move |result| {
+                        // The row shows one problem line after a refused file
+                        // and nothing after an accepted one.
+                        match &result {
+                            Ok(()) => notes.sound_accepted(),
+                            Err(problem) => notes.sound_problem(problem.clone()),
+                        }
                         finished(result.map(|()| {
                             persist_general(
                                 &ctx,
@@ -4293,7 +4309,7 @@ fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
             let window = ctx.handle();
             move |name, parent| review_managed_access(&window, name, parent.as_ref(), false)
         }),
-        status: Rc::new(move || (backend.audio_status(), backend.command_status())),
+        audio_report: Rc::new(move || backend.audio_report()),
     })
 }
 
@@ -7166,6 +7182,7 @@ mod tests {
         // The phases below start from the Notifications page, which used to be
         // the page shown on open.
         prefs.set_visible_page_name("notifications");
+        pump();
         if phase.starts_with("invalid-") {
             prefs.set_visible_page_name("keyboard");
             pump();
