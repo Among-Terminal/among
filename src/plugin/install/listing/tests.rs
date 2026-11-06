@@ -19,9 +19,11 @@ fn origin(repository_id: u64, owner: &str) -> Origin {
 }
 
 /// One catalogue plugin: identity, display name, version, manifest digest.
-type Spec<'a> = (&'a str, &'a str, &'a str, &'a str);
+pub(crate) type Spec<'a> = (&'a str, &'a str, &'a str, &'a str);
 
-fn inspection(origin: Origin, plugins: &[Spec<'_>]) -> Inspection {
+/// A synthetic release catalogue of the listed plugins, for views and models
+/// that need saved snapshots without a network.
+pub(crate) fn inspection(origin: Origin, plugins: &[Spec<'_>]) -> Inspection {
     let plugins: Vec<_> = plugins
         .iter()
         .map(|(id, name, version, manifest_sha256)| {
@@ -66,7 +68,7 @@ fn plain(entry: &Entry) -> Installed<'_> {
     }
 }
 
-fn digest(letter: char) -> String {
+pub(crate) fn digest(letter: char) -> String {
     letter.to_string().repeat(64)
 }
 

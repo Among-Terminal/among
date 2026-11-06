@@ -303,4 +303,4 @@ fn best_offer(inspection: &Inspection, plugin_id: &str) -> Option<Offer> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

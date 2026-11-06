@@ -4,6 +4,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
 mod candidate;
+mod list;
 mod local_catalogue;
 mod pane_render;
 mod published_lifecycle;

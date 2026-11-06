@@ -1,0 +1,332 @@
+//! The Plugins page built from saved sources and installed plugins, in a real
+//! window and offline: no client, runtime or server exists in these tests, so
+//! anything shown comes from files and any request would be a failure.
+
+use super::*;
+use crate::plugin::install::listing::tests::{digest, inspection};
+use crate::plugin::install::registry::{self, Request};
+use crate::plugin::origin::Origin;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+const SAMPLE: &str = "github:12/sample";
+const REMOVED: &str = "github:13/sample";
+
+fn origin(repository_id: u64, publisher_id: u64, owner: &str, repository: &str) -> Origin {
+    Origin {
+        repository_id,
+        publisher_id,
+        owner: owner.into(),
+        repository: repository.into(),
+    }
+}
+
+/// Saves one source snapshot the way an explicit refresh would have.
+fn save_source(root: &std::path::Path, source: crate::plugin::install::source::Inspection) {
+    let job = registry::Job::start(root.to_path_buf(), Request::Add(Box::new(source))).unwrap();
+    let outcome = RefCell::new(None);
+    wait_for(
+        || {
+            let result = job.poll();
+            if result.is_some() {
+                outcome.replace(result);
+                true
+            } else {
+                false
+            }
+        },
+        Duration::from_secs(5),
+    );
+    outcome.into_inner().unwrap().unwrap();
+}
+
+/// Two installed plugins named Sample: one from a registered source that now
+/// offers a newer version, one from a repository that is not registered.
+fn install_fixtures(root: &std::path::Path) {
+    let first = crate::plugin::inventory::tests::fixture_version(root, "1.0.0");
+    let mut second = first.clone();
+    let release = crate::plugin::inventory::tests::release_of(&mut second);
+    release.repository_id = 13;
+    release.owner = "another".into();
+    let package = second.package_path(root);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&package)
+        .unwrap();
+    for name in ["among-plugin.json", "plugin"] {
+        std::fs::copy(first.package_path(root).join(name), package.join(name)).unwrap();
+    }
+    std::fs::set_permissions(
+        package.join("plugin"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("installed.json"),
+        serde_json::json!({"version":1,"installations":[first,second]}).to_string(),
+    )
+    .unwrap();
+}
+
+fn preferences_window(ctx: &Window) -> (adw::PreferencesWindow, adw::PreferencesPage) {
+    open_preferences(ctx);
+    let preferences = gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+        .find(|window| window.title().as_deref() == Some("Preferences"))
+        .unwrap();
+    let page = widgets(preferences.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::PreferencesPage>().ok())
+        .find(|page| page.title() == "Plugins")
+        .unwrap();
+    preferences.set_visible_page(&page);
+    let id = focus(&preferences);
+    xdo(&["windowsize", "--sync", &id, "800", "1000"]);
+    wait_for(|| preferences.height() >= 900, Duration::from_secs(3));
+    (preferences, page)
+}
+
+/// Lets the main loop run so timers and idle callbacks get their turn.
+fn pump_for(duration: Duration) {
+    let end = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < end {
+        glib::MainContext::default().iteration(false);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn row_by_identity(root: &impl IsA<gtk::Widget>, identity: &str) -> adw::ActionRow {
+    widgets(root.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| row.widget_name() == identity)
+        .unwrap_or_else(|| panic!("no row for {identity}"))
+}
+
+fn shown_buttons(row: &adw::ActionRow) -> Vec<String> {
+    widgets(row.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .filter(|button| button.is_mapped())
+        .filter_map(|button| button.label().map(|label| label.to_string()))
+        .collect()
+}
+
+#[test]
+#[ignore = "requires an isolated display, xdotool and ImageMagick"]
+fn plugin_list_is_built_offline_from_saved_sources_with_one_state_control_per_row() {
+    let root = crate::plugin::inventory::root().unwrap();
+    crate::test_isolation::assert_below_check_root(&root);
+    install_fixtures(&root);
+    let sources = registry::root().unwrap();
+    // the official source, a source that offers the installed Sample again in
+    // a newer version, and a user source whose Notes shares nothing installed.
+    save_source(
+        &sources,
+        inspection(
+            origin(
+                1_431_055_733,
+                339_567_100,
+                "Among-Terminal",
+                "among-plugins",
+            ),
+            &[("system-status", "System status", "0.2.0", &digest('b'))],
+        ),
+    );
+    save_source(
+        &sources,
+        inspection(
+            origin(12, 34, "example", "sample"),
+            &[("sample", "Sample", "1.1.0", &digest('b'))],
+        ),
+    );
+    save_source(
+        &sources,
+        inspection(
+            origin(77, 34, "acme", "plugins"),
+            &[("notes", "Notes", "0.4.0", &digest('b'))],
+        ),
+    );
+    let app = application("com.github.among-terminal.plugin-list-offline-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    let (preferences, page) = preferences_window(&ctx);
+    wait_for(
+        || has_list_row(&preferences, "notes"),
+        Duration::from_secs(5),
+    );
+
+    // Installed: the first Sample has an update waiting, the second names its
+    // missing source; each row shows exactly one of Install, Update, Uninstall.
+    let updated = row_by_identity(&preferences, SAMPLE);
+    assert_eq!(shown_buttons(&updated), ["Update"]);
+    let removed = row_by_identity(&preferences, REMOVED);
+    assert_eq!(shown_buttons(&removed), ["Uninstall"]);
+    assert!(has_label(removed.upcast_ref(), "source removed"));
+    // Available: official plugins are there without any request, and a user
+    // source's plugin names its repository.
+    let status = row_by_identity(&preferences, "github:1431055733/system-status");
+    assert_eq!(shown_buttons(&status), ["Install"]);
+    assert!(
+        !has_label(status.upcast_ref(), "Among-Terminal/among-plugins"),
+        "the official source needs no label: its shield says so"
+    );
+    let notes = row_by_identity(&preferences, "github:77/notes");
+    assert_eq!(shown_buttons(&notes), ["Install"]);
+    assert!(has_label(notes.upcast_ref(), "acme/plugins"));
+    // The shields tell the three origins apart in words, not colour alone.
+    let tooltip = |row: &adw::ActionRow| {
+        named_button(row, "plugin-shield")
+            .tooltip_text()
+            .unwrap()
+            .to_string()
+    };
+    assert!(tooltip(&status).starts_with("Official plugin\n"));
+    assert!(tooltip(&notes).starts_with("Plugin from another publisher\n"));
+    assert!(tooltip(&updated).starts_with("Plugin from another publisher\n"));
+    // An ordinary run has neither the channel switch nor a local catalogue.
+    assert!(!banner_says(&page, "Plugin development mode"));
+    assert!(widgets(page.upcast_ref())
+        .iter()
+        .all(|widget| !widget.is::<gtk::ToggleButton>()));
+    assert!(!has_label(
+        page.upcast_ref(),
+        "Install from a local catalogue"
+    ));
+    screenshot(&preferences, "plugins-list");
+
+    // The plugin page: a subpage of the same window, what it is and what it
+    // may read first, package facts folded away.
+    press(&named_button(&updated, "plugin-info"));
+    wait_for(
+        || {
+            widgets(preferences.upcast_ref())
+                .iter()
+                .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
+        },
+        Duration::from_secs(3),
+    );
+    assert!(has_label(preferences.upcast_ref(), "Can read"));
+    assert!(has_label(
+        preferences.upcast_ref(),
+        "Version 1.1.0 is available."
+    ));
+    assert!(!has_label(preferences.upcast_ref(), "Manifest SHA-256"));
+    screenshot(&preferences, "plugin-page");
+    // Uninstall asks first and says what happens; declining changes nothing.
+    focus(&preferences);
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(
+        || {
+            !widgets(preferences.upcast_ref())
+                .iter()
+                .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
+        },
+        Duration::from_secs(3),
+    );
+    press(&button(&removed, "Uninstall"));
+    wait_for(
+        || preferences.visible_dialog().is_some(),
+        Duration::from_secs(3),
+    );
+    assert!(has_label(
+        preferences.visible_dialog().unwrap().upcast_ref(),
+        "It stops now if it is running. Your settings are kept."
+    ));
+    screenshot_dialog(&preferences.visible_dialog().unwrap(), "plugins-uninstall");
+    press(&button(&preferences.visible_dialog().unwrap(), "Cancel"));
+    wait_for(
+        || preferences.visible_dialog().is_none(),
+        Duration::from_secs(3),
+    );
+    assert_eq!(crate::plugin::inventory::read(&root).unwrap().len(), 2);
+    assert_eq!(shown_buttons(&removed), ["Uninstall"]);
+    preferences.destroy();
+    ctx.window.destroy();
+    println!("PASS Plugins page from saved snapshots offline: Update, source removed, source labels, shields, one control per row, ordinary run without development controls");
+}
+
+#[test]
+#[ignore = "requires an isolated display, xdotool and ImageMagick"]
+fn an_empty_source_cache_shows_a_status_page_and_asks_nothing_until_load_is_pressed() {
+    let root = crate::plugin::inventory::root().unwrap();
+    crate::test_isolation::assert_below_check_root(&root);
+    let empty = crate::test_isolation::check_root().join("empty-sources");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&empty)
+        .unwrap();
+    let app = application("com.github.among-terminal.plugin-list-empty-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    let (preferences, _) = preferences_window(&ctx);
+    let requests = Rc::new(Cell::new(0));
+    let view = list_window(
+        &ctx,
+        &preferences,
+        crate::prefs::PluginServices {
+            root: Some(empty),
+            refresh: Rc::new({
+                let requests = requests.clone();
+                move |_| {
+                    requests.set(requests.get() + 1);
+                    Err(crate::plugin::data::Problem("this test has no network"))
+                }
+            }),
+            prerelease: Rc::new(|_| Err(crate::plugin::data::Problem("not a development run"))),
+            install: Rc::new(|_| Err(crate::plugin::data::Problem("nothing is installed here"))),
+        },
+    );
+    wait_for(
+        || has_label(view.upcast_ref(), "Plugin list not loaded"),
+        Duration::from_secs(5),
+    );
+    pump_for(Duration::from_millis(600));
+    assert_eq!(requests.get(), 0, "opening the page requested nothing");
+    screenshot(&view, "plugins-status");
+    press(&button(&view, "Load"));
+    wait_for(|| requests.get() == 1, Duration::from_secs(3));
+    wait_for(
+        || {
+            has_label(
+                view.upcast_ref(),
+                "Could not load the list: this test has no network",
+            )
+        },
+        Duration::from_secs(3),
+    );
+    assert_eq!(requests.get(), 1);
+    view.destroy();
+    preferences.destroy();
+    ctx.window.destroy();
+    println!(
+        "PASS empty cache: status page, no request on open, one request on Load, the failure shown"
+    );
+}
+
+#[test]
+#[ignore = "requires an isolated display, xdotool and ImageMagick"]
+fn development_mode_shows_the_banner_the_channel_switch_and_the_local_catalogue() {
+    assert!(crate::plugin::development::fix(true));
+    let app = application("com.github.among-terminal.plugin-list-development-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    let (preferences, page) = preferences_window(&ctx);
+    assert!(banner_says(&page, "This is not saved"));
+    assert!(channel_active(&page, "Pre-release"));
+    assert!(!channel_active(&page, "Stable"));
+    assert!(has_label(
+        page.upcast_ref(),
+        "Install from a local catalogue"
+    ));
+    assert!(widgets(page.upcast_ref()).iter().all(|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_none_or(|button| button.label().as_deref() != Some("Use latest prerelease"))
+    }));
+    screenshot(&preferences, "plugins-development");
+    preferences.destroy();
+    ctx.window.destroy();
+    println!("PASS development run: banner, Stable/Pre-release switch on Pre-release, local catalogue row, no separate prerelease action");
+}
