@@ -74,7 +74,7 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
     let current = (ctx.query)();
     let visual = adw::PreferencesGroup::new();
     visual.set_title("Visual attention");
-    visual.set_description(Some("The originating header and workspace stripe pulse briefly, then retain an unread ! until that terminal is actually focused. System reduced motion is respected."));
+    visual.set_description(Some("The thin line at the left edge of the originating header and workspace row pulses until that terminal is actually focused. With system reduced motion it stays still and thicker. A bell in the terminal you are already looking at pulses the line for one second and does not mark it unread."));
     policy(
         &visual,
         "Visual alerts",

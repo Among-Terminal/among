@@ -135,8 +135,9 @@ struct Container {
     frame: gtk::Box,
     /// The header strip, which is also the drag handle.
     header: gtk::Box,
+    /// The left-edge stripe: it carries the workspace colour and is also the
+    /// unread-bell indicator, emphasised and pulsing until the terminal is focused.
     marker: gtk::Box,
-    unread: gtk::Label,
     /// Where plugin content for this pane's header goes, beside the title.
     header_slot: gtk::Box,
     /// The terminal's own title, as reported through OSC escapes.
@@ -260,15 +261,6 @@ impl Pane {
             colour % crate::workspace::PALETTE_SIZE
         ));
         header.append(&marker);
-        let unread = gtk::Label::new(Some("!"));
-        unread.add_css_class("notification-unread");
-        unread.set_tooltip_text(Some("Unread terminal bell"));
-        unread.update_property(&[gtk::accessible::Property::Label("Unread terminal bell")]);
-        unread.set_visible(false);
-        let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        badge.set_size_request(10, -1);
-        badge.append(&unread);
-        header.append(&badge);
         let identity = gtk::Label::new(Some(&format!("#{}", self.id.0)));
         identity.add_css_class("pane-number");
         header.append(&identity);
@@ -330,7 +322,6 @@ impl Pane {
             frame: frame.clone(),
             header,
             marker,
-            unread,
             header_slot,
             title,
             footer,
@@ -377,7 +368,17 @@ impl Pane {
         let Some(container) = container.as_ref() else {
             return;
         };
-        container.unread.set_visible(attention.unread);
+        // an unread stripe is thicker whether or not it moves, so the state is
+        // visible with system animations off.
+        if attention.unread {
+            container.marker.add_css_class("notification-unread");
+            container
+                .marker
+                .set_tooltip_text(Some("Unread terminal bell"));
+        } else {
+            container.marker.remove_css_class("notification-unread");
+            container.marker.set_tooltip_text(None);
+        }
         if attention.pulsing && motion {
             container.marker.add_css_class("notification-pulse");
         } else {

@@ -1007,7 +1007,6 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         gtk::AccessibleRole::Group
     ));
     let stripe = find_with_class(&header, "workspace-stripe").unwrap();
-    let badge = find_with_class(&header, "notification-unread").unwrap();
     let geometry = (
         term.width(),
         term.height(),
@@ -1023,7 +1022,11 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         || stripe.has_css_class("notification-pulse"),
         "header stripe pulse",
     );
-    assert!(badge.is_visible());
+    assert!(stripe.has_css_class("notification-unread"));
+    assert!(
+        find_with_class(&header, "notification-unread").is_some_and(|widget| widget == stripe),
+        "the stripe is the only unread indicator; no exclamation mark remains"
+    );
     shot("pulse-expanded");
     accessible_label(&header, &format!("Terminal {}, unread bell", first.0));
     accessible_property(
@@ -1042,6 +1045,12 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
             term.column_count()
         )
     );
+    // the pulse does not stop after the old one-second window while the
+    // terminal stays unfocused. This waits only after the geometry check:
+    // a long idle time lets the terminal's own scrollbar settle.
+    pump_for(Duration::from_millis(2_500));
+    assert!(backend.attention(first.0).unread && backend.attention(first.0).pulsing);
+    assert!(stripe.has_css_class("notification-pulse"));
     gtk::Settings::default()
         .unwrap()
         .set_gtk_enable_animations(false);
@@ -1049,7 +1058,7 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         || !stripe.has_css_class("notification-pulse"),
         "dynamic reduced motion",
     );
-    assert!(badge.is_visible() && backend.attention(first.0).unread);
+    assert!(stripe.has_css_class("notification-unread") && backend.attention(first.0).unread);
     for class in colour.iter() {
         assert!(stripe.has_css_class(class));
     }
@@ -1058,9 +1067,9 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
     rebuild_sidebar(&ctx, true);
     present_attention(&ctx);
     let row = ctx.workspace_list.row_at_index(0).unwrap();
-    assert!(find_with_class(row.upcast_ref(), "notification-unread")
+    assert!(find_with_class(row.upcast_ref(), "workspace-stripe")
         .unwrap()
-        .is_visible());
+        .has_css_class("notification-unread"));
     accessible_label(&row, "project, 2 terminals, 1 unread bells");
     shot("collapsed-sidebar");
     ctx.state.borrow_mut().sidebar_collapsed = false;
@@ -1122,6 +1131,28 @@ fn visual_attention_is_live_static_accessible_and_geometry_neutral() {
         || !backend.attention(first.0).unread,
         "actual origin focus acknowledgement",
     );
+    // looked up again: the pane may have been rebuilt by the zoom and restore above.
+    let resting_stripe = || {
+        let header = terminal(&ctx, first)
+            .parent()
+            .unwrap()
+            .first_child()
+            .unwrap();
+        find_with_class(&header, "workspace-stripe").unwrap()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while {
+        let stripe = resting_stripe();
+        stripe.has_css_class("notification-unread") || stripe.has_css_class("notification-pulse")
+    } {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stripe did not return to rest after focus: classes {:?}, attention {:?}",
+            resting_stripe().css_classes(),
+            backend.attention(first.0)
+        );
+        pump_for(Duration::from_millis(20));
+    }
     xdo(&[
         "type",
         "--clearmodifiers",

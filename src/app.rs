@@ -2220,14 +2220,6 @@ fn rebuild_sidebar(ctx: &Window, force: bool) {
         stripe.add_css_class(&colour_class(row_plan.colour));
         content.append(&stripe);
 
-        let unread = gtk::Label::new(Some("!"));
-        unread.add_css_class("notification-unread");
-        unread.set_visible(false);
-        let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        badge.set_size_request(10, -1);
-        badge.append(&unread);
-        content.append(&badge);
-
         if collapsed {
             let icon = terminal_icon();
             content.append(&icon);
@@ -2382,10 +2374,14 @@ fn present_attention(ctx: &Window) {
         row.update_property(&[gtk::accessible::Property::Label(&label)]);
         row.set_tooltip_text(Some(&label));
         fn update(widget: &gtk::Widget, unread: bool, pulse: bool) {
-            if widget.has_css_class("notification-unread") {
-                widget.set_visible(unread);
-            }
             if widget.has_css_class("workspace-stripe") {
+                // the row's stripe is the indicator: thicker while any terminal
+                // of the workspace is unread, and pulsing when motion is allowed.
+                if unread {
+                    widget.add_css_class("notification-unread");
+                } else {
+                    widget.remove_css_class("notification-unread");
+                }
                 if pulse {
                     widget.add_css_class("notification-pulse");
                 } else {

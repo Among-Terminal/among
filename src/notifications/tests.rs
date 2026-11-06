@@ -86,21 +86,76 @@ fn default_bell_marks_only_its_source_and_never_queues_disabled_delivery() {
 }
 
 #[test]
-fn pulse_is_one_second_cooldown_is_two_seconds_and_flood_does_not_extend_them() {
+fn timed_pulse_of_a_viewed_terminal_is_one_second_with_a_two_second_cooldown() {
     let mut host = Host::new().unwrap();
     let source = host.attach(1).unwrap();
+    host.set_visual_policy(enabled(Eligibility::Always));
+    let viewed = Focus {
+        application_active: true,
+        viewed: Some(source),
+    };
     let now = Instant::now();
-    host.bell(source, Focus::default(), now).unwrap();
+    host.bell(source, viewed, now).unwrap();
     for millis in 1..2_000 {
         let at = now + Duration::from_millis(millis);
-        host.bell(source, Focus::default(), at).unwrap();
-        assert_eq!(host.attention(source, at).pulsing, millis < 1_000);
+        host.bell(source, viewed, at).unwrap();
+        let attention = host.attention(source, at);
+        assert!(!attention.unread, "a viewed terminal never becomes unread");
+        assert_eq!(attention.pulsing, millis < 1_000, "at {millis} ms");
     }
-    assert!(host.attention(source, now + PULSE).unread);
     assert!(!host.attention(source, now + COOLDOWN).pulsing);
-    host.bell(source, Focus::default(), now + COOLDOWN).unwrap();
+    host.bell(source, viewed, now + COOLDOWN).unwrap();
     assert!(host.attention(source, now + COOLDOWN).pulsing);
     assert!(!host.attention(source, now + COOLDOWN + PULSE).pulsing);
+}
+
+#[test]
+fn an_unread_terminal_pulses_without_end_until_it_is_actually_focused() {
+    let mut host = Host::new().unwrap();
+    let source = host.attach(1).unwrap();
+    let other = host.attach(2).unwrap();
+    let now = Instant::now();
+    host.bell(source, Focus::default(), now).unwrap();
+    for seconds in [0, 1, 2, 60, 3_600, 86_400] {
+        let at = now + Duration::from_secs(seconds);
+        assert_eq!(
+            host.attention(source, at),
+            Attention {
+                unread: true,
+                pulsing: true
+            },
+            "after {seconds} s"
+        );
+        assert!(host.aggregate([1, 2], at).pulsing, "after {seconds} s");
+    }
+    // remembered selection, preferences, the background window and another
+    // terminal do not stop it.
+    for focus in [
+        Focus::default(),
+        Focus {
+            application_active: true,
+            viewed: None,
+        },
+        Focus {
+            application_active: false,
+            viewed: Some(source),
+        },
+        Focus {
+            application_active: true,
+            viewed: Some(other),
+        },
+    ] {
+        host.acknowledge(focus);
+        assert!(host.attention(source, now).pulsing);
+    }
+    // actual focus ends the emphasis in the same step, even inside the timed
+    // pulse that the bell started.
+    host.acknowledge(Focus {
+        application_active: true,
+        viewed: Some(source),
+    });
+    assert_eq!(host.attention(source, now), Attention::default());
+    assert!(!host.aggregate([1, 2], now).pulsing);
 }
 
 #[test]

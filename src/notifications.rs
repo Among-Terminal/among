@@ -509,7 +509,13 @@ impl Host {
         if let Some(source) = focus.viewed.filter(|source| focus.views(*source)) {
             if self.is_live(source) {
                 if let Some(state) = self.sources.get_mut(&source.pane) {
-                    state.unread = false;
+                    // looking at an unread terminal ends its emphasis at once,
+                    // also inside the timed pulse its bell started. The timed
+                    // pulse of a terminal that was never unread is left alone.
+                    if state.unread {
+                        state.unread = false;
+                        state.pulse_until = None;
+                    }
                 }
             }
         }
@@ -521,7 +527,10 @@ impl Host {
             .filter(|state| state.token == source)
             .map(|state| Attention {
                 unread: state.unread,
-                pulsing: state.pulse_until.is_some_and(|end| now < end),
+                // an unread terminal keeps pulsing until it is actually focused;
+                // the timed pulse remains for an event in a terminal that is
+                // already viewed and so never becomes unread.
+                pulsing: state.unread || state.pulse_until.is_some_and(|end| now < end),
             })
             .unwrap_or_default()
     }
