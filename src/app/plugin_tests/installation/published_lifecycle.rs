@@ -506,7 +506,7 @@ pub(super) fn run() {
             .find(|row| row.subtitle().as_deref() == Some(expected.as_str()))
             .unwrap();
         assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
-        press(&button(&row, "Install disabled"));
+        press(&button(&row, "Install"));
         wait_for(
             || crate::plugin::inventory::read(&root).unwrap().len() == receipts.len() + 1,
             Duration::from_secs(65),

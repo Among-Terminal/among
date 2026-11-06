@@ -19,10 +19,13 @@ pub(crate) mod general;
 pub(crate) mod local_catalogue;
 pub(crate) mod notification_role;
 mod plugin_manager;
+mod plugin_page;
+mod plugin_row;
 mod plugin_settings;
 pub(crate) mod repositories;
 mod repository_sources;
 mod retained_settings;
+mod trust;
 
 pub(crate) type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
 pub(crate) type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
@@ -30,10 +33,21 @@ type ConfigurationQuery = dyn Fn(&str) -> Configuration;
 type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
 type AllowProtection = dyn Fn(&str, &str) -> Result<(), String>;
 type RestartPlugin = dyn Fn(&str, &str, Option<gtk::Window>);
+/// What a package operation (uninstall, recover previous) reports to the view
+/// that asked for it, in order: nothing until the user confirms, then
+/// `Started`, any number of `Phase` lines, and exactly one `Finished`. A
+/// refusal before the operation starts is a `Finished` without `Started`.
+pub enum PackageEvent {
+    Started,
+    Phase(String),
+    Finished(Result<crate::settings::Durability, String>),
+}
+
 type PackageAction = dyn Fn(
     crate::plugin::inventory::Receipt,
     crate::plugin::install::mutation::Action,
     Option<gtk::Window>,
+    Rc<dyn Fn(PackageEvent)>,
 );
 type SavePluginSettings = dyn Fn(
     &str,
@@ -311,6 +325,20 @@ fn attach_capture(
     window.add_controller(controller);
 }
 
+#[cfg(test)]
+pub(crate) use plugin_manager::Services as PluginServices;
+
+/// The Plugins page with test-owned source, refresh and install jobs, so a
+/// controlled server stands in for GitHub while the page itself is the
+/// production one.
+#[cfg(test)]
+pub(crate) fn plugins_page_for_test(
+    ctx: &PreferencesContext,
+    services: PluginServices,
+) -> adw::PreferencesPage {
+    plugin_manager::page_with(ctx, services)
+}
+
 fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     let page = plugin_manager::page(ctx);
     page.set_name(Some("plugins"));
@@ -375,7 +403,7 @@ mod tests {
         fn context(overview: crate::plugin::host::Overview) -> PreferencesContext {
             PreferencesContext {
                 general: None,
-                package_action: Rc::new(|_, _, _| {}),
+                package_action: Rc::new(|_, _, _, _| {}),
                 retained_settings: Rc::new(|| Ok(Vec::new())),
                 delete_retained_settings: Rc::new(|_| Err("no retained settings".into())),
                 installations_changed: Rc::new(|| {}),
@@ -491,7 +519,7 @@ mod tests {
         let desired = Rc::new(std::cell::Cell::new(true));
         let page = plugins_page(&PreferencesContext {
             general: None,
-            package_action: Rc::new(|_, _, _| {}),
+            package_action: Rc::new(|_, _, _, _| {}),
             retained_settings: Rc::new(|| Ok(Vec::new())),
             delete_retained_settings: Rc::new(|_| {
                 Err("no retained settings in this fixture".into())

@@ -19,6 +19,9 @@ use crate::plugin::origin::Origin;
 
 pub(super) mod release;
 
+/// What a refresh reports when the repository has no stable release yet.
+pub const NO_STABLE_RELEASE: Problem = release::NO_STABLE_RELEASE;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -164,6 +167,9 @@ impl Inspection {
             compatibility,
         })
     }
+    /// The human-readable inspection preview. Only the tests read it now;
+    /// the window that showed it is gone.
+    #[cfg(test)]
     pub fn summary(&self, check: impl Fn() -> Result<(), Problem>) -> Result<String, Problem> {
         let mut lines = vec![format!("{}/{} (repository {}, publisher {}) at {}", self.repository.owner, self.repository.name,
             self.repository_id, self.publisher_id, self.catalogue_revision), "Metadata snapshot only; inspection does not install or enable plugins. Hashes establish content consistency, not publisher authentication.".into()];
@@ -271,6 +277,10 @@ const NOT_NEWER_SAME: Problem = Problem("this version is already installed");
 pub enum UpdateVerdict {
     /// A newer version that passes every update rule.
     Update(Box<Selection>),
+    /// A development prerelease of the same plugin identity, which replaces
+    /// the installed generation after its own confirmation and keeps none of
+    /// its grants.
+    Replace(Box<Selection>),
     /// The installed version is the offered one or newer.
     Current,
     /// An update is not offered for a reason worth showing: unordered
@@ -381,6 +391,13 @@ impl Selection {
         entry: &crate::plugin::inventory::Entry,
         stored: Option<&Value>,
     ) -> UpdateVerdict {
+        if self.is_prerelease() {
+            // a prerelease never updates: it replaces after its own confirmation.
+            return match self.replacing(entry, stored) {
+                Ok(selection) => UpdateVerdict::Replace(Box::new(selection)),
+                Err(problem) => UpdateVerdict::Withheld(problem),
+            };
+        }
         match self.for_update(entry, stored) {
             Ok(selection) => UpdateVerdict::Update(Box::new(selection)),
             Err(problem) if problem == NOT_NEWER_LOWER || problem == NOT_NEWER_SAME => {
@@ -759,6 +776,11 @@ impl InstallJob {
                 Err(current) => state = current,
             }
         }
+    }
+
+    /// Whether a stop request can still take effect: before commitment starts.
+    pub fn can_cancel(&self) -> bool {
+        self.state.load(Ordering::Acquire) < COMMITTING
     }
 
     pub fn phase(&self) -> &'static str {

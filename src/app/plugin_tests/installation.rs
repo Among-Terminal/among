@@ -9,6 +9,77 @@ mod pane_render;
 mod published_lifecycle;
 mod published_selection;
 
+/// An icon-only control, found by the widget name its row gives it.
+fn named_button(root: &impl IsA<gtk::Widget>, name: &str) -> gtk::Button {
+    widgets(root.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.widget_name() == name)
+        .unwrap_or_else(|| panic!("no control named {name}"))
+}
+
+/// Whether a banner under `root` carries `text` in its title.
+fn banner_says(root: &impl IsA<gtk::Widget>, text: &str) -> bool {
+    widgets(root.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::Banner>().ok())
+        .any(|banner| banner.title().contains(text))
+}
+
+/// The plugin list as its own Preferences window with test-owned jobs, so a
+/// controlled server stands in for GitHub while the page is the production one.
+fn list_window(
+    ctx: &Window,
+    parent: &adw::PreferencesWindow,
+    services: crate::prefs::PluginServices,
+) -> adw::PreferencesWindow {
+    let page = crate::prefs::plugins_page_for_test(&preferences_context(ctx), services);
+    let window = adw::PreferencesWindow::builder()
+        .transient_for(parent)
+        .modal(false)
+        .title("Plugin list")
+        .search_enabled(false)
+        .default_width(760)
+        .default_height(640)
+        .build();
+    window.add(&page);
+    window.present();
+    window
+}
+
+/// The row of a plugin by the name its title starts with.
+fn list_row(view: &impl IsA<gtk::Widget>, name: &str) -> adw::ActionRow {
+    widgets(view.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| row.title().to_lowercase().starts_with(name))
+        .unwrap_or_else(|| panic!("no plugin row named {name}"))
+}
+
+fn has_list_row(view: &impl IsA<gtk::Widget>, name: &str) -> bool {
+    widgets(view.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .any(|row| row.title().to_lowercase().starts_with(name))
+}
+
+fn channel_active(view: &impl IsA<gtk::Widget>, label: &str) -> bool {
+    widgets(view.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::ToggleButton>().ok())
+        .any(|button| button.label().as_deref() == Some(label) && button.is_active())
+}
+
+/// One of the Stable and Pre-release channel buttons.
+fn channel_button(view: &impl IsA<gtk::Widget>, label: &str) -> gtk::Button {
+    widgets(view.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::ToggleButton>().ok())
+        .find(|button| button.label().as_deref() == Some(label))
+        .unwrap_or_else(|| panic!("no channel button {label}"))
+        .upcast()
+}
+
 fn registered_source_row(view: &adw::PreferencesWindow, repository: u64) -> adw::ActionRow {
     widgets(view.upcast_ref())
         .into_iter()
@@ -1530,7 +1601,7 @@ fn native_install(close_after_commit: bool) {
     let installs: Vec<_> = widgets(view.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .filter(|button| button.label().as_deref() == Some("Install disabled"))
+        .filter(|button| button.label().as_deref() == Some("Install"))
         .collect();
     assert_eq!(
         installs.len(),
@@ -1561,7 +1632,7 @@ fn native_install(close_after_commit: bool) {
             || {
                 has_label(
                     view.upcast_ref(),
-                    "Installed github:12/sample disabled. Enable separately in Your plugins.",
+                    "Installed github:12/sample disabled. Switch it on from the Plugins page.",
                 )
             },
             Duration::from_secs(5),

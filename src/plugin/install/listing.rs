@@ -10,6 +10,14 @@ use super::{
 use crate::plugin::{data::Problem, inventory::Entry, manifest::Icon, origin::Origin};
 use serde_json::Value;
 
+/// Whether a repository and publisher pair is the application's built-in
+/// official source. An unknown publisher never qualifies: a receipt written
+/// before publishers were recorded cannot claim to be official.
+pub fn is_official(repository_id: u64, publisher_id: Option<u64>) -> bool {
+    let pinned = super::official::origin();
+    repository_id == pinned.repository_id && publisher_id == Some(pinned.publisher_id)
+}
+
 /// What one registered source contributes to the list.
 #[derive(Clone, Debug)]
 pub struct SourceCatalogue {
@@ -72,7 +80,6 @@ pub struct Installed<'a> {
 
 #[derive(Clone, Debug)]
 pub struct SourceStatus {
-    pub origin: Origin,
     pub official: bool,
     pub state: SourceState,
 }
@@ -98,6 +105,8 @@ pub struct Offer {
     pub description: String,
     pub version: String,
     pub icon: Option<Icon>,
+    /// What the plugin needs to read, from its manifest.
+    pub required_features: Vec<String>,
     /// The download size of the package for this platform, when one exists.
     pub size: Option<u64>,
     /// The selection to install, or why this platform cannot install it.
@@ -130,6 +139,8 @@ pub enum Link {
 #[derive(Clone, Debug)]
 pub enum Standing {
     Update(Box<Selection>),
+    /// A development prerelease that replaces the installed generation.
+    Replace(Box<Selection>),
     /// The saved snapshot offers this version or nothing newer.
     Current,
     /// The saved snapshot of its source does not list this plugin.
@@ -169,7 +180,6 @@ pub fn assemble(sources: &[SourceCatalogue], installed: &[Installed<'_>], now: u
     let mut listing = Listing::default();
     for source in sources {
         listing.sources.push(SourceStatus {
-            origin: source.origin.clone(),
             official: source.official,
             state: match &source.state {
                 CatalogueState::NoSnapshot => SourceState::NoSnapshot,
@@ -250,6 +260,7 @@ fn describe_installed(sources: &[SourceCatalogue], plugin: Installed<'_>) -> Ins
                     Err(problem) => Standing::Withheld(problem),
                     Ok(selection) => match selection.update_verdict(plugin.entry, plugin.stored) {
                         UpdateVerdict::Update(selection) => Standing::Update(selection),
+                        UpdateVerdict::Replace(selection) => Standing::Replace(selection),
                         UpdateVerdict::Current => Standing::Current,
                         UpdateVerdict::Withheld(problem) => Standing::Withheld(problem),
                     },
@@ -285,6 +296,7 @@ fn best_offer(inspection: &Inspection, plugin_id: &str) -> Option<Offer> {
         description: manifest.description.clone(),
         version: manifest.version.clone(),
         icon: manifest.icon.clone(),
+        required_features: manifest.required_features.clone(),
         size: selection.as_ref().ok().map(Selection::package_size),
         selection,
     })

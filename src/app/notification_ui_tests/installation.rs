@@ -439,7 +439,13 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
     let third_delivery = active_delivery(&ctx, &third.package_path(&root), pane);
     let (_server3, release3, job3) = pending_update(&ctx, &root, "4.0.0");
     activate(&ctx.window);
-    confirm_package_action(&ctx, third.clone(), mutation::Action::Uninstall, None);
+    confirm_package_action(
+        &ctx,
+        third.clone(),
+        mutation::Action::Uninstall,
+        None,
+        Rc::new(|_| {}),
+    );
     wait(
         || ctx.window.visible_dialog().is_some(),
         "real uninstall consent",

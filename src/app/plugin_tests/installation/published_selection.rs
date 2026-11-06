@@ -88,7 +88,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     let view = inspect(&ctx, &preferences, &revision);
     for (_, _, _, expected) in &rows {
         let row = selected_row(&view, expected);
-        let install = button(&row, "Install disabled");
+        let install = button(&row, "Install");
         assert!(install.grab_focus());
         visible_description(&row, expected);
         assert!(install.is_sensitive());
@@ -100,14 +100,14 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
         rows.iter().find(|(id, ..)| id == "clock").unwrap().clone();
     let clock_asset = snapshot.asset(&clock_artifact.asset).unwrap();
     let clock = selected_row(&view, &clock_description);
-    assert!(button(&clock, "Install disabled").grab_focus());
+    assert!(button(&clock, "Install").grab_focus());
     screenshot(&view, "published-native-selection");
-    press(&button(&clock, "Install disabled"));
+    press(&button(&clock, "Install"));
     wait_for(
         || {
             has_label(
                 clock.upcast_ref(),
-                "Installed github:1431055733/clock disabled. Enable separately in Your plugins.",
+                "Installed github:1431055733/clock disabled. Switch it on from the Plugins page.",
             ) || has_label(clock.upcast_ref(), "Package installation failed")
         },
         Duration::from_secs(65),

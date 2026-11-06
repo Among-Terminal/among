@@ -6,7 +6,7 @@
 
 use super::published_lifecycle::{observed, Observed};
 use super::*;
-use crate::prefs::repositories::{present_prerelease_for_test, present_updates_for_test};
+use crate::prefs::repositories::present_updates_for_test;
 use serde_json::{json, Value};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
@@ -130,40 +130,12 @@ fn preferences_page(ctx: &Window) -> adw::PreferencesWindow {
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
-    assert!(has_label(page.upcast_ref(), "Plugin development mode"));
+    assert!(banner_says(&page, "Plugin development mode"));
     preferences
 }
 
-fn clock_row(view: &adw::PreferencesWindow) -> adw::ActionRow {
-    widgets(view.upcast_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| {
-            row.subtitle()
-                .is_some_and(|subtitle| subtitle.starts_with("github:1431055733/clock · version"))
-        })
-        .unwrap()
-}
-
-fn wait_for_clock_row(view: &adw::PreferencesWindow) {
-    wait_for(
-        || {
-            widgets(view.upcast_ref())
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-                .any(|row| {
-                    row.subtitle().is_some_and(|subtitle| {
-                        subtitle.starts_with("github:1431055733/clock · version")
-                    })
-                })
-        },
-        Duration::from_secs(20),
-    );
-}
-
 const KEY: &str = "github:1431055733/clock";
-const INSTALLED: &str =
-    "Installed github:1431055733/clock disabled. Enable separately in Your plugins.";
+const INSTALLED: &str = "Installed and switched off. Use the switch to turn it on.";
 
 fn selected(ctx: &Window) -> crate::plugin::inventory::Receipt {
     ctx.state
@@ -264,32 +236,37 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
     let preferences = preferences_page(&ctx);
-    present_prerelease_for_test(
-        preferences.upcast_ref(),
-        Rc::new({
-            let server = server.clone();
-            move |id| server.refresh(id)
-        }),
-        Rc::new({
-            let server = server.clone();
-            move |id| server.refresh_prerelease(id)
-        }),
-        Rc::new({
-            let server = server.clone();
-            let root = root.clone();
-            move |selection| server.install(selection, root.clone())
-        }),
-        changed(&ctx),
-        registry,
-        details(&ctx),
+    let view = list_window(
+        &ctx,
+        &preferences,
+        crate::prefs::PluginServices {
+            root: Some(registry),
+            refresh: Rc::new({
+                let server = server.clone();
+                move |id| server.refresh(id)
+            }),
+            prerelease: Rc::new({
+                let server = server.clone();
+                move |id| server.refresh_prerelease(id)
+            }),
+            install: Rc::new({
+                let server = server.clone();
+                let root = root.clone();
+                move |selection| server.install(selection, root.clone())
+            }),
+        },
     );
-    let view = inspector();
     focus(&view);
+    // Development mode starts on the Pre-release channel; opening the page
+    // requested nothing.
+    assert!(channel_active(&view, "Pre-release"));
 
-    // An ordinary install first: Refresh shows the stable candidate.
-    press(&button(&view, "Refresh"));
-    wait_for_clock_row(&view);
-    press(&button(&clock_row(&view), "Install disabled"));
+    // An ordinary install first: the Stable channel's refresh shows the
+    // stable candidate in Available.
+    press(&channel_button(&view, "Stable"));
+    press(&named_button(&view, "plugins-refresh"));
+    wait_for(|| has_list_row(&view, "clock"), Duration::from_secs(20));
+    press(&button(&list_row(&view, "clock"), "Install"));
     wait_for(
         || has_label(view.upcast_ref(), INSTALLED),
         Duration::from_secs(30),
@@ -316,13 +293,27 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
         .unwrap();
 
     // The prerelease replaces it only through its confirmation.
-    press(&button(&view, "Use latest prerelease"));
+    press(&channel_button(&view, "Pre-release"));
+    press(&named_button(&view, "plugins-refresh"));
     wait_for(
-        || has_label(view.upcast_ref(), "Newest prerelease ready for review"),
+        || {
+            has_label(
+                view.upcast_ref(),
+                "Showing the newest pre-release catalogue. It is not saved.",
+            )
+        },
         Duration::from_secs(20),
     );
-    wait_for_clock_row(&view);
-    press(&button(&clock_row(&view), "Replace with prerelease…"));
+    wait_for(
+        || {
+            widgets(view.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+                .any(|button| button.label().as_deref() == Some("Replace"))
+        },
+        Duration::from_secs(5),
+    );
+    press(&button(&list_row(&view, "clock"), "Replace"));
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     press(&button(&view.visible_dialog().unwrap(), "Replace"));
     wait_for(
@@ -343,17 +334,18 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     starts_under_the_flag(&ctx, KEY, Reach::Admitted);
 
     // The stable release of the same bytes and commit rebinds it.
-    press(&button(&view, "Refresh"));
+    press(&channel_button(&view, "Stable"));
+    press(&named_button(&view, "plugins-refresh"));
     wait_for(
         || {
             widgets(view.upcast_ref())
                 .into_iter()
                 .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-                .any(|button| button.label().as_deref() == Some("Apply update…"))
+                .any(|button| button.label().as_deref() == Some("Update"))
         },
         Duration::from_secs(20),
     );
-    press(&button(&clock_row(&view), "Apply update…"));
+    press(&button(&list_row(&view, "clock"), "Update"));
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     press(&button(&view.visible_dialog().unwrap(), "Apply update"));
     wait_for(
