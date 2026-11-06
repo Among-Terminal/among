@@ -57,6 +57,18 @@ pub fn terminal_size(pixel_width: i32, pixel_height: i32, cell: CellSize) -> Ter
     }
 }
 
+/// How a split of `total` pixels divides between its two children.
+///
+/// The divider takes one pixel out of what the children share, and the first
+/// child's size is the stored ratio of what is left, rounded to whole pixels.
+/// Every place that turns a ratio into pixels uses this, so the divider a
+/// widget is given and the pane shape a split decision sees cannot disagree.
+pub fn split_sizes(total: i32, ratio: f64) -> (i32, i32) {
+    let usable = (total - 1).max(0);
+    let first = (usable as f64 * ratio.clamp(0.0, 1.0)).round() as i32;
+    (first, usable - first)
+}
+
 /// The pixel box a pane occupies within a layout of the given size.
 ///
 /// Computed from the tree's ratios rather than read from a widget: a widget's
@@ -175,6 +187,15 @@ mod tests {
         width: 9,
         height: 18,
     };
+
+    #[test]
+    fn a_split_shares_what_the_divider_leaves() {
+        assert_eq!(split_sizes(1071, 0.2), (214, 856));
+        assert_eq!(split_sizes(801, 0.5), (400, 400));
+        // No room for a divider, or a ratio outside 0..=1, never goes negative.
+        assert_eq!(split_sizes(0, 0.5), (0, 0));
+        assert_eq!(split_sizes(101, 1.5), (100, 0));
+    }
 
     #[test]
     fn a_pane_box_is_computed_from_the_tree() {
