@@ -80,6 +80,43 @@ pub fn release_version(tag: &str) -> Result<(&str, String)> {
     }
 }
 
+/// The build identity the application shows on its About page, as the
+/// environment variables the compiler reads: the release label (the tag
+/// without its `v`, so `0.2.0-rc.2` and not the Debian `0.2.0~rc.2`), the
+/// seven-character commit and the commit's UTC date.
+///
+/// Every value derives from the tagged commit, never from the clock of the
+/// machine that builds, so two builds of the same tag stay byte-identical.
+pub fn build_identity(tag: &str, source: &str, date: &str) -> Result<[(&'static str, String); 3]> {
+    release_version(tag)?;
+    let label = tag
+        .strip_prefix('v')
+        .ok_or("expected a vMAJOR.MINOR.PATCH release tag")?;
+    if source.len() != 40
+        || !source
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err("expected a full lowercase hexadecimal commit".into());
+    }
+    let bytes = date.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        return Err("expected a YYYY-MM-DD build date".into());
+    }
+    Ok([
+        ("AMONG_BUILD_VERSION", label.to_string()),
+        ("AMONG_BUILD_COMMIT", source[..7].to_string()),
+        ("AMONG_BUILD_DATE", date.to_string()),
+    ])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Identity {
     pub target: String,

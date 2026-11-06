@@ -230,7 +230,7 @@ fn every_channel_keeps_its_own_policy_failure_and_restart() {
     let general = descendants(prefs.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::PreferencesPage>().ok())
-        .find(|page| page.name().as_deref() == Some("general"))
+        .find(|page| page.name().as_deref() == Some("notifications"))
         .unwrap();
     prefs.set_visible_page(&general);
     pump_for(Duration::from_millis(200));

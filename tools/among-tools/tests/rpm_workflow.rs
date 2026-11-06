@@ -34,6 +34,27 @@ fn package_build_and_permission_tests_run_without_root_privileges() -> Result<()
     Ok(())
 }
 
+/// The build runs as another user through `env` with an explicit list, so a
+/// variable that is only exported in the job never reaches `cargo`.
+#[test]
+fn the_build_identity_reaches_the_compiler_through_the_explicit_environment() -> Result<()> {
+    let text = workflow()?;
+    assert!(text.contains(
+        "sh scripts/build-identity.sh \"$GITHUB_REF_TYPE\" \"$GITHUB_REF_NAME\" >> \"$GITHUB_ENV\""
+    ));
+    for name in [
+        "AMONG_BUILD_VERSION",
+        "AMONG_BUILD_COMMIT",
+        "AMONG_BUILD_DATE",
+    ] {
+        assert!(
+            text.contains(&format!("\"{name}=${name}\"")),
+            "{name} is not passed to rpmbuild"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn installed_checks_match_all_build_targets_and_every_shell_step_parses() -> Result<()> {
     let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&workflow()?)?;

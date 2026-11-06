@@ -36,7 +36,16 @@ fn preferences(ctx: &Window) -> adw::PreferencesWindow {
         .find_map(|widget| widget.downcast::<adw::PreferencesWindow>().ok())
         .unwrap();
     activate(&window);
-    assert_eq!(window.visible_page_name().as_deref(), Some("general"));
+    assert_eq!(window.visible_page_name().as_deref(), Some("plugins"));
+    let order: Vec<String> = descendants(window.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::PreferencesPage>().ok())
+        .filter_map(|page| page.name().map(|name| name.to_string()))
+        .collect();
+    assert_eq!(order, ["plugins", "notifications", "keyboard", "about"]);
+    // The tests below drive notification controls, so show that page for them
+    // after confirming that Preferences opens on Plugins.
+    window.set_visible_page_name("notifications");
     window
 }
 
@@ -883,7 +892,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
         .provider_inventory()
         .iter()
         .all(|channel| !channel.policy.enabled));
-    prefs.set_visible_page_name("general");
+    prefs.set_visible_page_name("notifications");
     wait(
         || {
             named::<adw::ActionRow>(&prefs, "notification-role-status:github:12/sample")

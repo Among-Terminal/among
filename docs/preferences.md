@@ -3,11 +3,14 @@
 The storage module uses `$XDG_CONFIG_HOME/among`, falling back to
 `$HOME/.config/among` when XDG_CONFIG_HOME is absent or empty.
 
-## General notifications
+## Notifications
 
-General is the first and initially visible page, followed by Keyboard and Plugins.
-Page/control automation uses identities (`general`, `keyboard`, `plugins` and
-`notification-…` widget names), not the first tab or first switch.
+The pages are, in order, Plugins, Notifications, Keyboard and About. Plugins is
+the visible page when the window opens. The tabs have equal widths. The
+Notifications page was called General before. Page/control automation uses
+identities (`plugins`, `notifications`, `keyboard`, `about` and
+`notification-…` widget names), not the first tab or first switch. The settings
+document is still `general.json`.
 
 Notification choices use `general.json`, version 1. Missing fields inherit these
 in-memory defaults; opening Preferences never writes this document:
@@ -61,7 +64,7 @@ the source pane or a stopped provider.
 **Managed notification roles** makes access review reachable even with valid
 existing consent. A process may have producer, delivery or neither authority;
 both required roles refuse without execution. Optional roles require an explicit
-selection, while declarative UI remains independent. General shows reviewed and
+selection, while declarative UI remains independent. Notifications shows reviewed and
 actually admitted roles separately. **Save reviewed access** stores the existing
 identity/publisher-scoped `review.features` without enabling code or channels.
 A running plugin must first be explicitly stopped and disabled; after retirement,
@@ -74,7 +77,7 @@ Cancel sound / selection requests cancellation without persisting playback succe
 The owner accepts this explicit-retry UX detail, not decoder safety/platform
 acceptance. A newer Preview diagnostic is not overwritten by older playback IDs.
 
-General edits re-read and merge the relevant fields, preserving unknown keys and
+Notification edits re-read and merge the relevant fields, preserving unknown keys and
 other provider identities. Bounded unique-key JSON and safe owner-controlled paths
 are required; fresh files are private, and safe existing directory permissions
 are not silently changed. Future versions, invalid known fields, symlinks and malformed documents are reported,
@@ -211,3 +214,31 @@ allow that one. The card's details list, for the latest start, the identity,
 generation, granted features, the digest of the policy applied, the Landlock ABI and
 enforcement the child reported, whether the seccomp filter loaded and the reason of
 any refusal.
+
+## About
+
+The last page, named `about`, identifies the build. It shows the logo, the name,
+the version and the build (`Build <short commit> · <date>`; a part the build did
+not record is left out, and `Build unknown` shows when it recorded neither), then links to the
+website (`https://among-terminal.github.io/`), the source repository
+(`https://github.com/Among-Terminal/among`) and its issue tracker, and the
+license (Apache-2.0). Opening the page reads only compiled-in values and the
+`os-release` file; the network is used only when you follow a link, and the link
+opens in the desktop's default handler.
+
+The version, commit and date come from the build environment, not from git at
+run time; a build that was not given them shows the version from `Cargo.toml` and
+`unknown`. See [build identity](build.md#build-identity).
+
+**Copy build details** puts four lines on the clipboard for a bug report:
+
+```text
+Among Terminal 0.2.0-rc.2
+Commit: 723e04b
+Built: 2026-11-05
+System: Debian GNU/Linux 13 (trixie)
+```
+
+The system line is `PRETTY_NAME` from `/etc/os-release` (`/usr/lib/os-release`
+when the first cannot be read), or `unknown` when the file has no such line. The row's icon
+turns into a check mark for two seconds to confirm the copy; there is no toast.

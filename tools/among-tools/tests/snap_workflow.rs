@@ -128,3 +128,33 @@ fn clean_runtime_mount_environment_image_and_script_agree_on_the_check_root() ->
     assert!(!script.contains(container));
     Ok(())
 }
+
+/// `sudo env` passes only the variables it is given, and snapcraft runs the
+/// part build in its own process. The build must hand the identity over by name
+/// and must then find it in the staged executable, so a build that silently
+/// lost it fails instead of shipping "unknown".
+#[test]
+fn the_snap_build_hands_over_the_build_identity_and_finds_it_in_the_executable() -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let text = fs::read_to_string(root.join(".github/workflows/snap-build.yml"))?;
+    assert!(text.contains(
+        "sh scripts/build-identity.sh \"$GITHUB_REF_TYPE\" \"$GITHUB_REF_NAME\" >> \"$GITHUB_ENV\""
+    ));
+    for name in [
+        "AMONG_BUILD_VERSION",
+        "AMONG_BUILD_COMMIT",
+        "AMONG_BUILD_DATE",
+    ] {
+        assert!(
+            text.contains(&format!("\"{name}=${name}\"")),
+            "{name} is not handed to snapcraft"
+        );
+    }
+    for name in ["AMONG_BUILD_COMMIT", "AMONG_BUILD_DATE"] {
+        assert!(
+            text.contains(&format!("sudo grep -aqF \"${name}\" prime/bin/among")),
+            "the staged executable is not searched for {name}"
+        );
+    }
+    Ok(())
+}

@@ -132,7 +132,9 @@ In these commands, `~` represents a space. `activate:<widget-name>` presses a
 named widget in any open window, such as `notification-audio-preview`. Only the
 application executable can do this for audio: a test binary cannot host the
 decoder helper, so its Preview produces no sound. `focus:<widget-name>` hands a
-named control to the keyboard, and `await:<mark>` holds the script until the file
+named control to the keyboard. Both first show the Preferences page that holds the
+control, because Preferences opens on Plugins and a control on a hidden tab cannot
+take focus. `await:<mark>` holds the script until the file
 `<script>.<mark>` exists, so a harness can send real keys or type text at that
 point.
 `collapse-sidebar`, `expand-sidebar` and `request-close` exercise window controls.

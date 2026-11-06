@@ -46,6 +46,51 @@ fn rc_packages_sort_before_stable_without_relaxing_stable_policy() -> Result<()>
 }
 
 #[test]
+fn the_build_identity_labels_a_candidate_with_its_tag_not_its_debian_version() -> Result<()> {
+    let commit = "723e04b9c1d2e3f4a5b6c7d8e9f0011223344556";
+    assert_eq!(commit.len(), 40);
+    assert_eq!(
+        deb::build_identity("v0.2.0-rc.2", commit, "2026-11-05")?,
+        [
+            ("AMONG_BUILD_VERSION", "0.2.0-rc.2".to_string()),
+            ("AMONG_BUILD_COMMIT", "723e04b".to_string()),
+            ("AMONG_BUILD_DATE", "2026-11-05".to_string()),
+        ]
+    );
+    assert_eq!(
+        deb::build_identity("v0.2.0", commit, "2026-11-05")?[0].1,
+        "0.2.0"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_build_identity_refuses_input_that_is_not_a_release_commit_or_date() {
+    let commit = "723e04b9c1d2e3f4a5b6c7d8e9f001122334455";
+    assert_eq!(commit.len(), 39);
+    let full = format!("{commit}6");
+    for (tag, source, date) in [
+        ("0.2.0", full.as_str(), "2026-11-05"),
+        ("v0.2", full.as_str(), "2026-11-05"),
+        ("v0.2.0-rc.0", full.as_str(), "2026-11-05"),
+        ("v0.2.0", commit, "2026-11-05"),
+        (
+            "v0.2.0",
+            "G23e04b9c1d2e3f4a5b6c7d8e9f0011223344556",
+            "2026-11-05",
+        ),
+        ("v0.2.0", full.as_str(), "2026-11-5"),
+        ("v0.2.0", full.as_str(), "05-11-2026"),
+        ("v0.2.0", full.as_str(), ""),
+    ] {
+        assert!(
+            deb::build_identity(tag, source, date).is_err(),
+            "{tag} {source} {date} was accepted"
+        );
+    }
+}
+
+#[test]
 fn source_packaging_inputs_remain_locked_user_installer_free_and_unprivileged() -> Result<()> {
     let f = Fixture::new()?;
     let root = &f.0;

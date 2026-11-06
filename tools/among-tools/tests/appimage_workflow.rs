@@ -161,3 +161,31 @@ fn package_profile_producers_stamp_one_exact_bin_test_from_a_valid_repo_local_sh
     }
     Ok(())
 }
+
+/// The identity is exported through `$GITHUB_ENV`, which only reaches steps that
+/// start after it. A compile before that step would embed "unknown", and a later
+/// compile would embed the real values, leaving two different executables in
+/// one job.
+#[test]
+fn the_build_identity_is_recorded_before_any_compile_in_the_build_job() -> Result<()> {
+    let workflow = workflow()?;
+    let steps = workflow["jobs"]["build"]["steps"]
+        .as_array()
+        .ok_or("build steps absent")?;
+    let position = |needle: &str| {
+        steps.iter().position(|step| {
+            step["run"]
+                .as_str()
+                .is_some_and(|script| script.contains(needle))
+        })
+    };
+    let record =
+        position("sh scripts/build-identity.sh \"$REF_TYPE\" \"$REF_NAME\" >> \"$GITHUB_ENV\"")
+            .ok_or("the build identity is never recorded")?;
+    let compile = position("cargo build").ok_or("no compile step")?;
+    assert!(
+        record < compile,
+        "a compile starts before the identity is recorded"
+    );
+    Ok(())
+}

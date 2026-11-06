@@ -180,6 +180,16 @@ pub fn run(
     }
     let epoch = timestamp.parse::<u64>()?;
     environment.insert("SOURCE_DATE_EPOCH".into(), timestamp.clone().into());
+    let commit_day = execute(
+        "/usr/bin/date",
+        &["--utc", "--date", &format!("@{timestamp}"), "+%F"],
+        root,
+        &BTreeMap::from([("LC_ALL".into(), "C".into())]),
+        Duration::from_secs(30),
+    )?;
+    for (name, value) in deb::build_identity(&tag, &source, &commit_day)? {
+        environment.insert(name.into(), value.into());
+    }
     let date = execute(
         "/usr/bin/date",
         &[
