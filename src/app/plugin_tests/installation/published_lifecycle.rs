@@ -651,6 +651,11 @@ pub(super) fn run() {
         catalogue,
     } = observed();
     let revision = revision.as_str();
+    let channel_suffix = if snapshot.is_prerelease() {
+        " · prerelease"
+    } else {
+        ""
+    };
     let catalogue_asset = snapshot.asset("among-plugins.json").unwrap();
     let root = crate::plugin::inventory::root().unwrap();
     crate::test_isolation::assert_below_check_root(&root);
@@ -707,7 +712,7 @@ pub(super) fn run() {
             artifact.sha256
         );
         let expected = format!(
-            "github:1431055733/{} · version {} · linux/{architecture} · asset {} · {} bytes",
+            "github:1431055733/{} · version {} · linux/{architecture} · asset {} · {} bytes{channel_suffix}",
             plugin.id, version.manifest.version, artifact.asset, artifact.size
         );
         assert_eq!(

@@ -35,6 +35,11 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
         catalogue,
         ..
     } = observed();
+    let channel_suffix = if snapshot.is_prerelease() {
+        " · prerelease"
+    } else {
+        ""
+    };
     let rows: Vec<_> = catalogue
         .plugins
         .iter()
@@ -46,7 +51,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
                 version.manifest.version.clone(),
                 artifact.clone(),
                 format!(
-                    "github:1431055733/{} · version {} · linux/{architecture} · asset {} · {} bytes",
+                    "github:1431055733/{} · version {} · linux/{architecture} · asset {} · {} bytes{channel_suffix}",
                     plugin.id, version.manifest.version, artifact.asset, artifact.size
                 ),
             )
@@ -153,10 +158,19 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     view.destroy();
 
     let (view, _) = inspect(&ctx, &preferences, &revision);
-    // The identical version has no offered update. Its row offers Uninstall;
-    // the plugin page explains that the saved catalogue is already current.
+    // An ordinary release offers no same-version update. A prerelease offers
+    // an explicit replacement even for the same bytes; observing it applies
+    // nothing and cannot inherit or change runtime consent.
     let installed_row = selected_row(&view, "clock");
-    assert!(button(&installed_row, "Uninstall").is_mapped());
+    assert!(button(
+        &installed_row,
+        if snapshot.is_prerelease() {
+            "Replace"
+        } else {
+            "Uninstall"
+        },
+    )
+    .is_mapped());
     assert!(widgets(installed_row.upcast_ref())
         .iter()
         .all(|widget| widget
@@ -165,13 +179,13 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
                 |button| !button.is_mapped() || button.label().as_deref() != Some("Update")
             )));
     press(&named_button(&installed_row, "plugin-info"));
+    let expected_status = if snapshot.is_prerelease() {
+        format!("Pre-release {clock_version} can replace this version.")
+    } else {
+        "This is the newest version the saved list offers.".into()
+    };
     wait_for(
-        || {
-            has_label(
-                view.upcast_ref(),
-                "This is the newest version the saved list offers.",
-            )
-        },
+        || has_label(view.upcast_ref(), &expected_status),
         Duration::from_secs(3),
     );
     assert_eq!(
