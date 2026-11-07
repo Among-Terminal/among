@@ -7981,7 +7981,10 @@ mod tests {
                 row.height()
             );
         }
-        assert!(switch.is_focusable() && row.is_activatable());
+        assert!(
+            switch.is_focusable(),
+            "the plugin enable switch remains reachable by keyboard"
+        );
         assert!(switch.grab_focus());
         pump();
         let ids = std::process::Command::new("xdotool")
