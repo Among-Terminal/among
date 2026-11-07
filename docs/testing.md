@@ -41,6 +41,11 @@ Logs include the recorded calls; `result.json` records the exact test executable
 SHA-256. A Rust test that runs zero cases is a failure. Evidence stays below
 `AMONG_CHECK_ROOT`.
 
+The required native CI jobs on Ubuntu 24.04 amd64 and arm64 run this exact ignored
+application case through `run-ignored-tests`. Each case owns its display and
+session bus, and its recorded D-Bus calls and test result appear in the job log.
+The standalone command above also writes the executable hash and a result file.
+
 This checks application integration on an owned X11 session. Use the separate
 GNOME checker to observe real banners and window activation:
 

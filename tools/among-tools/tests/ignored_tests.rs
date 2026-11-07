@@ -81,6 +81,44 @@ fn only_the_exact_published_install_case_uses_its_dedicated_runner() -> among_to
     Ok(())
 }
 
+#[test]
+fn desktop_contract_runs_in_the_required_native_jobs_on_both_ubuntu_architectures(
+) -> among_tools::Result<()> {
+    let desktop = among_tools::desktop_notifications::TEST;
+    assert_eq!(
+        ignored_tests::names(&format!("{desktop}: test"))?,
+        [desktop],
+        "the real desktop contract must remain in the graphical test selection"
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow: serde_json::Value =
+        serde_yaml_ng::from_slice(&std::fs::read(root.join(".github/workflows/checks.yml"))?)?;
+    let native = &workflow["jobs"]["native"];
+    assert_eq!(
+        native["strategy"]["matrix"]["runner"],
+        serde_json::json!(["ubuntu-24.04", "ubuntu-24.04-arm"])
+    );
+    assert_eq!(native["runs-on"], "${{ matrix.runner }}");
+    assert!(native.get("if").is_none());
+    assert!(native.get("continue-on-error").is_none());
+    let build = "cargo test --locked --no-run --message-format=json > \"$RUNNER_TEMP/test-executables.jsonl\"";
+    let run = "tools/among-tools/target/release/among-tools run-ignored-tests \"$RUNNER_TEMP/test-executables.jsonl\"";
+    let steps = native["steps"].as_array().ok_or("native steps absent")?;
+    let graphical = steps
+        .iter()
+        .filter(|step| step["run"].as_str().is_some_and(|text| text.contains(run)))
+        .collect::<Vec<_>>();
+    assert_eq!(graphical.len(), 1, "one mandatory root graphical test run");
+    let step = graphical[0];
+    assert!(step.get("if").is_none());
+    assert!(step.get("continue-on-error").is_none());
+    let commands = step["run"].as_str().ok_or("graphical commands absent")?;
+    let build_at = commands.find(build).ok_or("root test build absent")?;
+    let run_at = commands.find(run).ok_or("root graphical run absent")?;
+    assert!(build_at < run_at);
+    Ok(())
+}
+
 struct SelectionFixture(std::path::PathBuf);
 
 impl Drop for SelectionFixture {

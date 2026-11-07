@@ -1,7 +1,7 @@
 # Optional command backend
 
 `among::notifications::commands` executes real, optional local command attempts.
-Its core API is GTK-free. [General](preferences.md#general-notifications) accepts
+Its core API is GTK-free. [Notifications](preferences.md#notifications) accepts
 and stores explicit configuration; the normal VTE adapter owns registration,
 shared-tick polling and retirement. No command is configured or enabled by default.
 
