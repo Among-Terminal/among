@@ -48,7 +48,7 @@ fn toggle(preferences: &adw::PreferencesWindow, row: &adw::ActionRow) {
     xdo(&["key", "--clearmodifiers", "space"]);
 }
 
-fn read_regular(path: &Path, maximum: u64) -> Vec<u8> {
+pub(super) fn read_regular(path: &Path, maximum: u64) -> Vec<u8> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
@@ -67,6 +67,14 @@ fn read_regular(path: &Path, maximum: u64) -> Vec<u8> {
         "profile input changed while reading"
     );
     bytes
+}
+
+fn source_bytes(path: &Path) -> Option<Vec<u8>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Some(read_regular(path, 1024 * 1024)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("cannot inspect source cache: {error}"),
+    }
 }
 
 #[test]
@@ -177,28 +185,76 @@ pub(super) fn inspect(
     ctx: &Window,
     preferences: &adw::PreferencesWindow,
     revision: &str,
-) -> adw::PreferencesWindow {
-    let view = list_window(ctx, preferences, super::candidate::services());
+) -> (
+    adw::PreferencesWindow,
+    crate::plugin::install::source::Inspection,
+) {
+    let prerelease = prerelease_acceptance();
+    let observation = Rc::new(RefCell::new(None));
+    let source_file = crate::plugin::install::registry::root()
+        .unwrap()
+        .join("sources.json");
+    let sources_before = source_bytes(&source_file);
+    let view = if prerelease {
+        let page = crate::prefs::plugins_page_with_observation_for_test(
+            &preferences_context(ctx),
+            super::candidate::services(),
+            observation.clone(),
+        );
+        let window = adw::PreferencesWindow::builder()
+            .transient_for(preferences)
+            .modal(false)
+            .title("Plugin list")
+            .search_enabled(false)
+            .default_width(760)
+            .default_height(640)
+            .build();
+        window.add(&page);
+        window.present();
+        window
+    } else {
+        list_window(ctx, preferences, super::candidate::services())
+    };
     focus(&view);
     if widgets(view.upcast_ref()).iter().any(|widget| {
         widget
             .downcast_ref::<gtk::ToggleButton>()
             .is_some_and(|button| button.label().as_deref() == Some("Stable"))
     }) {
-        press(&channel_button(&view, "Stable"));
+        press(&channel_button(
+            &view,
+            if prerelease { "Pre-release" } else { "Stable" },
+        ));
+    }
+    if prerelease {
+        assert!(channel_active(&view, "Pre-release"));
     }
     let refresh = named_button(&view, "plugins-refresh");
     press(&refresh);
     wait_for(|| !refresh.is_sensitive(), Duration::from_secs(3));
     wait_for(|| refresh.is_sensitive(), Duration::from_secs(65));
-    let saved = saved_catalogue();
+    let saved = if prerelease {
+        let inspected = observation
+            .borrow_mut()
+            .take()
+            .expect("the selected channel must complete a validated real source observation");
+        let expected = observed();
+        let (snapshot, binding) = inspected.observed_release_for_test();
+        assert!(snapshot.is_prerelease());
+        assert_eq!(snapshot, &expected.snapshot);
+        assert_eq!(binding, &expected.binding);
+        assert_eq!(source_bytes(&source_file), sources_before);
+        inspected
+    } else {
+        saved_catalogue()
+    };
     assert_eq!(
         saved.catalogue_revision, revision,
         "the explicitly checked catalogue must match the independently prepared source binding"
     );
     assert_eq!(saved.repository_id, 1431055733);
     assert_eq!(saved.publisher_id, 339567100);
-    view
+    (view, saved)
 }
 
 pub(super) fn saved_catalogue() -> crate::plugin::install::source::Inspection {
@@ -387,7 +443,7 @@ fn assert_output(ctx: &Window, id: &str, key: &str) {
 /// The prepared observation of the official release, checked against its own
 /// catalogue bytes. Both native acceptance cases read the release, asset IDs
 /// and package digests from here, never from constants of an older release.
-pub(super) struct Observed {
+pub(in crate::app) struct Observed {
     pub(super) inputs_root: PathBuf,
     pub(super) inputs: Value,
     pub(super) platform: Platform,
@@ -398,7 +454,72 @@ pub(super) struct Observed {
     pub(super) catalogue: Catalogue,
 }
 
-pub(super) fn observed() -> Observed {
+pub(in crate::app) fn prerelease_acceptance() -> bool {
+    match std::env::var_os("AMONG_PUBLISHED_PRERELEASE_ACCEPTANCE") {
+        None => false,
+        Some(value) if value == "1" => true,
+        Some(_) => panic!("published prerelease acceptance requires the exact value 1"),
+    }
+}
+
+fn assert_prerelease_pin(
+    inputs: &Value,
+    snapshot: &crate::plugin::inventory::release::ReleaseSnapshot,
+) {
+    assert_eq!(
+        inputs["candidate"], false,
+        "synthetic candidates cannot enter published acceptance"
+    );
+    assert!(snapshot.is_prerelease());
+    assert_eq!(
+        inputs["published_pin"],
+        json!({
+            "repository_id":inputs["repository_id"],
+            "publisher_id":inputs["publisher_id"],
+            "release_id":snapshot.id,
+            "tag":snapshot.tag,
+            "source_revision":inputs["source_revision"],
+            "catalogue_sha256":snapshot.asset("among-plugins.json").unwrap().sha256,
+        })
+    );
+}
+
+#[test]
+fn published_prerelease_pin_refuses_candidates_and_each_mismatched_identity() {
+    let snapshot: crate::plugin::inventory::release::ReleaseSnapshot =
+        serde_json::from_value(json!({
+            "id":42,"tag":"v1.0.0-rc.1","prerelease":true,
+            "assets":[{"id":43,"name":"among-plugins.json","size":2,"sha256":"a".repeat(64)}]
+        }))
+        .unwrap();
+    snapshot.validate().unwrap();
+    let inputs = json!({
+        "candidate":false,"repository_id":12,"publisher_id":34,"source_revision":"b".repeat(40),
+        "published_pin":{"repository_id":12,"publisher_id":34,"release_id":42,
+            "tag":"v1.0.0-rc.1","source_revision":"b".repeat(40),"catalogue_sha256":"a".repeat(64)}
+    });
+    assert_prerelease_pin(&inputs, &snapshot);
+    let mut candidate = inputs.clone();
+    candidate["candidate"] = json!(true);
+    assert!(std::panic::catch_unwind(|| assert_prerelease_pin(&candidate, &snapshot)).is_err());
+    for (field, value) in [
+        ("repository_id", json!(13)),
+        ("publisher_id", json!(35)),
+        ("release_id", json!(44)),
+        ("tag", json!("v1.0.0-rc.2")),
+        ("source_revision", json!("c".repeat(40))),
+        ("catalogue_sha256", json!("d".repeat(64))),
+    ] {
+        let mut changed = inputs.clone();
+        changed["published_pin"][field] = value;
+        assert!(
+            std::panic::catch_unwind(|| assert_prerelease_pin(&changed, &snapshot)).is_err(),
+            "a changed {field} must not enter published acceptance"
+        );
+    }
+}
+
+pub(in crate::app) fn observed() -> Observed {
     let inputs_root = PathBuf::from(
         std::env::var_os("AMONG_OFFICIAL_PLUGIN_INPUTS")
             .expect("dedicated runner must supply actual published Release inputs"),
@@ -441,6 +562,52 @@ pub(super) fn observed() -> Observed {
     let catalogue = Catalogue::parse(&bytes).unwrap();
     assert_eq!(catalogue.plugins.len(), 3);
     assert_eq!(inputs["plugins"].as_array().unwrap().len(), 3);
+    if prerelease_acceptance() {
+        assert_prerelease_pin(&inputs, &snapshot);
+        let read = |name| {
+            crate::plugin::data::parse_unique(
+                &read_regular(&inputs_root.join(name), 1024 * 1024),
+                1024 * 1024,
+            )
+            .unwrap()
+        };
+        for name in ["latest.json", "latest-final.json"] {
+            let raw = read(name);
+            assert_eq!(
+                crate::plugin::inventory::release::ReleaseSnapshot::from_prerelease_value(&raw)
+                    .unwrap(),
+                snapshot,
+                "the original immutable prerelease observation must match the pinned snapshot"
+            );
+        }
+        for name in ["repository.json", "repository-final.json"] {
+            let raw = read(name);
+            assert_eq!(raw["id"], inputs["repository_id"]);
+            assert_eq!(raw["owner"]["id"], inputs["publisher_id"]);
+            assert_eq!(raw["private"], false);
+        }
+        for name in ["initial-ref.json", "final-ref.json"] {
+            let raw = read(name);
+            assert_eq!(raw["ref"], format!("refs/tags/{}", binding.tag));
+            assert_eq!(raw["object"]["sha"], binding.object);
+        }
+        for name in ["initial-commit.json", "final-commit.json"] {
+            assert_eq!(read(name)["sha"], binding.commit);
+        }
+        if !crate::plugin::development::enabled() {
+            assert!(crate::plugin::development::fix(true));
+        }
+        assert!(crate::plugin::development::enabled());
+        println!(
+            "published_prerelease_acceptance release={} tag={} source={} candidate_bytes=false snapshot_prerelease=true",
+            snapshot.id, snapshot.tag, revision
+        );
+    } else {
+        assert!(
+            !snapshot.is_prerelease(),
+            "ordinary acceptance requires stable inputs"
+        );
+    }
     Observed {
         inputs_root,
         inputs,
@@ -494,8 +661,7 @@ pub(super) fn run() {
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
-    let view = inspect(&ctx, &preferences, revision);
-    let saved = saved_catalogue();
+    let (view, saved) = inspect(&ctx, &preferences, revision);
     assert_eq!(saved.catalogue, catalogue);
     let mut receipts = Vec::new();
     for plugin in &catalogue.plugins {
@@ -547,6 +713,7 @@ pub(super) fn run() {
         );
         let (entry, _) = ctx.state.borrow().plugins.managed_details(&key).unwrap();
         let receipt = &entry.receipt;
+        assert_eq!(receipt.requires_development(), snapshot.is_prerelease());
         let release = receipt.release().unwrap();
         assert_eq!(release.repository_id, 1431055733);
         assert_eq!(release.release_id, snapshot.id);

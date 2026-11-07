@@ -1,4 +1,4 @@
-use super::published_lifecycle::{catalogue_row, inspect, observed, saved_catalogue, Observed};
+use super::published_lifecycle::{catalogue_row, inspect, observed, Observed};
 use super::*;
 
 const KEY: &str = "github:1431055733/clock";
@@ -82,8 +82,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     // Published acceptance uses the production client and installer. Candidate
     // runs serve CI-built bytes through the owned HTTPS fixture. Both drive
     // the same compact list and retain the independent source/asset oracle.
-    let view = inspect(&ctx, &preferences, &revision);
-    let saved_catalogue = saved_catalogue();
+    let (view, saved_catalogue) = inspect(&ctx, &preferences, &revision);
     assert_eq!(saved_catalogue.catalogue, catalogue);
     for (id, version, artifact, expected) in &rows {
         let row = selected_row(&view, id);
@@ -121,6 +120,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     );
     let entry = &installed[0];
     let receipt = &entry.receipt;
+    assert_eq!(receipt.requires_development(), snapshot.is_prerelease());
     let catalogue_asset = snapshot.asset("among-plugins.json").unwrap();
     let release = receipt.release().unwrap();
     assert_eq!(release.repository_id, 1431055733);
@@ -152,7 +152,7 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     }
     view.destroy();
 
-    let view = inspect(&ctx, &preferences, &revision);
+    let (view, _) = inspect(&ctx, &preferences, &revision);
     // The identical version has no offered update. Its row offers Uninstall;
     // the plugin page explains that the saved catalogue is already current.
     let installed_row = selected_row(&view, "clock");

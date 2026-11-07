@@ -86,6 +86,16 @@ pub struct Inspection {
 }
 
 impl Inspection {
+    #[cfg(test)]
+    pub(crate) fn observed_release_for_test(
+        &self,
+    ) -> (
+        &crate::plugin::inventory::release::ReleaseSnapshot,
+        &crate::plugin::inventory::ReleaseBinding,
+    ) {
+        (&self.release.snapshot, &self.release.binding)
+    }
+
     pub fn validate_source(&self) -> Result<(), Problem> {
         official::validate(&self.origin())
     }

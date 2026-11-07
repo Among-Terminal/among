@@ -7,7 +7,7 @@ mod candidate;
 mod list;
 mod local_catalogue;
 mod pane_render;
-mod published_lifecycle;
+pub(in crate::app) mod published_lifecycle;
 mod published_selection;
 mod sources;
 

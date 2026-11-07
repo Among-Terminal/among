@@ -1,7 +1,7 @@
 use super::*;
 use crate::plugin::host::PluginState;
 
-mod installation;
+pub(super) mod installation;
 #[cfg(feature = "managed-transport-interop")]
 mod resources;
 mod settings;

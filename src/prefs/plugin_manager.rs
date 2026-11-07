@@ -142,12 +142,30 @@ pub(super) struct Env {
     pub services: Services,
     pub state: State,
     lookup: Rc<super::source_dialog::Lookup>,
+    #[cfg(test)]
+    observation: Option<Rc<RefCell<Option<Inspection>>>>,
     /// Moves focus to where a plugin that just left Installed now is in the
     /// list, or to the search field; set once the page exists.
     pub focus: RefCell<Option<FocusAfterRemoval>>,
 }
 
 impl Env {
+    fn new(
+        ctx: &PreferencesContext,
+        services: Services,
+        lookup: Rc<super::source_dialog::Lookup>,
+    ) -> Self {
+        Self {
+            ctx: ctx.clone(),
+            services,
+            state: State::new(crate::plugin::development::enabled()),
+            lookup,
+            #[cfg(test)]
+            observation: None,
+            focus: RefCell::new(None),
+        }
+    }
+
     /// Drops a finished operation's message, so a later state is not
     /// described by an old line.
     pub(super) fn clear_note(&self, key: &str) {
@@ -242,14 +260,23 @@ pub(super) fn page_with_lookup(
     services: Services,
     lookup: Rc<super::source_dialog::Lookup>,
 ) -> adw::PreferencesPage {
+    build_page(Rc::new(Env::new(ctx, services, lookup)))
+}
+
+#[cfg(test)]
+pub(super) fn page_with_observation(
+    ctx: &PreferencesContext,
+    services: Services,
+    observation: Rc<RefCell<Option<Inspection>>>,
+) -> adw::PreferencesPage {
+    let mut env = Env::new(ctx, services, Rc::new(SourceJob::start));
+    env.observation = Some(observation);
+    build_page(Rc::new(env))
+}
+
+fn build_page(env: Rc<Env>) -> adw::PreferencesPage {
+    let ctx = &env.ctx;
     let development = crate::plugin::development::enabled();
-    let env = Rc::new(Env {
-        ctx: ctx.clone(),
-        services,
-        state: State::new(development),
-        lookup,
-        focus: RefCell::new(None),
-    });
     let page = adw::PreferencesPage::new();
     page.set_title("Plugins");
     page.set_icon_name(Some("application-x-addon-symbolic"));
@@ -562,6 +589,10 @@ fn start_refresh(env: &Rc<Env>) {
     if state.refreshing.borrow().is_some() {
         return;
     }
+    #[cfg(test)]
+    if let Some(observation) = &env.observation {
+        observation.borrow_mut().take();
+    }
     let repository = registry::official_source().origin.repository_id;
     let channel = state.channel.get();
     let started = match channel {
@@ -676,6 +707,12 @@ fn observed(env: &Rc<Env>, inspection: Inspection) {
             *state.notice.borrow_mut() = Notice::Failed(refusal);
             state.dirty.set(true);
             return;
+        }
+        #[cfg(test)]
+        if state.channel.get() == Channel::Prerelease {
+            if let Some(observation) = &env.observation {
+                *observation.borrow_mut() = Some(inspection.clone());
+            }
         }
         state
             .overlay

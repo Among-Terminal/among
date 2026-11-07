@@ -7046,6 +7046,11 @@ mod tests {
     #[ignore = "requires isolated XDG directories, display and xdotool; driven by among-tools check-preferences"]
     fn preferences_persist_across_fresh_processes() {
         const CLOCK: &str = "github:1431055733/clock";
+        if super::plugin_tests::installation::published_lifecycle::prerelease_acceptance() {
+            // Persistence uses its own synthetic receipts; the executable and
+            // resource bytes must still belong to the pinned published input.
+            let _ = super::plugin_tests::installation::published_lifecycle::observed();
+        }
         fn seed_preferences_fixture() {
             use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
             let root = crate::plugin::inventory::root().unwrap();

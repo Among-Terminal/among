@@ -1,8 +1,8 @@
-//! Acceptance over CI-built candidate packages while no release is published.
-//! A controlled HTTPS server answers exactly as GitHub would, from the prepared
-//! inputs: the real UI, client, installer and packages run, and only the
-//! release documents are synthetic. The bytes are CI builds, not the approved
-//! preparation, so this is candidate acceptance.
+//! Development acceptance over candidate or unchanged published packages.
+//! The synthetic replacement case serves CI bytes through controlled HTTPS;
+//! published wrappers use real source jobs and omit that replacement case.
+//! Local-catalogue acceptance retains the packages' original bytes and makes
+//! no claim of repository or release provenance for the local installation.
 
 use super::published_lifecycle::{observed, Observed};
 use super::*;
@@ -370,10 +370,38 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
 #[test]
 #[ignore = "requires check-development-install: an owned display, a CI-built catalogue and its own process"]
 fn candidate_packages_install_from_a_local_catalogue_and_start_under_the_flag() {
-    assert!(crate::plugin::development::fix(true));
+    let published = super::published_lifecycle::prerelease_acceptance().then(observed);
+    if !crate::plugin::development::enabled() {
+        assert!(crate::plugin::development::fix(true));
+    }
     let assets = std::path::PathBuf::from(
         std::env::var_os("AMONG_LOCAL_PLUGIN_CATALOGUE").expect("the runner names the catalogue"),
     );
+    if let Some(observed) = &published {
+        use super::published_lifecycle::read_regular;
+        let catalogue = read_regular(&assets.join("among-plugins.json"), 1024 * 1024);
+        assert_eq!(
+            crate::plugin::inventory::checksum(&catalogue).unwrap(),
+            observed.inputs["catalogue_sha256"]
+        );
+        assert_eq!(
+            crate::plugin::install::metadata::Catalogue::parse(&catalogue).unwrap(),
+            observed.catalogue
+        );
+        for plugin in &observed.catalogue.plugins {
+            let artifact = plugin.versions[0].select(&observed.platform).unwrap();
+            let archive = read_regular(&assets.join(&artifact.asset), artifact.size);
+            assert_eq!(archive.len() as u64, artifact.size);
+            assert_eq!(
+                crate::plugin::inventory::checksum(&archive).unwrap(),
+                artifact.sha256
+            );
+            assert_eq!(
+                observed.snapshot.asset(&artifact.asset).unwrap().sha256,
+                artifact.sha256
+            );
+        }
+    }
     // The package files stay exactly as built; only the directory is the
     // author's own, not writable by others.
     let author = crate::test_isolation::check_root().join("candidate-catalogue");
@@ -425,6 +453,28 @@ fn candidate_packages_install_from_a_local_catalogue_and_start_under_the_flag() 
     assert_eq!(entries.len(), 1);
     assert!(entries[0].receipt.local().is_some());
     assert!(entries[0].inspected.is_ok());
+    if let Some(observed) = &published {
+        let clock = observed
+            .catalogue
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "clock")
+            .unwrap();
+        let version = &clock.versions[0];
+        let artifact = version.select(&observed.platform).unwrap();
+        let receipt = &entries[0].receipt;
+        assert_eq!(receipt.plugin_id, "clock");
+        assert_eq!(receipt.revision, observed.revision);
+        assert_eq!(receipt.manifest_sha256, version.manifest_sha256);
+        assert_eq!(receipt.package_sha256, artifact.sha256);
+        let local = receipt.local().unwrap();
+        assert_eq!(local.asset, artifact.asset);
+        assert_eq!(local.catalogue_sha256, observed.inputs["catalogue_sha256"]);
+        assert_eq!(
+            entries[0].inspected.as_ref().unwrap().manifest,
+            version.manifest
+        );
+    }
     starts_under_the_flag(&ctx, "development/clock", Reach::ClosesChannel);
     view.destroy();
     preferences.destroy();

@@ -336,6 +336,16 @@ pub(crate) fn production_plugin_services_for_test() -> PluginServices {
     PluginServices::production()
 }
 
+/// Observes only a completed, validated session-only refresh from this page.
+#[cfg(test)]
+pub(crate) fn plugins_page_with_observation_for_test(
+    ctx: &PreferencesContext,
+    services: PluginServices,
+    observation: Rc<RefCell<Option<crate::plugin::install::source::Inspection>>>,
+) -> adw::PreferencesPage {
+    plugin_manager::page_with_observation(ctx, services, observation)
+}
+
 #[cfg(test)]
 pub(crate) fn plugins_page_with_source_lookup_for_test(
     ctx: &PreferencesContext,
