@@ -4,26 +4,14 @@
 
 use super::*;
 use crate::plugin::data::Problem;
-use crate::plugin::install::source::{Inspection, InstallJob, Job, Repository, Selection};
+use crate::plugin::install::source::InstallJob;
+#[cfg(test)]
+use crate::plugin::install::source::{Inspection, Job, Repository, Selection};
 
+#[cfg(test)]
 type Start = dyn Fn(Repository) -> Result<Job, Problem>;
+#[cfg(test)]
 type Install = dyn Fn(Selection) -> Result<InstallJob, Problem>;
-
-pub(super) fn present(
-    parent: &gtk::Window,
-    changed: Rc<dyn Fn()>,
-    details: Rc<super::PluginDetailsQuery>,
-) {
-    present_complete(
-        parent,
-        Rc::new(Job::start),
-        installer(),
-        changed,
-        crate::plugin::install::registry::root(),
-        Rc::new(Job::refresh),
-        details,
-    );
-}
 
 #[cfg(test)]
 pub(crate) fn present_for_test(parent: &gtk::Window, start: Rc<Start>) {
@@ -40,6 +28,7 @@ pub(crate) fn present_installer_for_test(
     present_with(parent, start, install, changed);
 }
 
+#[cfg(test)]
 fn installer() -> Rc<Install> {
     Rc::new(|selection| {
         InstallJob::start(
@@ -107,6 +96,7 @@ pub(crate) fn present_updates_for_test(
     );
 }
 
+#[cfg(test)]
 fn present_complete(
     parent: &gtk::Window,
     start: Rc<Start>,
@@ -373,6 +363,7 @@ fn present_complete(
     entry.grab_focus();
 }
 
+#[cfg(test)]
 fn installation_rows(
     group: &adw::PreferencesGroup,
     inspection: &Inspection,
@@ -471,6 +462,7 @@ fn installation_rows(
     rows
 }
 
+#[cfg(test)]
 fn run_install(
     button: &gtk::Button,
     row: &adw::ActionRow,

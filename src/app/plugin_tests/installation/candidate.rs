@@ -6,7 +6,6 @@
 
 use super::published_lifecycle::{observed, Observed};
 use super::*;
-use crate::prefs::repositories::present_updates_for_test;
 use serde_json::{json, Value};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
@@ -95,26 +94,27 @@ fn details(ctx: &Window) -> Rc<crate::prefs::PluginDetailsQuery> {
     Rc::new(move |key: &str| state.borrow().plugins.managed_details(key))
 }
 
-/// Whether the prepared inputs are a candidate, and the inspector for them.
-/// Published inputs return false: the caller uses the production action.
-pub(super) fn present_inspector(ctx: &Window, preferences: &adw::PreferencesWindow) -> bool {
+/// Candidate jobs serve the prepared release and exact package bytes through
+/// owned TLS. Published acceptance keeps the production HTTPS jobs instead.
+pub(super) fn services() -> crate::prefs::PluginServices {
     let observed = observed();
     if observed.inputs["candidate"] != true {
-        return false;
+        return crate::prefs::production_plugin_services_for_test();
     }
     let server = candidate_server(&observed);
     let root = crate::plugin::inventory::root().unwrap();
-    present_updates_for_test(
-        preferences.upcast_ref(),
-        Rc::new({
+    crate::prefs::PluginServices {
+        root: crate::plugin::install::registry::root(),
+        refresh: Rc::new({
             let server = server.clone();
-            move |repository| server.job(repository)
+            move |repository| server.refresh(repository)
         }),
-        Rc::new(move |selection| server.install(selection, root.clone())),
-        changed(ctx),
-        details(ctx),
-    );
-    true
+        prerelease: Rc::new({
+            let server = server.clone();
+            move |repository| server.refresh_prerelease(repository)
+        }),
+        install: Rc::new(move |selection| server.install(selection, root.clone())),
+    }
 }
 
 fn preferences_page(ctx: &Window) -> adw::PreferencesWindow {
@@ -135,7 +135,6 @@ fn preferences_page(ctx: &Window) -> adw::PreferencesWindow {
 }
 
 const KEY: &str = "github:1431055733/clock";
-const INSTALLED: &str = "Installed and switched off. Use the switch to turn it on.";
 
 fn selected(ctx: &Window) -> crate::plugin::inventory::Receipt {
     ctx.state
@@ -267,10 +266,6 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     press(&named_button(&view, "plugins-refresh"));
     wait_for(|| has_list_row(&view, "clock"), Duration::from_secs(20));
     press(&button(&list_row(&view, "clock"), "Install"));
-    wait_for(
-        || has_label(view.upcast_ref(), INSTALLED),
-        Duration::from_secs(30),
-    );
     wait_for(
         || ctx.state.borrow().plugins.managed_details(KEY).is_some(),
         Duration::from_secs(5),

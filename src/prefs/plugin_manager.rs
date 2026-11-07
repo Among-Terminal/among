@@ -88,9 +88,11 @@ struct Running {
 pub(super) struct State {
     registrations: RefCell<Vec<Registration>>,
     catalogues: RefCell<Vec<SourceCatalogue>>,
-    // a development prerelease catalogue: not saved, replaces the official one.
-    overlay: RefCell<Option<Inspection>>,
+    // Development prerelease catalogues are session-only and keyed by the
+    // numeric source identity, so several sources never replace each other.
+    overlay: RefCell<BTreeMap<u64, Inspection>>,
     loader: RefCell<Option<registry::Job>>,
+    reload_requested: Cell<bool>,
     loaded: Cell<bool>,
     refreshing: RefCell<Option<Refreshing>>,
     channel: Cell<Channel>,
@@ -106,8 +108,9 @@ impl State {
         Self {
             registrations: RefCell::new(Vec::new()),
             catalogues: RefCell::new(Vec::new()),
-            overlay: RefCell::new(None),
+            overlay: RefCell::new(BTreeMap::new()),
             loader: RefCell::new(None),
+            reload_requested: Cell::new(false),
             loaded: Cell::new(false),
             refreshing: RefCell::new(None),
             channel: Cell::new(if development {
@@ -137,6 +140,7 @@ pub(super) struct Env {
     pub ctx: PreferencesContext,
     pub services: Services,
     pub state: State,
+    lookup: Rc<super::source_dialog::Lookup>,
     /// Moves focus to where a plugin that just left Installed now is in the
     /// list, or to the search field; set once the page exists.
     pub focus: RefCell<Option<FocusAfterRemoval>>,
@@ -228,11 +232,20 @@ pub(super) fn page(ctx: &PreferencesContext) -> adw::PreferencesPage {
 }
 
 pub(super) fn page_with(ctx: &PreferencesContext, services: Services) -> adw::PreferencesPage {
+    page_with_lookup(ctx, services, Rc::new(SourceJob::start))
+}
+
+pub(super) fn page_with_lookup(
+    ctx: &PreferencesContext,
+    services: Services,
+    lookup: Rc<super::source_dialog::Lookup>,
+) -> adw::PreferencesPage {
     let development = crate::plugin::development::enabled();
     let env = Rc::new(Env {
         ctx: ctx.clone(),
         services,
         state: State::new(development),
+        lookup,
         focus: RefCell::new(None),
     });
     let page = adw::PreferencesPage::new();
@@ -290,6 +303,34 @@ pub(super) fn page_with(ctx: &PreferencesContext, services: Services) -> adw::Pr
     status.set_child(Some(&status_button));
     available.add(&status);
     page.add(&available);
+
+    let sources = adw::PreferencesGroup::new();
+    let sources_row = adw::ActionRow::new();
+    sources_row.set_title("Sources");
+    sources_row.set_widget_name("plugins-sources");
+    sources_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    sources_row.set_activatable(true);
+    sources_row.connect_activated({
+        let env = env.clone();
+        move |row| {
+            if let Some(window) = row
+                .root()
+                .and_then(|root| root.downcast::<adw::PreferencesWindow>().ok())
+            {
+                super::sources::present(
+                    &window,
+                    source_services(&env),
+                    source_changed(&env),
+                    Rc::new({
+                        let env = env.clone();
+                        move |inspection| observed(&env, inspection)
+                    }),
+                );
+            }
+        }
+    });
+    sources.add(&sources_row);
+    page.add(&sources);
 
     if development {
         let development_group = adw::PreferencesGroup::new();
@@ -349,17 +390,13 @@ pub(super) fn page_with(ctx: &PreferencesContext, services: Services) -> adw::Pr
         });
     }
     add.connect_clicked({
-        let ctx = ctx.clone();
+        let env = env.clone();
         move |button| {
             if let Some(parent) = button
                 .root()
                 .and_then(|root| root.downcast::<gtk::Window>().ok())
             {
-                super::repositories::present(
-                    &parent,
-                    ctx.installations_changed.clone(),
-                    ctx.plugin_details.clone(),
-                );
+                super::sources::add_dialog(&parent, source_services(&env), source_changed(&env));
             }
         }
     });
@@ -441,6 +478,7 @@ fn channel_switch(env: &Rc<Env>) -> gtk::Box {
 
 fn start_load(env: &Rc<Env>) {
     if env.state.loader.borrow().is_some() {
+        env.state.reload_requested.set(true);
         return;
     }
     let Some(root) = env.services.root.clone() else {
@@ -460,6 +498,33 @@ fn start_load(env: &Rc<Env>) {
     }
 }
 
+fn source_services(env: &Rc<Env>) -> super::sources::Services {
+    super::sources::Services {
+        root: env.services.root.clone(),
+        lookup: env.lookup.clone(),
+        refresh: Rc::new({
+            let env = env.clone();
+            move |id| match env.state.channel.get() {
+                Channel::Stable => (env.services.refresh)(id),
+                Channel::Prerelease => (env.services.prerelease)(id),
+            }
+        }),
+    }
+}
+
+fn source_changed(env: &Rc<Env>) -> Rc<dyn Fn()> {
+    let env = env.clone();
+    Rc::new(move || {
+        // A saved source mutation invalidates session-only offers. Re-read
+        // locally now, so Add/Remove is reflected without reopening Plugins.
+        if env.state.channel.get() == Channel::Stable {
+            env.state.overlay.borrow_mut().clear();
+        }
+        *env.state.notice.borrow_mut() = Notice::Nothing;
+        start_load(&env);
+    })
+}
+
 /// Turns the registrations into catalogues once per change, so the
 /// periodic reconciliation never decodes snapshots again.
 fn rebuild_catalogues(env: &Env) {
@@ -469,9 +534,14 @@ fn rebuild_catalogues(env: &Env) {
             .iter()
             .map(SourceCatalogue::from_registration)
             .collect();
-    if let Some(overlay) = state.overlay.borrow().clone() {
-        if let Some(official) = catalogues.iter_mut().find(|source| source.official) {
-            *official = SourceCatalogue::from_inspection(overlay, true);
+    for source in &mut catalogues {
+        if let Some(overlay) = state.overlay.borrow().get(&source.origin.repository_id) {
+            if matches!(
+                overlay.origin().compare(&source.origin),
+                Change::Unchanged | Change::Renamed
+            ) {
+                *source = SourceCatalogue::from_inspection(overlay.clone(), source.official);
+            }
         }
     }
     *state.catalogues.borrow_mut() = catalogues;
@@ -510,6 +580,15 @@ fn poll_sources(env: &Rc<Env>) {
                 registrations,
                 problem,
             }) => {
+                state.overlay.borrow_mut().retain(|id, inspection| {
+                    registrations.iter().any(|source| {
+                        source.origin.repository_id == *id
+                            && matches!(
+                                inspection.origin().compare(&source.origin),
+                                Change::Unchanged | Change::Renamed
+                            )
+                    })
+                });
                 *state.registrations.borrow_mut() = registrations;
                 if let Some(problem) = problem {
                     *state.notice.borrow_mut() = Notice::Failed(problem.to_string());
@@ -519,6 +598,9 @@ fn poll_sources(env: &Rc<Env>) {
             Err(problem) => *state.notice.borrow_mut() = Notice::Failed(problem.to_string()),
         }
         rebuild_catalogues(env);
+        if state.reload_requested.replace(false) {
+            start_load(env);
+        }
     }
     let current = state.refreshing.borrow_mut().take();
     match current {
@@ -563,10 +645,16 @@ fn poll_sources(env: &Rc<Env>) {
 fn observed(env: &Rc<Env>, inspection: Inspection) {
     let state = &env.state;
     if inspection.is_prerelease() {
-        // the same identity rules as a stable refresh: another repository or
-        // publisher is never shown as the official catalogue.
-        let official = registry::official_source();
-        let change = inspection.origin().compare(&official.origin);
+        let expected = registry::effective_sources(state.registrations.borrow().clone())
+            .into_iter()
+            .find(|source| source.origin.repository_id == inspection.repository_id);
+        let Some(expected) = expected else {
+            *state.notice.borrow_mut() =
+                Notice::Failed("Source was removed; its prerelease was not kept.".into());
+            state.dirty.set(true);
+            return;
+        };
+        let change = inspection.origin().compare(&expected.origin);
         let refusal = inspection
             .validate_source()
             .err()
@@ -580,13 +668,16 @@ fn observed(env: &Rc<Env>, inspection: Inspection) {
             state.dirty.set(true);
             return;
         }
-        *state.overlay.borrow_mut() = Some(inspection);
+        state
+            .overlay
+            .borrow_mut()
+            .insert(inspection.repository_id, inspection);
         *state.notice.borrow_mut() =
             Notice::Unsaved("Showing the newest pre-release catalogue. It is not saved.".into());
         rebuild_catalogues(env);
         return;
     }
-    state.overlay.borrow_mut().take();
+    state.overlay.borrow_mut().remove(&inspection.repository_id);
     let expected = state
         .registrations
         .borrow()
@@ -1078,7 +1169,7 @@ fn refresh_available_header(env: &Env, ui: &Ui) {
             }
         }
     }
-    if state.overlay.borrow().is_some() {
+    if !state.overlay.borrow().is_empty() {
         age = "pre-release catalogue, not saved".into();
     }
     if listing.several_sources() {
@@ -1100,7 +1191,7 @@ fn refresh_available_header(env: &Env, ui: &Ui) {
     let unloaded = state.loaded.get()
         && !has_list
         && official.is_none_or(|official| official.state == SourceState::NoSnapshot)
-        && state.overlay.borrow().is_none();
+        && state.overlay.borrow().is_empty();
     let (title, text, button) = if busy && !has_list {
         ("Loading the plugin list…", String::new(), None)
     } else if unloaded && notice == Notice::NoStable {
