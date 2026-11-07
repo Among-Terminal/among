@@ -1118,7 +1118,7 @@ fn reconcile(env: &Rc<Env>, ui: &Ui) {
             };
             if rows
                 .get(&info.key)
-                .is_some_and(|row| !row.matches_generation(&info.generation))
+                .is_some_and(|row| !row.matches_receipt(entry, &info.generation))
             {
                 if let Some(old) = rows.remove(&info.key) {
                     ui.installed.remove(&old.row);

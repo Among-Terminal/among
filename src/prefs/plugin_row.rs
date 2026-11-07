@@ -1,15 +1,14 @@
 //! one plugin row: icon, name, one-line description, shield, info control,
 //! settings control when settings exist, the switch for installed plugins and
 //! a single state slot. rows retain their widgets while observations change.
-//! package-generation replacement invalidates old rows instead of retargeting
-//! their controls.
+//! receipt replacement invalidates old rows instead of retargeting controls.
 
 use super::plugin_manager::{Env, Op};
 use super::trust::{self, Shield};
 use super::*;
 use crate::plugin::host::Overview;
 use crate::plugin::install::listing::{InstalledPlugin, Link, Offer, Standing};
-use crate::plugin::inventory::Entry;
+use crate::plugin::inventory::{Entry, Receipt};
 use std::cell::Cell;
 
 /// What a row shows besides its fixed controls, from the current listing.
@@ -201,12 +200,22 @@ pub(super) struct Row {
     slot: SlotWidgets,
     updating: Rc<Cell<bool>>,
     generation: Option<String>,
+    receipt: Option<Receipt>,
     installed: bool,
 }
 
 impl Row {
-    pub(super) fn matches_generation(&self, generation: &Option<String>) -> bool {
-        self.generation == *generation
+    pub(super) fn matches_receipt(
+        &self,
+        entry: Option<&Entry>,
+        generation: &Option<String>,
+    ) -> bool {
+        match (&self.receipt, entry) {
+            (Some(expected), Some(entry)) => *expected == entry.receipt,
+            // Inventory-only rows have no authoritative package receipt.
+            (None, None) => self.generation == *generation,
+            _ => false,
+        }
     }
 
     pub(super) fn new(env: &Rc<Env>, key: &str, shown: &Shown<'_>) -> Self {
@@ -260,6 +269,10 @@ impl Row {
             Shown::Installed { info, .. } => info.generation.clone(),
             Shown::Available { .. } => None,
         };
+        let receipt = match shown {
+            Shown::Installed { entry, .. } => entry.map(|entry| entry.receipt.clone()),
+            Shown::Available { .. } => None,
+        };
         let built = Self {
             row,
             icon_holder,
@@ -274,21 +287,19 @@ impl Row {
             slot,
             updating: Rc::new(Cell::new(false)),
             generation,
+            receipt,
             installed,
         };
-        let expected = match shown {
-            Shown::Installed { entry, .. } => entry.map(|entry| entry.receipt.clone()),
-            Shown::Available { .. } => None,
-        };
-        built.wire(env, key, expected);
+        built.wire(env, key);
         built
     }
 
-    fn wire(&self, env: &Rc<Env>, key: &str, expected: Option<crate::plugin::inventory::Receipt>) {
+    fn wire(&self, env: &Rc<Env>, key: &str) {
         let is_current: Rc<dyn Fn() -> bool> = Rc::new({
             let env = env.clone();
             let key = key.to_owned();
             let generation = self.generation.clone();
+            let expected = self.receipt.clone();
             let installed = self.installed;
             move || {
                 if let Some(expected) = &expected {
@@ -394,20 +405,14 @@ impl Row {
         });
         let signal = self.updating.clone();
         let weak_row = self.row.downgrade();
-        let generation = self.generation.clone();
+        let is_current = is_current.clone();
         let env = env.clone();
         let key = key.to_owned();
         self.switch.connect_active_notify(move |switch| {
             if signal.get() {
                 return;
             }
-            let current = (env.ctx.plugin_inventory)()
-                .into_iter()
-                .find(|info| info.key == key);
-            if current
-                .as_ref()
-                .is_none_or(|info| info.generation != generation)
-            {
+            if !is_current() {
                 if let Some(row) = weak_row.upgrade() {
                     row.set_subtitle("Plugin changed or was removed; reopen its current controls.");
                 }

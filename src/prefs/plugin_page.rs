@@ -544,16 +544,12 @@ fn build(
         let env = env.clone();
         let key = key.to_owned();
         let signal = updating.clone();
-        let generation = info.generation.clone();
+        let is_current = is_current.clone();
         move |switch| {
             if signal.get() {
                 return;
             }
-            if (env.ctx.plugin_inventory)()
-                .into_iter()
-                .find(|info| info.key == key)
-                .is_none_or(|info| info.generation != generation)
-            {
+            if !is_current() {
                 return;
             }
             env.clear_note(&key);
