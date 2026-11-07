@@ -121,6 +121,7 @@ impl Registration {
             self.origin.clone()
         }
     }
+    #[cfg(test)]
     pub fn display_title(&self) -> String {
         if self.is_official() {
             official::TITLE.into()
@@ -131,6 +132,7 @@ impl Registration {
     pub fn available(&self) -> Result<(), Problem> {
         official::validate(&self.origin)
     }
+    #[cfg(test)]
     pub fn snapshot_count(&self) -> usize {
         self.snapshots.len()
     }
@@ -195,6 +197,7 @@ pub enum Request {
         inspection: Box<Inspection>,
     },
     Remove(Registration),
+    #[cfg(test)]
     Cached(Registration),
 }
 
@@ -209,6 +212,7 @@ pub enum Outcome {
         durability: Durability,
         problem: Option<Problem>,
     },
+    #[cfg(test)]
     Cached {
         inspection: Box<Inspection>,
         retrieved_at: u64,
@@ -726,11 +730,15 @@ fn run_user(
     begin_commit: impl FnOnce() -> Result<(), Problem>,
 ) -> Result<Outcome, Problem> {
     check()?;
-    if matches!(&request, Request::List | Request::Cached(_)) {
+    let read_only = matches!(&request, Request::List);
+    #[cfg(test)]
+    let read_only = read_only || matches!(&request, Request::Cached(_));
+    if read_only {
         let (document, _) = read(root, &check)?;
         check()?;
         return match request {
             Request::List => Ok(Outcome::List(document.registrations)),
+            #[cfg(test)]
             Request::Cached(expected) => {
                 let current = document
                     .registrations

@@ -470,6 +470,7 @@ impl Selection {
         self.release.snapshot.is_prerelease()
     }
 
+    #[cfg(test)]
     pub fn identity(&self) -> String {
         format!("github:{}/{}", self.repository_id, self.version.manifest.id)
     }
