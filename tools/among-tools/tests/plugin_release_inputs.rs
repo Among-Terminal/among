@@ -114,6 +114,79 @@ fn both_native_workflow_jobs_use_release_binaries_and_keep_required_behaviour_co
 }
 
 #[test]
+fn published_selection_and_lifecycle_keep_separate_required_native_jobs() -> Result<()> {
+    let workflow: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(include_str!("../../../.github/workflows/checks.yml"))?;
+    let scripts = |job: &serde_yaml_ng::Value| -> Result<String> {
+        Ok(job["steps"]
+            .as_sequence()
+            .ok_or("job steps absent")?
+            .iter()
+            .filter_map(|step| step["run"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"))
+    };
+    for name in ["native", "published-development"] {
+        let job = &workflow["jobs"][name];
+        assert_eq!(job["needs"].as_str(), Some("published-plugins"));
+        assert!(job["if"].is_null());
+        assert!(job["continue-on-error"].is_null());
+        assert_eq!(
+            job["strategy"]["matrix"]["runner"],
+            serde_yaml_ng::to_value(["ubuntu-24.04", "ubuntu-24.04-arm"])?
+        );
+        let checkout = job["steps"]
+            .as_sequence()
+            .ok_or("steps absent")?
+            .iter()
+            .find(|step| {
+                step["uses"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("actions/checkout@"))
+            })
+            .ok_or("checkout absent")?;
+        assert_eq!(
+            checkout["with"]["ref"].as_str(),
+            Some("${{ github.event.pull_request.head.sha || github.sha }}")
+        );
+    }
+    let selection = scripts(&workflow["jobs"]["published-development"])?;
+    let lifecycle = scripts(&workflow["jobs"]["native"])?;
+    let input_download = workflow["jobs"]["published-development"]["steps"]
+        .as_sequence()
+        .ok_or("steps absent")?
+        .iter()
+        .find(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("actions/download-artifact@"))
+        })
+        .ok_or("published input download absent")?;
+    assert_eq!(
+        input_download["with"]["name"],
+        workflow["jobs"]["published-plugins"]["with"]["artifact"]
+    );
+    assert!(input_download["with"]["run-id"].is_null());
+    assert!(input_download["with"]["repository"].is_null());
+    for command in [
+        "prepare-published-plugin-inputs",
+        "export-plugin-catalogue",
+        "check-published-development-install",
+        "cargo +1.98.1 test --bin among --locked --no-run --message-format=json",
+    ] {
+        assert!(
+            selection.contains(command),
+            "required selection control missing: {command}"
+        );
+    }
+    assert!(!selection.contains("check-published-prerelease-install"));
+    assert!(!lifecycle.contains("check-published-development-install"));
+    assert!(lifecycle.contains("check-published-prerelease-install"));
+    assert!(lifecycle.contains("check-synthetic-plugin-replacement"));
+    Ok(())
+}
+
+#[test]
 fn required_consumers_share_one_published_pin_and_do_not_build_substitute_plugins() -> Result<()> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (file, consumer) in [

@@ -274,11 +274,25 @@ names, for a separate local development catalogue test.
 processes. `among-tools check-published-prerelease-install <among-test-executable>
 <inputs>` runs the full UI lifecycle with the explicit test-only development
 adapter. Neither changes the product's ordinary stable-only policy. Native tests
-use the exact downloaded metadata and archive bytes through their controlled HTTPS
-server; they do not perform another live publication observation.
+with `candidate:false` use the production GitHub HTTPS client for source refresh
+and installation. They compare its live snapshot, tag binding and installed bytes
+with the independently prepared inputs. The local catalogue case reads the
+verified archive bytes locally; synthetic replacement uses its owned HTTPS fixture.
 The aggregate preferences phases use `check-published-preferences-from-cargo`
 with the same verified inputs and explicit test-only mode. Ordinary preferences
 commands retain their existing mode and do not inherit this flag from the caller.
+
+Checks runs the complete published selection/local wrapper in the required
+`published-development` job on amd64 and arm64. The full published lifecycle stays
+in `native`, together with the separate synthetic replacement case. Counting the
+API calls in code, for a one-page release list and a tag directly targeting a
+commit, the selection test issues 23 requests and the lifecycle issues 39; putting both in one
+job would exceed the anonymous 60-request budget. The local case, preferences
+persistence fixture and subsequent profile replay make no GitHub requests.
+Separate jobs keep these API budgets separate, but do not guarantee independent
+public IP quotas or a fresh GitHub allowance. Prior traffic, another job sharing
+an address or additional release-list pages can still exhaust the available
+budget; rate refusal remains a failing acceptance result.
 
 The mandatory `check-synthetic-plugin-replacement` case retains the separate
 replacement/rebinding fixture over those archive bytes. It requires explicitly
