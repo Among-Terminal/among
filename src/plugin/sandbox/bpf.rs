@@ -316,11 +316,10 @@ mod tests {
         }
     }
 
+    /// Pin the Linux 6.17 ABI independently of libc and the policy table so
+    /// older build hosts still protect plugins running on newer kernels.
     #[test]
     fn path_based_file_attributes_are_refused_even_with_older_kernel_headers() {
-        // Linux 6.17 assigns 468/469 in both x86-64 and the generic table.
-        // Pin the ABI independently of libc and the generated policy table:
-        // older build hosts need to protect plugins on newer runtime kernels.
         let program = Program::build();
         for number in [468, 469] {
             for args in [[0; 6], [u64::MAX; 6]] {
@@ -332,6 +331,8 @@ mod tests {
         }
     }
 
+    /// Attribute EPERM to the loaded program only when the same unfiltered
+    /// calls can reach the kernel; inherited denials are inconclusive.
     #[test]
     fn the_loaded_filter_returns_eperm_for_both_file_attribute_syscall_numbers() {
         let program = Program::build();
@@ -343,6 +344,21 @@ mod tests {
         assert!(child >= 0, "fork: {}", std::io::Error::last_os_error());
         if child == 0 {
             unsafe {
+                let mut inherited_denial = false;
+                for number in [468 as libc::c_long, 469] {
+                    let result = libc::syscall(
+                        number,
+                        0 as libc::c_long,
+                        0 as libc::c_long,
+                        0 as libc::c_long,
+                        0 as libc::c_long,
+                        0 as libc::c_long,
+                    );
+                    inherited_denial |= result == -1 && *libc::__errno_location() == libc::EPERM;
+                }
+                if inherited_denial {
+                    libc::_exit(20);
+                }
                 if libc::prctl(
                     libc::PR_SET_NO_NEW_PRIVS,
                     1 as libc::c_ulong,
@@ -381,11 +397,21 @@ mod tests {
         };
         assert_eq!(waited, child);
         assert!(libc::WIFEXITED(status), "child wait status {status}");
+        if libc::WEXITSTATUS(status) == 20 {
+            // Write through the stderr handle so the inconclusive control is
+            // visible even when the test harness captures passing-test output.
+            use std::io::Write;
+            std::io::stderr()
+                .write_all(b"NOT VERIFIED: inherited EPERM blocks file-attribute controls; rerun the loaded-filter test natively\n")
+                .unwrap();
+            return;
+        }
         assert_eq!(
             libc::WEXITSTATUS(status),
             0,
             "filter-load or syscall refusal failed"
         );
+        eprintln!("PASS loaded filter: both unfiltered controls reached the kernel without EPERM; both filtered calls returned EPERM");
     }
 
     #[test]

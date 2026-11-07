@@ -273,6 +273,8 @@ mod tests {
         list.iter().copied().collect()
     }
 
+    /// Keep the complete reviewed baseline independent of the generated
+    /// rules so changing a mapping cannot silently remove a denied call.
     #[test]
     fn the_filtered_calls_are_exactly_the_reviewed_list() {
         // written out here, not derived from the table: removing or adding a
