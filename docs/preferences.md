@@ -51,13 +51,22 @@ or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
 Desktop notifications are enabled for existing profiles too when
 `notifications.desktop` is absent. The default sends only while Among is in the
 background; a terminal currently viewed never sends a desktop notification,
-including with Always selected. A bell names its workspace, terminal title and
-directory. Program-controlled text is cleaned and bounded before delivery.
+including with Always selected. If General cannot be read or validated, Desktop
+delivery stays off for that session; a missing file still uses the enabled
+default. The diagnostic and original file are retained. A bell names its
+workspace and includes the terminal title and directory when available.
+Program-controlled text is cleaned and bounded before delivery.
 Clicking a notification selects its originating terminal, switching workspace and
-restoring an expanded sibling when needed. Closing or focusing that terminal,
+restoring an expanded sibling when needed. During the final session write,
+activation only raises the window, preserving the captured workspace, terminal
+and layout; cancelling close restores navigation.
+Closing or focusing the source,
 turning the channel off, and normal exit withdraw its notifications. A missing
 session notification service is reported on the desktop row. GIO cannot confirm
 that a shell displayed a send; see [installation requirements](install.md#desktop-notification-integration).
+A failed Desktop policy update withdraws its notifications and reports a problem
+on the Desktop row without saving the requested change. Change a Desktop setting
+to retry; other channels and idle ticks do not retry that failed update.
 The command's environment is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`,
 `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` when
 Among's own environment sets them, and nothing else.

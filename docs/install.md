@@ -62,6 +62,14 @@ GNOME Shell requires a matching `com.github.among-terminal.desktop` entry in its
 application search path. The DEB and RPM install that entry; the Snap recipe also
 includes it and currently uses `confinement: classic`.
 
+Desktop notification banners and click-to-focus from an installed Snap on GNOME
+remain unverified for the 0.2.0 candidates; this integration is required before
+the stable release. The current package has `meta/gui/among.desktop`, which
+snapd normally exports with the Snap name prefix. The canonical desktop file
+inside the Snap does not establish matching registration in GNOME's host search
+path. See the [Snap desktop interface](https://snapcraft.io/docs/reference/interfaces/desktop-interface/)
+for filename handling.
+
 Running an extracted binary archive or a bare AppImage does not install a desktop
 entry. GNOME Shell may discard its notifications even though the session's
 notification service is running. Install the matching entry as shown in the
@@ -232,6 +240,7 @@ Terminal=false
 Categories=System;TerminalEmulator;
 StartupNotify=true
 StartupWMClass=among
+X-GNOME-UsesNotifications=true
 EOF
 ```
 

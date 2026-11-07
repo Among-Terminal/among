@@ -42,6 +42,7 @@ pub struct Runtime {
     sender: Box<dyn Sender>,
     posted: BTreeMap<Source, String>,
     next_attempt: Option<Instant>,
+    configuration_failure: Option<Failure>,
     closed: bool,
 }
 
@@ -61,6 +62,7 @@ impl Runtime {
             sender,
             posted: BTreeMap::new(),
             next_attempt: None,
+            configuration_failure: None,
             closed: false,
         })
     }
@@ -69,23 +71,38 @@ impl Runtime {
         self.sender.availability()
     }
 
+    pub fn configuration_failure(&self) -> Option<Failure> {
+        self.configuration_failure
+    }
+
     /// Capture the desktop-only suppression rule in the semantic bell signal.
     /// A later focus change or service appearance cannot revive that event.
     pub fn ingress(&self, host: &mut Host, source: Source, focus: Focus) {
-        if !permits(self.policy, Some(source), focus)
-            || self.sender.availability() != Availability::Available
+        if self.configuration_failure.is_some()
+            || !permits(self.policy, Some(source), focus)
+            || self.sender.availability() == Availability::Unavailable
         {
             host.discard_pending_source(self.channel, source);
         }
     }
 
     pub fn configure(&mut self, host: &mut Host, policy: Policy) -> Result<(), Failure> {
-        if self.closed || policy == self.policy {
+        if self.closed {
+            return Err(Failure::StaleChannel);
+        }
+        if policy == self.policy && self.configuration_failure.is_none() {
             return Ok(());
         }
-        host.set_channel_policy(self.channel, policy)?;
-        self.policy = policy;
+        // the core retires old authority before allocating its replacement.
+        // even a refused edit must remove notifications owned by that revision.
         self.withdraw_all();
+        if let Err(reason) = host.set_channel_policy(self.channel, policy) {
+            self.configuration_failure = Some(reason);
+            host.discard_pending(self.channel);
+            return Err(reason);
+        }
+        self.policy = policy;
+        self.configuration_failure = None;
         Ok(())
     }
 
@@ -139,9 +156,17 @@ impl Runtime {
         mut text: impl FnMut(Source) -> Option<Text>,
     ) {
         self.observe(host, focus);
-        if self.closed || self.sender.availability() != Availability::Available {
+        if self.closed
+            || self.configuration_failure.is_some()
+            || self.sender.availability() == Availability::Unavailable
+        {
             // A missing service does not turn old bells into later popups.
             host.discard_pending(self.channel);
+            return;
+        }
+        // discovery has not established absence. keep only the core's bounded
+        // jobs; focus, policy, source identity and expiry are rechecked on send.
+        if self.sender.availability() == Availability::Checking {
             return;
         }
         if self.next_attempt.is_some_and(|next| now < next) {
@@ -228,6 +253,192 @@ mod tests {
     }
     fn text(_: Source) -> Option<Text> {
         Some(Text::new(Some(b"build"), Some(b"make"), Some(b"/work")))
+    }
+
+    #[test]
+    fn failed_policy_replacement_withdraws_and_never_uses_revoked_authority() {
+        let mut host = Host::new().unwrap();
+        let source = host.attach(1).unwrap();
+        let waiting = host.attach(2).unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = Runtime::new(
+            &mut host,
+            Box::new(Recorder {
+                calls: calls.clone(),
+                available: Rc::new(Cell::new(Availability::Available)),
+            }),
+            "instance".into(),
+        )
+        .unwrap();
+        let now = Instant::now();
+        host.bell(source, Focus::default(), now).unwrap();
+        runtime.poll(&mut host, Focus::default(), now, text);
+        let Call::Send(id, _, _) = calls.borrow()[0].clone() else {
+            panic!("the initial notification was not sent");
+        };
+        host.bell(source, Focus::default(), now + COOLDOWN).unwrap();
+        let job = host.take_ready(runtime.channel, now + COOLDOWN).unwrap();
+        let authority = host.authorization(job).unwrap();
+        host.bell(waiting, Focus::default(), now + COOLDOWN)
+            .unwrap();
+        host.channels.get_mut(&runtime.channel).unwrap().revision = u64::MAX;
+        assert_eq!(
+            runtime.configure(
+                &mut host,
+                Policy {
+                    enabled: false,
+                    ..Policy::DESKTOP_DEFAULT
+                }
+            ),
+            Err(Failure::Exhausted)
+        );
+        assert_eq!(runtime.configuration_failure(), Some(Failure::Exhausted));
+        assert_eq!(calls.borrow().last(), Some(&Call::Withdraw(id)));
+        assert!(runtime.posted.is_empty());
+        assert!(!authority.is_current());
+        assert_eq!(host.pending_count(Some(runtime.channel)), 0);
+        host.bell(source, Focus::default(), now + COOLDOWN * 2)
+            .unwrap();
+        runtime.poll(&mut host, Focus::default(), now + COOLDOWN * 2, text);
+        assert_eq!(calls.borrow().len(), 2);
+        assert_eq!(
+            runtime.configure(&mut host, Policy::DESKTOP_DEFAULT),
+            Err(Failure::Exhausted),
+            "retrying the previous policy must not take the equality success path"
+        );
+        assert_eq!(host.channels.len(), 1);
+    }
+
+    #[test]
+    fn discovery_preserves_only_bounded_core_work_and_resolves_text_at_send() {
+        let mut host = Host::new().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let available = Rc::new(Cell::new(Availability::Checking));
+        let mut runtime = Runtime::new(
+            &mut host,
+            Box::new(Recorder {
+                calls: calls.clone(),
+                available: available.clone(),
+            }),
+            "instance".into(),
+        )
+        .unwrap();
+        let now = Instant::now();
+        for pane in 1..=crate::notifications::MAX_PENDING_PER_CHANNEL + 1 {
+            let source = host.attach(pane as u64).unwrap();
+            host.bell(source, Focus::default(), now).unwrap();
+            runtime.ingress(&mut host, source, Focus::default());
+        }
+        let builds = Cell::new(0);
+        runtime.poll(&mut host, Focus::default(), now, |source| {
+            builds.set(builds.get() + 1);
+            text(source)
+        });
+        assert_eq!(builds.get(), 0);
+        assert!(calls.borrow().is_empty());
+        assert_eq!(
+            host.pending_count(Some(runtime.channel)),
+            crate::notifications::MAX_PENDING_PER_CHANNEL
+        );
+        available.set(Availability::Available);
+        let fresh = Text::new(Some(b"renamed"), Some(b"new title"), Some(b"/new"));
+        runtime.poll(&mut host, Focus::default(), now + GLOBAL_INTERVAL, |_| {
+            builds.set(builds.get() + 1);
+            Some(fresh.clone())
+        });
+        assert_eq!(builds.get(), 1);
+        let recorded = calls.borrow();
+        let [Call::Send(_, actual, _)] = recorded.as_slice() else {
+            panic!("discovery did not release exactly one core job");
+        };
+        assert_eq!(actual, &fresh);
+    }
+
+    #[test]
+    fn discovery_revalidates_focus_policy_source_and_expiry_before_delivery() {
+        for invalidation in [
+            "viewed",
+            "foreground",
+            "policy",
+            "source",
+            "expired",
+            "unavailable",
+        ] {
+            let mut host = Host::new().unwrap();
+            let source = host.attach(1).unwrap();
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let available = Rc::new(Cell::new(Availability::Checking));
+            let mut runtime = Runtime::new(
+                &mut host,
+                Box::new(Recorder {
+                    calls: calls.clone(),
+                    available: available.clone(),
+                }),
+                "instance".into(),
+            )
+            .unwrap();
+            let now = Instant::now();
+            host.bell(source, Focus::default(), now).unwrap();
+            runtime.ingress(&mut host, source, Focus::default());
+            runtime.poll(&mut host, Focus::default(), now, text);
+            assert_eq!(host.pending_count(Some(runtime.channel)), 1);
+            match invalidation {
+                "viewed" => runtime.observe(
+                    &mut host,
+                    Focus {
+                        application_active: true,
+                        viewed: Some(source),
+                    },
+                ),
+                "policy" => {
+                    runtime
+                        .configure(
+                            &mut host,
+                            Policy {
+                                enabled: false,
+                                ..Policy::DESKTOP_DEFAULT
+                            },
+                        )
+                        .unwrap();
+                    runtime
+                        .configure(&mut host, Policy::DESKTOP_DEFAULT)
+                        .unwrap();
+                }
+                "source" => {
+                    host.detach(source);
+                    host.attach(source.pane()).unwrap();
+                }
+                "unavailable" => {
+                    available.set(Availability::Unavailable);
+                    runtime.poll(&mut host, Focus::default(), now + GLOBAL_INTERVAL, text);
+                }
+                "expired" | "foreground" => {}
+                _ => unreachable!(),
+            }
+            available.set(Availability::Available);
+            let ready = if invalidation == "expired" {
+                now + EVENT_LIFETIME + Duration::from_millis(1)
+            } else {
+                now + GLOBAL_INTERVAL * 2
+            };
+            let focus = Focus {
+                application_active: invalidation == "foreground",
+                viewed: None,
+            };
+            runtime.poll(&mut host, focus, ready, text);
+            runtime.poll(&mut host, Focus::default(), ready + GLOBAL_INTERVAL, text);
+            assert!(calls.borrow().is_empty(), "replayed after {invalidation}");
+            assert_eq!(host.pending_count(Some(runtime.channel)), 0);
+            let current = host.source(source.pane()).unwrap();
+            host.bell(current, Focus::default(), ready + COOLDOWN)
+                .unwrap();
+            runtime.poll(&mut host, Focus::default(), ready + COOLDOWN, text);
+            assert_eq!(
+                calls.borrow().len(),
+                1,
+                "fresh bell lost after {invalidation}"
+            );
+        }
     }
 
     #[test]

@@ -119,6 +119,63 @@ fn desktop_contract_runs_in_the_required_native_jobs_on_both_ubuntu_architecture
     Ok(())
 }
 
+#[test]
+fn actual_application_listings_require_the_desktop_case_while_other_binaries_do_not(
+) -> among_tools::Result<()> {
+    let base = among_tools::storage::private_directory(
+        &among_tools::scratch::root()?,
+        "desktop-listing-contract",
+    )?;
+    for missing in [false, true] {
+        let executable = base.join(if missing { "missing" } else { "present" });
+        let mut compiler = std::process::Command::new("rustc");
+        compiler
+            .args(["--edition=2021", "--test"])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/desktop-listing.rs"),
+            )
+            .arg("-o")
+            .arg(&executable);
+        if missing {
+            compiler.args(["--cfg", "missing_desktop"]);
+        }
+        let compiled = compiler.output()?;
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let output = std::process::Command::new(&executable)
+            .args(["--list", "--ignored"])
+            .output()?;
+        assert!(output.status.success());
+        let listing = String::from_utf8(output.stdout)?;
+        let mut record = serde_json::json!({"reason":"compiler-artifact","profile":{"test":true},"executable":executable,"target":{"name":"among","kind":["bin"]}});
+        let selected = ignored_tests::selected_names(&record.to_string(), &executable, &listing);
+        if missing {
+            let error = selected
+                .err()
+                .ok_or("the application lost its desktop contract without failing")?;
+            assert!(error
+                .to_string()
+                .contains("exactly one desktop notification contract"));
+        } else {
+            assert!(selected?
+                .iter()
+                .any(|name| name == among_tools::desktop_notifications::TEST));
+        }
+        record["target"]["name"] = serde_json::json!("among-tools");
+        assert!(
+            ignored_tests::selected_names(&record.to_string(), &executable, &listing)?
+                .iter()
+                .any(|name| name == "ordinary_graphical_case")
+        );
+    }
+    std::fs::remove_dir_all(base)?;
+    Ok(())
+}
+
 struct SelectionFixture(std::path::PathBuf);
 
 impl Drop for SelectionFixture {

@@ -45,6 +45,8 @@ pub struct AppState {
     pub workspaces: WorkspaceSet,
     pub panes: std::collections::BTreeMap<PaneId, Pane>,
     bells: Option<Rc<bell::Backend>>,
+    #[cfg(test)]
+    desktop_text_builds: Cell<usize>,
     /// Exit status of every process that has finished, per pane.
     ///
     /// Recorded rather than inferred, because a process that exited while its
@@ -238,6 +240,8 @@ impl AppState {
             workspaces: WorkspaceSet::new(Workspace::new("project".into(), first, 0)),
             panes: std::collections::BTreeMap::new(),
             bells: None,
+            #[cfg(test)]
+            desktop_text_builds: Cell::new(0),
             exited: std::collections::HashMap::new(),
             sidebar_collapsed: false,
             sidebar_width: None,
@@ -378,6 +382,63 @@ fn plugin_context(state: &AppState) -> Context {
     }
 }
 
+/// Resolve only a notification that is ready to be sent, using its terminal's
+/// current metadata. A weak reference lets a closed window release its state.
+fn desktop_text_resolver(
+    state: &Rc<RefCell<AppState>>,
+) -> Rc<dyn Fn(among::notifications::Source) -> Option<among::notifications::desktop::Text>> {
+    let state = Rc::downgrade(state);
+    Rc::new(move |source| {
+        let state = state.upgrade()?;
+        let state = state.borrow();
+        let pane_id = PaneId(source.pane());
+        let workspace = state
+            .workspaces
+            .workspaces()
+            .iter()
+            .find(|workspace| workspace.panes().contains(&pane_id))?;
+        let pane = state.pane(pane_id)?;
+        let title = pane.title();
+        let directory = pane.cwd();
+        #[cfg(test)]
+        state
+            .desktop_text_builds
+            .set(state.desktop_text_builds.get().wrapping_add(1));
+        Some(among::notifications::desktop::Text::new(
+            Some(workspace.name.as_bytes()),
+            title.as_deref().map(str::as_bytes),
+            directory.as_deref().map(str::as_bytes),
+        ))
+    })
+}
+
+/// Missing preferences use the documented defaults. A rejected saved document
+/// cannot silently enable desktop delivery; its load diagnostic stays visible.
+fn initial_notification_preferences(
+    settings: &mut crate::settings::PreferencesStorage,
+) -> among::notifications::preferences::Preferences {
+    let fallback = || among::notifications::preferences::Preferences {
+        desktop: among::notifications::Policy {
+            enabled: false,
+            ..among::notifications::Policy::DESKTOP_DEFAULT
+        },
+        ..among::notifications::preferences::Preferences::default()
+    };
+    let Some(document) = settings.load(crate::settings::Document::General) else {
+        return fallback();
+    };
+    match among::notifications::preferences::Preferences::parse(&document) {
+        Ok(preferences) => preferences,
+        Err(problem) => {
+            settings.problems.insert(
+                crate::settings::Document::General.filename().into(),
+                problem.into(),
+            );
+            fallback()
+        }
+    }
+}
+
 fn update_plugin_context(state: &mut AppState) {
     let context = plugin_context(state);
     let workspaces: Vec<_> = state
@@ -393,31 +454,6 @@ fn update_plugin_context(state: &mut AppState) {
         state.pane_drag = None;
     }
     if let Some(bells) = &state.bells {
-        bells.set_desktop_text(
-            state
-                .workspaces
-                .workspaces()
-                .iter()
-                .flat_map(|workspace| {
-                    workspace
-                        .panes()
-                        .into_iter()
-                        .map(|pane| {
-                            let title = state.pane(pane).and_then(|pane| pane.title());
-                            let directory = state.pane(pane).and_then(|pane| pane.cwd());
-                            (
-                                pane.0,
-                                among::notifications::desktop::Text::new(
-                                    Some(workspace.name.as_bytes()),
-                                    title.as_deref().map(str::as_bytes),
-                                    directory.as_deref().map(str::as_bytes),
-                                ),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect(),
-        );
         bells.set_workspaces(
             state
                 .workspaces
@@ -597,7 +633,7 @@ fn build_with_writer(
     let admission = application_plugins(app);
     let state = Rc::new(RefCell::new(AppState::new(admission.admission.clone())));
     admission.current.replace(Rc::downgrade(&state));
-    match bell::Backend::new(&window) {
+    match bell::Backend::new(&window, desktop_text_resolver(&state)) {
         Ok(backend) => {
             let mut state = state.borrow_mut();
             state.plugins = PluginHost::with_notification_backend(
@@ -610,16 +646,13 @@ fn build_with_writer(
     }
     {
         let mut state = state.borrow_mut();
-        if let Some(document) = state.settings.load(crate::settings::Document::General) {
-            if let Ok(preferences) =
-                among::notifications::preferences::Preferences::parse(&document)
-            {
-                if let Some(bells) = &state.bells {
-                    let source = preferences.sound.clone();
-                    bells.configure(preferences);
-                    bells.restore_sound(source);
-                }
+        let preferences = initial_notification_preferences(&mut state.settings);
+        if let Some(bells) = &state.bells {
+            let source = preferences.sound.clone();
+            if let Err(reason) = bells.configure(preferences) {
+                eprintln!("among: initial notification preferences could not be applied: {reason}");
             }
+            bells.restore_sound(source);
         }
         state.sidebar_width = state
             .settings
@@ -2115,6 +2148,10 @@ fn install_desktop_action(ctx: &Window) {
     action.connect_activate({
         let ctx = ctx.handle();
         move |_, parameter| {
+            if ctx.state.borrow().session_closing {
+                ctx.window.present();
+                return;
+            }
             let source = parameter.and_then(|target| {
                 ctx.state
                     .borrow()
@@ -6052,6 +6089,8 @@ mod plugin_tests;
 
 #[cfg(test)]
 mod bell_tests;
+#[cfg(test)]
+mod desktop_failure_tests;
 #[cfg(test)]
 mod desktop_notification_tests;
 #[cfg(test)]

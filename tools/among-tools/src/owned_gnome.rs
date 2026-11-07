@@ -15,6 +15,7 @@ use std::{
 };
 
 pub(crate) const ROOT: &str = "/owned";
+const ASYNC_EVAL_PROBE: &str = "(async () => true)()";
 pub(crate) const AUTOMATION: &str = r#"import GLib from 'gi://GLib';
 export function init() { global.context.unsafe_mode = true; }
 export async function run() {
@@ -66,6 +67,27 @@ pub(crate) fn eval(runner: &mut Runner, code: &str) -> Result<String> {
         return Err(format!("owned GNOME inspection failed: {text}").into());
     }
     Ok(text)
+}
+
+fn async_eval_available(success: bool, output: &str) -> Result<bool> {
+    let output = output.trim();
+    if !success || output.starts_with("(false,") {
+        return Ok(false);
+    }
+    if output == "(true, 'true')" {
+        return Ok(true);
+    }
+    Err(format!("owned GNOME requires Shell Eval that awaits Promises (upstream GNOME Shell 46+); response: {output}; inspect eval-capability.txt").into())
+}
+
+fn wait_with_evidence(
+    child: &mut OwnedProcess,
+    timeout: Duration,
+    base: &Path,
+) -> Result<std::process::ExitStatus> {
+    child
+        .wait(timeout)
+        .map_err(|error| format!("{error}; evidence: {}", base.display()).into())
 }
 
 pub(crate) fn screenshot(runner: &mut Runner, path: &Path) -> Result<()> {
@@ -315,7 +337,7 @@ pub(crate) fn launch(
         &base,
         &log,
     )?;
-    let status = child.wait(Duration::from_secs(170))?;
+    let status = wait_with_evidence(&mut child, Duration::from_secs(170), &base)?;
     if !status.success() {
         return Err(format!("owned GNOME proof failed; evidence: {}", base.display()).into());
     }
@@ -461,9 +483,33 @@ impl Session {
             _system_bus: system_bus,
         };
         let deadline = Instant::now() + Duration::from_secs(30);
+        let mut async_verified = false;
         loop {
             if !session.shell.is_running()? || Instant::now() >= deadline {
                 return Err("owned GNOME failed readiness; inspect gnome-shell.log".into());
+            }
+            if !async_verified {
+                let (success, output) = session.runner.execute(
+                    "/usr/bin/gdbus",
+                    &[
+                        "call",
+                        "--session",
+                        "--dest",
+                        "org.gnome.Shell",
+                        "--object-path",
+                        "/org/gnome/Shell",
+                        "--method",
+                        "org.gnome.Shell.Eval",
+                        ASYNC_EVAL_PROBE,
+                    ],
+                    2,
+                )?;
+                fs::write(session.runner.base.join("eval-capability.txt"), &output)?;
+                if !async_eval_available(success, &output)? {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                async_verified = true;
             }
             let (success, output) = session.runner.execute("/usr/bin/gdbus", &["call", "--session", "--dest", "org.gnome.Shell", "--object-path", "/org/gnome/Shell", "--method", "org.gnome.Shell.Eval", "(async () => { const Main = await import('resource:///org/gnome/shell/ui/main.js'); return !Main.layoutManager._startingUp; })()"], 2)?;
             if success && output.trim() == "(true, 'true')" {
@@ -523,5 +569,46 @@ impl Session {
 
     pub(crate) fn alive(&mut self) -> Result<bool> {
         self.shell.is_running()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn async_eval_probe_distinguishes_awaited_results_from_promises_and_startup() -> Result<()> {
+        assert!(async_eval_available(true, "(true, 'true')\n")?);
+        assert!(!async_eval_available(false, "service is not ready")?);
+        assert!(!async_eval_available(true, "(false, '')")?);
+        for unsupported in [
+            "(true, '{}')",
+            "(true, '[object Promise]')",
+            "(true, 'false')",
+        ] {
+            let error = async_eval_available(true, unsupported)
+                .err()
+                .ok_or("synchronous Eval was accepted as Promise-aware")?;
+            assert!(error.to_string().contains("awaits Promises"));
+            assert!(error.to_string().contains("eval-capability.txt"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_real_owned_timeout_retains_its_original_error_and_evidence_path() -> Result<()> {
+        let base = storage::private_directory(&crate::scratch::root()?, "gnome-timeout-unit")?;
+        let log = File::create(base.join("child.log"))?;
+        let env = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
+        let mut child =
+            OwnedProcess::spawn(Path::new("/usr/bin/sleep"), &["30"], &env, &base, &log)?;
+        let error = wait_with_evidence(&mut child, Duration::from_millis(1), &base)
+            .err()
+            .ok_or("sleep did not time out")?;
+        let message = error.to_string();
+        assert!(message.contains("owned process timed out; its process group was stopped"));
+        assert!(message.contains(&format!("evidence: {}", base.display())));
+        fs::remove_dir_all(base)?;
+        Ok(())
     }
 }

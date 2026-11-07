@@ -398,6 +398,31 @@ fn wait_pane_focus(after: usize, pane: u64) -> Result<()> {
     }
 }
 
+fn other_project_active(log: &str) -> bool {
+    let complete = log.rfind('\n').map_or("", |end| &log[..=end]);
+    complete
+        .lines()
+        .rev()
+        .find(|line| line.contains("workspaces=") && line.contains("focused=PaneId("))
+        .is_some_and(|line| line.contains("workspaces=2 active=1 "))
+}
+
+fn wait_other_project(session: &mut Session, after: usize) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let log = app_log()?;
+        fs::write(Path::new(ROOT).join("project-before-app.log"), &log)?;
+        let fresh = log.get(after..).ok_or("Among log was truncated")?;
+        if other_project_active(fresh) {
+            return Ok(());
+        }
+        if !session.alive()? || Instant::now() >= deadline {
+            return Err("other-project scenario did not activate Among workspace 1; inspect project-before-app.log".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn minimise(session: &mut Session, name: &str) -> Result<Value> {
     session.json(
         &format!("{name}-minimise-request"),
@@ -569,9 +594,11 @@ pub fn inside(mode: &str) -> Result<()> {
         return Err("notification focus did not restore the expanded layout".into());
     }
     scenarios.push(json!({"name":"hidden-sibling","notification":shown,"after":after}));
+    let project_offset = app_log()?.len();
     release("hidden-clicked")?;
 
     wait_mark(&mut session, "project")?;
+    wait_other_project(&mut session, project_offset)?;
     minimise(&mut session, "project")?;
     ring(&mut session, "project")?;
     let shown = notification(&mut session, "project")?;
@@ -675,4 +702,22 @@ pub fn inside(mode: &str) -> Result<()> {
         serde_json::to_vec_pretty(&result)?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    #[test]
+    fn a_noop_workspace_action_or_stale_report_cannot_prove_another_project() {
+        let original = "among[tick1]: workspaces=2 active=0 name=one focused=PaneId(1)\n";
+        let project = "among[tick2]: workspaces=2 active=1 name=two focused=PaneId(3)\n";
+        assert!(!other_project_active(original));
+        assert!(other_project_active(&format!("{original}{project}")));
+        assert!(!other_project_active(&format!("{project}{original}")));
+        assert!(!other_project_active(project.trim_end()));
+        let before = format!("{project}{original}");
+        let after = format!("{before}{original}");
+        assert!(!other_project_active(&after[before.len()..]));
+    }
 }

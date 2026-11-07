@@ -3,7 +3,96 @@ use super::*;
 use among::notifications::{preferences::Edit, Eligibility, Policy, COOLDOWN};
 use std::collections::BTreeMap;
 
-const APP_ID: &str = "com.github.among-terminal.desktop-notification-test";
+#[test]
+fn missing_notification_preferences_keep_defaults_without_creating_a_file() {
+    let root = crate::plugin::install::TestOwnedRoot::new();
+    let mut storage = crate::settings::PreferencesStorage::new(Some(root.0.clone()));
+    let loaded = initial_notification_preferences(&mut storage);
+    assert_eq!(loaded.desktop, Policy::DESKTOP_DEFAULT);
+    assert!(storage.problems.is_empty());
+    assert!(!root.0.join("general.json").exists());
+}
+
+#[test]
+fn rejected_notification_preferences_disable_desktop_without_repairing_saved_bytes() {
+    use std::os::unix::fs::PermissionsExt;
+    for bytes in [
+        "{",
+        r#"{"version":2}"#,
+        r#"{"version":1,"notifications":{"desktop":{"enabled":"true"}}}"#,
+        r#"{"version":1,"notifications":{"desktop":{"eligibility":"future"}}}"#,
+        r#"{"version":1,"notifications":{"audio":{"enabled":17}}}"#,
+    ] {
+        let root = crate::plugin::install::TestOwnedRoot::new();
+        let file = root.0.join("general.json");
+        std::fs::write(&file, bytes).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut storage = crate::settings::PreferencesStorage::new(Some(root.0.clone()));
+        let loaded = initial_notification_preferences(&mut storage);
+        assert!(
+            !loaded.desktop.enabled,
+            "rejected policy enabled desktop: {bytes}"
+        );
+        assert!(storage.problems.contains_key("general.json"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn unsafe_or_unavailable_notification_preferences_disable_desktop_without_writing() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    const VALID: &str = r#"{"version":1,"notifications":{"desktop":{"enabled":true}}}"#;
+    for unsafe_kind in ["symlink", "writable-file", "writable-directory"] {
+        let root = crate::plugin::install::TestOwnedRoot::new();
+        let profile = root.0.join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let file = profile.join("general.json");
+        let target = root.0.join("target.json");
+        std::fs::write(&target, VALID).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        if unsafe_kind == "symlink" {
+            symlink(&target, &file).unwrap();
+        } else {
+            std::fs::write(&file, VALID).unwrap();
+            std::fs::set_permissions(
+                &file,
+                std::fs::Permissions::from_mode(if unsafe_kind == "writable-file" {
+                    0o666
+                } else {
+                    0o600
+                }),
+            )
+            .unwrap();
+        }
+        if unsafe_kind == "writable-directory" {
+            std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        let mut storage = crate::settings::PreferencesStorage::new(Some(profile));
+        assert!(
+            !initial_notification_preferences(&mut storage)
+                .desktop
+                .enabled,
+            "unsafe {unsafe_kind} enabled desktop"
+        );
+        assert!(storage.problems.contains_key("general.json"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), VALID);
+        if unsafe_kind == "symlink" {
+            assert_eq!(std::fs::read_link(&file).unwrap(), target);
+        } else {
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), VALID);
+        }
+    }
+    let mut unavailable = crate::settings::PreferencesStorage::new(None);
+    assert!(
+        !initial_notification_preferences(&mut unavailable)
+            .desktop
+            .enabled
+    );
+    assert!(unavailable.problems.contains_key("general.json"));
+}
+
+pub(super) const APP_ID: &str = "com.github.among-terminal.desktop-notification-test";
 // Wire contract: GNOME GLib gio/ggtknotificationbackend.c AddNotification(ssa{sv})
 // and RemoveNotification(ss); the recorder checks the real GIO calls.
 const INTERFACE: &str = r#"<node><interface name="org.gtk.Notifications">
@@ -24,14 +113,14 @@ enum Call {
     },
 }
 
-struct Server {
+pub(super) struct Server {
     connection: gio::DBusConnection,
     registration: Option<gio::RegistrationId>,
     calls: Rc<RefCell<Vec<Call>>>,
 }
 
 impl Server {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).unwrap();
         let node = gio::DBusNodeInfo::for_xml(INTERFACE).unwrap();
         let calls = Rc::new(RefCell::new(Vec::new()));
@@ -89,7 +178,7 @@ impl Server {
         }
     }
 
-    fn additions(&self) -> Vec<(String, BTreeMap<String, glib::Variant>)> {
+    pub(super) fn additions(&self) -> Vec<(String, BTreeMap<String, glib::Variant>)> {
         self.calls
             .borrow()
             .iter()
@@ -107,7 +196,7 @@ impl Server {
             .collect()
     }
 
-    fn removed(&self, expected: &str) -> bool {
+    pub(super) fn removed(&self, expected: &str) -> bool {
         self.calls.borrow().iter().any(|call| matches!(call, Call::Remove { application, id } if application == APP_ID && id == expected))
     }
 
@@ -168,7 +257,7 @@ fn call_activation(app: &adw::Application, target: glib::Variant) {
     wait(|| completed.get(), "D-Bus application action completed");
 }
 
-fn named<T: IsA<gtk::Widget> + glib::object::IsClass>(
+pub(super) fn named<T: IsA<gtk::Widget> + glib::object::IsClass>(
     root: &impl IsA<gtk::Widget>,
     name: &str,
 ) -> T {
@@ -221,7 +310,7 @@ fn activation_diagnostic(window: &gtk::Window, phase: &str, xid: &str) {
 
 /// Search predicates are ANDed explicitly: xdotool's default OR would also
 /// select the other test window with the same PID, regardless of its title.
-fn activate(window: &impl IsA<gtk::Window>, phase: &str) {
+pub(super) fn activate(window: &impl IsA<gtk::Window>, phase: &str) {
     let window = window.as_ref();
     let title = window.title().unwrap();
     let exact_title = format!("^{title}$");
@@ -252,6 +341,142 @@ fn activate(window: &impl IsA<gtk::Window>, phase: &str) {
         "{phase}: target window {title:?} xid={xid} did not become active"
     );
     pump_for(Duration::from_millis(100));
+}
+
+fn closing_activation_preserves_the_final_snapshot_until_close_is_cancelled(
+    ctx: &Window,
+    application: &adw::Application,
+    other: &gtk::Window,
+    target: &glib::Variant,
+    originating_pane: PaneId,
+) {
+    struct ReleaseWriter(Option<std::sync::mpsc::Sender<()>>);
+    impl Drop for ReleaseWriter {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    fn find_button(widget: &gtk::Widget) -> Option<gtk::Button> {
+        if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+            if button.label().as_deref() == Some("Keep open") {
+                return Some(button.clone());
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(button) = find_button(&widget) {
+                return Some(button);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    let backend = ctx.state.borrow().bells.clone().unwrap();
+    let source = backend
+        .resolve_desktop_target(target)
+        .expect("existing core source target");
+    assert_eq!(source.pane(), originating_pane.0);
+    assert!(ctx.state.borrow_mut().workspaces.activate(1));
+    switch_workspace(ctx);
+    split_focused(ctx);
+    toggle_zoom(ctx);
+    let selected = ctx.state.borrow().workspaces.active().focused;
+    assert_eq!(
+        ctx.state.borrow().workspaces.active().zoomed,
+        Some(selected)
+    );
+    let snapshot = capture_session(ctx).unwrap();
+    let path = crate::session::path().unwrap();
+    crate::test_isolation::assert_below_check_root(&path);
+    let (captured_tx, captured_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release = ReleaseWriter(Some(release_tx));
+    ctx.state.borrow_mut().session_writer = Some(
+        crate::session::Writer::with_save(path, move |_, snapshot| {
+            captured_tx
+                .send(snapshot.clone())
+                .map_err(|error| error.to_string())?;
+            release_rx.recv().map_err(|error| error.to_string())?;
+            Err("controlled final session write failure".into())
+        })
+        .unwrap(),
+    );
+    quit(ctx);
+    assert!(ctx.state.borrow().session_closing);
+    let mut captured = None;
+    wait(
+        || {
+            if let Ok(snapshot) = captured_rx.try_recv() {
+                captured = Some(snapshot);
+            }
+            captured.is_some()
+        },
+        "final session writer captured its snapshot",
+    );
+    assert_eq!(captured.as_ref(), Some(&snapshot));
+
+    activate(other, "background-during-final-session-write");
+    call_activation(application, target.clone());
+    wait(
+        || ctx.window.is_active(),
+        "closing notification activation raises the window",
+    );
+    assert_eq!(backend.resolve_desktop_target(target), Some(source));
+    {
+        let state = ctx.state.borrow();
+        assert!(state.session_closing);
+        assert_eq!(state.workspaces.active_index(), snapshot.active);
+        assert_eq!(state.workspaces.active().focused, selected);
+        assert_eq!(state.workspaces.active().zoomed, Some(selected));
+        for (workspace, saved) in state
+            .workspaces
+            .workspaces()
+            .iter()
+            .zip(&snapshot.workspaces)
+        {
+            assert_eq!(workspace.focused.0, saved.focused);
+        }
+    }
+    assert!(!terminal(ctx, originating_pane).has_focus());
+
+    // Let the real final-write completion open the existing failure dialog;
+    // cancelling that close must restore ordinary notification navigation.
+    drop(release);
+    wait(
+        || ctx.window.visible_dialog().is_some(),
+        "failed final write offers to keep the session open",
+    );
+    let dialog = ctx.window.visible_dialog().unwrap();
+    let keep_open = find_button(dialog.upcast_ref()).expect("Keep open response");
+    activate(&ctx.window, "keep-open-after-final-write-refusal");
+    wait(
+        || keep_open.is_mapped() && keep_open.is_sensitive(),
+        "Keep open is operable",
+    );
+    assert!(keep_open.grab_focus());
+    xdo(&["key", "--clearmodifiers", "Return"]);
+    wait(
+        || !ctx.state.borrow().session_closing && ctx.window.visible_dialog().is_none(),
+        "cancelled close restores the live session",
+    );
+    assert!(!ctx.state.borrow().exiting);
+    call_activation(application, target.clone());
+    wait(
+        || {
+            ctx.state.borrow().workspaces.active_index() == 0
+                && terminal(ctx, originating_pane).has_focus()
+        },
+        "notification navigation works after cancelling close",
+    );
+    assert_eq!(backend.resolve_desktop_target(target), Some(source));
+    assert_eq!(
+        ctx.state.borrow().workspaces.workspaces()[1].zoomed,
+        Some(selected)
+    );
+    println!("PASS notification activation during final session write raises only; captured active/focus and live zoom stay fixed, and cancelling close restores exact-target navigation");
 }
 
 #[test]
@@ -304,10 +529,21 @@ fn real_bells_send_exact_desktop_payloads_and_clicks_focus_only_current_targets(
         || !backend.focus().application_active,
         "Among in background",
     );
+    pump_for(Duration::from_millis(200));
+    assert_eq!(
+        ctx.state.borrow().desktop_text_builds.get(),
+        0,
+        "idle ticks built desktop text"
+    );
     real_bell(&ctx, &backend, first);
     wait(
         || server.additions().len() == 1,
         "first notification on private bus",
+    );
+    assert_eq!(
+        ctx.state.borrow().desktop_text_builds.get(),
+        1,
+        "one eligible bell must build its current text once"
     );
     let (first_id, fields) = server.additions().remove(0);
     assert_eq!(
@@ -374,12 +610,18 @@ fn real_bells_send_exact_desktop_payloads_and_clicks_focus_only_current_targets(
         }))
         .unwrap();
     activate(&other, "background-disabled-channel");
+    let builds_before_disabled = ctx.state.borrow().desktop_text_builds.get();
     real_bell(&ctx, &backend, first);
     pump_for(Duration::from_millis(200));
     assert_eq!(
         server.additions().len(),
         count,
         "disabled channel sent a notification"
+    );
+    assert_eq!(
+        ctx.state.borrow().desktop_text_builds.get(),
+        builds_before_disabled,
+        "disabled desktop bells or ticks built notification text"
     );
 
     // Opening the row is inert; its actual controls immediately change policy.
@@ -404,10 +646,45 @@ fn real_bells_send_exact_desktop_payloads_and_clicks_focus_only_current_targets(
         "desktop switch applies immediately",
     );
     let when: adw::ComboRow = named(&preferences, "notification-desktop-when");
+    assert!(when
+        .tooltip_text()
+        .is_some_and(|text| text.contains("Always has the same effect as Terminal not in view")));
+    assert!(enabled.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait(
+        || !backend.preferences().desktop.enabled,
+        "desktop switch changed to its non-default value",
+    );
+    when.set_selected(1);
+    let reloaded =
+        crate::settings::load(&settings_file, crate::settings::Document::General).unwrap();
+    assert_eq!(
+        among::notifications::preferences::Preferences::parse(&reloaded)
+            .unwrap()
+            .desktop,
+        Policy {
+            enabled: false,
+            eligibility: Eligibility::OriginatingTerminalUnfocused
+        }
+    );
+    assert!(enabled.grab_focus());
+    xdo(&["key", "--clearmodifiers", "space"]);
+    wait(
+        || backend.preferences().desktop.enabled,
+        "desktop switch restored for the remaining bell checks",
+    );
     when.set_selected(2);
     assert_eq!(
         backend.preferences().desktop.eligibility,
         Eligibility::ApplicationBackground
+    );
+    let restored =
+        crate::settings::load(&settings_file, crate::settings::Document::General).unwrap();
+    assert_eq!(
+        among::notifications::preferences::Preferences::parse(&restored)
+            .unwrap()
+            .desktop,
+        Policy::DESKTOP_DEFAULT
     );
     preferences.destroy();
 
@@ -492,6 +769,14 @@ fn real_bells_send_exact_desktop_payloads_and_clicks_focus_only_current_targets(
             .as_str(),
         "(sttt)",
         "the exported action must reject parameters of a different wire type"
+    );
+
+    closing_activation_preserves_the_final_snapshot_until_close_is_cancelled(
+        &ctx,
+        &application,
+        &other,
+        &target,
+        first,
     );
 
     // Losing the service reports a known limitation and never replays bells.

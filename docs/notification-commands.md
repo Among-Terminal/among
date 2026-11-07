@@ -19,8 +19,9 @@ Notifications page controls this independently from sound and commands.
 
 The title is the workspace name. The body is `Bell in '<title>'` followed by its
 directory, omitting unknown title/directory parts. A missing workspace name uses
-`Among Terminal`; a missing terminal title uses `Bell`. This is terminal metadata,
-not a message extracted from escape sequences. Program-controlled text can appear
+`Among Terminal`; a missing terminal title uses `Bell`. Terminal metadata can
+include a title set by a program through an OSC escape; the body does not use
+an OSC notification message. Program-controlled text can appear
 in the notification centre and on a lock screen; disable the channel if that is
 unsuitable for the session.
 
@@ -35,8 +36,11 @@ Repeated bells from one terminal use the same notification id. The existing core
 allows one attempt per terminal every two seconds, and the desktop adapter allows
 one attempt globally per 100 ms. Pending work stays in the core's bounded queue
 with its source coalescing and fairness; there is no separate retry queue. A
-missing service discards pending desktop work, so it does not replay when the
-service returns. Closing or viewing the originating terminal, a policy edit and
+confirmed missing service discards pending desktop work, so it does not replay
+when the service returns. While initial service discovery is pending, work stays
+in that same bounded queue and is revalidated before delivery. GIO can activate
+a registered freedesktop notification service or the selected portal route even
+when it has no current bus owner. Closing or viewing the originating terminal, a policy edit and
 normal exit withdraw its outstanding notification. A viewed terminal never
 notifies, even with Always selected. Desktop delivery does not request sound;
 the audio channel retains its own policy, and a daemon may have its own sound

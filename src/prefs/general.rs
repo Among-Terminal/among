@@ -723,9 +723,17 @@ fn policy(
     });
     // The stored value is originating-terminal-unfocused: it also applies while
     // Among is in the background, which the label cannot say in a few words.
-    condition.set_tooltip_text(Some(
-        "\"Terminal not in view\" also applies while Among is in the background.",
-    ));
+    let explanation = if identity == "desktop" {
+        "Desktop notifications never alert for the terminal you are viewing. Always has the same effect as Terminal not in view, including while Among is in the background."
+    } else {
+        "\"Terminal not in view\" also applies while Among is in the background."
+    };
+    condition.set_tooltip_text(Some(explanation));
+    if identity == "desktop" {
+        condition
+            .upcast_ref::<gtk::Widget>()
+            .update_property(&[gtk::accessible::Property::Description(explanation)]);
+    }
     condition.set_model(Some(&gtk::StringList::new(&[
         "Always",
         "Terminal not in view",

@@ -1,5 +1,5 @@
 //! GIO owns notification backend selection and action activation. Name watchers
-//! only report whether the session currently has a notification service; GIO's
+//! and the bus's activatable names report whether a delivery route exists; GIO's
 //! send API cannot confirm that a shell displayed the notification.
 
 use adw::prelude::*;
@@ -9,8 +9,40 @@ use std::rc::Rc;
 
 pub(super) struct GioSender {
     application: glib::WeakRef<gio::Application>,
-    services: Rc<RefCell<Vec<Option<bool>>>>,
+    services: Rc<RefCell<Services>>,
+    discovery: gio::Cancellable,
     unwatch: Vec<Box<dyn FnOnce()>>,
+}
+
+struct Services {
+    names: Vec<&'static str>,
+    owners: Vec<Option<bool>>,
+    activatable: Option<Vec<String>>,
+}
+
+fn portal_route(flatpak: bool, portal_env: Option<&std::ffi::OsStr>) -> bool {
+    flatpak || portal_env.is_some_and(|value| value.as_encoded_bytes().first() == Some(&b'1'))
+}
+
+impl Services {
+    fn availability(&self) -> Availability {
+        if self.owners.contains(&Some(true))
+            || self.activatable.as_ref().is_some_and(|names| {
+                self.names.iter().any(|name| {
+                    // GIO's GTK backend requires an existing owner. Its FDO
+                    // and selected portal backends can activate their service.
+                    *name != "org.gtk.Notifications"
+                        && names.iter().any(|found| found.as_str() == *name)
+                })
+            })
+        {
+            Availability::Available
+        } else if self.owners.iter().any(Option::is_none) || self.activatable.is_none() {
+            Availability::Checking
+        } else {
+            Availability::Unavailable
+        }
+    }
 }
 
 impl GioSender {
@@ -18,13 +50,24 @@ impl GioSender {
         let application = window
             .application()
             .map(|app| app.upcast::<gio::Application>());
+        Self::for_application(application)
+    }
+
+    fn for_application(application: Option<gio::Application>) -> Self {
         let mut names = vec!["org.gtk.Notifications", "org.freedesktop.Notifications"];
-        // The portal is the delivery route inside Flatpak. Its presence on a
-        // native desktop alone does not make it a native notification daemon.
-        if std::path::Path::new("/.flatpak-info").exists() {
+        // Follow GIO's native opt-in too, without counting an unrelated portal
+        // as a notification route on an ordinary native session.
+        if portal_route(
+            std::path::Path::new("/.flatpak-info").exists(),
+            std::env::var_os("GIO_USE_PORTALS").as_deref(),
+        ) {
             names = vec!["org.freedesktop.portal.Desktop"];
         }
-        let services = Rc::new(RefCell::new(vec![None; names.len()]));
+        let services = Rc::new(RefCell::new(Services {
+            owners: vec![None; names.len()],
+            names: names.clone(),
+            activatable: None,
+        }));
         let unwatch = names
             .into_iter()
             .enumerate()
@@ -35,17 +78,46 @@ impl GioSender {
                     gio::BusType::Session,
                     name,
                     gio::BusNameWatcherFlags::NONE,
-                    move |_, _, _| appeared.borrow_mut()[index] = Some(true),
-                    move |_, _| vanished.borrow_mut()[index] = Some(false),
+                    move |_, _, _| appeared.borrow_mut().owners[index] = Some(true),
+                    move |_, _| vanished.borrow_mut().owners[index] = Some(false),
                 );
                 Box::new(move || gio::bus_unwatch_name(watcher)) as Box<dyn FnOnce()>
             })
             .collect();
+        let discovery = gio::Cancellable::new();
+        gio::bus_get(gio::BusType::Session, Some(&discovery), {
+            let services = services.clone();
+            let discovery = discovery.clone();
+            move |result| match result {
+                Ok(connection) => connection.call(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus",
+                    "ListActivatableNames",
+                    None,
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    2_000,
+                    Some(&discovery),
+                    move |result| {
+                        services.borrow_mut().activatable = Some(
+                            result
+                                .ok()
+                                .and_then(|reply| reply.get::<(Vec<String>,)>())
+                                .map(|(names,)| names)
+                                .unwrap_or_default(),
+                        );
+                    },
+                ),
+                Err(_) => services.borrow_mut().activatable = Some(Vec::new()),
+            }
+        });
         Self {
             application: application
                 .map(|application| application.downgrade())
                 .unwrap_or_default(),
             services,
+            discovery,
             unwatch,
         }
     }
@@ -76,14 +148,7 @@ impl Sender for GioSender {
         if self.application.upgrade().is_none() {
             return Availability::Unavailable;
         }
-        let services = self.services.borrow();
-        if services.contains(&Some(true)) {
-            Availability::Available
-        } else if services.iter().any(Option::is_none) {
-            Availability::Checking
-        } else {
-            Availability::Unavailable
-        }
+        self.services.borrow().availability()
     }
 
     fn attempt(&mut self, id: &str, text: &Text, target: &Target) {
@@ -108,8 +173,13 @@ impl Sender for GioSender {
 
 impl Drop for GioSender {
     fn drop(&mut self) {
+        self.discovery.cancel();
         for unwatch in self.unwatch.drain(..) {
             unwatch();
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../desktop_service_tests.rs"]
+mod service_tests;

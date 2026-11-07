@@ -37,14 +37,20 @@ focus, close and normal shutdown. It also checks viewed/off suppression, hostile
 OSC-title sanitisation, the settings row and missing-service reporting. Activation
 calls `org.freedesktop.Application.ActivateAction` over D-Bus for another workspace,
 a hidden sibling of an expanded pane, a closed pane and a previous instance token.
-Logs include the recorded calls; `result.json` records the exact test executable's
-SHA-256. A Rust test that runs zero cases is a failure. Evidence stays below
+The checker first copies a bounded regular executable into its private evidence
+directory, then enumerates and runs that same read-only snapshot. `result.json`
+keeps the original `executable` path, the `executed_snapshot` path and the snapshot's
+SHA-256, so replacing a Cargo output cannot change which image the report names.
+Logs include the recorded calls. A Rust test that runs zero cases is a failure. Evidence stays below
 `AMONG_CHECK_ROOT`.
 
 The required native CI jobs on Ubuntu 24.04 amd64 and arm64 run this exact ignored
 application case through `run-ignored-tests`. Each case owns its display and
 session bus, and its recorded D-Bus calls and test result appear in the job log.
 The standalone command above also writes the executable hash and a result file.
+The ignored-test runner requires the exact desktop case in the selected
+application binary's actual listing. Tools and example binaries keep their own
+test sets; removing or renaming the application case fails the native job.
 
 This checks application integration on an owned X11 session. Use the separate
 GNOME checker to observe real banners and window activation:
@@ -56,12 +62,20 @@ among-tools check-gnome-notifications /absolute/source/root /absolute/native/amo
 
 The runner needs Bubblewrap with unprivileged user namespaces, GNOME Shell,
 `gdbus`, `dbus-daemon` and their system runtime dependencies. X11 also needs
-Xvfb; its default path is `/usr/bin/Xvfb`. It copies the native application,
+Xvfb; its default path is `/usr/bin/Xvfb`. The Shell `Eval` implementation must
+await returned Promises, as upstream GNOME Shell 46 and later do. A capability
+probe runs before virtual input is created; unsupported synchronous Eval is a
+prerequisite failure, with the observed reply in `eval-capability.txt`.
+It copies the native application,
 checker, optional Xvfb and matching desktop entry into a new private evidence
 directory. Run it directly: it creates its own display and session bus.
 The headless seat owns virtual pointer and keyboard devices; without keyboard
 capability, Wayland cannot deliver keyboard focus to GTK even when Mutter has
 selected the window. `seat-ready.json` records the observed input devices.
+The other-project scenario requires a fresh Among self-check showing workspace 1
+active before ringing the source in workspace 0. Its initial state is retained in
+`project-before-app.log`; a no-op workspace action cannot pass as cross-project
+activation. Timeouts from the outer namespace process include the evidence path.
 The mount namespace exposes `/usr` read-only, selected system configuration,
 minimal `/dev`, private runtime directories and the fixture directory. It has
 no host HOME, desktop sockets, session bus, network or device mounts.
