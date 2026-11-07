@@ -331,8 +331,8 @@ mod tests {
         }
     }
 
-    /// Attribute EPERM to the loaded program only when the same unfiltered
-    /// calls can reach the kernel; inherited denials are inconclusive.
+    /// Attribute EPERM to the loaded program only when neither matching
+    /// unfiltered call returned EPERM; inherited EPERM is inconclusive.
     #[test]
     fn the_loaded_filter_returns_eperm_for_both_file_attribute_syscall_numbers() {
         let program = Program::build();
@@ -411,7 +411,7 @@ mod tests {
             0,
             "filter-load or syscall refusal failed"
         );
-        eprintln!("PASS loaded filter: both unfiltered controls reached the kernel without EPERM; both filtered calls returned EPERM");
+        eprintln!("PASS loaded filter: neither unfiltered control returned EPERM; both filtered calls returned EPERM");
     }
 
     #[test]
