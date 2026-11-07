@@ -23,8 +23,11 @@ mod plugin_page;
 mod plugin_row;
 mod plugin_settings;
 pub(crate) mod repositories;
+#[cfg(test)]
 mod repository_sources;
 mod retained_settings;
+mod source_dialog;
+pub(crate) mod sources;
 mod trust;
 
 pub(crate) type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
@@ -327,6 +330,20 @@ fn attach_capture(
 
 #[cfg(test)]
 pub(crate) use plugin_manager::Services as PluginServices;
+
+#[cfg(test)]
+pub(crate) fn production_plugin_services_for_test() -> PluginServices {
+    PluginServices::production()
+}
+
+#[cfg(test)]
+pub(crate) fn plugins_page_with_source_lookup_for_test(
+    ctx: &PreferencesContext,
+    services: PluginServices,
+    lookup: Rc<source_dialog::Lookup>,
+) -> adw::PreferencesPage {
+    plugin_manager::page_with_lookup(ctx, services, lookup)
+}
 
 /// The Plugins page with test-owned source, refresh and install jobs, so a
 /// controlled server stands in for GitHub while the page itself is the

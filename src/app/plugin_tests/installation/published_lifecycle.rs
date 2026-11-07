@@ -178,45 +178,68 @@ pub(super) fn inspect(
     preferences: &adw::PreferencesWindow,
     revision: &str,
 ) -> adw::PreferencesWindow {
-    focus(preferences);
-    if !super::candidate::present_inspector(ctx, preferences) {
-        press(&named_button(preferences, "plugins-add-source"));
-    }
-    let view = inspector();
+    let view = list_window(ctx, preferences, super::candidate::services());
     focus(&view);
-    let address = widgets(view.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
-        .unwrap();
-    assert!(address.grab_focus());
-    xdo(&[
-        "type",
-        "--clearmodifiers",
-        "--delay",
-        "0",
-        "Among-Terminal/among-plugins",
-    ]);
-    press(&button(&view, "Inspect"));
+    if widgets(view.upcast_ref()).iter().any(|widget| {
+        widget
+            .downcast_ref::<gtk::ToggleButton>()
+            .is_some_and(|button| button.label().as_deref() == Some("Stable"))
+    }) {
+        press(&channel_button(&view, "Stable"));
+    }
+    let refresh = named_button(&view, "plugins-refresh");
+    press(&refresh);
+    wait_for(|| !refresh.is_sensitive(), Duration::from_secs(3));
+    wait_for(|| refresh.is_sensitive(), Duration::from_secs(65));
+    let saved = saved_catalogue();
+    assert_eq!(
+        saved.catalogue_revision, revision,
+        "the explicitly checked catalogue must match the independently prepared source binding"
+    );
+    assert_eq!(saved.repository_id, 1431055733);
+    assert_eq!(saved.publisher_id, 339567100);
+    view
+}
+
+pub(super) fn saved_catalogue() -> crate::plugin::install::source::Inspection {
+    use crate::plugin::install::registry::{self, Outcome, Request};
+    let job = registry::Job::start(registry::root().unwrap(), Request::EffectiveList).unwrap();
+    let result = RefCell::new(None);
     wait_for(
         || {
-            has_label(view.upcast_ref(), "Metadata preview ready")
-                || has_label(view.upcast_ref(), "No metadata preview")
+            let outcome = job.poll();
+            if outcome.is_some() {
+                *result.borrow_mut() = outcome;
+                true
+            } else {
+                false
+            }
         },
-        Duration::from_secs(65),
+        Duration::from_secs(5),
     );
-    assert!(has_label(view.upcast_ref(), "Metadata preview ready"));
-    let output = widgets(view.upcast_ref())
+    let Outcome::EffectiveList {
+        registrations,
+        problem,
+    } = result.into_inner().unwrap().unwrap()
+    else {
+        panic!("effective registered sources missing")
+    };
+    assert!(problem.is_none());
+    registrations
         .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
+        .find(|source| source.is_official())
         .unwrap()
-        .buffer();
-    let preview = output.text(&output.start_iter(), &output.end_iter(), false);
-    assert!(
-        preview.contains(&format!("at {revision}")),
-        "published catalogue binding mismatch: expected {revision}; preview prefix: {:?}",
-        preview.chars().take(4096).collect::<String>()
-    );
-    view
+        .cached_inspection()
+        .unwrap()
+        .unwrap()
+}
+
+pub(super) fn catalogue_row(view: &adw::PreferencesWindow, identity: &str) -> adw::ActionRow {
+    widgets(view.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .find(|row| row.widget_name() == identity)
+        .unwrap()
 }
 
 fn assert_output(ctx: &Window, id: &str, key: &str) {
@@ -472,6 +495,8 @@ pub(super) fn run() {
         .unwrap();
     preferences.set_visible_page(&page);
     let view = inspect(&ctx, &preferences, revision);
+    let saved = saved_catalogue();
+    assert_eq!(saved.catalogue, catalogue);
     let mut receipts = Vec::new();
     for plugin in &catalogue.plugins {
         let version = &plugin.versions[0];
@@ -500,11 +525,15 @@ pub(super) fn run() {
             "github:1431055733/{} · version {} · linux/{architecture} · asset {} · {} bytes",
             plugin.id, version.manifest.version, artifact.asset, artifact.size
         );
-        let row = widgets(view.upcast_ref())
-            .into_iter()
-            .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-            .find(|row| row.subtitle().as_deref() == Some(expected.as_str()))
-            .unwrap();
+        assert_eq!(
+            saved
+                .select(&plugin.id, &version.manifest.version)
+                .unwrap()
+                .description(),
+            expected
+        );
+        let key = format!("github:1431055733/{}", plugin.id);
+        let row = catalogue_row(&view, &key);
         assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
         press(&button(&row, "Install"));
         wait_for(

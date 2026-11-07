@@ -86,9 +86,10 @@ and restores them on startup. A Faulted process remains desired-enabled until
 you disable it. Save failures are reported as session-only changes; see
 [Preferences storage](preferences.md).
 
-Open Preferences → Plugins → Inspect repository. Inspect a public repository,
-choose a compatible version and use **Install disabled**. The row identifies the
-chosen manifest version, OS/architecture, exact asset ID and size. Selection uses
+Open Preferences → Plugins. **Available** lists compatible packages from saved
+sources; use **Install** on the desired plugin. A new installation stays disabled.
+To use another publisher, add its repository through **Add source**, then install
+from Available. Selection uses
 the actual host architecture and declared runtime/libc requirements, not filenames.
 Native amd64 and arm64 packages are separate downloads; the source archive is not
 an installation payload. Packages also contain manifests and licensing material.
@@ -109,26 +110,42 @@ execution without a fallback. Refusal does not delete unrelated files or setting
 Among packages (DEB, RPM, Snap, AppImage and the binary archive) carry no
 plugins. The official ones (clock, system-status, pane-pwd) come from the
 repository `Among-Terminal/among-plugins` through the always-present registered
-source **Official plugins for Among Terminal** in Preferences → Plugins. Its row
-shows the repository and publisher identity and the age of the retained
-snapshot, offers **Cached** and **Refresh**, and has no **Remove source** button.
+source in Preferences → Plugins → Sources. It is marked **Official** and has no
+removal control. The saved catalogue appears directly in Available, without a
+network request. On first launch, **Load** checks the official source explicitly;
+without a saved catalogue and without network access, the list remains unloaded.
 
-- **Refresh** reads the current metadata over the network and keeps it for offline
-  use; a failed or cancelled refresh leaves the previous cache and every installed
-  plugin unchanged.
-- **Cached** opens the retained snapshot without a network request and is
-  available only when a snapshot exists and the source itself is available (a
-  source shown as unavailable, for example after a publisher mismatch, keeps it
-  disabled).
-- On a first launch without network access the row has no retained snapshot
-  ("No retained snapshot; refresh when online"): **Cached** is disabled and the
-  catalogue stays unavailable until a refresh succeeds. Nothing is installed in
-  the meantime.
+Choose **Install**, then review access and enable the installed plugin separately.
+Opening pages and checking catalogues never installs, enables or grants access.
 
-From the opened catalogue choose a compatible version and use **Install
-disabled**, then review the access request and enable the plugin as described
-above. Showing the row, refreshing or opening a cached catalogue never installs,
-enables or grants access to anything.
+### Plugin sources
+
+Open **Sources** from the Plugins page to see each registered repository, its
+plugin count, the age of its saved list and the result of the last requested
+check. **Check source** checks one repository; **Check all** checks them in order.
+Both use the selected Stable or Pre-release channel. They stop at an observed
+GitHub rate limit and show the reported remaining count, or **unknown** when the
+response did not provide a valid count. No automatic retry or periodic check is
+scheduled. A permission refusal without a rate-limit indication does not stop
+the remaining sources.
+
+A successful stable check saves its catalogue for offline use. A failed check
+keeps the saved list, including its real age. Lists older than a day are marked.
+A publisher change keeps serving the old list until **Review…** and explicit
+approval replace its metadata. That approval does not grant installed code any
+new access. Publisher changes observed on Pre-release must be checked and
+approved on Stable, because prerelease catalogues are not persisted.
+
+**Add source** opens a read-only look-up. Enter `owner/repository` or a public
+GitHub repository URL and choose **Look up** to preview its catalogue. There is
+no installation action in the preview. **Add source** saves the registration and
+snapshot; **Cancel** saves neither. Up to 32 user sources can be registered
+besides the built-in official source.
+
+Removing a user source asks for confirmation and updates Available immediately.
+Its installed plugins keep running, their enabled choices and settings stay
+unchanged, and their rows show **source removed**. Adding the source again makes
+its saved offers available without reopening Preferences.
 
 ### Plugin development mode
 
@@ -149,7 +166,7 @@ becomes the first instance decides the mode.
 
 #### Install from a local catalogue
 
-In development mode the Plugin sources section has **Install from a local
+In development mode the Plugins page has **Install from a local
 catalogue**. Choose an `among-plugins.json` (schema 2, the same format as a
 release catalogue) with the package files it names in the same directory.
 Opening it reads metadata only. Each compatible version has its own
@@ -189,10 +206,12 @@ they do not start, even if their switch was left on: an enabled row then says
 that the install starts only with `--plugin-development`, and the details
 always do.
 
-#### Use the latest prerelease of a source
+#### Checking prerelease catalogues
 
-In development mode every row of Registered sources also has **Use latest
-prerelease**. Among reads up to three pages of 100 releases and picks the
+In development mode the Plugins page has a **Stable / Pre-release** switch,
+initially on Pre-release. An explicit catalogue refresh or source check uses
+that channel; there is no separate prerelease action. Among reads up to three
+pages of 100 releases and picks the
 non-draft prerelease with the greatest creation time, the greater numeric ID
 deciding a tie. A list that ends without a prerelease, and three full pages
 without one, are refused with their own reasons; the second says only that the

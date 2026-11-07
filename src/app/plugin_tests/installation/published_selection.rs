@@ -1,17 +1,13 @@
-use super::published_lifecycle::{inspect, observed, Observed};
+use super::published_lifecycle::{catalogue_row, inspect, observed, saved_catalogue, Observed};
 use super::*;
 
 const KEY: &str = "github:1431055733/clock";
 
-fn selected_row(view: &adw::PreferencesWindow, expected: &str) -> adw::ActionRow {
-    widgets(view.upcast_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| row.subtitle().as_deref() == Some(expected))
-        .unwrap()
+fn selected_row(view: &adw::PreferencesWindow, id: &str) -> adw::ActionRow {
+    catalogue_row(view, &format!("github:1431055733/{id}"))
 }
 
-fn visible_description(row: &adw::ActionRow, expected: &str) {
+fn visible_version(row: &adw::ActionRow, expected: &str) {
     let label = widgets(row.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
@@ -83,33 +79,38 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
         .unwrap();
     preferences.set_visible_page(&page);
 
-    // Use the production manager action, network client and installer. No test
-    // TLS roots, archive substitution, receipt injection or executable build.
+    // Published acceptance uses the production client and installer. Candidate
+    // runs serve CI-built bytes through the owned HTTPS fixture. Both drive
+    // the same compact list and retain the independent source/asset oracle.
     let view = inspect(&ctx, &preferences, &revision);
-    for (_, _, _, expected) in &rows {
-        let row = selected_row(&view, expected);
+    let saved_catalogue = saved_catalogue();
+    assert_eq!(saved_catalogue.catalogue, catalogue);
+    for (id, version, artifact, expected) in &rows {
+        let row = selected_row(&view, id);
         let install = button(&row, "Install");
         assert!(install.grab_focus());
-        visible_description(&row, expected);
+        assert_eq!(
+            saved_catalogue.select(id, version).unwrap().description(),
+            *expected
+        );
+        visible_version(
+            &row,
+            &format!("{version} · {}", glib::format_size(artifact.size)),
+        );
         assert!(install.is_sensitive());
         println!("published_selection_row={expected}");
     }
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     assert!(!root.join("installed.json").exists());
-    let (_, clock_version, clock_artifact, clock_description) =
+    let (_, clock_version, clock_artifact, _) =
         rows.iter().find(|(id, ..)| id == "clock").unwrap().clone();
     let clock_asset = snapshot.asset(&clock_artifact.asset).unwrap();
-    let clock = selected_row(&view, &clock_description);
+    let clock = selected_row(&view, "clock");
     assert!(button(&clock, "Install").grab_focus());
     screenshot(&view, "published-native-selection");
     press(&button(&clock, "Install"));
     wait_for(
-        || {
-            has_label(
-                clock.upcast_ref(),
-                "Installed github:1431055733/clock disabled. Switch it on from the Plugins page.",
-            ) || has_label(clock.upcast_ref(), "Package installation failed")
-        },
+        || ctx.state.borrow().plugins.managed_details(KEY).is_some(),
         Duration::from_secs(65),
     );
     let installed = crate::plugin::inventory::read(&root).unwrap();
@@ -152,20 +153,27 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     view.destroy();
 
     let view = inspect(&ctx, &preferences, &revision);
-    // An installed version is not an update of itself, and the row says why.
-    let installed_row = widgets(view.upcast_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| {
-            row.subtitle()
-                .is_some_and(|text| text.starts_with(&clock_description))
-        })
-        .unwrap();
-    assert!(installed_row
-        .subtitle()
-        .unwrap()
-        .ends_with("this version is already installed"));
-    assert!(!button(&installed_row, "Apply update…").is_sensitive());
+    // The identical version has no offered update. Its row offers Uninstall;
+    // the plugin page explains that the saved catalogue is already current.
+    let installed_row = selected_row(&view, "clock");
+    assert!(button(&installed_row, "Uninstall").is_mapped());
+    assert!(widgets(installed_row.upcast_ref())
+        .iter()
+        .all(|widget| widget
+            .downcast_ref::<gtk::Button>()
+            .is_none_or(
+                |button| !button.is_mapped() || button.label().as_deref() != Some("Update")
+            )));
+    press(&named_button(&installed_row, "plugin-info"));
+    wait_for(
+        || {
+            has_label(
+                view.upcast_ref(),
+                "This is the newest version the saved list offers.",
+            )
+        },
+        Duration::from_secs(3),
+    );
     assert_eq!(
         crate::plugin::inventory::read(&root).unwrap()[0].receipt,
         *receipt
@@ -191,5 +199,5 @@ fn published_native_selection_is_shown_installed_disabled_and_reviewed_without_i
     assert_eq!(std::fs::read(proof).unwrap(), b"published-selection-alive");
     assert_eq!(terminal.pty().unwrap(), pty);
     ctx.window.destroy();
-    println!("PASS native {architecture} public selection rows and review dialog show chosen version/target; explicit keyboard Install verified Release {} asset {}, source/tag/catalogue binding and disabled inventory with no grants/process. Cancel preserved bytes and the same PTY accepted real input. This is not enabled output, update execution, uninstall, source/legal or whole RC acceptance.", snapshot.id, clock_asset.id);
+    println!("PASS native {architecture} compact selection rows show version/size; the checked snapshot retains the exact target/asset. Explicit keyboard Install verified Release {} asset {}, source/tag/catalogue binding and disabled inventory with no grants/process; the same version offers no Update and leaves saved bytes unchanged. The same PTY accepted real input. Enabled output, update execution, uninstall, source/legal and whole RC acceptance are separate checks.", snapshot.id, clock_asset.id);
 }

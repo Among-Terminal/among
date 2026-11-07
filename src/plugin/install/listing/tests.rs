@@ -24,6 +24,17 @@ pub(crate) type Spec<'a> = (&'a str, &'a str, &'a str, &'a str);
 /// A synthetic release catalogue of the listed plugins, for views and models
 /// that need saved snapshots without a network.
 pub(crate) fn inspection(origin: Origin, plugins: &[Spec<'_>]) -> Inspection {
+    Inspection::from_bytes(
+        origin,
+        "a".repeat(40),
+        document(plugins).to_string().into_bytes(),
+    )
+    .unwrap()
+}
+
+/// The same catalogue bytes can be served by an owned TLS fixture, so views
+/// exercise the real client instead of fabricating a finished network job.
+pub(crate) fn document(plugins: &[Spec<'_>]) -> Value {
     let plugins: Vec<_> = plugins
         .iter()
         .map(|(id, name, version, manifest_sha256)| {
@@ -41,10 +52,7 @@ pub(crate) fn inspection(origin: Origin, plugins: &[Spec<'_>]) -> Inspection {
             json!({"id": id, "versions": [entry]})
         })
         .collect();
-    let bytes = json!({"schema_version": 2, "plugins": plugins})
-        .to_string()
-        .into_bytes();
-    Inspection::from_bytes(origin, "a".repeat(40), bytes).unwrap()
+    json!({"schema_version": 2, "plugins": plugins})
 }
 
 fn catalogue(origin: Origin, official: bool, plugins: &[Spec<'_>]) -> SourceCatalogue {
