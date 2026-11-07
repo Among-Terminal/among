@@ -76,8 +76,8 @@ pub(super) fn snapshot(release: &Value) -> Result<Value> {
     Ok(json!({"id":release["id"],"tag":release["tag_name"],"assets":assets}))
 }
 
-/// The optional prerelease job's observation: every check of `snapshot` except
-/// the stable state, and the result stays marked so it cannot pass as stable.
+/// Explicit prerelease observation keeps every immutable asset check and stays
+/// marked as prerelease, so ordinary stable acceptance still refuses it.
 pub(super) fn prerelease_snapshot(release: &Value) -> Result<Value> {
     if release["prerelease"] != true {
         return Err("selected release is not a prerelease".into());

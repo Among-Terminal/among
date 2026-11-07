@@ -234,10 +234,10 @@ packaged behavior or whole-release acceptance.
 ## Published-plugin native checks
 
 `managed-transport.yml` runs on native amd64 and arm64 runners. Production clock,
-system-status and pane-pwd executables come from the official repository's latest
-stable immutable release; they are not compiled by the host check. A missing
-ordinary release is a failed prerequisite, not permission to use the historical
-prerelease or a default-branch catalogue.
+system-status and pane-pwd executables come from the exact immutable official
+prerelease pinned in `.github/plugin-acceptance.json`. The same required input
+producer serves Checks, DEB, RPM, AppImage and Snap. None of these acceptance paths
+builds replacement official plugin executables.
 
 `among-tools prepare-official-plugin-inputs <new-directory>` validates the numeric
 repository/publisher, complete bounded release inventory and full tag chain. It
@@ -253,27 +253,41 @@ supervised admission, stale-reply, paging, timezone, resource and keyboard contr
 remain mandatory. Transport fixture receipts remain synthetic and do not prove
 repository installation.
 
-Until a release is published, CI checks candidate bytes.
-`plugin-candidate.yml` builds the plugins from one pinned among-plugins commit (the
-one the official `v0.2.0-rc.1` release candidate was built from) on
-amd64 and arm64 with the catalogue, and
-`among-tools prepare-candidate-plugin-inputs <assets> <new-directory>` makes the
-same input directory as `prepare-official-plugin-inputs`, marked `candidate`, with
-synthetic release documents that still pass the stable observation. The host
-tests then answer from a controlled HTTPS server; UI, client, installer and
-packages are real. This is candidate acceptance, because CI builds differ from
-the approved preparation. `capture-package-plugin-profile` takes the same assets
-as an optional last argument.
+`published-plugin-inputs.yml` runs
+`among-tools fetch-published-plugin-assets <pin> <new-directory>`. It observes the
+exact numeric release ID, refuses drafts, mutable releases and non-prereleases,
+checks the tag's complete binding against the pinned source, and verifies the
+catalogue digest and all downloaded assets. It repeats the repository, release,
+inventory and tag observation before uploading the bytes and original API bodies.
+This live final observation occurs in the producer, before native consumers run.
 
-`among-tools check-development-install <among-test-executable> <inputs> <assets>`
-runs three native tests in their own processes: selection of the release in the
-inspector; a stable install replaced by the prerelease and rebound by the stable
-release of the same bytes; and installation of the same packages from a local
-catalogue. The last two start the package under the flag. `prepare-official-plugin-inputs --prerelease` observes a real published
-prerelease; its manual job is not required before publication.
+`among-tools prepare-published-plugin-inputs <pin> <assets> <new-directory>` checks
+both stored API observations and the producer receipt, then reconstructs native
+paths offline with the existing catalogue, archive-member, ELF and source-delivery
+checks. Its receipt keeps `candidate:false` and `prerelease:true`.
+`among-tools export-plugin-catalogue <inputs> <new-directory>` exports only the
+unchanged catalogue and verified native archives under their original release
+names, for a separate local development catalogue test.
+
+`among-tools check-published-development-install <among-test-executable> <inputs>
+<local-catalogue>` runs the release-selection and local-install tests in separate
+processes. `among-tools check-published-prerelease-install <among-test-executable>
+<inputs>` runs the full UI lifecycle with the explicit test-only development
+adapter. Neither changes the product's ordinary stable-only policy. Native tests
+use the exact downloaded metadata and archive bytes through their controlled HTTPS
+server; they do not perform another live publication observation.
+The aggregate preferences phases use `check-published-preferences-from-cargo`
+with the same verified inputs and explicit test-only mode. Ordinary preferences
+commands retain their existing mode and do not inherit this flag from the caller.
+
+The mandatory `check-synthetic-plugin-replacement` case retains the separate
+replacement/rebinding fixture over those archive bytes. It requires explicitly
+synthetic candidate inputs from `prepare-candidate-plugin-inputs` and invents its
+release documents. Its result proves replacement behaviour, not publication.
 
 `among-tools check-plugin-install <among-test-executable> <input-directory>` requires
-an owned X11 display and an isolated check root. It runs the exact ignored host test
+stable inputs, an owned X11 display and an isolated check root. Both lifecycle
+wrappers run the exact ignored host test
 `app::plugin_tests::installation::real_published_official_packages_install_review_enable_disable_uninstall`.
 An absent test, failed download, changed source/asset, ignored/zero-test result or
 missing lifecycle assertion is a failure, never a fallback to the old standalone
@@ -282,10 +296,9 @@ must be demonstrated by that host test before this check can pass. Preparing the
 inputs alone establishes none of those behaviours or application-RC readiness.
 
 `among-tools check-resource-measurements <profile>` takes the profile that
-`check-plugin-install` observed. It accepts the installed `system-status`
+the applicable lifecycle wrapper observed. It accepts the installed `system-status`
 executable only when the receipt, manifest, artifact and executable digests and size
-match the release candidate catalogue of the same run (a published release once
-one exists), then drives it over the managed handshake and compares
+match the published catalogue of the same run, then drives it over the managed handshake and compares
 CPU, MEM and root-DISK with independent `/proc` and `df -P /` readings. No plugin
 is built from this repository. The only plugin executable the host still builds is
 `examples/fake-plugin.rs`, a labelled protocol and failure-control fixture; it
@@ -294,10 +307,12 @@ never stands in for an official plugin.
 Package workflows compile exactly the `among` binary test target with
 `AMONG_CHECK_SOURCE_SHA` set to the checkout's full HEAD. The compile-time value is
 exported only with the observed runtime profile. `capture-package-plugin-profile`
+receives `--published-inputs <prepared-directory>` from every package producer and
 requires a clean checkout before and after the actual UI lifecycle, one Cargo test
 artifact whose manifest and `src/main.rs` belong to that checkout, an unchanged
 test-executable digest, and a matching compiled-in source SHA. Its bounded internal
-transfer includes exact file hashes and the completed lifecycle observation.
+transfer includes exact file hashes, the completed lifecycle observation, the
+publication pin and original initial/final API bodies in `publisher-observation.json`.
 Its `release-inputs.json` preserves the prepared release observation so replay
 checks every selected receipt's full snapshot, catalogue and tag binding against
 the same source, without embedded historical release/asset constants.
@@ -311,6 +326,13 @@ excluded from screenshot/failure uploads. No profile is a public application ass
 On compiler-free hosts the selected AppImage/Snap/DEB/RPM/archive executable renders
 that observed profile. This is packaged **renderer replay**, not observation of
 installation or access review through that packaged executable.
+For the pinned published prerelease, replay first checks the raw publication
+observations and keeps the profile's original prerelease receipts. It starts the
+production executable without a development flag and requires all three plugins
+to stay unavailable. A separate fresh replay then explicitly starts the same
+executable with `--plugin-development` and checks the existing renderer, terminal
+and fault-containment behaviour. Stable profiles keep the ordinary launch. Missing
+publication evidence or a synthetic prerelease refuses the development replay.
 
 ## Cross-repository managed transport
 
@@ -558,7 +580,7 @@ not verified.
 runs the released `clock`, `pane-pwd` and `system-status` binaries as managed plugins. It needs
 `AMONG_OFFICIAL_PLUGINS=<directory>` holding one extracted release package per plugin identifier
 (`clock/`, `pane-pwd/`, `system-status/`). Without the variable it prints `NOT VERIFIED` and passes, except
-under `AMONG_REQUIRE_SANDBOX=1`, where it fails; the `native` CI job extracts the candidate packages of the
+under `AMONG_REQUIRE_SANDBOX=1`, where it fails; the `native` CI job extracts the published packages of the
 runner's architecture and sets both. Only the `native` job of `checks.yml` runs these tests; the package
 workflows only build the test executables.
 

@@ -81,8 +81,8 @@ fn both_native_workflow_jobs_use_release_binaries_and_keep_required_behaviour_co
     assert_eq!(matrix[0]["runner"].as_str(), Some("ubuntu-24.04"));
     assert_eq!(matrix[1]["runner"].as_str(), Some("ubuntu-24.04-arm"));
     for control in [
-        "prepare-candidate-plugin-inputs",
-        "check-plugin-install",
+        "prepare-published-plugin-inputs",
+        "check-published-prerelease-install",
         "--example managed-status --example managed-pages",
         "real_companion_admits_only_after_review_and_publishes_correlated_status",
         "real_companion_identity_mismatch_never_becomes_admitted",
@@ -108,6 +108,72 @@ fn both_native_workflow_jobs_use_release_binaries_and_keep_required_behaviour_co
         assert!(
             !bytes.contains(obsolete),
             "obsolete input remains: {obsolete}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn required_consumers_share_one_published_pin_and_do_not_build_substitute_plugins() -> Result<()> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (file, consumer) in [
+        ("checks.yml", "native"),
+        ("deb-release.yml", "build"),
+        ("rpm-release.yml", "build"),
+        ("appimage-release.yml", "build"),
+        ("snap-build.yml", "snap"),
+        ("managed-transport.yml", "native-interop"),
+    ] {
+        let bytes = fs::read_to_string(root.join(".github/workflows").join(file))?;
+        let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&bytes)?;
+        assert_eq!(
+            workflow["jobs"]["published-plugins"]["uses"].as_str(),
+            Some("./.github/workflows/published-plugin-inputs.yml"),
+            "{file}"
+        );
+        assert!(
+            workflow["jobs"]["published-plugins"]["if"].is_null(),
+            "{file}"
+        );
+        assert!(
+            workflow["jobs"]["published-plugins"]["continue-on-error"].is_null(),
+            "{file}"
+        );
+        assert_eq!(
+            workflow["jobs"][consumer]["needs"].as_str(),
+            Some("published-plugins"),
+            "{file}"
+        );
+        assert!(bytes.contains("prepare-published-plugin-inputs .github/plugin-acceptance.json") || bytes.contains("prepare-published-plugin-inputs \\\n            .github/plugin-acceptance.json"), "{file}");
+        assert!(
+            !bytes.contains("434653882"),
+            "release ID must live in one pin: {file}"
+        );
+        assert!(
+            !bytes.contains("8835249fbe2edb2a55a10080a4e0479e60de79c77901b4c7ca3c72844738d90a"),
+            "catalogue digest must live in one pin: {file}"
+        );
+        assert!(
+            !bytes.contains("uses: ./.github/workflows/plugin-candidate.yml"),
+            "{file}"
+        );
+    }
+    let producer = fs::read_to_string(root.join(".github/workflows/published-plugin-inputs.yml"))?;
+    assert!(producer.contains("fetch-published-plugin-assets"));
+    assert!(producer.contains(".github/plugin-acceptance.json"));
+    assert!(!producer.contains("continue-on-error"));
+    let checks = fs::read_to_string(root.join(".github/workflows/checks.yml"))?;
+    for control in [
+        "AMONG_OFFICIAL_PLUGINS=$packages",
+        "check-synthetic-plugin-replacement",
+        "export-plugin-catalogue",
+        "check-published-development-install",
+        "check-published-prerelease-install",
+        "check-published-preferences-from-cargo",
+    ] {
+        assert!(
+            checks.contains(control),
+            "required control absent: {control}"
         );
     }
     Ok(())

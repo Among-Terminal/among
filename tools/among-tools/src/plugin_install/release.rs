@@ -14,6 +14,7 @@ use std::time::Duration;
 pub(crate) mod fixture;
 mod observation;
 pub use observation::select;
+pub mod published;
 
 pub const REPOSITORY: u64 = 1431055733;
 pub const PUBLISHER: u64 = 339567100;
@@ -318,6 +319,10 @@ fn unpack(root: &Path, archive: &Path, plugin: &str, artifact: &Value) -> Result
 
 fn repository(root: &Path, name: &str) -> Result<()> {
     let repository = metadata(root, "repositories/1431055733", name)?;
+    check_repository(&repository)
+}
+
+fn check_repository(repository: &Value) -> Result<()> {
     if repository["id"] != REPOSITORY
         || repository["owner"]["id"] != PUBLISHER
         || repository["private"] != false
@@ -337,8 +342,17 @@ fn latest(root: &Path, name: &str) -> Result<Value> {
 }
 
 fn resolve(root: &Path, snapshot: &Value, pass: &str) -> Result<(Value, Value)> {
+    resolve_with(root, snapshot, pass, metadata)
+}
+
+fn resolve_with(
+    root: &Path,
+    snapshot: &Value,
+    pass: &str,
+    load: impl Fn(&Path, &str, &str) -> Result<Value>,
+) -> Result<(Value, Value)> {
     let tag = text(snapshot, "tag")?;
-    let reference = metadata(
+    let reference = load(
         root,
         &format!("repositories/{REPOSITORY}/git/ref/tags/{tag}"),
         &format!("{pass}-ref.json"),
@@ -358,7 +372,7 @@ fn resolve(root: &Path, snapshot: &Value, pass: &str) -> Result<(Value, Value)> 
         }
         chain.push(json!([kind, sha]));
         if kind == "commit" {
-            let commit = metadata(
+            let commit = load(
                 root,
                 &format!("repositories/{REPOSITORY}/git/commits/{sha}"),
                 &format!("{pass}-commit.json"),
@@ -371,7 +385,7 @@ fn resolve(root: &Path, snapshot: &Value, pass: &str) -> Result<(Value, Value)> 
         if kind != "tag" || depth == 8 {
             return Err("release tag chain is unsupported or exceeds eight annotations".into());
         }
-        let annotation = metadata(
+        let annotation = load(
             root,
             &format!("repositories/{REPOSITORY}/git/tags/{sha}"),
             &format!("{pass}-tag-{depth}.json"),

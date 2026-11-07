@@ -19,12 +19,21 @@ Usage:
   among-tools check-resource-measurements <official-plugin-profile>
   among-tools check-preferences <prebuilt-app-test> <prebuilt-plugins-directory>
   among-tools check-preferences-from-cargo <cargo-test-executables.jsonl> <prebuilt-plugins-directory>
+  among-tools check-published-preferences <prebuilt-app-test> <prepared-published-inputs>
+  among-tools check-published-preferences-from-cargo <cargo-test-executables.jsonl> <prepared-published-inputs>
   among-tools install-prebuilt <source-root> <among-binary> <native-uninstaller>
   among-tools install <source-root> [--binary PATH | --install-deps | --uninstall]
   among-tools prepare-official-plugin-inputs [--prerelease] <new-output-directory>
   among-tools prepare-candidate-plugin-inputs <candidate-assets> <new-output-directory>
+  among-tools fetch-published-plugin-assets <pin.json> <new-output-directory>
+  among-tools prepare-published-plugin-inputs <pin.json> <published-assets> <new-output-directory>
+  among-tools export-plugin-catalogue <prepared-published-inputs> <new-output-directory>
+  among-tools check-published-prerelease-install <host-test-executable> <prepared-published-inputs>
+  among-tools check-published-development-install <host-test-executable> <prepared-published-inputs> <local-catalogue>
+  among-tools check-synthetic-plugin-replacement <host-test-executable> <synthetic-inputs> <local-catalogue>
   among-tools check-development-install <host-test-executable> <prepared-inputs> <candidate-assets>
   among-tools capture-package-plugin-profile <source-root> <cargo-host-test-records> <new-directory> [<candidate-assets>]
+  among-tools capture-package-plugin-profile <source-root> <cargo-host-test-records> <new-directory> --published-inputs <prepared-published-inputs>
   among-tools check-package-plugin-profile <profile-directory> <host-source-sha>
   among-tools check-plugin-install <among-test-executable> <official-plugin-inputs>
   among-tools check-sessions <among-binary>
@@ -870,6 +879,52 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         [command, destination] if command == "prepare-official-plugin-inputs" => {
             among_tools::plugin_install::release::prepare(Path::new(destination))?;
         }
+        [command, pin, destination] if command == "fetch-published-plugin-assets" => {
+            among_tools::plugin_install::release::published::fetch(
+                Path::new(pin),
+                Path::new(destination),
+            )?;
+        }
+        [command, pin, assets, destination] if command == "prepare-published-plugin-inputs" => {
+            among_tools::plugin_install::release::published::prepare(
+                Path::new(pin),
+                Path::new(assets),
+                Path::new(destination),
+            )?;
+        }
+        [command, inputs, destination] if command == "export-plugin-catalogue" => {
+            among_tools::plugin_install::release::published::export_catalogue(
+                Path::new(inputs),
+                Path::new(destination),
+            )?;
+        }
+        [command, executable, inputs] if command == "check-published-prerelease-install" => {
+            among_tools::plugin_install::published_prerelease(
+                Path::new(executable),
+                Path::new(inputs),
+                &among_tools::scratch::root()?,
+            )?;
+        }
+        [command, executable, inputs, assets]
+            if command == "check-published-development-install" =>
+        {
+            among_tools::plugin_install::published_development(
+                Path::new(executable),
+                Path::new(inputs),
+                Path::new(assets),
+                &among_tools::scratch::root()?,
+            )?;
+        }
+        [command, executable, inputs, assets]
+            if command == "check-synthetic-plugin-replacement" =>
+        {
+            among_tools::plugin_install::synthetic_replacement(
+                Path::new(executable),
+                Path::new(inputs),
+                Path::new(assets),
+                &among_tools::scratch::root()?,
+            )?;
+        }
         [command, flag, destination]
             if command == "prepare-official-plugin-inputs" && flag == "--prerelease" =>
         {
@@ -910,6 +965,17 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 &among_tools::scratch::root()?,
             )?;
         }
+        [command, root, records, output, flag, inputs]
+            if command == "capture-package-plugin-profile" && flag == "--published-inputs" =>
+        {
+            among_tools::plugin_install::package::capture_published(
+                Path::new(root),
+                Path::new(records),
+                Path::new(output),
+                Path::new(inputs),
+                &among_tools::scratch::root()?,
+            )?;
+        }
         [command, profile, source] if command == "check-package-plugin-profile" => {
             among_tools::plugin_install::package::validate(Path::new(profile), source)?;
         }
@@ -943,6 +1009,20 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         [command, records, plugins] if command == "check-preferences-from-cargo" => {
             preferences::from_cargo(
                 Path::new(records),
+                Path::new(plugins),
+                &among_tools::scratch::root()?,
+            )?;
+        }
+        [command, records, plugins] if command == "check-published-preferences-from-cargo" => {
+            preferences::published_from_cargo(
+                Path::new(records),
+                Path::new(plugins),
+                &among_tools::scratch::root()?,
+            )?;
+        }
+        [command, executable, plugins] if command == "check-published-preferences" => {
+            preferences::published(
+                Path::new(executable),
                 Path::new(plugins),
                 &among_tools::scratch::root()?,
             )?;

@@ -48,6 +48,21 @@ fn checked(profile: &Path, path: &str, record: &Value, size: &str, sha: &str) ->
     )
 }
 
+/// Development execution is permitted only for the pinned publication whose
+/// original immutable API observations agree with the selected profile.
+pub fn development_replay(profile: &Path) -> Result<bool> {
+    let inputs = release::profile_inputs(profile)?;
+    if inputs["release_snapshot"]["prerelease"] == true || !inputs["published_pin"].is_null() {
+        let record = storage::parse_json(&bounded(
+            &storage::safe_path(profile, Path::new("publisher-observation.json"))?,
+            1024 * 1024,
+        )?)?;
+        release::published::validate_publication_record(&record, &inputs)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub fn replay(profile: &Path, destination: &Path) -> Result<()> {
     let metadata = storage::parse_json(&bounded(
         &storage::safe_path(profile, Path::new("profile.json"))?,
@@ -62,6 +77,7 @@ pub fn replay(profile: &Path, destination: &Path) -> Result<()> {
     {
         return Err("runtime replay provenance or actual architecture differs".into());
     }
+    development_replay(profile)?;
     let installed = checked(
         profile,
         "managed/installed.json",

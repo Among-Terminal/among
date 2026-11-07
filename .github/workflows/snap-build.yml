@@ -11,13 +11,13 @@ permissions:
   contents: read
 
 jobs:
-  plugin-candidate:
-    uses: ./.github/workflows/plugin-candidate.yml
+  published-plugins:
+    uses: ./.github/workflows/published-plugin-inputs.yml
     with:
-      artifact: plugin-candidate-snap
+      artifact: published-plugin-snap
 
   snap:
-    needs: plugin-candidate
+    needs: published-plugins
     env:
       CARGO_BUILD_JOBS: '1'
     strategy:
@@ -37,8 +37,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: plugin-candidate-snap
-          path: ${{ runner.temp }}/plugin-candidate
+          name: published-plugin-snap
+          path: ${{ runner.temp }}/published-plugin-assets
       - name: Install disposable hosted prerequisites
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
@@ -69,7 +69,8 @@ jobs:
           test "${#source_sha}" -eq 40
           AMONG_CHECK_SOURCE_SHA="$source_sha" CARGO_BUILD_JOBS=1 cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
           tool=tools/among-tools/target/release/among-tools
-          "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" package-plugin-profile "$RUNNER_TEMP/plugin-candidate"
+          "$tool" prepare-published-plugin-inputs .github/plugin-acceptance.json "$RUNNER_TEMP/published-plugin-assets" "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" package-plugin-profile --published-inputs "$AMONG_CHECK_ROOT/official-plugin-inputs"
           "$tool" check-package-plugin-profile package-plugin-profile "$EXPECTED_SOURCE"
       # The About page names the commit and its date. `sudo env` passes only what
       # it is given, so the values are handed over by name below.
