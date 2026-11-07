@@ -139,7 +139,7 @@ impl Backend {
             .revalidate(self.audio_channel, self.preferences.borrow().audio, focus);
         self.desktop
             .borrow_mut()
-            .observe(&self.host.borrow(), focus);
+            .observe(&mut self.host.borrow_mut(), focus);
     }
 
     pub(super) fn focus(&self) -> Focus {
@@ -188,9 +188,10 @@ impl Backend {
                 }
             }
         }
+        let focus = self.focus();
         self.desktop
             .borrow_mut()
-            .observe(&self.host.borrow(), self.focus());
+            .observe(&mut self.host.borrow_mut(), focus);
     }
 
     pub(super) fn shutdown(&self) {

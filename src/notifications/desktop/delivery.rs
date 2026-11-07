@@ -27,7 +27,7 @@ pub struct Target {
 }
 
 /// GIO reports an attempted send, not that the notification was displayed.
-/// Implementations must not block the UI loop or queue a retry.
+/// Adapters must not add blocking work or queue a retry around the platform API.
 pub trait Sender {
     fn availability(&self) -> Availability;
     fn attempt(&mut self, id: &str, text: &Text, target: &Target);
@@ -107,7 +107,14 @@ impl Runtime {
             .then_some(source)
     }
 
-    pub fn observe(&mut self, host: &Host, focus: Focus) {
+    pub fn observe(&mut self, host: &mut Host, focus: Focus) {
+        if focus.application_active {
+            if let Some(source) = focus.viewed {
+                // Viewing acknowledges even a bell still waiting for a send
+                // budget. Leaving the terminal must not revive that bell.
+                host.discard_pending_source(self.channel, source);
+            }
+        }
         let removed: Vec<_> = self
             .posted
             .keys()
@@ -256,7 +263,7 @@ mod tests {
         let id = first.clone();
         drop(recorded);
         runtime.observe(
-            &host,
+            &mut host,
             Focus {
                 application_active: true,
                 viewed: Some(source),
@@ -267,7 +274,7 @@ mod tests {
             .unwrap();
         runtime.poll(&mut host, Focus::default(), now + COOLDOWN * 2, text);
         host.detach(source);
-        runtime.observe(&host, Focus::default());
+        runtime.observe(&mut host, Focus::default());
         assert!(matches!(calls.borrow().last(), Some(Call::Withdraw(_))));
         let replacement = host.attach(1).unwrap();
         host.bell(replacement, Focus::default(), now + COOLDOWN * 3)
@@ -346,6 +353,66 @@ mod tests {
         let mut foreign = target;
         foreign.instance = "previous process".into();
         assert!(runtime.resolve(&host, &foreign).is_none());
+    }
+
+    #[test]
+    fn briefly_viewing_a_queued_bell_prevents_replay_after_leaving_the_terminal() {
+        for source_cooldown in [false, true] {
+            let mut host = Host::new().unwrap();
+            let first = host.attach(1).unwrap();
+            let waiting = if source_cooldown {
+                first
+            } else {
+                host.attach(2).unwrap()
+            };
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mut runtime = Runtime::new(
+                &mut host,
+                Box::new(Recorder {
+                    calls: calls.clone(),
+                    available: Rc::new(Cell::new(Availability::Available)),
+                }),
+                "instance".into(),
+            )
+            .unwrap();
+            let now = Instant::now();
+            host.bell(first, Focus::default(), now).unwrap();
+            runtime.poll(&mut host, Focus::default(), now, text);
+            let queued = now + Duration::from_millis(10);
+            host.bell(waiting, Focus::default(), queued).unwrap();
+            runtime.poll(&mut host, Focus::default(), queued, text);
+            assert_eq!(host.pending_count(Some(runtime.channel)), 1);
+
+            let viewed = Focus {
+                application_active: true,
+                viewed: Some(waiting),
+            };
+            runtime.poll(&mut host, viewed, now + Duration::from_millis(20), text);
+            runtime.poll(&mut host, Focus::default(), now + COOLDOWN, text);
+            assert_eq!(
+                calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| matches!(call, Call::Send(..)))
+                    .count(),
+                1,
+                "viewed bell replayed after leaving the terminal; source cooldown={source_cooldown}"
+            );
+            assert_eq!(host.pending_count(Some(runtime.channel)), 0);
+
+            let fresh = now + COOLDOWN * 2;
+            host.bell(waiting, Focus::default(), fresh).unwrap();
+            runtime.poll(&mut host, Focus::default(), fresh, text);
+            assert_eq!(
+                calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| matches!(call, Call::Send(..)))
+                    .count(),
+                2,
+                "a fresh bell must still be delivered"
+            );
+        }
     }
 
     #[test]
