@@ -77,6 +77,7 @@ enum Refreshing {
 pub(super) enum Op {
     Running { phase: String, can_stop: bool },
     Done(String),
+    Uncertain(String),
     Failed(String),
 }
 
@@ -148,7 +149,7 @@ impl Env {
     pub(super) fn clear_note(&self, key: &str) {
         let finished = matches!(
             self.state.ops.borrow().get(key),
-            Some(Op::Done(_) | Op::Failed(_))
+            Some(Op::Done(_) | Op::Uncertain(_) | Op::Failed(_))
         );
         if finished {
             self.state.ops.borrow_mut().remove(key);
@@ -212,6 +213,7 @@ struct Ui {
     installed: adw::PreferencesGroup,
     available: adw::PreferencesGroup,
     retained: adw::PreferencesGroup,
+    known_installed: Rc<RefCell<Option<BTreeSet<String>>>>,
     search: gtk::SearchEntry,
     empty: adw::ActionRow,
     status: adw::StatusPage,
@@ -298,6 +300,7 @@ pub(super) fn page_with(ctx: &PreferencesContext, services: Services) -> adw::Pr
     }
 
     let retained = adw::PreferencesGroup::new();
+    let known_installed = Rc::new(RefCell::new(None));
     let retained_row = adw::ActionRow::builder()
         .title("Settings of removed plugins")
         .subtitle("Review and separately delete local settings of uninstalled plugins.")
@@ -306,12 +309,17 @@ pub(super) fn page_with(ctx: &PreferencesContext, services: Services) -> adw::Pr
     retained_row.set_activatable(true);
     retained_row.connect_activated({
         let ctx = ctx.clone();
+        let known_installed = known_installed.clone();
         move |row| {
             if let Some(parent) = row
                 .root()
                 .and_then(|root| root.downcast::<gtk::Window>().ok())
             {
-                super::retained_settings::present(&parent, &ctx);
+                let window = super::retained_settings::present(&parent, &ctx);
+                window.connect_destroy({
+                    let known_installed = known_installed.clone();
+                    move |_| *known_installed.borrow_mut() = None
+                });
             }
         }
     });
@@ -332,6 +340,7 @@ pub(super) fn page_with(ctx: &PreferencesContext, services: Services) -> adw::Pr
         installed,
         available,
         retained,
+        known_installed,
         search,
         empty,
         status,
@@ -677,21 +686,18 @@ fn poll_operations(env: &Rc<Env>) {
         match outcome {
             Ok(commit) => {
                 (env.ctx.installations_changed)();
-                state.set_op(
-                    &key,
-                    Op::Done(match commit.durability {
-                        crate::settings::Durability::Durable if updating => "Updated. The previous version is kept; the plugin stays switched on or off as you left it.".into(),
-                        crate::settings::Durability::Durable => "Installed and switched off. Use the switch to turn it on.".into(),
-                        _ => "Saved, but the write is not confirmed. Check the installed list before retrying.".into(),
-                    }),
-                );
+                state.set_op(&key, match commit.durability {
+                    crate::settings::Durability::Durable if updating => Op::Done("Updated. The previous version is kept; the plugin stays switched on or off as you left it.".into()),
+                    crate::settings::Durability::Durable => Op::Done("Installed and switched off. Use the switch to turn it on.".into()),
+                    _ => Op::Uncertain("Saved, but the write is not confirmed. Check the installed list before retrying.".into()),
+                });
             }
             Err(problem) => state.set_op(&key, Op::Failed(problem.to_string())),
         }
     }
 }
 
-fn listed_offer(env: &Env, key: &str) -> Option<Offer> {
+pub(super) fn listed_offer(env: &Env, key: &str) -> Option<Offer> {
     env.state
         .listing
         .borrow()
@@ -851,7 +857,7 @@ pub(super) fn package_action(
                 } else {
                     env.state.set_op(
                         &key,
-                        Op::Done(
+                        Op::Uncertain(
                             "Saved, but the write is not confirmed. Check the installed list before retrying."
                                 .into(),
                         ),
@@ -1036,8 +1042,15 @@ fn reconcile(env: &Rc<Env>, ui: &Ui) {
         .any(|row| row.row.is_visible());
     let anything = !ui.installed_rows.borrow().is_empty() || !ui.available_rows.borrow().is_empty();
     ui.empty.set_visible(anything && !anything_visible);
-    let retained = (env.ctx.retained_settings)().is_ok_and(|settings| !settings.is_empty());
-    ui.retained.set_visible(retained);
+    // Retained settings reads the installed inventory from disk. Refresh it
+    // when installations change or the retained-settings window closes,
+    // rather than scanning the store on every runtime-status tick.
+    let due = ui.known_installed.borrow().as_ref() != Some(&live);
+    if due {
+        *ui.known_installed.borrow_mut() = Some(live.clone());
+        let retained = (env.ctx.retained_settings)().is_ok_and(|settings| !settings.is_empty());
+        ui.retained.set_visible(retained);
+    }
 }
 
 fn retire(

@@ -112,7 +112,9 @@ struct Live {
     protection: adw::ActionRow,
     allow: gtk::Button,
     update_note: adw::ActionRow,
+    removal: adw::PreferencesGroup,
     status: adw::ActionRow,
+    role: Option<adw::ActionRow>,
     description: String,
     name: String,
 }
@@ -172,6 +174,10 @@ fn update_text(standing: Option<&Standing>) -> String {
 /// Opens the plugin page for an installed plugin as a subpage of `window`.
 pub(super) fn open(env: &Rc<Env>, key: &str, window: &adw::PreferencesWindow) {
     let Some((info, entry)) = current(env, key) else {
+        if super::plugin_manager::listed_offer(env, key).is_some() {
+            open_available(env, key, window);
+            return;
+        }
         // a plugin without package files has no page: say what is known.
         let Some(info) = (env.ctx.plugin_inventory)()
             .into_iter()
@@ -194,6 +200,7 @@ pub(super) fn open(env: &Rc<Env>, key: &str, window: &adw::PreferencesWindow) {
         return;
     };
     let nav = adw::NavigationPage::new(&gtk::Box::new(gtk::Orientation::Vertical, 0), &info.name);
+    nav.set_widget_name(&format!("plugin-page:{key}"));
     let shown = Rc::new(RefCell::new((
         entry.receipt.clone(),
         build(env, key, &nav, &info, &entry),
@@ -228,6 +235,137 @@ pub(super) fn open(env: &Rc<Env>, key: &str, window: &adw::PreferencesWindow) {
             shown.1 = build(&env, &key, &nav, &info, &entry);
         }
         update(&env, &key, &shown.1, &info);
+        glib::ControlFlow::Continue
+    });
+}
+
+/// An available plugin has catalogue metadata but no observed runtime or
+/// granted access. Keep that distinction visible until installation commits.
+fn open_available(env: &Rc<Env>, key: &str, window: &adw::PreferencesWindow) {
+    let Some(offer) = super::plugin_manager::listed_offer(env, key) else {
+        return;
+    };
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    let banner = adw::Banner::new("");
+    toolbar.add_top_bar(&banner);
+    let page = adw::PreferencesPage::new();
+    let head_group = adw::PreferencesGroup::new();
+    let head = adw::ActionRow::new();
+    head.set_subtitle_lines(0);
+    head.add_prefix(&gtk::Image::from_icon_name("application-x-addon-symbolic"));
+    let slot = SlotWidgets::new();
+    head.add_suffix(&slot.stack);
+    head_group.add(&head);
+    page.add(&head_group);
+    slot.install.connect_clicked({
+        let env = env.clone();
+        let key = key.to_owned();
+        move |_| super::plugin_manager::install(&env, &key)
+    });
+    slot.stop.connect_clicked({
+        let env = env.clone();
+        let key = key.to_owned();
+        move |_| super::plugin_manager::stop(&env, &key)
+    });
+    let cards = adw::PreferencesGroup::new();
+    let source = technical_row("", "Source");
+    cards.add(&source);
+    cards.add(&technical_row(
+        "Checked when the plugin starts.",
+        "Protection",
+    ));
+    let access = technical_row("", "Can read");
+    cards.add(&access);
+    page.add(&cards);
+    let details = adw::PreferencesGroup::new();
+    let expander = adw::ExpanderRow::new();
+    expander.set_title("Technical details");
+    expander.add_row(&technical_row(key, "Identity"));
+    if crate::plugin::development::enabled() {
+        expander.add_row(&technical_row(
+            &offer.source.repository_id.to_string(),
+            "Repository id",
+        ));
+        expander.add_row(&technical_row(
+            &offer.source.publisher_id.to_string(),
+            "Publisher id",
+        ));
+    }
+    details.add(&expander);
+    page.add(&details);
+    toolbar.set_content(Some(&page));
+    let nav = adw::NavigationPage::new(&toolbar, &offer.name);
+    nav.set_widget_name(&format!("plugin-page:{key}"));
+    window.push_subpage(&nav);
+    let refresh = {
+        let env = env.clone();
+        let key = key.to_owned();
+        move || {
+            let offer = super::plugin_manager::listed_offer(&env, &key);
+            let op = env.state.op(&key);
+            if let Some(offer) = &offer {
+                head.set_title(&version_title(&offer.name, Some(&offer.version)));
+                head.set_subtitle(&escape_display(&match &op {
+                    Some(Op::Running { phase, .. }) => phase.clone(),
+                    _ => offer.description.clone(),
+                }));
+                let shield = Shield::of(trust::Origin::of_offer(offer), false);
+                source.set_subtitle(&escape_display(&format!(
+                    "{} · {}/{}\n{}",
+                    shield.title(),
+                    offer.source.owner,
+                    offer.source.repository,
+                    shield.detail()
+                )));
+                access.set_subtitle(&escape_display(&trust::access_summary(
+                    &offer.required_features,
+                )));
+                slot.install.set_sensitive(offer.selection.is_ok());
+                slot.install
+                    .set_tooltip_text(offer.selection.as_ref().err().map(|problem| problem.0));
+            } else {
+                slot.install.set_sensitive(false);
+            }
+            let selected = match &op {
+                Some(Op::Running { can_stop, .. }) => Slot::Busy {
+                    can_stop: *can_stop,
+                },
+                _ => Slot::Install,
+            };
+            slot.show(
+                selected,
+                &offer
+                    .as_ref()
+                    .map_or_else(|| key.clone(), |offer| offer.name.clone()),
+            );
+            let problem = match op {
+                Some(Op::Failed(problem)) => Some(problem),
+                _ if offer.is_none() => Some("This source no longer offers the plugin.".into()),
+                _ => None,
+            };
+            banner.set_title(&escape_display(problem.as_deref().unwrap_or("")));
+            banner.set_revealed(problem.is_some());
+        }
+    };
+    refresh();
+    let env = env.clone();
+    let key = key.to_owned();
+    let window = window.downgrade();
+    let nav = nav.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+        let (Some(window), Some(nav)) = (window.upgrade(), nav.upgrade()) else {
+            return glib::ControlFlow::Break;
+        };
+        if nav.parent().is_none() {
+            return glib::ControlFlow::Break;
+        }
+        if current(&env, &key).is_some() {
+            window.pop_subpage();
+            open(&env, &key, &window);
+            return glib::ControlFlow::Break;
+        }
+        refresh();
         glib::ControlFlow::Continue
     });
 }
@@ -267,6 +405,12 @@ fn build(
     entry: &Entry,
 ) -> Live {
     let development = crate::plugin::development::enabled();
+    let is_current: Rc<dyn Fn() -> bool> = Rc::new({
+        let env = env.clone();
+        let key = key.to_owned();
+        let expected = entry.receipt.clone();
+        move || (env.ctx.plugin_details)(&key).is_some_and(|(entry, _)| entry.receipt == expected)
+    });
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&adw::HeaderBar::new());
     let banner = adw::Banner::new("");
@@ -289,15 +433,34 @@ fn build(
     head_group.add(&head);
     page.add(&head_group);
     slot.install.set_visible(false);
+    slot.stop.connect_clicked({
+        let env = env.clone();
+        let key = key.to_owned();
+        let is_current = is_current.clone();
+        move |_| {
+            if is_current() {
+                super::plugin_manager::stop(&env, &key)
+            }
+        }
+    });
     slot.update.connect_clicked({
         let env = env.clone();
         let key = key.to_owned();
-        move |button| super::plugin_manager::update(&env, &key, window_of(button))
+        let is_current = is_current.clone();
+        move |button| {
+            if is_current() {
+                super::plugin_manager::update(&env, &key, window_of(button))
+            }
+        }
     });
     slot.uninstall.connect_clicked({
         let env = env.clone();
         let key = key.to_owned();
+        let is_current = is_current.clone();
         move |button| {
+            if !is_current() {
+                return;
+            }
             super::plugin_manager::uninstall(
                 &env,
                 &key,
@@ -349,7 +512,12 @@ fn build(
     allow.connect_clicked({
         let env = env.clone();
         let key = key.to_owned();
-        move |button| super::plugin_manager::allow_reduced(&env, &key, button)
+        let is_current = is_current.clone();
+        move |button| {
+            if is_current() {
+                super::plugin_manager::allow_reduced(&env, &key, button)
+            }
+        }
     });
     protection.add_suffix(&allow);
     cards.add(&protection);
@@ -413,7 +581,11 @@ fn build(
         settings.connect_activated({
             let env = env.clone();
             let key = key.to_owned();
+            let is_current = is_current.clone();
             move |row| {
+                if !is_current() {
+                    return;
+                }
                 if let Some(window) = window_of(row) {
                     open_settings(&env, &key, &window);
                 }
@@ -421,7 +593,49 @@ fn build(
         });
         controls.add(&settings);
     }
+    let role = env
+        .ctx
+        .general
+        .as_ref()
+        .and_then(|ctx| super::general::role_row(ctx, key, is_current.clone()));
+    if let Some(role) = &role {
+        controls.add(role);
+    }
     page.add(&controls);
+
+    // While the slot offers Update, Uninstall is here instead.
+    let removal = adw::PreferencesGroup::new();
+    let remove_row = adw::ActionRow::new();
+    remove_row.set_title("Uninstall");
+    remove_row.set_subtitle("It stops now if it is running. Your settings are kept.");
+    let remove = gtk::Button::with_label("Uninstall");
+    remove.set_valign(gtk::Align::Center);
+    remove.add_css_class("destructive-action");
+    remove.connect_clicked({
+        let env = env.clone();
+        let key = key.to_owned();
+        let is_current = is_current.clone();
+        move |button| {
+            if !is_current() {
+                return;
+            }
+            super::plugin_manager::uninstall(
+                &env,
+                &key,
+                button
+                    .root()
+                    .and_then(|root| root.downcast::<gtk::Window>().ok()),
+            )
+        }
+    });
+    remove.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Uninstall {}",
+        info.name
+    ))]);
+    remove_row.add_suffix(&remove);
+    removal.add(&remove_row);
+    removal.set_visible(false);
+    page.add(&removal);
 
     let details = adw::PreferencesGroup::new();
     let expander = adw::ExpanderRow::new();
@@ -441,7 +655,11 @@ fn build(
         button.connect_clicked({
             let env = env.clone();
             let key = key.to_owned();
+            let is_current = is_current.clone();
             move |button| {
+                if !is_current() {
+                    return;
+                }
                 super::plugin_manager::package_action(
                     &env,
                     &key,
@@ -472,7 +690,9 @@ fn build(
         protection,
         allow,
         update_note,
+        removal,
         status,
+        role,
         description: info.description.clone(),
         name: info.name.clone(),
     }
@@ -499,9 +719,12 @@ fn version_title(name: &str, version: Option<&str>) -> String {
 
 /// Brings what can change while the page is open in line with the host.
 fn update(env: &Rc<Env>, key: &str, live: &Live, info: &Overview) {
+    if let Some(role) = &live.role {
+        role.set_subtitle(&escape_display(&info.declared));
+    }
     let op = env.state.op(key);
     match &op {
-        Some(Op::Failed(text)) | Some(Op::Done(text)) => {
+        Some(Op::Failed(text)) | Some(Op::Done(text)) | Some(Op::Uncertain(text)) => {
             live.banner.set_title(&escape_display(text));
             live.banner.set_revealed(true);
         }
@@ -522,6 +745,8 @@ fn update(env: &Rc<Env>, key: &str, live: &Live, info: &Overview) {
         _ => Slot::Uninstall,
     };
     live.slot.show(slot, &live.name);
+    live.removal
+        .set_visible(matches!(slot, Slot::Update | Slot::Replace));
     live.status.set_subtitle(&escape_display(
         &super::plugin_row::status_line(info).unwrap_or_else(|| match info.state {
             PluginState::Running => "Running".into(),

@@ -19,6 +19,49 @@ fn named_button(root: &impl IsA<gtk::Widget>, name: &str) -> gtk::Button {
         .unwrap_or_else(|| panic!("no control named {name}"))
 }
 
+/// Navigation transitions can leave the underlying list mapped briefly. Scope
+/// actions to the selected page so an identically labelled sibling action
+/// cannot be mistaken for the control the user is reviewing.
+fn plugin_page_button(view: &adw::PreferencesWindow, identity: &str, label: &str) -> gtk::Button {
+    let page = widgets(view.upcast_ref())
+        .into_iter()
+        .find(|widget| widget.widget_name() == format!("plugin-page:{identity}"))
+        .unwrap_or_else(|| panic!("no page for {identity}"));
+    button(&page, label)
+}
+
+/// Whether the window shows installable versions: package rows are titled
+/// "name — version".
+fn has_package_rows(view: &adw::PreferencesWindow) -> bool {
+    widgets(view.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .any(|row| row.is_mapped() && row.title().contains(" — "))
+}
+
+/// The preview must carry the selected plugin's identity and the authority
+/// offered for registration, even without the former raw metadata panel.
+fn assert_sample_preview(view: &adw::PreferencesWindow) {
+    assert!(widgets(view.upcast_ref()).iter().any(|widget| {
+        widget.downcast_ref::<adw::ActionRow>().is_some_and(|row| {
+            row.is_mapped()
+                && row
+                    .subtitle()
+                    .is_some_and(|text| text.starts_with("github:12/sample · version "))
+        })
+    }));
+    assert!(widgets(view.upcast_ref()).iter().any(|widget| {
+        widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+            button.is_mapped()
+                && button.tooltip_text().is_some_and(|text| {
+                    text.starts_with("Repository 12 / publisher 34.")
+                        && text
+                            .contains("no plugin is installed, enabled or granted runtime access")
+                })
+        })
+    }));
+}
+
 /// Whether a banner under `root` carries `text` in its title.
 fn banner_says(root: &impl IsA<gtk::Widget>, text: &str) -> bool {
     widgets(root.as_ref())
@@ -831,7 +874,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         preferences.clone()
     };
     let details = open_details();
-    press(&button(&details, "Recover previous…"));
+    press(&plugin_page_button(&details, KEY, "Recover previous…"));
     wait_for(
         || details.visible_dialog().is_some(),
         Duration::from_secs(2),
@@ -921,7 +964,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         Duration::from_secs(5),
     );
     let details = open_details();
-    press(&button(&details, "Uninstall"));
+    press(&plugin_page_button(&details, KEY, "Uninstall"));
     wait_for(
         || details.visible_dialog().is_some(),
         Duration::from_secs(2),
@@ -942,6 +985,17 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         Duration::from_secs(5),
     );
     assert!(details.visible_dialog().is_none());
+    wait_for(
+        || {
+            gtk::prelude::GtkWindowExt::focus(&details).is_some_and(|focus| {
+                focus.is::<gtk::SearchEntry>()
+                    || focus
+                        .parent()
+                        .is_some_and(|parent| parent.is::<gtk::SearchEntry>())
+            })
+        },
+        Duration::from_secs(3),
+    );
     assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());
     assert!(ctx.state.borrow().plugins.managed_details(KEY).is_none());
     assert!(ctx
@@ -1814,7 +1868,17 @@ fn screenshot_dialog(dialog: &adw::Dialog, name: &str) {
     println!("Native dialog scene screenshot: {}", path.display());
 }
 
+/// Lets a subpage slide in or out before it is measured or photographed.
+fn settle() {
+    let start = std::time::Instant::now();
+    wait_for(
+        || start.elapsed() >= Duration::from_millis(700),
+        Duration::from_secs(3),
+    );
+}
+
 fn screenshot(window: &impl IsA<gtk::Window>, name: &str) {
+    settle();
     let id = focus(window);
     let path = crate::test_isolation::check_root().join(format!("{name}.png"));
     assert!(std::process::Command::new("import")
@@ -1925,6 +1989,7 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
         .find(|field| field.title() == "Label")
         .unwrap();
+    settle();
     let save = button(&editor, "Save");
     assert!(contained(&save, &editor).y() < contained(&field, &editor).y());
     assert!(!config.exists(), "inspection must not save defaults");
@@ -2039,19 +2104,9 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         || has_label(view.upcast_ref(), "Metadata preview ready"),
         Duration::from_secs(6),
     );
-    let output = widgets(view.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
-        .unwrap();
-    assert!(output.is_mapped());
-    assert!(output
-        .buffer()
-        .text(
-            &output.buffer().start_iter(),
-            &output.buffer().end_iter(),
-            false
-        )
-        .contains("example/sample (repository 12, publisher 34)"));
+    // the result is the list of installable versions; there is no raw metadata.
+    assert!(has_package_rows(&view));
+    assert_sample_preview(&view);
     assert_eq!(requests.get(), 2);
     assert_eq!(ready.requests().len(), 5);
     screenshot(&view, "repository-result");
@@ -2070,7 +2125,7 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         "0",
         "another/repository",
     ]);
-    wait_for(|| !output.is_mapped(), Duration::from_secs(2));
+    wait_for(|| !has_package_rows(&view), Duration::from_secs(2));
     assert_eq!(
         requests.get(),
         2,
@@ -2160,20 +2215,6 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
         .into_iter()
         .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
         .unwrap();
-    let output = widgets(view.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
-        .unwrap();
-    let text = || {
-        output
-            .buffer()
-            .text(
-                &output.buffer().start_iter(),
-                &output.buffer().end_iter(),
-                false,
-            )
-            .to_string()
-    };
     focus(&view);
     wait_for(|| entry.is_mapped(), Duration::from_secs(2));
     assert!(entry.grab_focus());
@@ -2213,7 +2254,7 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
                 eprintln!(
                     "repository input diagnostic: terminal={:?} inspection={:?} xfocus={}",
                     terminal.text_format(vte::Format::Text),
-                    text(),
+                    has_package_rows(&view),
                     xdo(&["getwindowfocus"])
                 );
             }
@@ -2233,7 +2274,7 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
         Duration::from_secs(2),
     );
     assert_eq!(requests.get(), 1);
-    assert!(text().is_empty());
+    assert!(!has_package_rows(&view));
     press(&button(&view, "Inspect"));
     wait_for(
         || {
@@ -2244,8 +2285,8 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
         },
         Duration::from_secs(6),
     );
-    assert!(text().contains("example/sample (repository 12, publisher 34)"));
-    assert!(text().contains("inspection does not install or enable plugins"));
+    assert!(has_package_rows(&view));
+    assert_sample_preview(&view);
     assert_eq!(ready.requests().len(), 5);
     assert!(ready.requests()[2].starts_with("GET /repositories/12/releases/assets/12 "));
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);

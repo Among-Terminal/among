@@ -67,7 +67,7 @@ impl Shield {
     pub(super) fn icon_name(self) -> &'static str {
         match self {
             Self::Official => "security-high-symbolic",
-            Self::OtherPublisher => "security-medium-symbolic",
+            Self::OtherPublisher => "security-low-symbolic",
             Self::Development => "dialog-question-symbolic",
             Self::Weaker => "dialog-warning-symbolic",
         }
@@ -85,10 +85,10 @@ impl Shield {
 
     pub(super) fn detail(self) -> &'static str {
         match self {
-            Self::Official => "Published by Among Terminal. Runs in a sandbox when started: no network, own files only.",
-            Self::OtherPublisher => "Published by someone else. Among Terminal has not reviewed it. Runs in a sandbox when started: no network, own files only.",
+            Self::Official => "Published by Among Terminal. Protection is checked when the plugin starts.",
+            Self::OtherPublisher => "Published by someone else. Among Terminal has not reviewed it. Protection is checked when the plugin starts.",
             Self::Development => "Installed from a local folder. Its repository, publisher and release are not known.",
-            Self::Weaker => "This plugin was allowed to run with less than full sandboxing.",
+            Self::Weaker => "Full sandboxing is unavailable or reduced protection was allowed. Review the protection details before starting it.",
         }
     }
 

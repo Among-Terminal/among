@@ -196,6 +196,23 @@ fn plugin_list_is_built_offline_from_saved_sources_with_one_state_control_per_ro
     ));
     screenshot(&preferences, "plugins-list");
 
+    // Catalogue entries have working info pages before installation. Their
+    // protection is unobserved and no settings or enable switch is offered.
+    press(&named_button(&status, "plugin-info"));
+    wait_for(
+        || has_label(preferences.upcast_ref(), "Checked when the plugin starts."),
+        Duration::from_secs(3),
+    );
+    assert!(has_label(preferences.upcast_ref(), "Can read"));
+    assert!(button(&preferences, "Install").is_mapped());
+    assert!(!widgets(preferences.upcast_ref())
+        .iter()
+        .any(|widget| widget.is::<adw::SwitchRow>() && widget.is_mapped()));
+    screenshot(&preferences, "plugin-available-page");
+    focus(&preferences);
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    settle();
+
     // The plugin page: a subpage of the same window, what it is and what it
     // may read first, package facts folded away.
     press(&named_button(&updated, "plugin-info"));
@@ -208,10 +225,10 @@ fn plugin_list_is_built_offline_from_saved_sources_with_one_state_control_per_ro
         Duration::from_secs(3),
     );
     assert!(has_label(preferences.upcast_ref(), "Can read"));
-    assert!(has_label(
-        preferences.upcast_ref(),
-        "Version 1.1.0 is available."
-    ));
+    wait_for(
+        || has_label(preferences.upcast_ref(), "Version 1.1.0 is available."),
+        Duration::from_secs(3),
+    );
     assert!(!has_label(preferences.upcast_ref(), "Manifest SHA-256"));
     screenshot(&preferences, "plugin-page");
     // Uninstall asks first and says what happens; declining changes nothing.
@@ -329,4 +346,206 @@ fn development_mode_shows_the_banner_the_channel_switch_and_the_local_catalogue(
     preferences.destroy();
     ctx.window.destroy();
     println!("PASS development run: banner, Stable/Pre-release switch on Pre-release, local catalogue row, no separate prerelease action");
+}
+
+#[test]
+#[ignore = "requires an isolated display, xdotool and ImageMagick"]
+fn a_refused_install_is_named_in_its_row_and_leaves_install_available() {
+    let root = crate::plugin::inventory::root().unwrap();
+    crate::test_isolation::assert_below_check_root(&root);
+    let sources = registry::root().unwrap();
+    save_source(
+        &sources,
+        inspection(
+            origin(
+                1_431_055_733,
+                339_567_100,
+                "Among-Terminal",
+                "among-plugins",
+            ),
+            &[("system-status", "System status", "0.2.0", &digest('b'))],
+        ),
+    );
+    let app = application("com.github.among-terminal.plugin-list-install-refusal-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    let (preferences, _) = preferences_window(&ctx);
+    let installs = Rc::new(Cell::new(0));
+    let view = list_window(
+        &ctx,
+        &preferences,
+        crate::prefs::PluginServices {
+            root: Some(sources),
+            refresh: Rc::new(|_| Err(crate::plugin::data::Problem("no refresh here"))),
+            prerelease: Rc::new(|_| Err(crate::plugin::data::Problem("not a development run"))),
+            install: Rc::new({
+                let installs = installs.clone();
+                move |_| {
+                    installs.set(installs.get() + 1);
+                    Err(crate::plugin::data::Problem(
+                        "two repository operations are still active",
+                    ))
+                }
+            }),
+        },
+    );
+    wait_for(
+        || has_list_row(&view, "system status"),
+        Duration::from_secs(5),
+    );
+    focus(&view);
+    let row = row_by_identity(&view, "github:1431055733/system-status");
+    press(&button(&row, "Install"));
+    wait_for(
+        || {
+            has_label(
+                row.upcast_ref(),
+                "two repository operations are still active",
+            )
+        },
+        Duration::from_secs(3),
+    );
+    assert_eq!(installs.get(), 1);
+    assert_eq!(shown_buttons(&row), ["Install"]);
+    assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());
+    press(&named_button(&row, "plugin-info"));
+    wait_for(
+        || has_label(view.upcast_ref(), "Checked when the plugin starts."),
+        Duration::from_secs(3),
+    );
+    press(&button(&view, "Install"));
+    wait_for(
+        || banner_says(&view, "two repository operations are still active"),
+        Duration::from_secs(3),
+    );
+    assert_eq!(installs.get(), 2);
+    assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());
+    view.destroy();
+    preferences.destroy();
+    ctx.window.destroy();
+    println!("PASS a refused install names its reason in the row, offers Install again and installs nothing");
+}
+
+#[test]
+#[ignore = "requires an isolated display, xdotool and ImageMagick"]
+fn old_package_controls_refuse_a_replaced_receipt_before_the_page_refreshes() {
+    let root = crate::plugin::inventory::root().unwrap();
+    install_fixtures(&root);
+    let app = application("com.github.among-terminal.plugin-stale-controls-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    let (preferences, _) = preferences_window(&ctx);
+    let row = row_by_identity(&preferences, "github:12/sample");
+    let old_row_uninstall = button(&row, "Uninstall");
+    press(&named_button(&row, "plugin-info"));
+    wait_for(
+        || has_label(preferences.upcast_ref(), "Technical details"),
+        Duration::from_secs(3),
+    );
+    let old_page_uninstall = plugin_page_button(&preferences, "github:12/sample", "Uninstall");
+    let mut entries = crate::plugin::inventory::read(&root).unwrap();
+    let selected = entries
+        .iter_mut()
+        .find(|entry| entry.key() == "github:12/sample")
+        .unwrap();
+    // Reinstalling the same bytes can retain the generation value while
+    // changing installation authority. The full receipt must bind controls.
+    selected.receipt.installation = Some("a".repeat(64));
+    let receipts: Vec<_> = entries.into_iter().map(|entry| entry.receipt).collect();
+    std::fs::write(
+        root.join("installed.json"),
+        serde_json::json!({"version":1,"installations":receipts}).to_string(),
+    )
+    .unwrap();
+    reconcile_managed_installations(&ctx.state);
+    let before = std::fs::read(root.join("installed.json")).unwrap();
+    // Do not iterate GTK between selection and clicks: this exercises the
+    // interval before either page's observation timer can rebuild controls.
+    old_page_uninstall.emit_clicked();
+    old_row_uninstall.emit_clicked();
+    assert!(
+        preferences.visible_dialog().is_none(),
+        "a stale control opened a current-generation confirmation"
+    );
+    assert_eq!(std::fs::read(root.join("installed.json")).unwrap(), before);
+    preferences.destroy();
+    ctx.window.destroy();
+}
+
+#[test]
+#[ignore = "requires an isolated display, xdotool and ImageMagick"]
+fn an_uninstall_write_failure_keeps_the_page_and_the_selected_package() {
+    let root = crate::plugin::inventory::root().unwrap();
+    install_fixtures(&root);
+    let app = application("com.github.among-terminal.plugin-uninstall-failure-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    let (preferences, _) = preferences_window(&ctx);
+    let row = row_by_identity(&preferences, "github:12/sample");
+    press(&named_button(&row, "plugin-info"));
+    settle();
+    let before = std::fs::read(root.join("installed.json")).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
+    press(&plugin_page_button(
+        &preferences,
+        "github:12/sample",
+        "Uninstall",
+    ));
+    wait_for(
+        || preferences.visible_dialog().is_some(),
+        Duration::from_secs(3),
+    );
+    press(&button(&preferences.visible_dialog().unwrap(), "Uninstall"));
+    wait_for(
+        || {
+            widgets(preferences.upcast_ref()).iter().any(|widget| {
+                widget
+                    .downcast_ref::<adw::Banner>()
+                    .is_some_and(|banner| banner.is_mapped() && banner.is_revealed())
+            })
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(std::fs::read(root.join("installed.json")).unwrap(), before);
+    assert!(plugin_page_button(&preferences, "github:12/sample", "Uninstall").is_mapped());
+    screenshot(&preferences, "plugin-uninstall-failed");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    preferences.destroy();
+    ctx.window.destroy();
+}
+
+#[test]
+#[ignore = "requires an isolated display, xdotool and ImageMagick"]
+fn plugin_controls_remain_named_and_operable_in_high_contrast_without_animation() {
+    std::env::set_var("GTK_A11Y", "test");
+    let root = crate::plugin::inventory::root().unwrap();
+    install_fixtures(&root);
+    let app = application("com.github.among-terminal.plugin-accessibility-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    let contrast = gio::Settings::new("org.gnome.desktop.a11y.interface");
+    contrast.set_boolean("high-contrast", true).unwrap();
+    gtk::Settings::default()
+        .unwrap()
+        .set_gtk_enable_animations(false);
+    pump_for(Duration::from_millis(200));
+    assert!(adw::StyleManager::default().is_high_contrast());
+    let (preferences, _) = preferences_window(&ctx);
+    let row = row_by_identity(&preferences, "github:12/sample");
+    let shield = named_button(&row, "plugin-shield");
+    crate::app::notification_ui_tests::accessible_label(&shield, "Plugin from another publisher");
+    assert!(shield
+        .tooltip_text()
+        .is_some_and(|text| text.starts_with("Plugin from another publisher")));
+    let info = named_button(&row, "plugin-info");
+    crate::app::notification_ui_tests::accessible_label(&info, "Details of Sample");
+    assert!(info.grab_focus());
+    xdo(&["key", "--clearmodifiers", "Return"]);
+    wait_for(
+        || plugin_page_button(&preferences, "github:12/sample", "Uninstall").is_mapped(),
+        Duration::from_secs(3),
+    );
+    screenshot(&preferences, "plugin-high-contrast-static");
+    assert!(!gtk::Settings::default().unwrap().is_gtk_enable_animations());
+    preferences.destroy();
+    ctx.window.destroy();
 }

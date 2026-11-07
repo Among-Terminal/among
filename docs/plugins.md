@@ -233,30 +233,35 @@ an install to the same version with different content.
 
 ### Native inventory
 
-Preferences → Plugins joins committed managed receipts
-and runtime observations by identity. Cards show origin/version and runtime state
-beside the desired enablement switch. Details shows the description (or its
-absence), declared compatibility, last observed wire API and package provenance;
-managed details use labelled, selectable rows rather than a single long alert.
-A never-run plugin does not receive an observed-compatible badge. Equal display names retain separate
-origin-scoped settings and switches; invalid selected packages remain visible.
+Preferences → Plugins shows Installed and Available from committed receipts,
+runtime observations and saved source snapshots. Opening it uses no network.
+The row shows its version, description, trust shield, info icon and one package
+action. A stable Running state needs no extra line; an unavailable or faulted
+state replaces the description with its reason. Faults keep the desired enable
+switch on. Equal display names retain separate identities and settings.
+
+The info icon opens a subpage with source, protection and access cards. Available
+plugins can be inspected before installation, without an enable switch or settings.
+**Technical details** shows identity and API compatibility in an ordinary run;
+development mode adds release provenance, digests, generation and recovery of a
+retained previous package. Values can be selected and copied. Protection is
+checked at start; an origin shield does not establish that sandboxing succeeded.
 
 Search matches name, description, identity and origin. Clearing search restores
 the same rows rather than redirecting an action to a sorted position. Background
 state changes update existing controls; they do not replace an open editor or
-discard unfinished settings text. Details/settings callbacks reject a removed or
-replaced package rather than silently retargeting an old action. The separate
-Plugin sources section opens repository inspection with a separate explicit
-Install disabled action for each compatible version; the search field filters
-only installed plugins. Merely inspecting metadata never installs or
-enables code. Registered sources have explicit Cached, Refresh and Remove source
-actions; source removal does not uninstall anything. Existing identities have a
-separate Apply update action. Managed Details exposes explicit recovery/removal;
-these do not modify legacy executables.
+discard unfinished settings text. Callbacks reject removed or replaced package
+generations. Plugin settings open as a further subpage; Back without Save discards
+edits. Notification roles are reviewed on the plugin page, without enabling or
+restarting code. Removing a registered source does not uninstall its plugins.
+Uninstall asks for confirmation and shows progress in the row. It cannot be
+cancelled once begun. A committed removal closes the page and retains settings;
+a failure leaves a persistent banner and the current installed state.
 
 ### Updating an installed package
 
-Inspect its repository and choose **Apply update…** for the desired version.
+Refresh the source explicitly, then choose **Update** when its saved catalogue
+offers a newer compatible version. Showing that action uses no network.
 The confirmation includes the selected version/target and access requirements.
 Only the selected plugin may restart. Publisher/access changes still require
 renewed review; changing an on-disk filename cannot inherit another identity.

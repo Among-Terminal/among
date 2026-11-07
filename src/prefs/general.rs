@@ -335,15 +335,8 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
     let provider_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
     provider_rows_refresh(&providers, ctx, &banner, &provider_rows);
     page.add(&providers);
-    let roles = adw::PreferencesGroup::new();
-    roles.set_title("Managed notification roles");
-    roles.set_description(Some("Review producer, delivery or neither for each process. UI contributions are independent. Stop a running plugin explicitly before changing access; saving a review here does not enable or restart it."));
-    let role_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
-    role_rows_refresh(&roles, ctx, &role_rows);
-    page.add(&roles);
 
     let providers = providers.downgrade();
-    let roles = roles.downgrade();
     let provider_context = ctx.clone();
     let banner = banner.downgrade();
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
@@ -355,9 +348,6 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
         }
         if let Some(group) = providers.upgrade() {
             provider_rows_refresh(&group, &provider_context, &banner, &provider_rows);
-        }
-        if let Some(group) = roles.upgrade() {
-            role_rows_refresh(&group, &provider_context, &role_rows);
         }
         glib::ControlFlow::Continue
     });
@@ -584,51 +574,47 @@ fn sound_row(ctx: &Context, banner: &adw::Banner) -> (adw::ActionRow, SoundRow) 
     (row, sound)
 }
 
-fn role_rows_refresh(
-    group: &adw::PreferencesGroup,
+/// Opens the existing consent review from the installed plugin's page. The
+/// role inventory excludes plugins that declare neither notification role.
+pub(super) fn role_row(
     ctx: &Context,
-    rows: &RefCell<std::collections::BTreeMap<String, adw::ActionRow>>,
-) {
-    let inventory = (ctx.roles)();
-    let mut rows = rows.borrow_mut();
-    rows.retain(|key, row| {
-        let retained = inventory.iter().any(|entry| entry.key == *key);
-        if !retained {
-            group.remove(row);
+    key: &str,
+    is_current: Rc<dyn Fn() -> bool>,
+) -> Option<adw::ActionRow> {
+    let entry = (ctx.roles)().into_iter().find(|entry| entry.key == key)?;
+    let row = adw::ActionRow::new();
+    row.set_title("Notification role");
+    row.set_subtitle_lines(0);
+    row.set_widget_name(&format!("notification-role-status:{}", entry.key));
+    let review = gtk::Button::with_label("Review role / access");
+    review.set_widget_name(&format!("notification-review-role:{}", entry.key));
+    review.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Review notification role and access for {}",
+        entry.key
+    ))]);
+    review.set_valign(gtk::Align::Center);
+    review.connect_clicked({
+        let callback = ctx.review_role.clone();
+        let key = entry.key.clone();
+        move |button| {
+            if !is_current() {
+                return;
+            }
+            callback(
+                &key,
+                button
+                    .root()
+                    .and_then(|root| root.downcast::<gtk::Window>().ok()),
+            )
         }
-        retained
     });
-    for entry in inventory {
-        let row = rows.entry(entry.key.clone()).or_insert_with(|| {
-            let row = row(group, &entry.key, "");
-            row.set_widget_name(&format!("notification-role-status:{}", entry.key));
-            let review = gtk::Button::with_label("Review role / access");
-            review.set_widget_name(&format!("notification-review-role:{}", entry.key));
-            review.update_property(&[gtk::accessible::Property::Label(&format!(
-                "Review notification role and access for {}",
-                entry.key
-            ))]);
-            review.set_valign(gtk::Align::Center);
-            review.connect_clicked({
-                let callback = ctx.review_role.clone();
-                let key = entry.key.clone();
-                move |button| {
-                    callback(
-                        &key,
-                        button
-                            .root()
-                            .and_then(|root| root.downcast::<gtk::Window>().ok()),
-                    )
-                }
-            });
-            row.add_suffix(&review);
-            row
-        });
-        row.set_subtitle(&escape_display(&format!(
-            "{} · {}",
-            entry.name, entry.declared
-        )));
-    }
+    row.add_suffix(&review);
+    row.set_activatable_widget(Some(&review));
+    row.set_subtitle(&escape_display(&format!(
+        "{} · {}",
+        entry.name, entry.declared
+    )));
+    Some(row)
 }
 
 fn provider_rows_refresh(

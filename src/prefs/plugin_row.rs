@@ -276,11 +276,34 @@ impl Row {
             generation,
             installed,
         };
-        built.wire(env, key);
+        let expected = match shown {
+            Shown::Installed { entry, .. } => entry.map(|entry| entry.receipt.clone()),
+            Shown::Available { .. } => None,
+        };
+        built.wire(env, key, expected);
         built
     }
 
-    fn wire(&self, env: &Rc<Env>, key: &str) {
+    fn wire(&self, env: &Rc<Env>, key: &str, expected: Option<crate::plugin::inventory::Receipt>) {
+        let is_current: Rc<dyn Fn() -> bool> = Rc::new({
+            let env = env.clone();
+            let key = key.to_owned();
+            let generation = self.generation.clone();
+            let installed = self.installed;
+            move || {
+                if let Some(expected) = &expected {
+                    return (env.ctx.plugin_details)(&key)
+                        .is_some_and(|(entry, _)| &entry.receipt == expected);
+                }
+                match (env.ctx.plugin_inventory)()
+                    .into_iter()
+                    .find(|info| info.key == key)
+                {
+                    Some(info) => installed && info.generation == generation,
+                    None => !installed,
+                }
+            }
+        });
         let window_of = |button: &gtk::Button| {
             button
                 .root()
@@ -289,7 +312,11 @@ impl Row {
         self.info.connect_clicked({
             let env = env.clone();
             let key = key.to_owned();
+            let is_current = is_current.clone();
             move |button| {
+                if !is_current() {
+                    return;
+                }
                 if let Some(window) = window_of(button) {
                     super::plugin_page::open(&env, &key, &window);
                 }
@@ -298,7 +325,11 @@ impl Row {
         self.gear.connect_clicked({
             let env = env.clone();
             let key = key.to_owned();
+            let is_current = is_current.clone();
             move |button| {
+                if !is_current() {
+                    return;
+                }
                 if let Some(window) = window_of(button) {
                     super::plugin_page::open_settings(&env, &key, &window);
                 }
@@ -307,17 +338,31 @@ impl Row {
         self.slot.install.connect_clicked({
             let env = env.clone();
             let key = key.to_owned();
-            move |_| super::plugin_manager::install(&env, &key)
+            let is_current = is_current.clone();
+            move |_| {
+                if is_current() {
+                    super::plugin_manager::install(&env, &key)
+                }
+            }
         });
         self.slot.update.connect_clicked({
             let env = env.clone();
             let key = key.to_owned();
-            move |button| super::plugin_manager::update(&env, &key, window_of(button))
+            let is_current = is_current.clone();
+            move |button| {
+                if is_current() {
+                    super::plugin_manager::update(&env, &key, window_of(button))
+                }
+            }
         });
         self.slot.uninstall.connect_clicked({
             let env = env.clone();
             let key = key.to_owned();
+            let is_current = is_current.clone();
             move |button| {
+                if !is_current() {
+                    return;
+                }
                 super::plugin_manager::uninstall(
                     &env,
                     &key,
@@ -330,12 +375,22 @@ impl Row {
         self.slot.stop.connect_clicked({
             let env = env.clone();
             let key = key.to_owned();
-            move |_| super::plugin_manager::stop(&env, &key)
+            let is_current = is_current.clone();
+            move |_| {
+                if is_current() {
+                    super::plugin_manager::stop(&env, &key)
+                }
+            }
         });
         self.allow.connect_clicked({
             let env = env.clone();
             let key = key.to_owned();
-            move |button| super::plugin_manager::allow_reduced(&env, &key, button)
+            let is_current = is_current.clone();
+            move |button| {
+                if is_current() {
+                    super::plugin_manager::allow_reduced(&env, &key, button)
+                }
+            }
         });
         let signal = self.updating.clone();
         let weak_row = self.row.downgrade();
@@ -422,9 +477,8 @@ impl Row {
         // an operation's own line wins over the plugin's steady description.
         let (line, problem) = match &op {
             Some(Op::Running { phase, .. }) => (phase.clone(), false),
-            Some(Op::Done(text)) => (text.clone(), false),
-            Some(Op::Failed(text)) => (text.clone(), true),
-            None => match &status {
+            Some(Op::Failed(text) | Op::Uncertain(text)) => (text.clone(), true),
+            None | Some(Op::Done(_)) => match &status {
                 Some(text) => (text.clone(), true),
                 None => (description, false),
             },
@@ -561,5 +615,86 @@ impl Row {
             }
         };
         self.icon_holder.append(&image);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::install::listing::Standing;
+    use crate::plugin::origin::Origin;
+
+    fn offer() -> Offer {
+        Offer {
+            source: Origin {
+                repository_id: 1,
+                publisher_id: 2,
+                owner: "acme".into(),
+                repository: "plugins".into(),
+            },
+            official: false,
+            plugin_id: "notes".into(),
+            name: "Notes".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            icon: None,
+            required_features: Vec::new(),
+            size: None,
+            selection: Err(crate::plugin::data::Problem("not for this platform")),
+        }
+    }
+
+    fn installed(standing: Standing) -> InstalledPlugin {
+        InstalledPlugin {
+            key: "github:1/notes".into(),
+            link: Link::Local,
+            standing,
+        }
+    }
+
+    #[test]
+    fn the_slot_shows_one_control_and_an_operation_outranks_the_rest() {
+        let info = Overview::fixture("github:1/notes", PluginState::Disabled, false);
+        let offer = offer();
+        let running = Op::Running {
+            phase: "Downloading".into(),
+            can_stop: true,
+        };
+        let available = Shown::Available {
+            offer: &offer,
+            several_sources: false,
+        };
+        assert_eq!(Slot::choose(&available, None), Slot::Install);
+        assert_eq!(
+            Slot::choose(&available, Some(&running)),
+            Slot::Busy { can_stop: true }
+        );
+        let plugin = installed(Standing::Current);
+        let steady = Shown::Installed {
+            info: &info,
+            entry: None,
+            plugin: Some(&plugin),
+            several_sources: false,
+        };
+        // a plugin without package files has nothing to install or remove.
+        assert_eq!(Slot::choose(&steady, None), Slot::Empty);
+        let uninstall_only = Shown::Installed {
+            info: &info,
+            entry: None,
+            plugin: None,
+            several_sources: false,
+        };
+        assert_eq!(Slot::choose(&uninstall_only, None), Slot::Empty);
+        let failed = Op::Failed("refused".into());
+        assert_eq!(Slot::choose(&available, Some(&failed)), Slot::Install);
+        // an uninstall cannot be cancelled once begun: it shows no stop.
+        let removing = Op::Running {
+            phase: "Removing files".into(),
+            can_stop: false,
+        };
+        assert_eq!(
+            Slot::choose(&available, Some(&removing)),
+            Slot::Busy { can_stop: false }
+        );
     }
 }
