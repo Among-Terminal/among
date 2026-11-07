@@ -41,6 +41,7 @@ Usage:
   among-tools check-live-status <source-root> <among-binary> <observed-installed-profile>
   among-tools check-desktop <source-root> <among-binary>
   among-tools check-desktop-notifications <prebuilt-app-test>
+  among-tools check-gnome-notifications <source-root> <native-binary> <wayland|x11> <new-evidence-directory> [--xvfb PATH]
   among-tools check-appimage-gnome <appimage> <new-evidence-directory> [--native-present]
   among-tools check-context-menu-launch <among-binary>
   among-tools check-context-menu <among-binary> <prebuilt-clipboard-helper> <light|dark>
@@ -107,6 +108,31 @@ Unported operations are not exposed as successful command placeholders.";
 
 fn run(args: &[String]) -> Result<std::process::ExitCode> {
     match args {
+        [command, source, binary, mode, output] if command == "check-gnome-notifications" => {
+            let path = among_tools::gnome_notifications::run(
+                Path::new(source),
+                Path::new(binary),
+                mode,
+                Path::new(output),
+                None,
+            )?;
+            println!("GNOME notification evidence: {}", path.display());
+        }
+        [command, source, binary, mode, output, option, xvfb]
+            if command == "check-gnome-notifications" && option == "--xvfb" =>
+        {
+            let path = among_tools::gnome_notifications::run(
+                Path::new(source),
+                Path::new(binary),
+                mode,
+                Path::new(output),
+                Some(Path::new(xvfb)),
+            )?;
+            println!("GNOME notification evidence: {}", path.display());
+        }
+        [command, mode] if command == "owned-gnome-notification-session" => {
+            among_tools::gnome_notifications::inside(mode)?;
+        }
         [command, prepared, artifact, checkers, source, architecture, output]
             if command == "check-audio-retirement" =>
         {

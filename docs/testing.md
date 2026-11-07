@@ -41,16 +41,61 @@ Logs include the recorded calls; `result.json` records the exact test executable
 SHA-256. A Rust test that runs zero cases is a failure. Evidence stays below
 `AMONG_CHECK_ROOT`.
 
-This checks application integration on an owned X11 session. It does not prove
-that GNOME Shell displays a notification or permits raising every window. On an
-isolated GNOME Wayland session and again on GNOME X11, use a packaged application
-with its matching desktop entry. Run `sleep 3; printf '\a'` in a terminal, minimise
-Among or switch to a different desktop, then click the real notification. Check
-the originating terminal, another workspace and a hidden expanded-layout sibling.
-Record shell/session versions, screenshots and the observed focus behaviour.
-GNOME's focus-prevention behaviour must be reported as observed; the application
-does not bypass it. Repeat the private-bus check on Ubuntu 24.04 and Fedora before
-accepting those target environments.
+This checks application integration on an owned X11 session. Use the separate
+GNOME checker to observe real banners and window activation:
+
+```sh
+among-tools check-gnome-notifications /absolute/source/root /absolute/native/among wayland /absolute/new/evidence-wayland
+among-tools check-gnome-notifications /absolute/source/root /absolute/native/among x11 /absolute/new/evidence-x11 --xvfb /absolute/path/to/Xvfb
+```
+
+The runner needs Bubblewrap with unprivileged user namespaces, GNOME Shell,
+`gdbus`, `dbus-daemon` and their system runtime dependencies. X11 also needs
+Xvfb; its default path is `/usr/bin/Xvfb`. It copies the native application,
+checker, optional Xvfb and matching desktop entry into a new private evidence
+directory. Run it directly: it creates its own display and session bus.
+The headless seat owns virtual pointer and keyboard devices; without keyboard
+capability, Wayland cannot deliver keyboard focus to GTK even when Mutter has
+selected the window. `seat-ready.json` records the observed input devices.
+The mount namespace exposes `/usr` read-only, selected system configuration,
+minimal `/dev`, private runtime directories and the fixture directory. It has
+no host HOME, desktop sockets, session bus, network or device mounts.
+The fixture uses Cairo for the application, disables its accessibility backend
+and limits Mesa software rendering to two threads. These settings apply only
+to the owned test processes.
+
+The checker inspects the actual Shell notification source, complete action
+target, banner allocation and window focus.
+The selected mode sets `GDK_BACKEND` for Among. Every window snapshot also records
+Mutter's actual `get_client_type()` as `client_type` and `client_type_value`;
+the checker rejects an Among window whose client type differs from that mode.
+This distinguishes a Wayland client from an Xwayland client in a Wayland Shell.
+A virtual pointer clicks the banner body for a minimised window, another GNOME
+desktop, another Among project and
+a terminal hidden by an expanded sibling. The last case must restore the
+layout. It also closes a source, observes withdrawal and dispatches its captured
+action from a real pointer release on an owned Shell test control with that
+event's timestamp. This models a late action race; the remaining terminal must
+stay selected. The control has its own Shell input region on both X11 and
+Wayland; the pointer clicks its measured allocation. The result records the
+input device, button, timestamp and action target. It does not claim a
+click on an already withdrawn banner.
+`inputs.json` identifies the copied executables by SHA-256. Shell and application
+logs, JSON observations and PNG screenshots remain in the evidence directory;
+`observations.jsonl` preserves each poll, including Shell notification policy,
+queue, presence and banner state, so a timed-out final snapshot cannot hide an
+earlier banner. The owned pointer moves before each BEL to register user activity.
+Before the first BEL, the pointer closes any visible Shell startup banners using
+their real close buttons; `startup-dismissals.json` records the banner identity,
+button allocation and observed removal.
+`result.json` appears only after every scenario passes. A missing prerequisite,
+failed compositor or blocked activation returns an error with the evidence path.
+
+This runner exercises its owned virtual GNOME session. A packaged application
+on a physical desktop and distribution-specific integration still need their
+own observations. GNOME's focus-prevention behaviour must be reported as
+observed; the application does not bypass it. Repeat the private-bus check on
+Ubuntu 24.04 and Fedora before accepting those target environments.
 
 ## Additional graphical fixtures
 

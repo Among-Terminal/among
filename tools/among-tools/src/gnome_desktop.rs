@@ -1,4 +1,5 @@
 //! Observe AppImageLauncher matching in an owned GNOME Wayland namespace.
+use crate::owned_gnome::{eval, screenshot, AUTOMATION};
 use crate::{deb_installed::Runner, process::OwnedProcess, storage, Result};
 use serde_json::{json, Value};
 use std::{
@@ -8,38 +9,6 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-
-// the native shell automation hook enables inspection only inside the owned
-// compositor; the Rust driver owns its lifetime and all assertions.
-const AUTOMATION: &str = r#"import GLib from 'gi://GLib';
-export function init() { global.context.unsafe_mode = true; }
-export async function run() {
-    await new Promise(resolve => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 180000,
-        () => { resolve(); return GLib.SOURCE_REMOVE; }));
-}
-"#;
-
-fn eval(runner: &mut Runner, code: &str) -> Result<String> {
-    let text = runner.command(
-        "/usr/bin/gdbus",
-        &[
-            "call",
-            "--session",
-            "--dest",
-            "org.gnome.Shell",
-            "--object-path",
-            "/org/gnome/Shell",
-            "--method",
-            "org.gnome.Shell.Eval",
-            code,
-        ],
-        15,
-    )?;
-    if !text.trim_start().starts_with("(true,") {
-        return Err(format!("owned GNOME inspection failed: {text}").into());
-    }
-    Ok(text)
-}
 
 fn observe(runner: &mut Runner, base: &Path, phase: &str) -> Result<Value> {
     let observation = base.join(format!("{phase}.json"));
@@ -56,27 +25,6 @@ fn wait_input(shell: &mut OwnedProcess, input: &Path) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
-}
-
-fn screenshot(runner: &mut Runner, path: &Path) -> Result<()> {
-    runner.command(
-        "/usr/bin/gdbus",
-        &[
-            "call",
-            "--session",
-            "--dest",
-            "org.gnome.Shell.Screenshot",
-            "--object-path",
-            "/org/gnome/Shell/Screenshot",
-            "--method",
-            "org.gnome.Shell.Screenshot.Screenshot",
-            "false",
-            "false",
-            path.to_str().ok_or("screenshot path is not UTF-8")?,
-        ],
-        15,
-    )?;
     Ok(())
 }
 
