@@ -234,6 +234,25 @@ pub(super) fn inspect(
     wait_for(|| !refresh.is_sensitive(), Duration::from_secs(3));
     wait_for(|| refresh.is_sensitive(), Duration::from_secs(65));
     let saved = if prerelease {
+        if observation.borrow().is_none() {
+            eprintln!(
+                "published_prerelease_refresh_refused selected_prerelease={} refresh_sensitive={} development={}",
+                channel_active(&view, "Pre-release"),
+                refresh.is_sensitive(),
+                crate::plugin::development::enabled()
+            );
+            for widget in widgets(view.upcast_ref()) {
+                if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                    eprintln!(
+                        "published_prerelease_refresh_label mapped={} visible={} text={:?}",
+                        label.is_mapped(),
+                        label.is_visible(),
+                        label.text()
+                    );
+                }
+            }
+            screenshot(&view, "published-prerelease-refresh-refused");
+        }
         let inspected = observation
             .borrow_mut()
             .take()
