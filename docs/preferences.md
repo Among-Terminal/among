@@ -16,11 +16,11 @@ Notification choices use `general.json`, version 1. Missing fields inherit these
 in-memory defaults; opening Preferences never writes this document:
 
 ```json
-{"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"command":{"enabled":false,"eligibility":"application-background"}}}
+{"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"desktop":{"enabled":true,"eligibility":"application-background"},"command":{"enabled":false,"eligibility":"application-background"}}}
 ```
 
-The page has three groups: Visual (**Highlight the terminal**), Sound (**Play a
-sound**) and Command (**Run a command**), plus a Plugin channels group only while
+The page has four groups: Visual (**Highlight the terminal**), Sound (**Play a
+sound**), Desktop (**Desktop notification**) and Command (**Run a command**), plus a Plugin channels group only while
 an installed plugin declares a delivery channel. It carries no status rows or
 explanatory plates. The result of a save shows as a banner at the top only when it
 was not saved or its durability is uncertain; a durable save shows nothing. A value
@@ -47,6 +47,17 @@ file chooser) and literal arguments (a JSON list of strings) require **Save**, i
 the Command group's header. An empty program clears
 configuration and disables the channel. Saving or enabling does not run a command
 or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
+
+Desktop notifications are enabled for existing profiles too when
+`notifications.desktop` is absent. The default sends only while Among is in the
+background; a terminal currently viewed never sends a desktop notification,
+including with Always selected. A bell names its workspace, terminal title and
+directory. Program-controlled text is cleaned and bounded before delivery.
+Clicking a notification selects its originating terminal, switching workspace and
+restoring an expanded sibling when needed. Closing or focusing that terminal,
+turning the channel off, and normal exit withdraw its notifications. A missing
+session notification service is reported on the desktop row. GIO cannot confirm
+that a shell displayed a send; see [installation requirements](install.md#desktop-notification-integration).
 The command's environment is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`,
 `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` when
 Among's own environment sets them, and nothing else.

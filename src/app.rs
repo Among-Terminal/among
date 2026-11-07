@@ -393,6 +393,31 @@ fn update_plugin_context(state: &mut AppState) {
         state.pane_drag = None;
     }
     if let Some(bells) = &state.bells {
+        bells.set_desktop_text(
+            state
+                .workspaces
+                .workspaces()
+                .iter()
+                .flat_map(|workspace| {
+                    workspace
+                        .panes()
+                        .into_iter()
+                        .map(|pane| {
+                            let title = state.pane(pane).and_then(|pane| pane.title());
+                            let directory = state.pane(pane).and_then(|pane| pane.cwd());
+                            (
+                                pane.0,
+                                among::notifications::desktop::Text::new(
+                                    Some(workspace.name.as_bytes()),
+                                    title.as_deref().map(str::as_bytes),
+                                    directory.as_deref().map(str::as_bytes),
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+        );
         bells.set_workspaces(
             state
                 .workspaces
@@ -832,6 +857,7 @@ fn build_with_writer(
             if let Some(handler) = removal_handler.borrow_mut().take() {
                 app.disconnect(handler);
             }
+            app.remove_action("focus-pane");
             // Per-identity reservations span windows. A replacement cannot
             // overlap its predecessor, but unrelated identities may use free
             // slots even if one old group cannot yet be proven retired.
@@ -869,6 +895,7 @@ fn build_with_writer(
     });
     *removal_handler.borrow_mut() = Some(handler);
 
+    install_desktop_action(&ctx);
     install_shortcuts(&ctx);
     install_tick(&ctx);
     install_sidebar_resize(&ctx);
@@ -2072,6 +2099,43 @@ fn rebuild(ctx: &Window) {
     apply_focus(ctx);
     refresh_slots(ctx);
     selfcheck(ctx, "rebuild");
+}
+
+/// Present inside the GApplication action so GTK can apply the activation
+/// token supplied by the desktop. Stale targets raise the existing window
+/// without changing its workspace, expansion, sidebar or selected terminal.
+fn install_desktop_action(ctx: &Window) {
+    let Some(application) = ctx.window.application() else {
+        return;
+    };
+    let action = gio::SimpleAction::new(
+        "focus-pane",
+        Some(&<(String, u64, u64, u64)>::static_variant_type()),
+    );
+    action.connect_activate({
+        let ctx = ctx.handle();
+        move |_, parameter| {
+            let source = parameter.and_then(|target| {
+                ctx.state
+                    .borrow()
+                    .bells
+                    .as_ref()?
+                    .resolve_desktop_target(target)
+            });
+            if let Some(source) = source {
+                if ctx
+                    .state
+                    .borrow_mut()
+                    .workspaces
+                    .focus_notification(PaneId(source.pane()))
+                {
+                    switch_workspace(&ctx);
+                }
+            }
+            ctx.window.present();
+        }
+    });
+    application.add_action(&action);
 }
 
 /// A summary of everything the sidebar shows.
@@ -4309,6 +4373,10 @@ fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
             let window = ctx.handle();
             move |name, parent| review_managed_access(&window, name, parent.as_ref(), false)
         }),
+        desktop_report: Rc::new({
+            let backend = backend.clone();
+            move || backend.desktop_report().map(str::to_owned)
+        }),
         audio_report: Rc::new(move || backend.audio_report()),
     })
 }
@@ -5911,6 +5979,8 @@ mod plugin_tests;
 
 #[cfg(test)]
 mod bell_tests;
+#[cfg(test)]
+mod desktop_notification_tests;
 #[cfg(test)]
 mod notification_ui_tests;
 

@@ -10,6 +10,55 @@ repair and its independent re-review. That disposition is specific to PID
 selection; it does not establish packaged self-exec, every exceptional cleanup
 path, combined UI acceptance or release readiness.
 
+## Desktop bell notifications
+
+The built-in desktop channel sends a system notification for a terminal bell.
+It is enabled with Among in background by default, including when an upgraded
+profile has no `notifications.desktop` entry. The Desktop group on the
+Notifications page controls this independently from sound and commands.
+
+The title is the workspace name. The body is `Bell in '<title>'` followed by its
+directory, omitting unknown title/directory parts. A missing workspace name uses
+`Among Terminal`; a missing terminal title uses `Bell`. This is terminal metadata,
+not a message extracted from escape sequences. Program-controlled text can appear
+in the notification centre and on a lock screen; disable the channel if that is
+unsuitable for the session.
+
+Title and body are capped at 128 and 512 Unicode scalar values respectively
+(at most 512 and 2048 UTF-8 bytes). These are payload budgets, not measured display
+sizes. Invalid UTF-8 becomes replacement characters, whitespace is collapsed,
+other C0/C1 controls and `<`, `>` and `&` are removed. Cuts preserve UTF-8 character
+boundaries but may split a combining sequence. No OSC 9/777/99 message parser is
+installed. The optional command's JSON event remains free of title and directory.
+
+Repeated bells from one terminal use the same notification id. The existing core
+allows one attempt per terminal every two seconds, and the desktop adapter allows
+one attempt globally per 100 ms. Pending work stays in the core's bounded queue
+with its source coalescing and fairness; there is no separate retry queue. A
+missing service discards pending desktop work, so it does not replay when the
+service returns. Closing or viewing the originating terminal, a policy edit and
+normal exit withdraw its outstanding notification. A viewed terminal never
+notifies, even with Always selected. Desktop delivery does not request sound;
+the audio channel retains its own policy, and a daemon may have its own sound
+preferences.
+
+Clicking selects the exact originating terminal and workspace. If an expanded
+sibling hides it, the layout is restored. The action binds the backend's random
+incarnation token and the core's session, generation and pane identifiers. Closed
+or stale targets only raise the current window; they do not select a replacement
+terminal. The sidebar's collapsed state is preserved.
+
+GIO chooses the native GNOME, freedesktop or portal backend. Among can report that
+no session notification service is available, but GIO cannot confirm display or
+report every shell refusal. See [desktop-entry requirements](install.md#desktop-notification-integration)
+for binary archives and AppImages. Notification clicks are handled by the running
+application; restarting it through a notification is not enabled.
+
+API references: [GApplication.send_notification](https://docs.gtk.org/gio/method.Application.send_notification.html)
+documents replacement and the absence of a display guarantee;
+[GNotification.set_default_action_and_target_value](https://docs.gtk.org/gio/method.Notification.set_default_action_and_target_value.html)
+documents the application action and its target.
+
 ## Configuration and admission
 
 - `Configuration::new` accepts an absolute UTF-8 executable path and literal

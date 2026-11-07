@@ -40,6 +40,7 @@ Usage:
   among-tools check-live-resize <among-binary>
   among-tools check-live-status <source-root> <among-binary> <observed-installed-profile>
   among-tools check-desktop <source-root> <among-binary>
+  among-tools check-desktop-notifications <prebuilt-app-test>
   among-tools check-appimage-gnome <appimage> <new-evidence-directory> [--native-present]
   among-tools check-context-menu-launch <among-binary>
   among-tools check-context-menu <among-binary> <prebuilt-clipboard-helper> <light|dark>
@@ -143,6 +144,13 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, binary] if command == "check-general-audio" => {
             among_tools::audio_general::run(Path::new(binary), &among_tools::scratch::root()?)?;
+        }
+        [command, executable] if command == "check-desktop-notifications" => {
+            let evidence = among_tools::desktop_notifications::run(
+                Path::new(executable),
+                &among_tools::scratch::root()?,
+            )?;
+            println!("Desktop notification evidence: {}", evidence.display());
         }
         [command, probe, output] if command == "check-audio-native" => {
             among_tools::audio_package::run_native(Path::new(probe), Path::new(output))?;

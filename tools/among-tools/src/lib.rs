@@ -20,6 +20,7 @@ pub mod deb_selection;
 pub mod deb_workflow;
 pub mod delivery_package;
 pub mod desktop;
+pub mod desktop_notifications;
 pub mod display;
 pub mod gnome_desktop;
 pub mod ignored_tests;

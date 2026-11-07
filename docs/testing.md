@@ -20,6 +20,40 @@ builds only that target, and the tests that need an example then fail at once
 with "build --example notification-plugin first" or a similar message. Before
 such a run, execute `cargo build --locked --examples`.
 
+## Desktop notification contract
+
+Build the application test executable with `cargo test --locked --bin among
+--no-run --message-format=json`, then use its absolute executable path:
+
+```sh
+among-tools ci-x11 among-tools check-desktop-notifications /absolute/path/to/among-test-executable
+```
+
+The Rust test owns `org.gtk.Notifications` on the runner's private session bus;
+it refuses to replace an existing owner. It rings a real VTE terminal and checks
+the actual `AddNotification` body and field names, application id, normal priority,
+icon, complete default-action target, stable replacement id and withdrawal on
+focus, close and normal shutdown. It also checks viewed/off suppression, hostile
+OSC-title sanitisation, the settings row and missing-service reporting. Activation
+calls `org.freedesktop.Application.ActivateAction` over D-Bus for another workspace,
+a hidden sibling of an expanded pane, a closed pane and a previous instance token.
+Logs include the recorded calls; `result.json` records the exact test executable's
+SHA-256. A Rust test that runs zero cases is a failure. Evidence stays below
+`AMONG_CHECK_ROOT`.
+
+This checks application integration on an owned X11 session. It does not prove
+that GNOME Shell displays a notification or permits raising every window. On an
+isolated GNOME Wayland session and again on GNOME X11, use a packaged application
+with its matching desktop entry. Run `sleep 3; printf '\a'` in a terminal, minimise
+Among or switch to a different desktop, then click the real notification. Check
+the originating terminal, another workspace and a hidden expanded-layout sibling.
+Record shell/session versions, screenshots and the observed focus behaviour.
+GNOME's focus-prevention behaviour must be reported as observed; the application
+does not bypass it. Repeat the private-bus check on Ubuntu 24.04 and Fedora before
+accepting those target environments.
+
+## Additional graphical fixtures
+
 The ignored graphical tests also use `target/debug/notification-command-fixture`.
 Cargo does not build it: the integration tests (`notification_commands`,
 `command_effect_authority`) compile `tests/fixtures/notification-command.rs` with
