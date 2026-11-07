@@ -39,7 +39,9 @@ impl State {
     /// now, so it is visible for as long as the consent is stored.
     ///
     /// What a process reached is claimed only while that process is live
-    /// (`live`); a stopped plugin keeps its refusal reason, if any.
+    /// (`live`). A stored permission describes earlier consent, not what the
+    /// next launch will reach. Without consent, an unstarted record keeps its
+    /// refusal reason, if any.
     pub(super) fn card_line(&self, live: bool) -> Option<String> {
         let reached = self
             .record
@@ -49,7 +51,7 @@ impl State {
         match (reached, self.consent) {
             (Some(line), _) => Some(line),
             (None, Some(consent)) if !consent.is_full() => Some(format!(
-                "Protection: reduced protection allowed ({}) · runs with reduced protection",
+                "Reduced protection was allowed · {}",
                 consent.label()
             )),
             _ => self

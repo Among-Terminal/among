@@ -35,6 +35,15 @@ pub(crate) fn inspection(origin: Origin, plugins: &[Spec<'_>]) -> Inspection {
 /// The same catalogue bytes can be served by an owned TLS fixture, so views
 /// exercise the real client instead of fabricating a finished network job.
 pub(crate) fn document(plugins: &[Spec<'_>]) -> Value {
+    let platform = metadata::Platform::current().unwrap();
+    document_for_architecture(plugins, &platform.architecture)
+}
+
+fn document_for_architecture(plugins: &[Spec<'_>], architecture: &metadata::Architecture) -> Value {
+    let architecture = match architecture {
+        metadata::Architecture::Amd64 => "amd64",
+        metadata::Architecture::Arm64 => "arm64",
+    };
     let plugins: Vec<_> = plugins
         .iter()
         .map(|(id, name, version, manifest_sha256)| {
@@ -44,6 +53,9 @@ pub(crate) fn document(plugins: &[Spec<'_>]) -> Value {
             entry["manifest"]["name"] = json!(name);
             entry["manifest"]["version"] = json!(version);
             entry["manifest_sha256"] = json!(manifest_sha256);
+            // Listing selects against the real host before comparing versions.
+            // Its fixture must offer that host's architecture on both CI runners.
+            entry["artifacts"][0]["architecture"] = json!(architecture);
             // the packaged manifest file must carry the declared digest.
             entry["artifacts"][0]["members"][0]["sha256"] = json!(manifest_sha256);
             entry["artifacts"][0]["asset"] = json!(format!("{id}.tar.gz"));
@@ -53,6 +65,23 @@ pub(crate) fn document(plugins: &[Spec<'_>]) -> Value {
         })
         .collect();
     json!({"schema_version": 2, "plugins": plugins})
+}
+
+#[test]
+fn listing_catalogue_fixtures_offer_a_compatible_artifact_on_both_native_architectures() {
+    for architecture in [metadata::Architecture::Amd64, metadata::Architecture::Arm64] {
+        let document = document_for_architecture(
+            &[("sample", "Sample", "1.0.0", &digest('b'))],
+            &architecture,
+        );
+        let catalogue = metadata::Catalogue::parse(document.to_string().as_bytes()).unwrap();
+        let platform = metadata::Platform {
+            architecture,
+            libc: Some((metadata::Libc::Glibc, "2.35".into())),
+        };
+        let selected = catalogue.plugins[0].versions[0].select(&platform).unwrap();
+        assert_eq!(selected.architecture, platform.architecture);
+    }
 }
 
 fn catalogue(origin: Origin, official: bool, plugins: &[Spec<'_>]) -> SourceCatalogue {

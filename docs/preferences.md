@@ -223,10 +223,14 @@ consent:
 |---|---|
 | `Protection: full (Landlock ABI N and seccomp)` | The child applied Landlock ABI 3 or newer and the seccomp filter. |
 | `Protection: reduced (…) · running with reduced protection` | The kernel offers less than ABI 3 (or no Landlock) and you allowed it; this is the level the running process reached. |
-| `Protection: reduced protection allowed (…) · runs with reduced protection` | The same permission on a plugin that is stopped, disabled or not yet started in this session. The mark stays for as long as the permission is stored. |
+| `Reduced protection was allowed · reduced (…)` | Stored permission on a plugin that is stopped, disabled or not yet started in this session. The mark stays while the permission is stored; it does not predict the protection of the next launch. |
 | `Unavailable` with `the kernel supports only Landlock ABI N (required: ABI 3, kernel 6.2 or newer); the plugin was not started. Allow starting with reduced protection to run it with …` | The start was refused for lack of your consent. The card shows **Allow reduced protection…**. |
 | `Unavailable` with `the kernel cannot load a seccomp filter; the plugin is not started` | Never starts, with or without consent. |
 | `Unavailable` naming a link, owner or permission | The plugin's data directory could not be created safely. |
+
+Each start checks the current kernel again. A later full-protection result
+replaces the card's consent text while that process is live; the warning shield
+still marks the stored permission.
 
 The **Review plugin access** dialog opens with a sentence that follows the level
 this kernel offers. At full protection it says the plugin gets no network and no

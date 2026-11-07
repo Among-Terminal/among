@@ -60,15 +60,6 @@ fn list_window(
     window
 }
 
-/// The row of a plugin by the name its title starts with.
-fn list_row(view: &impl IsA<gtk::Widget>, name: &str) -> adw::ActionRow {
-    widgets(view.as_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| row.title().to_lowercase().starts_with(name))
-        .unwrap_or_else(|| panic!("no plugin row named {name}"))
-}
-
 fn has_list_row(view: &impl IsA<gtk::Widget>, name: &str) -> bool {
     widgets(view.as_ref())
         .into_iter()
