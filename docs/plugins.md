@@ -825,37 +825,20 @@ installed/settings SHA-256 and executable/resource digests before replay. This
 ephemeral executable/manifest/lease snapshot is excluded from uploaded artifacts;
 it is not a second installer or a new package/source archive.
 
-## Repository package metadata — implementation in progress
+## Repository identity and cached metadata
 
-Preferences → Plugins → Plugin sources → Inspect repository opens a
-public-GitHub catalogue preview. Enter `owner/repository` or its public HTTPS
-GitHub URL, then use the adjacent Inspect button or press Enter. Loading exposes
-a Cancel request action; empty/error/cancelled states do not show a blank result
-panel. Editing the address hides the previous preview without sending a request.
-After inspecting a catalogue, each compatible version has an explicit **Install
-disabled** action for new identities, or **Apply update…** for a currently installed
-identity. Ordinary installation still refuses replacement. Updates have separate
-confirmation disclosing the exact version, access and target-only restart. Source
-inspection alone cannot install, update, enable or grant execution access. This is
-not full installer acceptance: integrated notification providers, separate settings
-deletion, independent security review, supported-platform observations and CI gates
-remain separate from the local managed-process workflows.
+See [Plugin sources](#plugin-sources) for the Sources page and the read-only Add
+source flow. Registration saves the inspected numeric repository/publisher
+identity and validated snapshot; looking up an address never grants access or
+changes an installed package.
 
-**Add source** explicitly saves the inspected numeric repository/publisher identity
-and validated snapshot. Inspection or address edits alone never register it.
-Registered sources reopen from bounded local storage without network access.
-**Cached** displays the actual retrieval timestamp, whether the snapshot is at least
-24 hours old, and that it is not an online check. A future timestamp/clock rollback
-is stale/uncertain, not fresh. No cache is a promise of network availability.
-
-**Refresh** requests the registered numeric GitHub repository ID, never the old
-owner/name alias. A rename retains identity. A changed numeric publisher requires
-the explicit **Approve publisher change** action; refresh does not silently approve
-it or grant installed code any access. Reusing an owner/repository spelling with a
-different numeric repository ID is a separate explicit addition, not an update.
-Failed/rate-limited/cancelled refresh keeps the committed cache and installed
-selection/switch/settings unchanged. **Remove source** removes discovery and its
-cache only; it neither disables nor uninstalls a selected package.
+Checking a saved source requests its numeric GitHub repository ID, never its old
+owner/name alias. A rename retains identity. Reusing an owner/repository spelling
+with a different numeric repository ID requires a separate explicit addition.
+The saved list's age comes from its actual retrieval timestamp. A future timestamp
+or clock rollback is stale/uncertain, not fresh; a cache is no promise of network
+availability. Failure, a rate limit or cancellation preserves the committed cache
+and the installed selection, enabled choice and settings.
 
 The application-owned **Official plugins for Among Terminal** row is always present,
 in addition to at most 32 custom sources. Its numeric repository `1431055733` and
@@ -958,8 +941,9 @@ Source receipts retain the canonical complete `release_snapshot` and
 the version revision). Offline inventory reads require both. The snapshot's
 release ID, selected asset ID/digest, catalogue digest and tag must agree with
 the committed receipt. Missing or inconsistent source observations refuse the
-read without repairing the receipt or changing user data. Details retain the
-selected package's API-observed release/asset IDs and exact catalogue digest. Matching
+read without repairing the receipt or changing user data. In development mode,
+Technical details retains the selected package's API-observed release/asset IDs
+and exact catalogue digest. Matching
 tag commits and asset hashes establish content consistency,
 not build reproducibility or independent publisher authentication. Run-time
 confinement is separate (see Confinement).
@@ -1055,11 +1039,11 @@ fresh activation still passes ordinary publisher/access/settings admission. Old
 generation leases stay supervised through reaping before deferred cleanup.
 Selected and actually running package versions are observed separately while the
 old supervisor stops. Numeric publisher/access changes and incompatible local
-settings can refuse activation; no downloaded migration code runs. Details →
-**Recover previous…** explicitly reselects the retained verified generation with
+settings can refuse activation; no downloaded migration code runs. In development
+mode, the plugin page's **Recover previous…** action explicitly reselects the retained verified generation with
 normal access/settings/API admission, without claiming rollback of external effects.
 
-Details → **Uninstall…** is separate from source deregistration. Confirmation
+The plugin page's **Uninstall** action is separate from source deregistration. Confirmation
 invalidates the identity's pending package worker, blocks stale enable/restart
 controls, withdraws contributions and stops its supervised process. Removal waits
 up to five seconds for actual stop acknowledgement, then commits absence and a new
