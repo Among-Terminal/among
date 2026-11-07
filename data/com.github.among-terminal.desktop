@@ -8,4 +8,5 @@ Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;workspace;multiplexer;
 StartupNotify=true
+X-GNOME-UsesNotifications=true
 StartupWMClass=among

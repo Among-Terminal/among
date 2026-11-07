@@ -11,6 +11,7 @@ use among::notifications::{Aggregate, Attention, Diagnostic, Failure, Focus, Hos
 use vte::prelude::*;
 
 mod command;
+mod desktop;
 mod sound;
 
 pub(super) struct Backend {
@@ -23,6 +24,8 @@ pub(super) struct Backend {
     commands: RefCell<command::Adapter>,
     sound: Rc<sound::Shared>,
     audio_channel: among::notifications::Channel,
+    desktop: RefCell<among::notifications::desktop::Runtime>,
+    desktop_text: RefCell<BTreeMap<u64, among::notifications::desktop::Text>>,
     closed: Cell<bool>,
 }
 
@@ -31,6 +34,11 @@ impl Backend {
         let mut host = Host::new()?;
         let audio_channel =
             host.register_channel(among::notifications::Policy::DELIVERY_DEFAULT)?;
+        let desktop = among::notifications::desktop::Runtime::new(
+            &mut host,
+            Box::new(desktop::GioSender::new(window)),
+            glib::uuid_string_random().to_string(),
+        )?;
         let host = Rc::new(RefCell::new(host));
         let bridge = Rc::new(RefCell::new(among::plugin_notifications::Backend::new(
             host.clone(),
@@ -46,6 +54,8 @@ impl Backend {
             commands: RefCell::new(command::Adapter::new()),
             sound: sound::Shared::application(),
             audio_channel,
+            desktop: RefCell::new(desktop),
+            desktop_text: RefCell::new(BTreeMap::new()),
             closed: Cell::new(false),
         });
         window.connect_is_active_notify({
@@ -106,6 +116,9 @@ impl Backend {
         }
         let event = self.host.borrow_mut().bell(source, focus, now);
         if let Ok(event) = event {
+            self.desktop
+                .borrow()
+                .ingress(&mut self.host.borrow_mut(), source, focus);
             let workspace = self.workspaces.borrow().get(&source.pane()).copied();
             let mut bridge = self.bridge.borrow_mut();
             bridge.set_focus(focus);
@@ -124,6 +137,9 @@ impl Backend {
         self.bridge.borrow_mut().set_focus(focus);
         self.sound
             .revalidate(self.audio_channel, self.preferences.borrow().audio, focus);
+        self.desktop
+            .borrow_mut()
+            .observe(&mut self.host.borrow_mut(), focus);
     }
 
     pub(super) fn focus(&self) -> Focus {
@@ -172,6 +188,10 @@ impl Backend {
                 }
             }
         }
+        let focus = self.focus();
+        self.desktop
+            .borrow_mut()
+            .observe(&mut self.host.borrow_mut(), focus);
     }
 
     pub(super) fn shutdown(&self) {
@@ -182,6 +202,7 @@ impl Backend {
         {
             let mut host = self.host.borrow_mut();
             host.remove_channel(self.audio_channel);
+            self.desktop.borrow_mut().shutdown(&mut host);
             self.commands.borrow_mut().shutdown(&mut host);
             let sources: Vec<_> = self
                 .terminals
@@ -204,6 +225,14 @@ impl Backend {
                 .ingress(&self.host, &self.bridge, self.audio_channel, Instant::now());
         }
         self.sound.poll();
+        let focus = self.focus();
+        let texts = self.desktop_text.borrow();
+        self.desktop.borrow_mut().poll(
+            &mut self.host.borrow_mut(),
+            focus,
+            Instant::now(),
+            |source| texts.get(&source.pane()).cloned(),
+        );
     }
 
     pub(super) fn is_stopped(&self) -> bool {
@@ -248,6 +277,36 @@ impl Backend {
     }
     pub(super) fn set_workspaces(&self, workspaces: BTreeMap<u64, u64>) {
         *self.workspaces.borrow_mut() = workspaces;
+    }
+    pub(super) fn set_desktop_text(
+        &self,
+        text: BTreeMap<u64, among::notifications::desktop::Text>,
+    ) {
+        *self.desktop_text.borrow_mut() = text;
+    }
+
+    pub(super) fn desktop_report(&self) -> Option<&'static str> {
+        use among::notifications::desktop::Availability;
+        match self.desktop.borrow().availability() {
+            Availability::Checking => Some("Checking the session notification service…"),
+            Availability::Unavailable => {
+                Some("No notification service is available on the session bus.")
+            }
+            Availability::Available => None,
+        }
+    }
+
+    pub(super) fn resolve_desktop_target(&self, target: &glib::Variant) -> Option<Source> {
+        let target = desktop::target(target)?;
+        self.desktop.borrow().resolve(&self.host.borrow(), &target)
+    }
+
+    #[cfg(test)]
+    pub(super) fn desktop_target(&self, pane: u64) -> Option<glib::Variant> {
+        let source = self.host.borrow().source(pane)?;
+        Some(desktop::target_variant(
+            &self.desktop.borrow().target(source),
+        ))
     }
     pub(super) fn sync_provider_policies(&self) {
         let inventory = self.provider_inventory();
@@ -408,6 +467,13 @@ impl Backend {
                 &self.preferences.borrow(),
                 &preferences,
             );
+            if let Err(reason) = self
+                .desktop
+                .borrow_mut()
+                .configure(&mut host, preferences.desktop)
+            {
+                eprintln!("among: desktop policy could not be updated: {reason:?}");
+            }
             *self.preferences.borrow_mut() = preferences;
         }
         self.sync_provider_policies();

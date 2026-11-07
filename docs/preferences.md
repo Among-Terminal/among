@@ -16,11 +16,11 @@ Notification choices use `general.json`, version 1. Missing fields inherit these
 in-memory defaults; opening Preferences never writes this document:
 
 ```json
-{"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"command":{"enabled":false,"eligibility":"application-background"}}}
+{"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"desktop":{"enabled":true,"eligibility":"application-background"},"command":{"enabled":false,"eligibility":"application-background"}}}
 ```
 
-The page has three groups: Visual (**Highlight the terminal**), Sound (**Play a
-sound**) and Command (**Run a command**), plus a Plugin channels group only while
+The page has four groups: Visual (**Highlight the terminal**), Sound (**Play a
+sound**), Desktop (**Desktop notification**) and Command (**Run a command**), plus a Plugin channels group only while
 an installed plugin declares a delivery channel. It carries no status rows or
 explanatory plates. The result of a save shows as a banner at the top only when it
 was not saved or its durability is uncertain; a durable save shows nothing. A value
@@ -47,6 +47,17 @@ file chooser) and literal arguments (a JSON list of strings) require **Save**, i
 the Command group's header. An empty program clears
 configuration and disables the channel. Saving or enabling does not run a command
 or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
+
+Desktop notifications are enabled for existing profiles too when
+`notifications.desktop` is absent. The default sends only while Among is in the
+background; a terminal currently viewed never sends a desktop notification,
+including with Always selected. A bell names its workspace, terminal title and
+directory. Program-controlled text is cleaned and bounded before delivery.
+Clicking a notification selects its originating terminal, switching workspace and
+restoring an expanded sibling when needed. Closing or focusing that terminal,
+turning the channel off, and normal exit withdraw its notifications. A missing
+session notification service is reported on the desktop row. GIO cannot confirm
+that a shell displayed a send; see [installation requirements](install.md#desktop-notification-integration).
 The command's environment is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`,
 `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` when
 Among's own environment sets them, and nothing else.
@@ -81,15 +92,7 @@ authority; the audio owner retains and rechecks it on the shared tick and cancel
 a sound whose authority was revoked, whether by disabling the channel, removing
 the source pane or a stopped provider.
 
-**Managed notification roles** makes access review reachable even with valid
-existing consent. A process may have producer, delivery or neither authority;
-both required roles refuse without execution. Optional roles require an explicit
-selection, while declarative UI remains independent. Notifications shows reviewed and
-actually admitted roles separately. **Save reviewed access** stores the existing
-identity/publisher-scoped `review.features` without enabling code or channels.
-A running plugin must first be explicitly stopped and disabled; after retirement,
-open the review again. Changing a stopped role never restarts it. The Plugins
-manager retains its separate **Accept and enable** path for initial enablement.
+Review a plugin's notification role on its [plugin page](#plugin-inventory-navigation).
 
 Replacing a sound first cancels and retires the old decoder. A real Busy response
 (Play pressed while the old decoder is still retiring) retains no replacement: the
@@ -206,6 +209,16 @@ show identity, repository and API compatibility; development runs add provenance
 digests, generation and **Recover previous…** when a previous package exists.
 Use Tab/Shift+Tab for actions, Space for switches and Back or Escape to return.
 Saving settings remains separate from runtime application or restart consent.
+
+Notification access review remains reachable with valid existing consent. A
+process may have producer, delivery or neither authority; both required roles
+refuse without execution. Optional roles require an explicit selection, while
+declarative UI remains independent. The plugin page shows reviewed and actually
+admitted roles separately. **Save reviewed access** stores the existing
+identity/publisher-scoped `review.features` without enabling code or channels.
+A running plugin must first be explicitly stopped and disabled; after retirement,
+open the review again. Changing a stopped role never restarts it. The manager
+retains its separate **Accept and enable** path for initial enablement.
 
 Background registration or process-state changes update rows by identity rather
 than rebuilding focused controls every tick. Opening/searching these views does
