@@ -14,11 +14,6 @@ type Start = dyn Fn(Repository) -> Result<Job, Problem>;
 type Install = dyn Fn(Selection) -> Result<InstallJob, Problem>;
 
 #[cfg(test)]
-pub(crate) fn present_for_test(parent: &gtk::Window, start: Rc<Start>) {
-    present_with(parent, start, installer(), Rc::new(|| {}));
-}
-
-#[cfg(test)]
 pub(crate) fn present_installer_for_test(
     parent: &gtk::Window,
     start: Rc<Start>,
@@ -26,17 +21,6 @@ pub(crate) fn present_installer_for_test(
     changed: Rc<dyn Fn()>,
 ) {
     present_with(parent, start, install, changed);
-}
-
-#[cfg(test)]
-fn installer() -> Rc<Install> {
-    Rc::new(|selection| {
-        InstallJob::start(
-            selection,
-            crate::plugin::inventory::root()
-                .ok_or(Problem("managed data directory is unavailable"))?,
-        )
-    })
 }
 
 #[cfg(test)]
