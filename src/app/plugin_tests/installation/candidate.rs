@@ -136,6 +136,22 @@ fn preferences_page(ctx: &Window) -> adw::PreferencesWindow {
 
 const KEY: &str = "github:1431055733/clock";
 
+fn mapped_action(view: &adw::PreferencesWindow, label: &str) -> Option<gtk::Button> {
+    widgets(view.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .filter(|row| row.widget_name() == KEY && row.is_mapped())
+        .find_map(|row| {
+            widgets(row.upcast_ref()).into_iter().find_map(|widget| {
+                widget.downcast::<gtk::Button>().ok().filter(|button| {
+                    button.label().as_deref() == Some(label)
+                        && button.is_mapped()
+                        && button.is_sensitive()
+                })
+            })
+        })
+}
+
 fn selected(ctx: &Window) -> crate::plugin::inventory::Receipt {
     ctx.state
         .borrow()
@@ -264,8 +280,12 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     // stable candidate in Available.
     press(&channel_button(&view, "Stable"));
     press(&named_button(&view, "plugins-refresh"));
-    wait_for(|| has_list_row(&view, "clock"), Duration::from_secs(20));
-    press(&button(&list_row(&view, "clock"), "Install"));
+    println!("candidate_phase=stable_install identity={KEY}");
+    wait_for(
+        || mapped_action(&view, "Install").is_some(),
+        Duration::from_secs(20),
+    );
+    press(&mapped_action(&view, "Install").unwrap());
     wait_for(
         || ctx.state.borrow().plugins.managed_details(KEY).is_some(),
         Duration::from_secs(5),
@@ -299,16 +319,12 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
         },
         Duration::from_secs(20),
     );
+    println!("candidate_phase=prerelease_replace identity={KEY}");
     wait_for(
-        || {
-            widgets(view.upcast_ref())
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-                .any(|button| button.label().as_deref() == Some("Replace"))
-        },
+        || mapped_action(&view, "Replace").is_some(),
         Duration::from_secs(5),
     );
-    press(&button(&list_row(&view, "clock"), "Replace"));
+    press(&mapped_action(&view, "Replace").unwrap());
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     press(&button(&view.visible_dialog().unwrap(), "Replace"));
     wait_for(
@@ -331,16 +347,14 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     // The stable release of the same bytes and commit rebinds it.
     press(&channel_button(&view, "Stable"));
     press(&named_button(&view, "plugins-refresh"));
+    // Every row's stack also owns hidden controls. Only clock's mapped slot
+    // proves that its checked stable catalogue has replaced the prerelease.
+    println!("candidate_phase=stable_rebind identity={KEY}");
     wait_for(
-        || {
-            widgets(view.upcast_ref())
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-                .any(|button| button.label().as_deref() == Some("Update"))
-        },
+        || mapped_action(&view, "Update").is_some(),
         Duration::from_secs(20),
     );
-    press(&button(&list_row(&view, "clock"), "Update"));
+    press(&mapped_action(&view, "Update").unwrap());
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     press(&button(&view.visible_dialog().unwrap(), "Apply update"));
     wait_for(
