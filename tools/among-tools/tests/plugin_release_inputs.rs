@@ -2,6 +2,7 @@
 //! release-input preparer. Catalogue selection is covered next to its parser.
 
 use among_tools::{plugin_install::release, storage, Result};
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
@@ -247,6 +248,101 @@ fn required_consumers_share_one_published_pin_and_do_not_build_substitute_plugin
         assert!(
             checks.contains(control),
             "required control absent: {control}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn failed_observer_uploads_only_unique_curl_diagnostics() -> Result<()> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let producer = fs::read_to_string(root.join(".github/workflows/published-plugin-inputs.yml"))?;
+    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&producer)?;
+    assert_eq!(workflow["permissions"]["contents"].as_str(), Some("read"));
+    let steps = workflow["jobs"]["observe"]["steps"]
+        .as_sequence()
+        .ok_or("steps absent")?;
+    let uploads = steps
+        .iter()
+        .filter(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|uses| uses.starts_with("actions/upload-artifact@"))
+        })
+        .collect::<Vec<_>>();
+    let [successful, diagnostics] = uploads.as_slice() else {
+        return Err("expected two upload steps".into());
+    };
+    let successful = *successful;
+    let diagnostics = *diagnostics;
+    assert!(successful["if"].is_null());
+    assert_eq!(
+        successful["with"]["name"].as_str(),
+        Some("${{ inputs.artifact }}")
+    );
+    assert_eq!(
+        successful["with"]["path"].as_str(),
+        Some("${{ runner.temp }}/published-plugin-assets/")
+    );
+    assert_eq!(
+        successful["with"]["if-no-files-found"].as_str(),
+        Some("error")
+    );
+    assert_eq!(successful["with"]["retention-days"].as_u64(), Some(14));
+    assert_eq!(diagnostics["if"].as_str(), Some("failure()"));
+    assert_eq!(
+        steps
+            .iter()
+            .filter(|step| step["if"].as_str() == Some("failure()"))
+            .count(),
+        1
+    );
+    assert!(diagnostics["continue-on-error"].is_null());
+    assert_eq!(diagnostics["uses"], successful["uses"]);
+    assert_eq!(
+        diagnostics["with"]["name"].as_str(),
+        Some("${{ inputs.artifact }}-curl-diagnostics")
+    );
+    assert_eq!(
+        diagnostics["with"]["path"].as_str(),
+        Some("${{ runner.temp }}/published-plugin-assets/*.curl.log")
+    );
+    assert_eq!(
+        diagnostics["with"]["if-no-files-found"].as_str(),
+        Some("ignore")
+    );
+    assert_eq!(diagnostics["with"]["retention-days"].as_u64(), Some(5));
+    assert!(!producer.contains("continue-on-error"));
+    let fetch = steps
+        .iter()
+        .position(|step| {
+            step["run"]
+                .as_str()
+                .is_some_and(|run| run.contains("fetch-published-plugin-assets"))
+        })
+        .ok_or("fetch step absent")?;
+    let diagnostic = steps
+        .iter()
+        .position(|step| step["name"].as_str() == Some("Upload curl diagnostics on failure"))
+        .ok_or("diagnostic step absent")?;
+    assert!(fetch < diagnostic);
+    let mut artifacts = BTreeSet::new();
+    for file in [
+        "checks.yml",
+        "deb-release.yml",
+        "rpm-release.yml",
+        "appimage-release.yml",
+        "snap-build.yml",
+        "managed-transport.yml",
+    ] {
+        let bytes = fs::read_to_string(root.join(".github/workflows").join(file))?;
+        let caller: serde_yaml_ng::Value = serde_yaml_ng::from_str(&bytes)?;
+        let artifact = caller["jobs"]["published-plugins"]["with"]["artifact"]
+            .as_str()
+            .ok_or("caller artifact absent")?;
+        assert!(
+            artifacts.insert(artifact.to_owned()),
+            "duplicate artifact name: {artifact}"
         );
     }
     Ok(())

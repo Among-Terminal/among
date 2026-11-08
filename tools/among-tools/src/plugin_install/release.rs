@@ -5,7 +5,7 @@ use crate::{process::OwnedProcess, storage, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -21,6 +21,9 @@ pub const PUBLISHER: u64 = 339567100;
 // Synthetic facts of a CI-built candidate; no such release exists.
 const CANDIDATE_RELEASE: u64 = 900_000;
 const CANDIDATE_TAG: &str = "v0.2.0";
+const FETCH_WAIT: Duration = Duration::from_secs(65);
+const CURL_LOG_TAIL: u64 = 4096;
+const CURL_LOG_TEXT: usize = 8192;
 
 fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
@@ -35,6 +38,26 @@ fn number(value: &Value, field: &str) -> Result<u64> {
 }
 
 fn fetch(root: &Path, url: &str, name: &str, limit: u64, asset: bool) -> Result<PathBuf> {
+    fetch_with(
+        Path::new("/usr/bin/curl"),
+        FETCH_WAIT,
+        root,
+        url,
+        name,
+        limit,
+        asset,
+    )
+}
+
+fn fetch_with(
+    program: &Path,
+    wait: Duration,
+    root: &Path,
+    url: &str,
+    name: &str,
+    limit: u64,
+    asset: bool,
+) -> Result<PathBuf> {
     let destination = storage::safe_path(root, Path::new(name))?;
     let output = OpenOptions::new()
         .write(true)
@@ -48,11 +71,12 @@ fn fetch(root: &Path, url: &str, name: &str, limit: u64, asset: bool) -> Result<
         .ok_or("download target has no file name")?
         .to_owned();
     log_name.push(".curl.log");
+    let log_path = destination.with_file_name(log_name);
     let log = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(destination.with_file_name(log_name))?;
+        .open(&log_path)?;
     let environment = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
     let maximum = limit.to_string();
     let mut arguments = vec![
@@ -81,18 +105,194 @@ fn fetch(root: &Path, url: &str, name: &str, limit: u64, asset: bool) -> Result<
         ]);
     }
     arguments.push(url);
-    let mut child = OwnedProcess::spawn_split(
-        Path::new("/usr/bin/curl"),
-        &arguments,
-        &environment,
-        root,
-        &output,
-        &log,
-    )?;
-    if !child.wait(Duration::from_secs(65))?.success() || destination.metadata()?.len() > limit {
-        return Err(format!("public release download failed; retained {}", name).into());
+    let mut child =
+        OwnedProcess::spawn_split(program, &arguments, &environment, root, &output, &log)?;
+    let outcome = match child.wait(wait) {
+        Err(error) => DownloadOutcome::WaitFailed {
+            error: error.to_string(),
+        },
+        Ok(status) => {
+            let measured = destination.metadata();
+            let length = measured.as_ref().ok().map(|metadata| metadata.len());
+            let size_error = measured.err().map(|error| error.to_string());
+            if status.success() {
+                match length {
+                    Some(length) if length <= limit => return Ok(destination),
+                    Some(length) => DownloadOutcome::Oversize { length },
+                    None => DownloadOutcome::SizeUnavailable {
+                        error: size_error.unwrap_or_else(|| "unknown".into()),
+                    },
+                }
+            } else {
+                DownloadOutcome::Exit {
+                    status: status.to_string(),
+                    length,
+                    size_error,
+                }
+            }
+        }
+    };
+    Err(download_failure(name, &log_path, limit, wait, &outcome).into())
+}
+
+enum DownloadOutcome {
+    WaitFailed {
+        error: String,
+    },
+    Exit {
+        status: String,
+        length: Option<u64>,
+        size_error: Option<String>,
+    },
+    Oversize {
+        length: u64,
+    },
+    SizeUnavailable {
+        error: String,
+    },
+}
+
+struct LogTail {
+    text: String,
+    read: u64,
+    omitted: u64,
+}
+
+fn download_failure(
+    name: &str,
+    log_path: &Path,
+    limit: u64,
+    wait: Duration,
+    outcome: &DownloadOutcome,
+) -> String {
+    let mut message = format!("public release download failed; retained {name}");
+    match outcome {
+        DownloadOutcome::WaitFailed { error } => {
+            message.push_str(&format!(
+                "; process wait failed with wait limit {wait:?}: {error}"
+            ));
+        }
+        DownloadOutcome::Exit {
+            status,
+            length,
+            size_error,
+        } => {
+            message.push_str(&format!("; curl exited with {status}"));
+            match length {
+                Some(length) if *length > limit => message.push_str(&format!(
+                    "; downloaded {length} bytes, over the {limit} byte limit"
+                )),
+                Some(_) => {}
+                None => {
+                    if let Some(error) = size_error {
+                        message.push_str(&format!("; downloaded size unavailable: {error}"));
+                    }
+                }
+            }
+        }
+        DownloadOutcome::Oversize { length } => message.push_str(&format!(
+            "; downloaded {length} bytes, over the {limit} byte limit"
+        )),
+        DownloadOutcome::SizeUnavailable { error } => {
+            message.push_str(&format!("; downloaded size unavailable: {error}"));
+        }
     }
-    Ok(destination)
+    message.push_str(&format!("; log {}", log_path.display()));
+    match read_log_tail(log_path) {
+        Ok(tail) if tail.text.is_empty() => {
+            if tail.read == 0 {
+                message.push_str("; curl log is empty");
+            } else {
+                message.push_str("; curl log has no readable text");
+            }
+        }
+        Ok(tail) => {
+            let omitted = if tail.omitted > 0 {
+                format!(", first {} bytes omitted", tail.omitted)
+            } else {
+                String::new()
+            };
+            message.push_str(&format!(
+                "; stderr tail (last {} bytes{}):\n{}",
+                tail.read,
+                omitted,
+                bounded_lines(&tail.text)
+            ));
+        }
+        Err(error) => message.push_str(&format!("; curl log unavailable: {error}")),
+    }
+    message.replace("##[", "##\\[")
+}
+
+fn read_log_tail(path: &Path) -> std::result::Result<LogTail, String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                "missing".to_owned()
+            } else {
+                format!("unreadable: {error}")
+            }
+        })?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("unreadable: {error}"))?;
+    if !metadata.is_file() {
+        return Err("not a regular file".to_owned());
+    }
+    read_tail(&mut file, metadata.len())
+}
+
+fn read_tail<R: Read + Seek>(reader: &mut R, length: u64) -> std::result::Result<LogTail, String> {
+    let start = length.saturating_sub(CURL_LOG_TAIL);
+    reader
+        .seek(SeekFrom::Start(start))
+        .map_err(|error| format!("unreadable: {error}"))?;
+    let mut bytes = Vec::new();
+    let mut limited = (&mut *reader).take(CURL_LOG_TAIL);
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("unreadable: {error}"))?;
+    let mut offset = 0;
+    while bytes.get(offset).is_some_and(|byte| byte & 0xC0 == 0x80) {
+        offset += 1;
+    }
+    let mut text = String::new();
+    for character in String::from_utf8_lossy(&bytes[offset..]).chars() {
+        match character {
+            '\n' | '\t' => text.push(character),
+            control if control.is_control() => text.extend(control.escape_unicode()),
+            other => text.push(other),
+        }
+    }
+    Ok(LogTail {
+        text,
+        read: bytes.len() as u64,
+        omitted: start + offset as u64,
+    })
+}
+
+fn bounded_lines(text: &str) -> String {
+    let mut output = String::new();
+    for line in text.split('\n') {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str("  | ");
+        output.push_str(line);
+    }
+    if output.len() <= CURL_LOG_TEXT {
+        return output;
+    }
+    let mut start = output.len() - CURL_LOG_TEXT;
+    while !output.is_char_boundary(start) {
+        start += 1;
+    }
+    let mut bounded = String::from("  | ... (diagnostic truncated)\n  | ");
+    bounded.push_str(&output[start..]);
+    bounded
 }
 
 fn regular_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
@@ -680,4 +880,310 @@ fn assemble(
         "release_binding":binding,"tag_chain":chain,"architecture":architecture,"plugins":plugins,
         "source_archive":source_name,"source_asset_id":source["id"],"source_size":source["size"],"source_sha256":source["sha256"]});
     Ok((inputs, catalogue))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::io::{self, Read, Seek, SeekFrom, Write};
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    fn fixture() -> Result<PathBuf> {
+        let root = crate::scratch::root()?;
+        storage::private_directory(&root, "fetch-diagnostic")
+    }
+
+    fn fake_curl(root: &Path, body: &str) -> Result<PathBuf> {
+        let bin = root.join("bin");
+        fs::DirBuilder::new().mode(0o700).create(&bin)?;
+        let path = bin.join("curl");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n"))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+        Ok(path)
+    }
+
+    fn failure(result: Result<PathBuf>) -> String {
+        match result {
+            Ok(path) => format!("unexpected success at {}", path.display()),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    fn run(root: &Path, program: &Path, name: &str, limit: u64, asset: bool) -> Result<PathBuf> {
+        fetch_with(
+            program,
+            Duration::from_secs(2),
+            root,
+            "https://api.github.com/repositories/1/releases/latest",
+            name,
+            limit,
+            asset,
+        )
+    }
+
+    #[test]
+    fn fetch_keeps_the_exact_curl_policy_argv_for_metadata_and_assets() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(
+            &root,
+            "for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> argv.log; done\nprintf 'ok'",
+        )?;
+        let metadata = run(&root, &program, "repository.json", 1024, false)?;
+        assert_eq!(fs::read(&metadata)?, b"ok");
+        let observed = fs::read_to_string(root.join("argv.log"))?;
+        let expected = [
+            "-q",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "60",
+            "--max-filesize",
+            "1024",
+            "https://api.github.com/repositories/1/releases/latest",
+        ];
+        assert_eq!(observed.lines().collect::<Vec<_>>(), expected.to_vec());
+        fs::remove_file(root.join("argv.log"))?;
+        let asset = run(&root, &program, "asset.bin", 2048, true)?;
+        assert_eq!(fs::read(&asset)?, b"ok");
+        let observed = fs::read_to_string(root.join("argv.log"))?;
+        let expected = [
+            "-q",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "60",
+            "--max-filesize",
+            "2048",
+            "--location",
+            "--max-redirs",
+            "3",
+            "--header",
+            "Accept: application/octet-stream",
+            "https://api.github.com/repositories/1/releases/latest",
+        ];
+        assert_eq!(observed.lines().collect::<Vec<_>>(), expected.to_vec());
+        Ok(())
+    }
+
+    #[test]
+    fn nonzero_exit_keeps_the_status_and_a_bounded_utf8_tail() -> Result<()> {
+        let root = fixture()?;
+        let mut payload = vec![b'a'; 5000];
+        payload.extend_from_slice(b"TAIL-MARKER\n");
+        fs::write(root.join("payload"), payload)?;
+        let program = fake_curl(&root, "cat payload >&2\nexit 22")?;
+        let message = failure(run(&root, &program, "repository.json", 1024, false));
+        assert!(message.contains("public release download failed; retained repository.json"));
+        assert!(message.contains("curl exited with exit status: 22"));
+        assert!(message.contains("stderr tail"));
+        assert!(message.contains("bytes omitted"));
+        assert!(message.contains("TAIL-MARKER"));
+        let log = root.join("repository.json.curl.log").display().to_string();
+        assert!(message.contains(log.as_str()));
+        assert!(message.len() < 16 * 1024);
+        Ok(())
+    }
+
+    #[test]
+    fn process_wait_error_keeps_the_original_timeout_text() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(&root, "sleep 5\nprintf 'late'")?;
+        let message = failure(fetch_with(
+            &program,
+            Duration::from_millis(200),
+            &root,
+            "https://api.github.com/repositories/1/releases/latest",
+            "repository.json",
+            1024,
+            false,
+        ));
+        assert!(message.contains("process wait failed with wait limit 200ms:"));
+        assert!(message.contains("owned process timed out; its process group was stopped"));
+        assert!(!message.contains("curl exited with"));
+        Ok(())
+    }
+
+    #[test]
+    fn oversize_success_names_the_size_and_the_limit() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(&root, "head -c 1025 /dev/zero")?;
+        let message = failure(run(&root, &program, "repository.json", 1024, false));
+        assert!(message.contains("downloaded 1025 bytes, over the 1024 byte limit"));
+        assert!(message.contains("curl log is empty"));
+        assert!(!message.contains("curl exited with"));
+        Ok(())
+    }
+
+    #[test]
+    fn nonzero_exit_and_oversize_keep_both_facts() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(&root, "echo err >&2\nhead -c 1025 /dev/zero\nexit 7")?;
+        let message = failure(run(&root, &program, "repository.json", 1024, false));
+        assert!(message.contains("curl exited with exit status: 7"));
+        assert!(message.contains("downloaded 1025 bytes, over the 1024 byte limit"));
+        assert!(message.contains("err"));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_log_does_not_replace_the_original_exit() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(
+            &root,
+            "log=$(readlink /proc/self/fd/2) || exit 9\nrm -f \"$log\"\nexit 1",
+        )?;
+        let message = failure(run(&root, &program, "repository.json", 1024, false));
+        assert!(message.contains("curl exited with exit status: 1"));
+        assert!(message.contains("curl log unavailable: missing"));
+        assert!(message.contains("retained repository.json"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_directory_in_place_of_the_log_is_reported_without_hiding_the_exit() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(
+            &root,
+            "log=$(readlink /proc/self/fd/2) || exit 9\nrm -f \"$log\"\nmkdir \"$log\"\nexit 1",
+        )?;
+        let message = failure(run(&root, &program, "repository.json", 1024, false));
+        assert!(message.contains("curl exited with exit status: 1"));
+        assert!(message.contains("curl log unavailable: not a regular file"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_log_keeps_the_original_exit() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(&root, "exit 1")?;
+        let message = failure(run(&root, &program, "repository.json", 1024, false));
+        assert!(message.contains("curl exited with exit status: 1"));
+        assert!(message.contains("curl log is empty"));
+        Ok(())
+    }
+
+    #[test]
+    fn untrusted_stderr_cannot_inject_a_workflow_command() -> Result<()> {
+        let root = fixture()?;
+        fs::write(
+            root.join("payload"),
+            b"::error::injected\n::set-output name=x::y\n\x1b[31mred\rplain\xffmarker\n",
+        )?;
+        let program = fake_curl(&root, "cat payload >&2\nexit 1")?;
+        let message = failure(run(&root, &program, "repository.json", 1024, false));
+        assert!(!message.contains('\u{1b}'));
+        assert!(!message.contains('\r'));
+        assert!(message.contains("\\u{1b}"));
+        assert!(message.contains("\\u{d}"));
+        assert!(message.contains("plain\u{fffd}marker"));
+        assert!(message.contains("  | ::error::injected"));
+        assert!(message.contains("  | ::set-output name=x::y"));
+        for line in message.lines() {
+            assert!(
+                !line.trim_start().starts_with("::"),
+                "workflow command line: {line}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_delimiters_are_neutralized_in_normal_and_truncated_excerpts() -> Result<()> {
+        let normal = fixture()?;
+        fs::write(
+            normal.join("payload"),
+            b"##[error]legacy\n##[stop-commands]token\n",
+        )?;
+        let program = fake_curl(&normal, "cat payload >&2\nexit 1")?;
+        let message = failure(run(&normal, &program, "repository.json", 1024, false));
+        assert!(!message.contains("##["));
+        assert!(message.contains("##\\[error]legacy"));
+        assert!(message.contains("##\\[stop-commands]token"));
+
+        let truncated = fixture()?;
+        let mut payload = vec![0x1b; 4000];
+        payload.extend_from_slice(b"##[error]late\n");
+        fs::write(truncated.join("payload"), payload)?;
+        let program = fake_curl(&truncated, "cat payload >&2\nexit 1")?;
+        let message = failure(run(&truncated, &program, "repository.json", 1024, false));
+        assert!(!message.contains("##["));
+        assert!(message.contains("##\\[error]late"));
+        assert!(message.contains("(diagnostic truncated)"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_tail_cut_inside_a_multibyte_character_skips_the_continuation_bytes() -> Result<()> {
+        let root = fixture()?;
+        let mut payload = vec![b'a'; 4090];
+        payload.extend_from_slice("🦀".as_bytes());
+        payload.extend(std::iter::repeat_n(b'b', 4086));
+        payload.extend_from_slice(b"MARKER\n");
+        assert_eq!(payload.len(), 8187);
+        fs::write(root.join("payload"), payload)?;
+        let program = fake_curl(&root, "cat payload >&2\nexit 1")?;
+        let message = failure(run(&root, &program, "repository.json", 1024, false));
+        assert!(!message.contains('\u{fffd}'));
+        assert!(message.contains("MARKER"));
+        assert!(message.contains("bytes omitted"));
+        Ok(())
+    }
+
+    struct Counting<R> {
+        inner: R,
+        read: usize,
+    }
+
+    impl<R: Read> Read for Counting<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = self.inner.read(buffer)?;
+            self.read += count;
+            Ok(count)
+        }
+    }
+
+    impl<R: Seek> Seek for Counting<R> {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(position)
+        }
+    }
+
+    #[test]
+    fn a_modest_sparse_log_is_read_only_through_the_tail_limit() -> Result<()> {
+        let root = fixture()?;
+        let path = root.join("large.log");
+        let mut file = File::create(&path)?;
+        file.set_len(1024 * 1024)?;
+        file.seek(SeekFrom::End(-7))?;
+        file.write_all(b"MARKER\n")?;
+        file.sync_all()?;
+        let mut counting = Counting {
+            inner: File::open(&path)?,
+            read: 0,
+        };
+        let tail = read_tail(&mut counting, 1024 * 1024)?;
+        assert!(counting.read <= CURL_LOG_TAIL as usize);
+        assert!(tail.omitted > 0);
+        let block = bounded_lines(&tail.text);
+        assert!(block.contains("MARKER"));
+        assert!(block.len() <= CURL_LOG_TEXT + 64);
+        Ok(())
+    }
 }
