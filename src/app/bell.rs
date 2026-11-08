@@ -282,6 +282,9 @@ impl Backend {
     pub(super) fn set_workspaces(&self, workspaces: BTreeMap<u64, u64>) {
         *self.workspaces.borrow_mut() = workspaces;
     }
+    pub(super) fn desktop_is_quiescent(&self) -> bool {
+        self.desktop.borrow().is_quiescent()
+    }
     pub(super) fn desktop_report(&self) -> Option<&'static str> {
         use among::notifications::desktop::Availability;
         let desktop = self.desktop.borrow();

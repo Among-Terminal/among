@@ -917,7 +917,10 @@ fn build_with_writer(
                     }
                 }
                 if state.plugins.is_stopped()
-                    && state.bells.as_ref().is_none_or(|bells| bells.is_stopped())
+                    && state
+                        .bells
+                        .as_ref()
+                        .is_none_or(|bells| bells.is_stopped() && bells.desktop_is_quiescent())
                 {
                     glib::ControlFlow::Break
                 } else {

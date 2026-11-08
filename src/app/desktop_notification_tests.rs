@@ -3,6 +3,8 @@ use super::*;
 use among::notifications::{preferences::Edit, Eligibility, Policy, COOLDOWN};
 use std::collections::BTreeMap;
 
+mod fdo;
+
 #[test]
 fn missing_notification_preferences_keep_defaults_without_creating_a_file() {
     let root = crate::plugin::install::TestOwnedRoot::new();
@@ -345,10 +347,10 @@ pub(super) fn activate(window: &impl IsA<gtk::Window>, phase: &str) {
 
 fn closing_activation_preserves_the_final_snapshot_until_close_is_cancelled(
     ctx: &Window,
-    application: &adw::Application,
     other: &gtk::Window,
     target: &glib::Variant,
     originating_pane: PaneId,
+    trigger: &dyn Fn(),
 ) {
     struct ReleaseWriter(Option<std::sync::mpsc::Sender<()>>);
     impl Drop for ReleaseWriter {
@@ -419,7 +421,7 @@ fn closing_activation_preserves_the_final_snapshot_until_close_is_cancelled(
     assert_eq!(captured.as_ref(), Some(&snapshot));
 
     activate(other, "background-during-final-session-write");
-    call_activation(application, target.clone());
+    trigger();
     wait(
         || ctx.window.is_active(),
         "closing notification activation raises the window",
@@ -463,7 +465,7 @@ fn closing_activation_preserves_the_final_snapshot_until_close_is_cancelled(
         "cancelled close restores the live session",
     );
     assert!(!ctx.state.borrow().exiting);
-    call_activation(application, target.clone());
+    trigger();
     wait(
         || {
             ctx.state.borrow().workspaces.active_index() == 0
@@ -773,10 +775,10 @@ fn real_bells_send_exact_desktop_payloads_and_clicks_focus_only_current_targets(
 
     closing_activation_preserves_the_final_snapshot_until_close_is_cancelled(
         &ctx,
-        &application,
         &other,
         &target,
         first,
+        &|| call_activation(&application, target.clone()),
     );
 
     // Losing the service reports a known limitation and never replays bells.

@@ -29,14 +29,38 @@ Build the application test executable with `cargo test --locked --bin among
 among-tools ci-x11 among-tools check-desktop-notifications /absolute/path/to/among-test-executable
 ```
 
-The Rust test owns `org.gtk.Notifications` on the runner's private session bus;
-it refuses to replace an existing owner. It rings a real VTE terminal and checks
-the actual `AddNotification` body and field names, application id, normal priority,
-icon, complete default-action target, stable replacement id and withdrawal on
-focus, close and normal shutdown. It also checks viewed/off suppression, hostile
-OSC-title sanitisation, the settings row and missing-service reporting. Activation
-calls `org.freedesktop.Application.ActivateAction` over D-Bus for another workspace,
-a hidden sibling of an expanded pane, a closed pane and a previous instance token.
+The full-window GTK test owns `org.gtk.Notifications` on the runner's private
+session bus; it refuses to replace an existing owner. It rings a real VTE terminal
+and checks the actual `AddNotification` body and field names, application id,
+normal priority, icon, complete default-action target, stable replacement id and
+withdrawal on focus, close and normal shutdown. It also checks viewed/off
+suppression, hostile OSC-title sanitisation, the settings row and missing-service
+reporting. Activation calls `org.freedesktop.Application.ActivateAction` over
+D-Bus for another workspace, a hidden sibling of an expanded pane, a closed pane
+and a previous instance token.
+
+The named-sender private-bus tests
+`app::bell::desktop::named::tests::gtk_named_private_bus` and
+`app::bell::desktop::named::tests::portal_named_private_bus` drive the production
+`GioSender` against fake services. The GTK case checks the real
+`AddNotification`/`RemoveNotification` payload, removal from the old unique owner
+when the same id is added to a new owner, and raw error and malformed-reply
+reporting. The portal case checks the forced-GTK fallback, autostart, an early
+`RemoveNotification` before the held `AddNotification` reply, held Add/Remove
+replies and the shared drain budget. Both prove that a named route never falls
+back to freedesktop delivery.
+
+A separate private-bus FDO fixture holds the `Notify` reply and checks the raw
+freedesktop payload, automatic `CloseNotification` after a viewed/off withdrawal,
+coalescing while a reply is pending and the real application action handler. It
+binds each server id to the reply's unique owner; the scenarios cover the first
+owner, an A-to-B owner swap, a retired owner whose late activation token and
+action still select the old target while its Close reply is held, a foreign owner
+that must not inherit that identity, and removal of the identity when the Close
+replies, fails or the drain budget expires. A direct GIO control keeps the
+original early-withdrawal loss as a measured comparison.
+Failure to observe the held reply or the daemon-side close is a test failure, not
+a product pass.
 The checker first copies a bounded regular executable into its private evidence
 directory, then enumerates and runs that same read-only snapshot. `result.json`
 keeps the original `executable` path, the `executed_snapshot` path and the snapshot's

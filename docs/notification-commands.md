@@ -38,11 +38,25 @@ one attempt globally per 100 ms. Pending work stays in the core's bounded queue
 with its source coalescing and fairness; there is no separate retry queue. A
 confirmed missing service discards pending desktop work, so it does not replay
 when the service returns. While initial service discovery is pending, work stays
-in that same bounded queue and is revalidated before delivery. GIO can activate
-a registered freedesktop notification service or the selected portal route even
-when it has no current bus owner. Closing or viewing the originating terminal, a policy edit and
-normal exit withdraw its outstanding notification. A viewed terminal never
-notifies, even with Always selected. Desktop delivery does not request sound;
+in that same bounded queue and is revalidated before delivery. A registered
+freedesktop service or the selected portal route can be activated when it has no
+current bus owner.
+
+Among delivers the three desktop routes with direct named D-Bus senders on its GIO
+session connection: `org.gtk.Notifications` for GNOME, the
+`org.freedesktop.portal.Notification` portal interface when the portal route is
+selected, and `org.freedesktop.Notifications` for the freedesktop daemon. It does
+not use GIO's `GNotification`/`GApplication.send_notification` backend, because
+that backend loses a withdrawal made before the `Notify`/`AddNotification` reply.
+Add and Remove calls are asynchronous: the GTK route addresses the discovered
+unique owner, while the portal and freedesktop routes address the well-known name,
+and the freedesktop server id stays bound to the unique owner that returned it.
+The route is selected before the first delivery and kept for the process. Closing
+or viewing the originating terminal, a policy edit and normal exit withdraw its
+outstanding notification, including a send whose reply arrives after a
+withdrawal. Normal exit drains real freedesktop and named cleanup inside one
+absolute 30-second budget, and a held reply does not extend it. A viewed terminal
+never notifies, even with Always selected. Desktop delivery does not request sound;
 the audio channel retains its own policy, and a daemon may have its own sound
 preferences.
 
@@ -52,16 +66,20 @@ incarnation token and the core's session, generation and pane identifiers. Close
 or stale targets only raise the current window; they do not select a replacement
 terminal. The sidebar's collapsed state is preserved.
 
-GIO chooses the native GNOME, freedesktop or portal backend. Among can report that
-no session notification service is available, but GIO cannot confirm display or
+Among can report that no session notification service is available, but a
+successful D-Bus call cannot confirm display or
 report every shell refusal. See [desktop-entry requirements](install.md#desktop-notification-integration)
 for binary archives and AppImages. Notification clicks are handled by the running
 application; restarting it through a notification is not enabled.
 
-API references: [GApplication.send_notification](https://docs.gtk.org/gio/method.Application.send_notification.html)
-documents replacement and the absence of a display guarantee;
-[GNotification.set_default_action_and_target_value](https://docs.gtk.org/gio/method.Notification.set_default_action_and_target_value.html)
-documents the application action and its target.
+API references: the
+[freedesktop notification specification](https://specifications.freedesktop.org/notification-spec/latest/)
+documents `Notify`, `CloseNotification`, server ids, replacement and the absence
+of a display guarantee; the
+[portal notification interface](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Notification.html)
+documents `AddNotification` and `RemoveNotification`; the
+[`org.freedesktop.Application` D-Bus interface](https://docs.gtk.org/gio/class.Application.html#dbus)
+documents the `ActivateAction` call that click handling uses.
 
 ## Configuration and admission
 

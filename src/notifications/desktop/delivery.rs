@@ -32,6 +32,15 @@ pub trait Sender {
     fn availability(&self) -> Availability;
     fn attempt(&mut self, id: &str, text: &Text, target: &Target);
     fn withdraw(&mut self, id: &str);
+
+    /// Stop accepting new work. Synchronous test senders have nothing to drain.
+    fn shutdown(&mut self) {}
+
+    /// True when no platform send or close is still in flight. Test senders that
+    /// complete synchronously keep the default.
+    fn is_quiescent(&self) -> bool {
+        true
+    }
 }
 
 pub struct Runtime {
@@ -205,7 +214,12 @@ impl Runtime {
     pub fn shutdown(&mut self, host: &mut Host) {
         self.closed = true;
         host.remove_channel(self.channel);
+        self.sender.shutdown();
         self.withdraw_all();
+    }
+
+    pub fn is_quiescent(&self) -> bool {
+        self.sender.is_quiescent()
     }
 
     fn withdraw_all(&mut self) {
