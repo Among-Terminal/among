@@ -1302,9 +1302,7 @@ fn close_preferences(
     )?;
     h.wait(10, |this| {
         let text = this.text()?;
-        Ok(text
-            .get(offset..)
-            .is_some_and(preferences_report_is_gone))
+        Ok(text.get(offset..).is_some_and(preferences_report_is_gone))
     })?;
     if find_window(h, pid, APP_TITLE)? != Some(app_window) {
         return Err("application window disappeared while closing Preferences".into());
