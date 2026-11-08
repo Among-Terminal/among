@@ -1049,9 +1049,23 @@ pub(super) fn allow_reduced(env: &Rc<Env>, key: &str, button: &gtk::Button) {
         .root()
         .and_then(|root| root.downcast::<gtk::Window>().ok());
     let parent = window.clone();
+    // The question describes this installed package; an update that finishes
+    // while it is open must not inherit the answer.
+    let shown = (info.version.clone(), info.generation.clone());
+    let inventory = env.ctx.plugin_inventory.clone();
     dialog.connect_response(None, move |_, response| {
         if response == "allow" {
-            if let Err(problem) = allow_protection(&key, &offer.token()) {
+            let unchanged = inventory().into_iter().any(|now| {
+                now.key == key
+                    && (now.version.clone(), now.generation.clone()) == shown
+                    && now.consent_offer == Some(offer)
+            });
+            let outcome = if unchanged {
+                allow_protection(&key, &offer.token())
+            } else {
+                Err("The plugin changed while this question was open. Ask again.".to_string())
+            };
+            if let Err(problem) = outcome {
                 eprintln!("among: {problem}");
                 // the row may be gone by now, so the message goes to a dialog
                 // on the window that showed the question.
@@ -1110,10 +1124,12 @@ fn reconcile(env: &Rc<Env>, ui: &Ui) {
         for (info, detail) in inventory.iter().zip(&details) {
             let entry = detail.as_ref().map(|(entry, _)| entry);
             let plugin = built.installed.iter().find(|plugin| plugin.key == info.key);
+            let stored = detail.as_ref().and_then(|(_, stored)| stored.as_ref());
             let shown = Shown::Installed {
                 info,
                 entry,
                 plugin,
+                stored,
                 several_sources: several,
             };
             if rows

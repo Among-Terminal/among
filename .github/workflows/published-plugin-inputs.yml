@@ -21,6 +21,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          # The consumers check out the pull request head, not the merge commit.
+          # The producer must read the same pin file or a pin that changed after
+          # the branch was cut makes the receipt disagree with its consumers.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Prepare the observation tool
         run: |
           set -euo pipefail

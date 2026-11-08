@@ -30,14 +30,7 @@ pub(super) fn technical_rows(
     }
     if let Some(info) = info {
         rows.push(("API compatibility", info.declared.clone()));
-        rows.push((
-            "Observed API",
-            info.observed
-                .as_ref()
-                .map_or("Not observed in this session".to_owned(), |api| {
-                    format!("{}.{}", api.major, api.minor)
-                }),
-        ));
+        rows.push(("Observed API", observed_text(info)));
     }
     if let Some(problem) = entry
         .inspected
@@ -102,8 +95,20 @@ fn technical_row(value: &str, title: &str) -> adw::ActionRow {
     row
 }
 
+/// The API level the plugin's process reported, or that none has yet.
+fn observed_text(info: &Overview) -> String {
+    info.observed
+        .as_ref()
+        .map_or("Not observed in this session".to_owned(), |api| {
+            format!("{}.{}", api.major, api.minor)
+        })
+}
+
 /// What a page shows that changes while it is open.
 struct Live {
+    observed: Option<adw::ActionRow>,
+    /// The "Can read" card, which follows the access the user grants.
+    access: adw::ActionRow,
     banner: adw::Banner,
     head: adw::ActionRow,
     slot: SlotWidgets,
@@ -258,10 +263,21 @@ fn open_available(env: &Rc<Env>, key: &str, window: &adw::PreferencesWindow) {
     head.add_suffix(&slot.stack);
     head_group.add(&head);
     page.add(&head_group);
+    // The version this page shows. Install does nothing when the source has
+    // offered another one since, so the user never installs what the page does
+    // not display; the next refresh shows the new offer.
+    let shown: Rc<std::cell::RefCell<Option<String>>> =
+        Rc::new(std::cell::RefCell::new(Some(offer.version.clone())));
     slot.install.connect_clicked({
         let env = env.clone();
         let key = key.to_owned();
-        move |_| super::plugin_manager::install(&env, &key)
+        let shown = shown.clone();
+        move |_| {
+            let now = super::plugin_manager::listed_offer(&env, &key).map(|offer| offer.version);
+            if *shown.borrow() == now {
+                super::plugin_manager::install(&env, &key)
+            }
+        }
     });
     slot.stop.connect_clicked({
         let env = env.clone();
@@ -303,6 +319,7 @@ fn open_available(env: &Rc<Env>, key: &str, window: &adw::PreferencesWindow) {
         let key = key.to_owned();
         move || {
             let offer = super::plugin_manager::listed_offer(&env, &key);
+            *shown.borrow_mut() = offer.as_ref().map(|offer| offer.version.clone());
             let op = env.state.op(&key);
             if let Some(offer) = &offer {
                 head.set_title(&version_title(&offer.name, Some(&offer.version)));
@@ -472,11 +489,12 @@ fn build(
     });
 
     let origin = trust::Origin::of_installed(entry);
-    let features = entry
-        .inspected
-        .as_ref()
-        .map(|inspected| inspected.manifest.required_features.clone())
-        .unwrap_or_default();
+    let features = trust::granted_features(
+        entry,
+        (env.ctx.plugin_details)(key)
+            .and_then(|(_, stored)| stored)
+            .as_ref(),
+    );
     let shield = Shield::of(origin, info.weaker_protection);
     let cards = adw::PreferencesGroup::new();
     let source = adw::ActionRow::new();
@@ -639,8 +657,14 @@ fn build(
     expander.set_expanded(false);
     let update_note = technical_row("", "Updates");
     expander.add_row(&update_note);
+    let mut observed = None;
     for (title, value) in technical_rows(entry, Some(info), development) {
-        expander.add_row(&technical_row(&value, title));
+        let row = technical_row(&value, title);
+        if title == "Observed API" {
+            // A first handshake while the page is open changes this row.
+            observed = Some(row.clone());
+        }
+        expander.add_row(&row);
     }
     if development && entry.previous.is_some() {
         let recover = adw::ActionRow::new();
@@ -678,6 +702,8 @@ fn build(
     nav.set_title(&info.name);
     head.set_title(&version_title(&info.name, info.version.as_deref()));
     Live {
+        observed,
+        access,
         banner,
         head,
         slot,
@@ -751,6 +777,15 @@ fn update(env: &Rc<Env>, key: &str, live: &Live, info: &Overview) {
     ));
     live.update_note
         .set_subtitle(&escape_display(&update_text(standing.as_ref())));
+    if let Some(row) = &live.observed {
+        row.set_subtitle(&escape_display(&observed_text(info)));
+    }
+    if let Some((entry, stored)) = (env.ctx.plugin_details)(key) {
+        live.access
+            .set_subtitle(&escape_display(&capitalized(&trust::access_summary(
+                &trust::granted_features(&entry, stored.as_ref()),
+            ))));
+    }
     live.protection.set_subtitle(&escape_display(
         &match (&info.protection, info.consent_offer) {
             (Some(line), Some(offer)) => format!(

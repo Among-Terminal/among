@@ -314,6 +314,17 @@ fn run_mode(
             )
             .into());
         }
+        // A success status alone proves nothing: an executable that exits 0
+        // without opening Preferences would pass every phase. The phase counts
+        // only when its log shows the one named test passed.
+        let log_text = fs::read_to_string(base.join(format!("{index}-{phase}.log")))?;
+        if !log_text.contains("test result: ok. 1 passed; 0 failed") {
+            return Err(format!(
+                "Preferences phase {phase} did not report its test as passed; evidence: {}",
+                base.display()
+            )
+            .into());
+        }
         verify(phase, &before, &snapshot(&config)?)?;
         let final_inputs = if published {
             crate::plugin_install::release::published::verify(&plugins_source)?

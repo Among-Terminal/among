@@ -131,6 +131,32 @@ pub(super) fn access(feature: &str) -> (&'static str, String) {
     (known.0, known.1.to_owned())
 }
 
+/// What an installed plugin is actually given: its required features plus the
+/// optional ones the user reviewed and granted (`review.features` of its local
+/// record). Summaries must name all of them, or they can claim the plugin reads
+/// nothing while it receives terminal directories.
+pub(super) fn granted_features(entry: &Entry, stored: Option<&serde_json::Value>) -> Vec<String> {
+    let mut features = entry
+        .inspected
+        .as_ref()
+        .map(|inspected| inspected.manifest.required_features.clone())
+        .unwrap_or_default();
+    let reviewed = stored
+        .and_then(|record| record.get("review"))
+        .and_then(|review| review.get("features"))
+        .and_then(serde_json::Value::as_array);
+    for feature in reviewed
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+    {
+        if !features.iter().any(|known| known == feature) {
+            features.push(feature.to_owned());
+        }
+    }
+    features
+}
+
 /// The comma-separated reading list, or "nothing from your terminals".
 pub(super) fn access_summary(features: &[String]) -> String {
     let words: Vec<String> = features

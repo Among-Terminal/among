@@ -613,6 +613,15 @@ impl FdoShared {
                 .collect();
             for local_id in stale {
                 if let Some(posted) = state.posted.remove(&local_id) {
+                    // Keep the target and token until the close completes, so a
+                    // click on the old banner in the meantime still acts.
+                    state.retiring.insert(
+                        (posted.owner.clone(), posted.server_id),
+                        Retiring {
+                            target: posted.target.clone(),
+                            token: posted.token.clone(),
+                        },
+                    );
                     closes.push((posted.owner, posted.server_id));
                 }
             }
@@ -632,6 +641,15 @@ impl FdoShared {
             let stale: Vec<String> = state.posted.keys().cloned().collect();
             for local_id in stale {
                 if let Some(posted) = state.posted.remove(&local_id) {
+                    // Keep the target and token until the close completes, so a
+                    // click on the old banner in the meantime still acts.
+                    state.retiring.insert(
+                        (posted.owner.clone(), posted.server_id),
+                        Retiring {
+                            target: posted.target.clone(),
+                            token: posted.token.clone(),
+                        },
+                    );
                     closes.push((posted.owner, posted.server_id));
                 }
             }

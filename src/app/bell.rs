@@ -464,24 +464,26 @@ impl Backend {
 
     fn apply_preferences(
         &self,
-        preferences: Preferences,
+        mut preferences: Preferences,
         retry_desktop: bool,
     ) -> Result<(), &'static str> {
         if self.closed.get() {
             return Err("Notification session closed");
         }
+        let mut desktop_failed = false;
         {
             let mut host = self.host.borrow_mut();
             if retry_desktop {
                 let mut desktop = self.desktop.borrow_mut();
                 // an unrelated edit cannot silently restore failed authority.
                 // desktop controls explicitly retry the same registered channel.
-                desktop
-                    .configure(&mut host, preferences.desktop)
-                    .map_err(|reason| {
-                        eprintln!("among: desktop policy could not be updated: {reason:?}");
-                        DESKTOP_CONFIGURATION_FAILED
-                    })?;
+                // A failure leaves the desktop policy as it was but must not
+                // stop the visual, sound and command policies from applying.
+                if let Err(reason) = desktop.configure(&mut host, preferences.desktop) {
+                    eprintln!("among: desktop policy could not be updated: {reason:?}");
+                    desktop_failed = true;
+                    preferences.desktop = self.preferences.borrow().desktop;
+                }
             }
             host.set_visual_policy(preferences.visual);
             if self.preferences.borrow().audio != preferences.audio {
@@ -496,6 +498,9 @@ impl Backend {
             *self.preferences.borrow_mut() = preferences;
         }
         self.sync_provider_policies();
+        if desktop_failed {
+            return Err(DESKTOP_CONFIGURATION_FAILED);
+        }
         Ok(())
     }
 

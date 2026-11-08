@@ -17,6 +17,8 @@ pub(super) enum Shown<'a> {
         info: &'a Overview,
         entry: Option<&'a Entry>,
         plugin: Option<&'a InstalledPlugin>,
+        /// The plugin's local record, which holds the access the user reviewed.
+        stored: Option<&'a serde_json::Value>,
         several_sources: bool,
     },
     Available {
@@ -440,12 +442,12 @@ impl Row {
             Shown::Installed {
                 info,
                 entry,
+                stored,
                 several_sources,
                 ..
             } => {
                 let features = entry
-                    .and_then(|entry| entry.inspected.as_ref().ok())
-                    .map(|inspected| inspected.manifest.required_features.clone())
+                    .map(|entry| trust::granted_features(entry, *stored))
                     .unwrap_or_default();
                 (
                     info.name.clone(),
@@ -568,9 +570,17 @@ impl Row {
                 self.updating.set(false);
             }
         } else if let Shown::Available { offer, .. } = shown {
+            // The full identity and the origin shown on the row are searchable,
+            // as they are for installed plugins.
             let text = format!(
-                "{} {} {} {}",
-                offer.name, offer.description, offer.plugin_id, offer.source.owner
+                "{} {} {} {} {}/{} {}",
+                offer.name,
+                offer.description,
+                offer.plugin_id,
+                offer.source.owner,
+                offer.source.owner,
+                offer.source.repository,
+                offer.key()
             )
             .to_lowercase();
             self.row.set_visible(text.contains(query));
@@ -679,6 +689,7 @@ mod tests {
             info: &info,
             entry: None,
             plugin: Some(&plugin),
+            stored: None,
             several_sources: false,
         };
         // a plugin without package files has nothing to install or remove.
@@ -687,6 +698,7 @@ mod tests {
             info: &info,
             entry: None,
             plugin: None,
+            stored: None,
             several_sources: false,
         };
         assert_eq!(Slot::choose(&uninstall_only, None), Slot::Empty);

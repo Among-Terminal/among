@@ -41,11 +41,18 @@ fn fetch(root: &Path, url: &str, name: &str, limit: u64, asset: bool) -> Result<
         .create_new(true)
         .mode(0o600)
         .open(&destination)?;
+    // The log is named after the whole file name: replacing the extension would
+    // give among-plugins.json and among-plugins.sig the same log.
+    let mut log_name = destination
+        .file_name()
+        .ok_or("download target has no file name")?
+        .to_owned();
+    log_name.push(".curl.log");
     let log = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(destination.with_extension("curl.log"))?;
+        .open(destination.with_file_name(log_name))?;
     let environment = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
     let maximum = limit.to_string();
     let mut arguments = vec![

@@ -312,10 +312,24 @@ impl Controller {
     }
 
     fn check(self: &Rc<Self>, expected: Registration) {
-        if self.active.borrow().is_some() || !self.current(&expected) {
+        if self.active.borrow().is_some() {
             return;
         }
+        // A queued registration can change under the queue: saving another
+        // source may evict this one's cached snapshot. The source is still the
+        // same repository, so check its registration as it is now; a source that
+        // is gone is skipped so the rest of the queue still runs.
         let id = expected.origin.repository_id;
+        let Some(expected) = self
+            .registrations
+            .borrow()
+            .iter()
+            .find(|source| source.origin.repository_id == id)
+            .cloned()
+        else {
+            self.next();
+            return;
+        };
         if let Ok(now) = registry::now() {
             self.attempted_at.borrow_mut().insert(id, now);
         }

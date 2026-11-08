@@ -142,7 +142,12 @@ impl Services {
     fn route_available(&self, route: Route) -> bool {
         match route {
             Route::Gtk => self.owner(GTK) == Some(true),
-            Route::Portal => self.portal_supported,
+            // A selected portal that nothing owns and nothing can start would
+            // make every eligible bell fail instead of being reported.
+            Route::Portal => {
+                self.portal_supported
+                    && (self.owner(PORTAL) == Some(true) || self.is_activatable(PORTAL))
+            }
             Route::Fdo => self.owner(FDO) == Some(true) || self.is_activatable(FDO),
         }
     }
@@ -159,7 +164,7 @@ impl Services {
             return Availability::Checking;
         }
         let route = self.effective_route();
-        if route != Route::Portal && !self.owner_known(route.name()) {
+        if !self.owner_known(route.name()) {
             return Availability::Checking;
         }
         if self.route_available(route) {
