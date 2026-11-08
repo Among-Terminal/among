@@ -572,7 +572,7 @@ fn delayed_fdo_daemon(root: &Path) {
 <method name="Notify"><arg type="s" direction="in"/><arg type="u" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="a{sv}" direction="in"/><arg type="i" direction="in"/><arg type="u" direction="out"/></method>
 <method name="CloseNotification"><arg type="u" direction="in"/></method>
 <method name="ReleaseNotify"/><method name="Counts"><arg type="u" direction="out"/><arg type="au" direction="out"/><arg type="b" direction="out"/></method>
-<method name="EmitToken"/><method name="EmitAction"/><method name="ReleaseName"/>
+<method name="EmitToken"/><method name="EmitAction"/><method name="EmitClosed"/><method name="ReleaseName"/>
 <method name="FailNextNotify"/><method name="FailNextClose"/><method name="ClearFailures"/><method name="MalformedClose"/>
 <method name="SameId"/><method name="HoldClose"/><method name="ReleaseClose"/><method name="EmitToken2"/>
 </interface></node>"#;
@@ -769,6 +769,18 @@ fn delayed_fdo_daemon(root: &Path) {
                             FDO,
                             "ActionInvoked",
                             Some(&(37_u32, "default").to_variant()),
+                        )
+                        .unwrap();
+                    invocation.return_value(Some(&().to_variant()));
+                }
+                "EmitClosed" => {
+                    signal_connection
+                        .emit_signal(
+                            None,
+                            "/org/freedesktop/Notifications",
+                            FDO,
+                            "NotificationClosed",
+                            Some(&(37_u32, 1_u32).to_variant()),
                         )
                         .unwrap();
                     invocation.return_value(Some(&().to_variant()));
@@ -1368,6 +1380,177 @@ fn retired_owner_client(app: &gio::Application, connection: &gio::DBusConnection
     );
 }
 
+fn notification_closed_client(
+    app: &gio::Application,
+    connection: &gio::DBusConnection,
+    root: &Path,
+) {
+    let (activation_tx, activation_rx) = std::sync::mpsc::sync_channel::<(Target, String)>(8);
+    let filter = connection.add_filter(move |_, message, incoming| {
+        if !incoming
+            && message.message_type() == gio::DBusMessageType::MethodCall
+            && message
+                .member()
+                .is_some_and(|member| member.as_str() == "ActivateAction")
+        {
+            if let Some((_name, arguments, platform)) = message.body().and_then(|body| {
+                body.get::<(String, Vec<glib::Variant>, BTreeMap<String, glib::Variant>)>()
+            }) {
+                if let (Some(target), Some(token)) = (
+                    arguments.first().and_then(target),
+                    platform
+                        .get("activation-token")
+                        .and_then(|value| value.get::<String>()),
+                ) {
+                    let _ = activation_tx.try_send((target, token));
+                }
+            }
+        }
+        Some(message.clone())
+    });
+    let counts = || {
+        fdo_control(connection, "Counts")
+            .get::<(u32, Vec<u32>, bool)>()
+            .unwrap()
+    };
+    let a_root = root.join("a");
+    let _a = OwnedChild(spawn_delayed_daemon(&a_root));
+    wait(
+        || name_owner(connection, FDO).is_some(),
+        "notification-closed FDO service",
+    );
+    let mut sender = GioSender::for_application(Some(app.clone()));
+    wait(
+        || sender.availability() == Availability::Available,
+        "notification-closed FDO route",
+    );
+    let expected = Target {
+        instance: "notification-closed".to_string(),
+        session: 1,
+        generation: 2,
+        pane: 7,
+    };
+    sender.attempt(
+        "closed",
+        &Text {
+            title: "closed".to_string(),
+            body: "closed".to_string(),
+        },
+        &expected,
+    );
+    wait(
+        || a_root.join("request-37.json").exists(),
+        "notification-closed Notify held",
+    );
+    fdo_control(connection, "ReleaseNotify");
+    wait(|| !counts().2, "notification-closed Notify reply released");
+    for _ in 0..10 {
+        pump();
+    }
+    fdo_control(connection, "EmitToken");
+    pump();
+
+    // A NotificationClosed from a foreign unique sender with the live id must
+    // not remove the entry. Flush the foreign signal before the owner action.
+    let foreign = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).unwrap();
+    foreign
+        .emit_signal(
+            None,
+            "/org/freedesktop/Notifications",
+            FDO,
+            "NotificationClosed",
+            Some(&(37_u32, 1_u32).to_variant()),
+        )
+        .unwrap();
+    foreign
+        .call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "GetNameOwner",
+            Some(&(FDO,).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            5_000,
+            gio::Cancellable::NONE,
+        )
+        .unwrap();
+    drop(foreign);
+    pump();
+    fdo_control(connection, "EmitAction");
+    let mut observed = None;
+    wait(
+        || {
+            while let Ok(value) = activation_rx.try_recv() {
+                observed = Some(value);
+            }
+            observed.is_some()
+        },
+        "foreign NotificationClosed removed the live identity",
+    );
+    let (target, token) = observed.unwrap();
+    assert_eq!(target, expected);
+    assert_eq!(token, "test-token");
+
+    // The owning service closes the same id. The stale action must not fire.
+    fdo_control(connection, "EmitClosed");
+    pump();
+    fdo_control(connection, "EmitAction");
+    for _ in 0..20 {
+        pump();
+    }
+    assert!(
+        activation_rx.try_recv().is_err(),
+        "stale action activated a NotificationClosed identity"
+    );
+
+    // The next attempt under the same local id must not reuse the removed id.
+    sender.attempt(
+        "closed",
+        &Text {
+            title: "new".to_string(),
+            body: "new".to_string(),
+        },
+        &expected,
+    );
+    wait(
+        || a_root.join("request-38.json").exists(),
+        "notification-closed new Notify held",
+    );
+    let request: serde_json::Value =
+        serde_json::from_slice(&fs::read(a_root.join("request-38.json")).unwrap()).unwrap();
+    assert_eq!(
+        request["replace_id"], 0,
+        "closed identity left a replaces_id tombstone"
+    );
+    fdo_control(connection, "ReleaseNotify");
+    wait(|| !counts().2, "notification-closed new reply released");
+    sender.withdraw("closed");
+    wait(
+        || counts().1.contains(&38),
+        "notification-closed new identity was withdrawn",
+    );
+    wait(
+        || sender.is_quiescent(),
+        "notification-closed sender quiescent",
+    );
+    connection.remove_filter(filter);
+    publish_measurement(
+        &root.join("early-withdrawal.json"),
+        &serde_json::json!({
+            "schema":1,
+            "scope":"real private FDO method calls; shell display was not observed",
+            "withdraw_trigger":"owner-notification-closed",
+            "closed_server_id":37,
+            "wrong_owner_signal_ignored":true,
+            "stale_action_fired":false,
+            "new_replace_id":request["replace_id"],
+            "new_closed_ids":counts().1,
+            "result":"notification_closed_observed"
+        }),
+    );
+}
+
 fn deadline_client(app: &gio::Application, connection: &gio::DBusConnection, root: &Path) {
     let counts = || {
         fdo_control(connection, "Counts")
@@ -1669,6 +1852,7 @@ fn delayed_fdo_client(root: &Path, scenario: &str) {
             || scenario == "coalesce"
             || scenario == "same-id"
             || scenario == "retired-owner"
+            || scenario == "notification-closed"
         {
             let action = gio::SimpleAction::new(
                 "focus-pane",
@@ -1724,6 +1908,13 @@ fn delayed_fdo_client(root: &Path, scenario: &str) {
         }
         if scenario == "retired-owner" {
             retired_owner_client(&app, &connection, root);
+            drop(connection);
+            drop(app);
+            bus.down();
+            return;
+        }
+        if scenario == "notification-closed" {
+            notification_closed_client(&app, &connection, root);
             drop(connection);
             drop(app);
             bus.down();
@@ -1935,6 +2126,7 @@ fn real_fdo_early_withdrawal_is_measured_before_delayed_notify_reply_and_cleaned
         "errors",
         "deadline",
         "retired-owner",
+        "notification-closed",
         "same-id",
         "shutdown",
         "action",

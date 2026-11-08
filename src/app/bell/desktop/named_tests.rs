@@ -15,6 +15,8 @@ const ROLE: &str = "AMONG_NAMED_TEST_ROLE";
 const ROOT: &str = "AMONG_NAMED_TEST_ROOT";
 const GTK_TEST: &str = "app::bell::desktop::named::tests::gtk_named_private_bus";
 const PORTAL_TEST: &str = "app::bell::desktop::named::tests::portal_named_private_bus";
+const FREEZE_TEST: &str =
+    "app::bell::desktop::named::tests::gtk_first_freeze_keeps_gtk_when_fdo_appears";
 
 const GTK_PATH: &str = "/org/gtk/Notifications";
 const GTK_INTERFACE: &str = "org.gtk.Notifications";
@@ -128,6 +130,24 @@ fn append(path: &Path, value: &serde_json::Value) {
 
 fn connection() -> gio::DBusConnection {
     gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).unwrap()
+}
+
+fn fdo_owner(connection: &gio::DBusConnection) -> Option<String> {
+    connection
+        .call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "GetNameOwner",
+            Some(&(FDO,).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            5_000,
+            gio::Cancellable::NONE,
+        )
+        .ok()
+        .and_then(|reply| reply.get::<(String,)>())
+        .map(|(owner,)| owner)
 }
 
 fn release_gtk(connection: &gio::DBusConnection) {
@@ -598,6 +618,91 @@ fn gtk_named_private_bus() {
     drop(d);
     drop(sender);
     drop(app);
+    drop(_a);
+    drop(_fdo);
+    pump();
+    bus.down();
+}
+
+#[test]
+#[ignore = "requires an isolated private session bus and fake named services"]
+fn gtk_first_freeze_keeps_gtk_when_fdo_appears() {
+    if let Ok(role) = std::env::var(ROLE) {
+        serve(&role);
+        return;
+    }
+    std::env::remove_var("GNOTIFICATION_BACKEND");
+    std::env::remove_var("GIO_USE_PORTALS");
+    let root = root("gtk-first-freeze");
+    let bus = gio::TestDBus::new(gio::TestDBusFlags::NONE);
+    bus.up();
+    let _a = spawn_role(&root, "gtk-a", FREEZE_TEST);
+    wait(|| root.join("gtk-a.ready").exists(), "first GTK owner");
+    let app = gio::Application::builder()
+        .application_id("com.github.among-terminal.named-freeze-test")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+    app.register(gio::Cancellable::NONE).unwrap();
+    let connection = app.dbus_connection().unwrap();
+    let mut sender = GioSender::for_application(Some(app.clone()));
+    wait(
+        || sender.availability() == among::notifications::desktop::Availability::Available,
+        "GTK-first route",
+    );
+    sender.attempt("before-fdo", &text("build", "before FDO"), &target());
+    wait(
+        || has(&root, "gtk-a", "AddNotification", "before-fdo"),
+        "first GTK send",
+    );
+    assert!(
+        !root.join("fdo.jsonl").exists(),
+        "FDO recorder existed before it appeared"
+    );
+
+    let _fdo = spawn_role(&root, "fdo", FREEZE_TEST);
+    wait(|| root.join("fdo.ready").exists(), "late FDO recorder");
+    // The app's FDO watch and this GetNameOwner reply share the connection
+    // order; pump after the reply so the next attempt follows the seen owner.
+    wait(
+        || fdo_owner(&connection).is_some(),
+        "late FDO owner on the application connection",
+    );
+    pump();
+    assert!(
+        sender.gtk_owner_for_test().is_some(),
+        "GTK owner released while FDO appeared"
+    );
+
+    sender.attempt("after-fdo", &text("build", "after FDO"), &target());
+    wait(
+        || has(&root, "gtk-a", "AddNotification", "after-fdo"),
+        "next send remains on the frozen GTK route",
+    );
+    assert!(
+        !has(&root, "fdo", "Notify", "after-fdo"),
+        "late FDO owner received the next send"
+    );
+    assert!(
+        !root.join("fdo.jsonl").exists(),
+        "late FDO owner received any call"
+    );
+    sender.withdraw("before-fdo");
+    sender.withdraw("after-fdo");
+    wait(
+        || {
+            has(&root, "gtk-a", "RemoveNotification", "before-fdo")
+                && has(&root, "gtk-a", "RemoveNotification", "after-fdo")
+        },
+        "both frozen GTK ids removed",
+    );
+    wait(|| sender.is_quiescent(), "GTK sender quiescent");
+    assert!(
+        !root.join("fdo.jsonl").exists(),
+        "late FDO owner received a withdrawal"
+    );
+    drop(sender);
+    drop(app);
+    drop(connection);
     drop(_a);
     drop(_fdo);
     pump();
