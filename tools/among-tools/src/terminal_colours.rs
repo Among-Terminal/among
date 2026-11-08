@@ -378,6 +378,24 @@ fn validate_map(cells: &[CellDef]) -> Result<()> {
             )
             .into());
         }
+        // The label names the palette or extended index the cell stands for,
+        // so the recorded index must be that same number.
+        let named_index = ["ansi-bg-", "ansi-fg-"]
+            .iter()
+            .find_map(|prefix| cell.label.strip_prefix(prefix))
+            .and_then(|digits| digits.parse::<u32>().ok())
+            .or_else(|| {
+                cell.label
+                    .strip_prefix("extended-")
+                    .and_then(|digits| digits.parse::<u32>().ok())
+            });
+        if named_index.is_some_and(|named| named != cell.index) {
+            return Err(format!(
+                "fixture map {} records index {} instead of the index in its label",
+                cell.label, cell.index
+            )
+            .into());
+        }
         let expected = expected_position(&cell.label);
         if expected != Some((cell.row, cell.col)) {
             return Err(format!(
@@ -570,6 +588,26 @@ struct TabObservation {
     parent_width: i32,
     ellipsized: bool,
     mapped: bool,
+}
+
+/// The rectangles and the tab list are two lines of one status tick. A read
+/// between them would pair this tick's rectangles with an earlier, possibly
+/// empty tab list, so require both newest lines to come from the same tick and
+/// the tab list to be non-empty.
+fn tab_snapshot_is_current(text: &str) -> bool {
+    let tick = |field: &str| {
+        let needle = format!(" {field}=");
+        text.lines()
+            .rev()
+            .find(|line| line.contains(&needle))
+            .and_then(|line| line.split_once("]:").map(|(label, _)| label.to_owned()))
+    };
+    match (tick("prefs_rects"), tick("prefs_tabs")) {
+        (Some(rects), Some(tabs)) if rects == tabs => {
+            prefs_tabs(text).is_ok_and(|tabs| !tabs.is_empty())
+        }
+        _ => false,
+    }
 }
 
 fn prefs_tabs(text: &str) -> Result<Vec<TabObservation>> {
@@ -1310,6 +1348,12 @@ fn close_preferences(
     Ok(())
 }
 
+/// Single-quote a path for the shell, so an apostrophe in it cannot end the
+/// quoting early.
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
 fn append_phase(report: &mut Value, name: &str, status: &str, detail: &str) -> Result<()> {
     report["phases"]
         .as_array_mut()
@@ -1631,9 +1675,19 @@ fn run_continuity(options: &Options, report: &mut Value) -> Result<()> {
         let first_pid = *initial_pids.first().ok_or("fixture PID missing")?;
         let first_start = proc_start_time(first_pid)?;
         let marker = h.base.join("continuity-marker");
-        h.command(&format!("printf marker > '{}'", marker.display()))?;
+        h.command(&format!("printf marker > {}", shell_quote(&marker)))?;
         h.wait(10, |_| Ok(marker.exists()))?;
         h.command("seq 1 200")?;
+        // Wheel clicks go to the widget under the pointer, so put it inside
+        // the terminal first; over the sidebar they would never scroll it.
+        let pane = rect_of(&h.text()?, "terminal_rects", "1")?;
+        h.xdo(&[
+            "mousemove",
+            "--window",
+            &app_window.to_string(),
+            &((pane[0] + pane[2] / 2.0) as i64).to_string(),
+            &((pane[1] + pane[3] / 2.0) as i64).to_string(),
+        ])?;
         h.xdo(&["click", "--repeat", "3", "--delay", "100", "4"])?;
         h.wait(10, |this| Ok(pane_scroll_moved(&this.text()?)))?;
         let terminal = rect_of(&h.text()?, "terminal_rects", "1")?;
@@ -1700,7 +1754,7 @@ fn run_continuity(options: &Options, report: &mut Value) -> Result<()> {
             return Err("selection or scrollback changed across the live preset update".into());
         }
         let after_marker = h.base.join("continuity-after-marker");
-        h.command(&format!("printf after > '{}'", after_marker.display()))?;
+        h.command(&format!("printf after > {}", shell_quote(&after_marker)))?;
         h.wait(10, |_| Ok(after_marker.exists()))?;
         if !proc_alive(first_pid, first_start) {
             return Err(
@@ -2017,9 +2071,7 @@ fn run_layout(options: &Options, report: &mut Value) -> Result<()> {
                     .map(|(width, _)| width >= 820)
                     .unwrap_or(false))
             })?;
-            h.wait(20, |this| {
-                Ok(latest_field(&this.text()?, "prefs_tabs").is_some())
-            })?;
+            h.wait(20, |this| Ok(tab_snapshot_is_current(&this.text()?)))?;
             let (width, _) = window_size(&h, preferences_window)?;
             if width != 820 {
                 return Err(format!(
@@ -2279,6 +2331,12 @@ pub fn run(args: &[String]) -> Result<()> {
                 append_phase(&mut report, name, "failed", &error.to_string())?;
             }
             finish_own_phases(&mut report, failed_own)?;
+            // A failure before a phase ran must still account for it.
+            for (name, _) in PHASES {
+                if !phase_present(&report, name) {
+                    append_phase(&mut report, name, "not-run", "an earlier phase failed")?;
+                }
+            }
             report["evidence"] = json!(h.base.display().to_string());
             write_report(&h.base.join("result.json"), &report)?;
             println!("Terminal colour evidence: {}", h.base.display());

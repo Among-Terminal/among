@@ -212,9 +212,13 @@ mod tests {
     }
 
     fn schema_fixture(name: &str) -> SchemaFixture {
+        // Tests run in parallel and may share a fixture name, so every call
+        // gets its own directory to remove.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "among-terminal-schemas-{}-{name}",
-            std::process::id()
+            "among-terminal-schemas-{}-{name}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("private schema directory");

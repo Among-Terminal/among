@@ -944,6 +944,9 @@ mod tests {
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             std::fs::create_dir(&path).unwrap();
+            // A permissive umask would make the directory group- or
+            // world-writable, which the safe storage route refuses.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
             Self(path)
         }
     }

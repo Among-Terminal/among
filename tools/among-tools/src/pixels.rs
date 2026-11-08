@@ -125,7 +125,7 @@ impl RgbaImage {
             .into());
         }
         Ok(Sample {
-            rgba: first.ok_or("sample patch is empty")?,
+            rgba: self.pixel(x, y).ok_or("sample patch is empty")?,
             max_delta,
         })
     }
@@ -231,6 +231,16 @@ mod tests {
         let sample = image().sample_solid(1, 1, 3, 0)?;
         assert_eq!(sample.rgba, [7, 8, 9, 255]);
         assert_eq!(sample.max_delta, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_patch_within_tolerance_reports_its_centre_not_its_corner() -> Result<()> {
+        let mut image = image();
+        image.data[0] = 8;
+        let sample = image.sample_solid(1, 1, 3, 1)?;
+        assert_eq!(sample.rgba, [7, 8, 9, 255]);
+        assert_eq!(sample.max_delta, 1);
         Ok(())
     }
 
