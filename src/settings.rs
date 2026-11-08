@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
 mod general;
+mod terminal;
 
 #[derive(Default)]
 struct ManagedEdits {
@@ -65,6 +66,20 @@ pub enum Document {
     Shortcuts,
     Window,
     General,
+    TerminalAppearance,
+}
+
+/// One explicitly accepted terminal dimension edit.
+#[derive(Clone, Copy, Debug)]
+pub enum TerminalEdit {
+    TextBackground(crate::terminal_appearance::TextBackgroundId),
+    AnsiPalette(crate::terminal_appearance::AnsiPaletteId),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PendingTerminal {
+    text_background: Option<crate::terminal_appearance::TextBackgroundId>,
+    ansi_palette: Option<crate::terminal_appearance::AnsiPaletteId>,
 }
 
 pub struct PreferencesStorage {
@@ -72,6 +87,9 @@ pub struct PreferencesStorage {
     pending_shortcuts: std::collections::BTreeMap<String, Value>,
     pending_managed: std::collections::BTreeMap<String, ManagedEdits>,
     pending_general: Vec<among::notifications::preferences::Edit>,
+    pending_terminal: Option<PendingTerminal>,
+    #[cfg(test)]
+    fail_next_terminal_confirmation: bool,
     #[cfg(test)]
     fail_next_managed_confirmation: bool,
     pub problems: std::collections::BTreeMap<String, String>,
@@ -84,6 +102,9 @@ impl PreferencesStorage {
             pending_shortcuts: Default::default(),
             pending_managed: Default::default(),
             pending_general: Default::default(),
+            pending_terminal: None,
+            #[cfg(test)]
+            fail_next_terminal_confirmation: false,
             #[cfg(test)]
             fail_next_managed_confirmation: false,
             problems: Default::default(),
@@ -462,6 +483,11 @@ impl PreferencesStorage {
         self.fail_next_managed_confirmation = true;
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_terminal_confirmation(&mut self) {
+        self.fail_next_terminal_confirmation = true;
+    }
+
     pub fn sidebar_width_changed(&mut self, width: f64) -> Result<(), StorageError> {
         let result = self.path(Document::Window).and_then(|path| {
             if !width.is_finite() || width <= 0.0 {
@@ -476,6 +502,75 @@ impl PreferencesStorage {
             })
         });
         self.record(Document::Window, &result);
+        result
+    }
+
+    /// Load the terminal appearance without creating a document or changing GNOME.
+    pub fn terminal_appearance(&mut self) -> crate::terminal_appearance::StoredAppearance {
+        let Some(value) = self.load(Document::TerminalAppearance) else {
+            return crate::terminal_appearance::StoredAppearance::default();
+        };
+        terminal::stored(&value)
+    }
+
+    /// Remember the latest accepted edit for one dimension and retry any
+    /// earlier pending edit without overwriting the untouched dimension.
+    pub fn terminal_appearance_changed(&mut self, edit: TerminalEdit) -> Result<(), StorageError> {
+        let pending = self.pending_terminal.get_or_insert_default();
+        match edit {
+            TerminalEdit::TextBackground(id) => pending.text_background = Some(id),
+            TerminalEdit::AnsiPalette(id) => pending.ansi_palette = Some(id),
+        }
+        self.flush_terminal()
+    }
+
+    fn flush_terminal(&mut self) -> Result<(), StorageError> {
+        let Some(pending) = self.pending_terminal else {
+            return Ok(());
+        };
+        if pending.text_background.is_none() && pending.ansi_palette.is_none() {
+            self.pending_terminal = None;
+            return Ok(());
+        }
+        let edit = |value: &mut Value| {
+            if let Some(id) = pending.text_background {
+                terminal::edit_dimension(value, TerminalEdit::TextBackground(id));
+            }
+            if let Some(id) = pending.ansi_palette {
+                terminal::edit_dimension(value, TerminalEdit::AnsiPalette(id));
+            }
+            Ok(())
+        };
+        #[cfg(test)]
+        let fail_confirmation = std::mem::take(&mut self.fail_next_terminal_confirmation);
+        let result = self.path(Document::TerminalAppearance).and_then(|path| {
+            #[cfg(not(test))]
+            {
+                update(&path, Document::TerminalAppearance, edit)
+            }
+            #[cfg(test)]
+            {
+                update_with_confirmation(
+                    &path,
+                    Document::TerminalAppearance,
+                    edit,
+                    |_| Ok(()),
+                    |parent| {
+                        if fail_confirmation {
+                            Err(io::Error::other(
+                                "controlled terminal durability confirmation failure",
+                            ))
+                        } else {
+                            confirm_directory(parent)
+                        }
+                    },
+                )
+            }
+        });
+        if result.is_ok() {
+            self.pending_terminal = None;
+        }
+        self.record(Document::TerminalAppearance, &result);
         result
     }
 
@@ -514,6 +609,7 @@ impl Document {
             Self::Shortcuts => "shortcuts.json",
             Self::Window => "window.json",
             Self::General => "general.json",
+            Self::TerminalAppearance => "terminal.json",
         }
     }
 
@@ -525,6 +621,7 @@ impl Document {
             Self::Shortcuts => json!({"version": 1, "overrides": {}}),
             Self::Window => json!({"version": 1}),
             Self::General => json!({"version": 1}),
+            Self::TerminalAppearance => json!({"version": 1}),
         }
     }
 }
@@ -566,7 +663,10 @@ pub fn directory() -> Option<PathBuf> {
 }
 
 fn read_bytes(path: &Path, kind: Document) -> Result<Option<Vec<u8>>, StorageError> {
-    if matches!(kind, Document::ManagedPlugins | Document::General) {
+    if matches!(
+        kind,
+        Document::ManagedPlugins | Document::General | Document::TerminalAppearance
+    ) {
         if matches!(std::fs::symlink_metadata(path),Err(error) if error.kind()==io::ErrorKind::NotFound)
         {
             return Ok(None);
@@ -597,7 +697,10 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
     let Some(bytes) = bytes else {
         return Ok(kind.empty());
     };
-    let value: Value = if matches!(kind, Document::ManagedPlugins | Document::General) {
+    let value: Value = if matches!(
+        kind,
+        Document::ManagedPlugins | Document::General | Document::TerminalAppearance
+    ) {
         crate::plugin::data::parse_unique(bytes, crate::plugin::data::MAX_STATIC_BYTES)
             .map_err(|problem| invalid(path, problem))?
     } else {
@@ -653,6 +756,9 @@ fn parse(path: &Path, kind: Document, bytes: Option<&[u8]>) -> Result<Value, Sto
                     ));
                 }
             }
+        }
+        Document::TerminalAppearance => {
+            terminal::validate(&value).map_err(|problem| invalid(path, problem))?;
         }
     }
     Ok(value)
@@ -711,22 +817,30 @@ fn update_with_confirmation(
         let original = read_bytes(path, kind)?;
         let mut value = parse(path, kind, original.as_deref())?;
         edit(&mut value).map_err(|message| invalid(path, message))?;
-        if matches!(kind, Document::ManagedPlugins | Document::General) {
+        if matches!(
+            kind,
+            Document::ManagedPlugins | Document::General | Document::TerminalAppearance
+        ) {
             crate::plugin::data::serialized_size(&value, crate::plugin::data::MAX_STATIC_BYTES)
                 .map_err(|problem| invalid(path, problem))?;
         }
         let bytes = serde_json::to_vec_pretty(&value).map_err(|error| invalid(path, error))?;
         // unknown data can expand under pretty formatting. protect the reader's
         // actual byte budget before any replacement is prepared or published.
-        if matches!(kind, Document::ManagedPlugins | Document::General)
-            && bytes.len() > crate::plugin::data::MAX_STATIC_BYTES
+        if matches!(
+            kind,
+            Document::ManagedPlugins | Document::General | Document::TerminalAppearance
+        ) && bytes.len() > crate::plugin::data::MAX_STATIC_BYTES
         {
             return Err(invalid(
                 path,
                 "encoded preferences exceed the managed document byte limit",
             ));
         }
-        if matches!(kind, Document::ManagedPlugins | Document::General) {
+        if matches!(
+            kind,
+            Document::ManagedPlugins | Document::General | Document::TerminalAppearance
+        ) {
             std::fs::DirBuilder::new()
                 .recursive(true)
                 .mode(0o700)
@@ -1534,13 +1648,14 @@ mod tests {
             .skip(1)
             .map(|body| body.split("```").next().unwrap().trim())
             .collect();
-        assert_eq!(fixtures.len(), 4);
+        assert_eq!(fixtures.len(), 5);
         std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
         for (identity, kind) in [
             ("notifications", Document::General),
             ("plugins", Document::Plugins),
             ("overrides", Document::Shortcuts),
             ("sidebar_width", Document::Window),
+            ("text_background", Document::TerminalAppearance),
         ] {
             let body = fixtures
                 .iter()
@@ -1692,5 +1807,133 @@ mod tests {
                 "version":1,"sidebar_width":500.0,"external":42
             })
         );
+    }
+
+    #[test]
+    fn terminal_document_defaults_do_not_write_and_unknown_fields_survive() {
+        let temp = Temp::new();
+        let path = temp.0.join("terminal.json");
+        let mut store = PreferencesStorage::new(Some(temp.0.clone()));
+        assert_eq!(
+            store.terminal_appearance(),
+            crate::terminal_appearance::StoredAppearance::default()
+        );
+        assert!(
+            !path.exists(),
+            "reading defaults must not create terminal.json"
+        );
+
+        std::fs::write(
+            &path,
+            r#"{"version":1,"text_background":"solarized-dark","ansi_palette":"solarized","external":{"keep":7}}"#,
+        )
+        .unwrap();
+        let mut reopened = PreferencesStorage::new(Some(temp.0.clone()));
+        reopened
+            .terminal_appearance_changed(TerminalEdit::TextBackground(
+                crate::terminal_appearance::TextBackgroundId::GrayOnBlack,
+            ))
+            .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["text_background"], "gray-on-black");
+        assert_eq!(value["ansi_palette"], "solarized");
+        assert_eq!(value["external"], json!({"keep":7}));
+    }
+
+    #[test]
+    fn terminal_document_invalid_or_future_bytes_are_not_replaced() {
+        let temp = Temp::new();
+        let path = temp.0.join("terminal.json");
+        for body in [
+            "broken",
+            "[]",
+            r#"{"version":2}"#,
+            r#"{"version":1,"text_background":4}"#,
+            r#"{"version":1,"text_background":"unknown-preset"}"#,
+            r#"{"version":1,"ansi_palette":"unknown-palette"}"#,
+        ] {
+            std::fs::write(&path, body).unwrap();
+            let mut store = PreferencesStorage::new(Some(temp.0.clone()));
+            assert_eq!(
+                store.terminal_appearance(),
+                crate::terminal_appearance::StoredAppearance::default()
+            );
+            assert!(!store.status().is_empty(), "{body}");
+            let result = store.terminal_appearance_changed(TerminalEdit::TextBackground(
+                crate::terminal_appearance::TextBackgroundId::GrayOnBlack,
+            ));
+            assert!(result.is_err(), "{body}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        }
+    }
+
+    #[test]
+    fn terminal_document_refuses_a_symlink_destination() {
+        let temp = Temp::new();
+        let target = temp.0.join("real.json");
+        std::fs::write(&target, r#"{"version":1,"external":true}"#).unwrap();
+        let link = temp.0.join("terminal.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut store = PreferencesStorage::new(Some(temp.0.clone()));
+        assert!(store
+            .terminal_appearance_changed(TerminalEdit::AnsiPalette(
+                crate::terminal_appearance::AnsiPaletteId::Tango,
+            ))
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            r#"{"version":1,"external":true}"#
+        );
+    }
+
+    #[test]
+    fn terminal_pending_dimension_edits_retry_together_after_the_destination_is_repaired() {
+        let temp = Temp::new();
+        let path = temp.0.join("terminal.json");
+        let target = temp.0.join("target.json");
+        std::fs::write(&target, r#"{"version":1,"external":true}"#).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let mut store = PreferencesStorage::new(Some(temp.0.clone()));
+        assert!(store
+            .terminal_appearance_changed(TerminalEdit::TextBackground(
+                crate::terminal_appearance::TextBackgroundId::GrayOnBlack,
+            ))
+            .is_err());
+        assert!(store
+            .terminal_appearance_changed(TerminalEdit::AnsiPalette(
+                crate::terminal_appearance::AnsiPaletteId::Tango,
+            ))
+            .is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, r#"{"version":1,"external":true}"#).unwrap();
+        store
+            .terminal_appearance_changed(TerminalEdit::AnsiPalette(
+                crate::terminal_appearance::AnsiPaletteId::Tango,
+            ))
+            .unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["text_background"], "gray-on-black");
+        assert_eq!(value["ansi_palette"], "tango");
+        assert_eq!(value["external"], true);
+    }
+
+    #[test]
+    fn terminal_durability_uncertainty_keeps_written_bytes_and_reports() {
+        let temp = Temp::new();
+        let path = temp.0.join("terminal.json");
+        std::fs::write(&path, r#"{"version":1,"external":true}"#).unwrap();
+        let mut store = PreferencesStorage::new(Some(temp.0.clone()));
+        store.fail_next_terminal_confirmation();
+        let error = store
+            .terminal_appearance_changed(TerminalEdit::TextBackground(
+                crate::terminal_appearance::TextBackgroundId::GrayOnBlack,
+            ))
+            .unwrap_err();
+        assert!(error.replaced);
+        assert!(store.status().contains("Durability uncertain"));
+        let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["text_background"], "gray-on-black");
+        assert_eq!(value["external"], true);
     }
 }

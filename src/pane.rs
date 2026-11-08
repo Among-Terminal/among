@@ -16,6 +16,7 @@ use vte::prelude::*;
 
 use crate::size::{self, CellSize, TermSize};
 use crate::slots::{self, Scope, SlotStore};
+use crate::terminal_appearance::{PaletteResolution, ResolvedAppearance, Rgba};
 use crate::tree::PaneId;
 
 // preserve admitted status text in the label; GTK ellipsizes its visual layout.
@@ -154,12 +155,60 @@ pub(crate) fn button_at(widget: &gtk::Widget, x: f64, y: f64) -> bool {
         })
 }
 
+/// VTE-ready colours derived once from the effective appearance.
+///
+/// Kept outside the model so no GTK type leaks into appearance resolution.
+#[derive(Clone)]
+pub(crate) struct TerminalColours {
+    foreground: gdk::RGBA,
+    background: gdk::RGBA,
+    /// `None` means VTE's compiled-in palette. The binding passes an empty
+    /// `&[]` slice with `palette_size = 0` (its pointer is not NULL); the C API
+    /// accepts zero length and VTE restores its compiled defaults.
+    palette: Option<Vec<gdk::RGBA>>,
+}
+
+pub(crate) fn terminal_colours(appearance: &ResolvedAppearance) -> TerminalColours {
+    let pair = appearance.effective_pair();
+    let palette = match &appearance.palette {
+        PaletteResolution::Exact(colours) => {
+            Some(colours.iter().copied().map(rgba).collect::<Vec<_>>())
+        }
+        PaletteResolution::VteCompiledDefaults { .. } => None,
+    };
+    TerminalColours {
+        foreground: rgba(pair.foreground),
+        background: rgba(pair.background),
+        palette,
+    }
+}
+
+fn rgba(colour: Rgba) -> gdk::RGBA {
+    gdk::RGBA::new(colour.red(), colour.green(), colour.blue(), colour.alpha())
+}
+
+/// Apply colours in place. Never resets the terminal or touches its PTY.
+pub(crate) fn apply_terminal_colours(terminal: &vte::Terminal, colours: &TerminalColours) {
+    match &colours.palette {
+        Some(palette) => {
+            let palette = palette.iter().collect::<Vec<_>>();
+            terminal.set_colors(
+                Some(&colours.foreground),
+                Some(&colours.background),
+                &palette,
+            )
+        }
+        None => terminal.set_colors(Some(&colours.foreground), Some(&colours.background), &[]),
+    }
+}
+
 impl Pane {
     /// Build a pane with a live shell in it.
     pub fn new(
         id: PaneId,
         mut signals: PaneSignals,
         cwd: Option<String>,
+        colours: &TerminalColours,
         on_spawn: crate::SpawnCallback,
     ) -> Result<Self, String> {
         let pty = crate::new_pty().map_err(|error| error.to_string())?;
@@ -171,6 +220,8 @@ impl Pane {
             .enable_bidi(true)
             .enable_shaping(true)
             .build();
+        // Appearance is in place before the shell can produce its first output.
+        apply_terminal_colours(&terminal, colours);
         // Links belong to the terminal, not to the optional context menu: a
         // pane without a menu still offers Ctrl+click and link detection.
         crate::links::install(&terminal);
@@ -578,6 +629,11 @@ impl Pane {
 
     pub fn terminal(&self) -> &vte::Terminal {
         &self.terminal
+    }
+
+    /// The terminal's allocation in `ancestor` coordinates for live geometry checks.
+    pub fn terminal_rect(&self, ancestor: &gtk::Widget) -> Option<gtk::graphene::Rect> {
+        self.terminal.compute_bounds(ancestor)
     }
 
     pub fn invalidate_menu(&self) {

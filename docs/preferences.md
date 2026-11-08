@@ -5,10 +5,10 @@ The storage module uses `$XDG_CONFIG_HOME/among`, falling back to
 
 ## Notifications
 
-The pages are, in order, Plugins, Notifications, Keyboard and About. Plugins is
-the visible page when the window opens. The tabs have equal widths. The
-Notifications page was called General before. Page/control automation uses
-identities (`plugins`, `notifications`, `keyboard`, `about` and
+The pages are, in order, Plugins, Notifications, Keyboard, Terminal and About.
+Plugins is the visible page when the window opens. The tabs have equal widths.
+The Notifications page was called General before. Page/control automation uses
+identities (`plugins`, `notifications`, `keyboard`, `terminal`, `about` and
 `notification-…` widget names), not the first tab or first switch. The settings
 document is still `general.json`.
 
@@ -135,6 +135,25 @@ constrains the displayed width without replacing the saved preference. Without a
 saved width, the existing adaptive default is used; zero, negative and non-numeric
 widths are rejected.
 
+Terminal appearance uses `terminal.json`, version 1:
+
+```json
+{"version": 1, "text_background": "gnome-terminal-default", "ansi_palette": "tango"}
+```
+
+The two fields are independent. `gnome-terminal-default` is the inherited source
+row; missing fields mean that source for their dimension. Named values use stable
+kebab-case identifiers such as `gray-on-black`, `solarized-dark`, `linux-console`
+and `xterm`. Among reads only the default GNOME Terminal profile at startup,
+without following live changes or writing GNOME settings. A valid inherited
+palette is applied with explicit text/background colours. If the inherited
+text/background pair is unavailable, Among uses its built-in Gray on black
+scheme, explains why, keeps the source row for the next start and still applies
+a valid palette. If the inherited palette is unavailable, existing and new panes
+return to VTE's compiled-in palette rather than keeping a previous explicit
+palette. Values that do not match a built-in are shown as custom, never relabelled
+as the nearest preset.
+
 Unknown fields and entries are retained when saving other preferences.
 Malformed files and unsupported versions are not automatically overwritten.
 
@@ -236,6 +255,23 @@ allow that one. The card's details list, for the latest start, the identity,
 generation, granted features, the digest of the policy applied, the Landlock ABI and
 enforcement the child reported, whether the seccomp filter loaded and the reason of
 any refusal.
+
+## Terminal
+
+The Terminal page is before About and has two independent native dropdowns,
+named `terminal-text-background` and `terminal-ansi-palette`. The first lists
+`GNOME Terminal default` followed by the eleven built-in text/background schemes;
+the second lists `GNOME Terminal default` followed by the six built-in palettes.
+The catalogue matches GNOME Terminal 3.56.2 and is embedded in Among, available
+without GNOME Terminal installed.
+Changing one dropdown leaves the other dimension selected as it was and applies
+the new effective appearance to every existing and new pane without restarting a
+terminal. An unavailable inherited text/background pair shows the built-in Gray
+on black fallback and its reason; the source row stays `GNOME Terminal default`
+for the next start. An unavailable inherited palette restores VTE's compiled-in
+palette in every pane. Invalid or future `terminal.json` documents, unknown IDs
+and unsafe paths are reported in the page's settings-storage group and are not
+silently replaced.
 
 ## About
 
