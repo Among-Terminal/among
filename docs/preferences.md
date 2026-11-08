@@ -16,11 +16,11 @@ Notification choices use `general.json`, version 1. Missing fields inherit these
 in-memory defaults; opening Preferences never writes this document:
 
 ```json
-{"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"command":{"enabled":false,"eligibility":"application-background"}}}
+{"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"desktop":{"enabled":true,"eligibility":"application-background"},"command":{"enabled":false,"eligibility":"application-background"}}}
 ```
 
-The page has three groups: Visual (**Highlight the terminal**), Sound (**Play a
-sound**) and Command (**Run a command**), plus a Plugin channels group only while
+The page has four groups: Visual (**Highlight the terminal**), Sound (**Play a
+sound**), Desktop (**Desktop notification**) and Command (**Run a command**), plus a Plugin channels group only while
 an installed plugin declares a delivery channel. It carries no status rows or
 explanatory plates. The result of a save shows as a banner at the top only when it
 was not saved or its durability is uncertain; a durable save shows nothing. A value
@@ -47,6 +47,26 @@ file chooser) and literal arguments (a JSON list of strings) require **Save**, i
 the Command group's header. An empty program clears
 configuration and disables the channel. Saving or enabling does not run a command
 or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
+
+Desktop notifications are enabled for existing profiles too when
+`notifications.desktop` is absent. The default sends only while Among is in the
+background; a terminal currently viewed never sends a desktop notification,
+including with Always selected. If General cannot be read or validated, Desktop
+delivery stays off for that session; a missing file still uses the enabled
+default. The diagnostic and original file are retained. A bell names its
+workspace and includes the terminal title and directory when available.
+Program-controlled text is cleaned and bounded before delivery.
+Clicking a notification selects its originating terminal, switching workspace and
+restoring an expanded sibling when needed. During the final session write,
+activation only raises the window, preserving the captured workspace, terminal
+and layout; cancelling close restores navigation.
+Closing or focusing the source,
+turning the channel off, and normal exit withdraw its notifications. A missing
+session notification service is reported on the desktop row. GIO cannot confirm
+that a shell displayed a send; see [installation requirements](install.md#desktop-notification-integration).
+A failed Desktop policy update withdraws its notifications and reports a problem
+on the Desktop row without saving the requested change. Change a Desktop setting
+to retry; other channels and idle ticks do not retry that failed update.
 The command's environment is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`,
 `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` when
 Among's own environment sets them, and nothing else.
@@ -81,15 +101,7 @@ authority; the audio owner retains and rechecks it on the shared tick and cancel
 a sound whose authority was revoked, whether by disabling the channel, removing
 the source pane or a stopped provider.
 
-**Managed notification roles** makes access review reachable even with valid
-existing consent. A process may have producer, delivery or neither authority;
-both required roles refuse without execution. Optional roles require an explicit
-selection, while declarative UI remains independent. Notifications shows reviewed and
-actually admitted roles separately. **Save reviewed access** stores the existing
-identity/publisher-scoped `review.features` without enabling code or channels.
-A running plugin must first be explicitly stopped and disabled; after retirement,
-open the review again. Changing a stopped role never restarts it. The Plugins
-manager retains its separate **Accept and enable** path for initial enablement.
+Review a plugin's notification role on its [plugin page](#plugin-inventory-navigation).
 
 Replacing a sound first cancels and retires the old decoder. A real Busy response
 (Play pressed while the old decoder is still retiring) retains no replacement: the
@@ -197,28 +209,44 @@ Developer checks are described in [the contributing guide](../CONTRIBUTING.md#ch
 
 ## Plugin inventory navigation
 
-The Plugins page has a labelled native search field. Match by name, description,
-identity or origin; clear it to return to the full installed/configured list.
-Repository inspection belongs to its own Plugin sources section, above and
-separate from search. Inspection only previews metadata; a separate Install disabled
-action selects one compatible ready-built version without enabling it. Existing
-selected identities are refused rather than overwritten. Add source explicitly
-saves discovery metadata; Cached reports its retrieval time/offline/stale state,
-Refresh resolves the numeric registered repository, and Remove source affects
-discovery only. Publisher transfer requires explicit renewed source approval and
-cannot grant installed code new runtime access. Existing identities expose
-**Apply update…** with explicit target-only restart consent. Managed Details adds
-**Recover previous…** and **Uninstall…**; the latter waits for supervised stop and
-committed removal, retains local settings and invalidates stale package work.
-Neither action updates or removes legacy executables. Separate settings deletion
-and combined notification-provider acceptance remain unfinished.
-Equal names show separate origins, missing configured files stay inspectable,
-and a desired-on unavailable entry remains switchable off. Details opens a native
-view; Settings appears only for a declared settings schema. The form's Save action
-is above its fields; persistence feedback and runtime status have their own group.
-Use Tab/Shift+Tab to move between search, actions and switches, Space to operate
-a switch, and the view's close action or Escape to return. The form's Save boundary is separate from
-runtime applied/pending/rejected/restart-required acknowledgement.
+The Plugins page shows Installed and Available, assembled from installed records
+and saved catalogues without a network request. Search matches name, description,
+identity or origin in both groups. Equal names remain separate identities. A row
+from a user source names its repository when several sources are registered; a
+removed source is labelled **source removed** and does not stop its installed
+plugins. Without a saved catalogue, **Load** requests it only when pressed.
+
+Each row has one action slot: progress and an install cancellation control,
+**Update**, **Install**, or **Uninstall**. A new installation starts disabled.
+An update needs explicit consent and may restart only the selected plugin.
+Uninstall confirms first, then shows progress in place without a progress dialog
+or cancellation. Settings are retained. A failure keeps the plugin page open
+with a banner; a committed removal closes it and returns focus to the list.
+
+The info icon opens a subpage with source, protection and access cards. A
+never-started plugin says its protection will be checked at start. The shield
+distinguishes official, other-publisher, development and weaker-protection states
+by icon and accessible name. The desired enable switch stays on after a fault.
+An available plugin has an info page too, without an enable switch or settings.
+
+**Settings** appears only for a declared schema and opens another subpage; Back
+without Save discards edits. **Notification role** opens the existing access
+review only for installed plugins that declare a notification role. Roles no
+longer appear on Notifications. **Technical details** is collapsed: ordinary runs
+show identity, repository and API compatibility; development runs add provenance,
+digests, generation and **Recover previous…** when a previous package exists.
+Use Tab/Shift+Tab for actions, Space for switches and Back or Escape to return.
+Saving settings remains separate from runtime application or restart consent.
+
+Notification access review remains reachable with valid existing consent. A
+process may have producer, delivery or neither authority; both required roles
+refuse without execution. Optional roles require an explicit selection, while
+declarative UI remains independent. The plugin page shows reviewed and actually
+admitted roles separately. **Save reviewed access** stores the existing
+identity/publisher-scoped `review.features` without enabling code or channels.
+A running plugin must first be explicitly stopped and disabled; after retirement,
+open the review again. Changing a stopped role never restarts it. The manager
+retains its separate **Accept and enable** path for initial enablement.
 
 Background registration or process-state changes update rows by identity rather
 than rebuilding focused controls every tick. Opening/searching these views does
@@ -228,16 +256,22 @@ this inventory; no download or uninstall is implied by a static card.
 ## Plugin protection level
 
 Every managed plugin runs in a kernel-enforced sandbox ([Confinement](plugins.md#confinement)).
-The plugin's card shows the level it actually runs with:
+The plugin page's Protection card shows the observed or allowed level. The list
+uses a warning shield for weaker protection, including a refused start awaiting
+consent:
 
 | Card | Meaning |
 |---|---|
 | `Protection: full (Landlock ABI N and seccomp)` | The child applied Landlock ABI 3 or newer and the seccomp filter. |
 | `Protection: reduced (…) · running with reduced protection` | The kernel offers less than ABI 3 (or no Landlock) and you allowed it; this is the level the running process reached. |
-| `Protection: reduced protection allowed (…) · runs with reduced protection` | The same permission on a plugin that is stopped, disabled or not yet started in this session. The mark stays for as long as the permission is stored. |
+| `Reduced protection was allowed · reduced (…)` | Stored permission on a plugin that is stopped, disabled or not yet started in this session. The mark stays while the permission is stored; it does not predict the protection of the next launch. |
 | `Unavailable` with `the kernel supports only Landlock ABI N (required: ABI 3, kernel 6.2 or newer); the plugin was not started. Allow starting with reduced protection to run it with …` | The start was refused for lack of your consent. The card shows **Allow reduced protection…**. |
 | `Unavailable` with `the kernel cannot load a seccomp filter; the plugin is not started` | Never starts, with or without consent. |
 | `Unavailable` naming a link, owner or permission | The plugin's data directory could not be created safely. |
+
+Each start checks the current kernel again. A later full-protection result
+replaces the card's consent text while that process is live; the warning shield
+still marks the stored permission.
 
 The **Review plugin access** dialog opens with a sentence that follows the level
 this kernel offers. At full protection it says the plugin gets no network and no

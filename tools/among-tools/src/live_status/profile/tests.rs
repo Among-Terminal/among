@@ -1,4 +1,4 @@
-use super::replay;
+use super::{development_replay, replay};
 use crate::plugin_install::release::fixture::Fixture;
 use crate::{storage, Result};
 use serde_json::json;
@@ -29,6 +29,23 @@ fn refusal(fixture: &Fixture) -> String {
     };
     assert!(!destination.exists(), "{error}");
     error
+}
+
+#[test]
+fn ordinary_replay_stays_ordinary_and_prerelease_cannot_enable_execution_without_publication_proof(
+) -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    assert!(!development_replay(&fixture.root)?);
+    fixture.inputs["candidate"] = json!(false);
+    fixture.inputs["release_snapshot"]["prerelease"] = json!(true);
+    fixture.save()?;
+    assert!(development_replay(&fixture.root).is_err());
+    std::fs::write(fixture.root.join("publisher-observation.json"), b"{}")?;
+    assert!(development_replay(&fixture.root).is_err());
+    fixture.inputs["published_pin"] = json!({"release_id":900});
+    fixture.save()?;
+    assert!(development_replay(&fixture.root).is_err());
+    Ok(())
 }
 
 #[test]

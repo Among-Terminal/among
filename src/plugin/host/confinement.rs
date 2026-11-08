@@ -21,12 +21,27 @@ pub(super) struct State {
 }
 
 impl State {
+    /// Whether this plugin runs, ran or is waiting to run below full
+    /// protection: a reduced level was allowed or is being offered, or the
+    /// latest start proved less than full.
+    pub(super) fn weaker(&self) -> bool {
+        self.awaiting.is_some()
+            || self.consent.is_some_and(|level| !level.is_full())
+            || self
+                .record
+                .as_ref()
+                .and_then(|record| record.applied.as_ref())
+                .is_some_and(|applied| !applied.protection.is_full())
+    }
+
     /// The protection line of the plugin's card. A plugin the user allowed to
     /// run with reduced protection carries the mark whether or not it runs
     /// now, so it is visible for as long as the consent is stored.
     ///
     /// What a process reached is claimed only while that process is live
-    /// (`live`); a stopped plugin keeps its refusal reason, if any.
+    /// (`live`). A stored permission describes earlier consent, not what the
+    /// next launch will reach. Without consent, an unstarted record keeps its
+    /// refusal reason, if any.
     pub(super) fn card_line(&self, live: bool) -> Option<String> {
         let reached = self
             .record
@@ -36,7 +51,7 @@ impl State {
         match (reached, self.consent) {
             (Some(line), _) => Some(line),
             (None, Some(consent)) if !consent.is_full() => Some(format!(
-                "Protection: reduced protection allowed ({}) · runs with reduced protection",
+                "Reduced protection was allowed · {}",
                 consent.label()
             )),
             _ => self

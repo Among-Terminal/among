@@ -27,12 +27,36 @@ fn focus(window: &impl IsA<gtk::Window>) {
     wait_for(|| window.as_ref().is_active(), Duration::from_secs(2));
 }
 
+/// The first control with this label, preferring one that is shown: the
+/// settings form is a subpage of the window that also holds other pages with
+/// their own Save.
 fn button(widget: &impl IsA<gtk::Widget>, label: &str) -> gtk::Button {
-    widgets(widget.as_ref())
+    let all: Vec<_> = widgets(widget.as_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some(label))
+        .filter(|button| button.label().as_deref() == Some(label))
+        .collect();
+    all.iter()
+        .find(|button| button.is_mapped())
+        .or(all.first())
         .unwrap()
+        .clone()
+}
+
+/// Goes back from the settings subpage; unsaved edits are discarded with it.
+fn leave_form(editor: &adw::PreferencesWindow) {
+    focus(editor);
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(
+        || {
+            !widgets(editor.upcast_ref()).iter().any(|widget| {
+                widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                    button.label().as_deref() == Some("Save") && button.is_mapped()
+                })
+            })
+        },
+        Duration::from_secs(2),
+    );
 }
 
 fn press(button: &gtk::Button) {
@@ -63,25 +87,34 @@ fn open_editor(
     row: &adw::ActionRow,
 ) -> adw::PreferencesWindow {
     focus(preferences);
-    press(&button(row, "Settings…"));
+    let gear = widgets(row.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.widget_name() == "plugin-settings")
+        .expect("a plugin with a settings schema has a settings control");
+    press(&gear);
+    // the form is a subpage of the same window; its Save is the mapped one.
+    let editor = preferences.clone();
     wait_for(
         || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window
-                    .downcast_ref::<adw::PreferencesWindow>()
-                    .is_some_and(|window| window.title().as_deref() == Some("Plugin settings"))
+            widgets(editor.upcast_ref()).iter().any(|widget| {
+                widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                    button.label().as_deref() == Some("Save") && button.is_mapped()
+                })
             })
         },
         Duration::from_secs(2),
     );
-    let editor = gtk::Window::list_toplevels()
-        .into_iter()
-        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-        .find(|window| window.title().as_deref() == Some("Plugin settings"))
-        .unwrap();
-    wait_for(|| editor.is_mapped(), Duration::from_secs(2));
     focus(&editor);
     editor
+}
+
+fn has_settings_control(row: &adw::ActionRow) -> bool {
+    widgets(row.upcast_ref()).iter().any(|widget| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .is_some_and(|button| button.widget_name() == "plugin-settings" && button.is_visible())
+    })
 }
 
 fn transcript(package: &Path) -> Vec<serde_json::Value> {
@@ -149,9 +182,7 @@ fn unavailable_form_contract(malicious: bool) {
     preferences.set_visible_page(&page);
     wait_for(|| row.is_mapped(), Duration::from_secs(2));
     if malicious {
-        assert!(!widgets(row.upcast_ref()).iter().any(|widget| widget
-            .downcast_ref::<gtk::Button>()
-            .is_some_and(|button| button.label().as_deref() == Some("Settings…"))));
+        assert!(!has_settings_control(&row));
         assert!(row
             .subtitle()
             .is_some_and(|text| text.contains("invalid settings schema")));
@@ -161,16 +192,17 @@ fn unavailable_form_contract(malicious: bool) {
             .is_some_and(|text| text.contains("required settings")));
         let editor = open_editor(&preferences, &row);
         assert!(!button(&editor, "Save").is_sensitive());
-        assert!(!widgets(editor.upcast_ref())
-            .iter()
-            .any(|widget| widget.is::<adw::EntryRow>() || widget.is::<gtk::PasswordEntry>()));
+        // other pages of the window keep their own fields; none of the form's.
+        assert!(!widgets(editor.upcast_ref()).iter().any(|widget| {
+            widget.is_mapped()
+                && (widget.is::<adw::EntryRow>() || widget.is::<gtk::PasswordEntry>())
+        }));
         assert!(has_label(
             editor.upcast_ref(),
             "Unavailable; no plain-text substitute is supported"
         ));
         assert!(!has_label(editor.upcast_ref(), "synthetic-secret-default"));
-        xdo(&["key", "--clearmodifiers", "alt+F4"]);
-        wait_for(|| !editor.is_visible(), Duration::from_secs(2));
+        leave_form(&editor);
     }
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
@@ -365,7 +397,6 @@ fn typed_forms_optional_absence_validation_restart_and_fresh_process_are_real() 
         assert_eq!(field(&editor, "Unset number").text(), "");
         assert_eq!(std::fs::read(&config).unwrap(), before);
         println!("PASS fresh process restores all accepted field kinds and explicit grants, leaves optional absence/secret data unavailable and applies the saved restart revision without inspection writes");
-        editor.destroy();
         preferences.destroy();
         ctx.window.destroy();
         wait_for(
@@ -489,7 +520,7 @@ fn typed_forms_optional_absence_validation_restart_and_fresh_process_are_real() 
         .settings
         .status()
         .contains("session edit"));
-    editor.destroy();
+    leave_form(&editor);
     let editor = open_editor(&preferences, &row);
     assert_eq!(field(&editor, "Label").text(), "session edit");
     std::fs::remove_dir(&config).unwrap();
@@ -553,7 +584,7 @@ fn typed_forms_optional_absence_validation_restart_and_fresh_process_are_real() 
     let before_review = std::fs::read(&config).unwrap();
     std::fs::rename(&config, &backup).unwrap();
     std::fs::create_dir(&config).unwrap();
-    editor.destroy();
+    leave_form(&editor);
     focus(&preferences);
     let switch = widgets(row.upcast_ref())
         .into_iter()
@@ -626,7 +657,7 @@ fn typed_forms_optional_absence_validation_restart_and_fresh_process_are_real() 
         assert!(transcript(&package).iter().any(
             |frame| frame["type"] == "configure" && frame["values"]["label"] == "live session"
         ));
-        editor.destroy();
+        leave_form(&editor);
         let editor = open_editor(&preferences, &row);
         assert_eq!(field(&editor, "Label").text(), "live session");
         std::fs::remove_dir(&config).unwrap();
@@ -661,7 +692,6 @@ fn typed_forms_optional_absence_validation_restart_and_fresh_process_are_real() 
             &terminal
         );
         println!("PASS a session-only live Save changes actual configure traffic and rendered header without a process restart; reopening retains it and repaired saving persists pending grants, enabled state and values together");
-        editor.destroy();
         preferences.destroy();
         ctx.window.destroy();
         wait_for(
@@ -781,7 +811,6 @@ fn typed_forms_optional_absence_validation_restart_and_fresh_process_are_real() 
         &terminal
     );
     println!("PASS actual bool/integer/number/string/enum controls reject an invalid Save atomically, preserve unknown/unset/secret fields, save while disabled, send accepted typed values to the real child after explicit enable, and require Cancel/explicit confirmation before a generation-safe plugin-only restart");
-    editor.destroy();
     preferences.destroy();
     ctx.window.destroy();
     wait_for(

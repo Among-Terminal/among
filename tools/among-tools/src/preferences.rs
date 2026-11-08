@@ -45,6 +45,20 @@ pub(crate) fn owned_display_for(home: &Path) -> Result<()> {
 }
 
 pub fn from_cargo(records: &Path, plugins: &Path, scratch: &Path) -> Result<PathBuf> {
+    from_cargo_mode(records, plugins, scratch, false)
+}
+
+pub fn published_from_cargo(records: &Path, plugins: &Path, scratch: &Path) -> Result<PathBuf> {
+    crate::plugin_install::release::published::verify(plugins)?;
+    from_cargo_mode(records, plugins, scratch, true)
+}
+
+fn from_cargo_mode(
+    records: &Path,
+    plugins: &Path,
+    scratch: &Path,
+    published: bool,
+) -> Result<PathBuf> {
     owned_display()?;
     let executables = crate::ignored_tests::executables(&fs::read_to_string(records)?)?;
     let listing_root = storage::private_directory(scratch, "among-preferences-list")?;
@@ -74,10 +88,11 @@ pub fn from_cargo(records: &Path, plugins: &Path, scratch: &Path) -> Result<Path
             return Err("multiple application Preferences test executables are ambiguous".into());
         }
     }
-    run(
+    run_mode(
         &selected.ok_or("Cargo records contain no application Preferences test")?,
         plugins,
         scratch,
+        published,
     )
 }
 
@@ -130,10 +145,31 @@ pub fn verify(
 }
 
 pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<PathBuf> {
+    run_mode(executable, plugins_source, scratch, false)
+}
+
+pub fn published(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<PathBuf> {
+    crate::plugin_install::release::published::verify(plugins_source)?;
+    run_mode(executable, plugins_source, scratch, true)
+}
+
+fn run_mode(
+    executable: &Path,
+    plugins_source: &Path,
+    scratch: &Path,
+    published: bool,
+) -> Result<PathBuf> {
     owned_display()?;
     let executable = executable.canonicalize()?;
     let plugins_source = plugins_source.canonicalize()?;
-    crate::plugin_install::release::verify(&plugins_source)?;
+    let prepared = if published {
+        crate::plugin_install::release::published::verify(&plugins_source)?
+    } else {
+        crate::plugin_install::release::verify(&plugins_source)?
+    };
+    if !published && prepared["release_snapshot"]["prerelease"] == true {
+        return Err("ordinary preferences acceptance refuses prerelease inputs".into());
+    }
     fs::create_dir_all(scratch)?;
     let base = storage::private_directory(scratch, "among-preferences")?;
     for directory in [
@@ -194,9 +230,12 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
         env.insert(key.into(), value.into());
     }
     env.insert("SHELL".into(), base.join("shell").into_os_string());
+    if published {
+        env.insert("AMONG_PUBLISHED_PRERELEASE_ACCEPTANCE".into(), "1".into());
+    }
     env.insert(
         "AMONG_OFFICIAL_PLUGIN_INPUTS".into(),
-        plugins_source.into_os_string(),
+        plugins_source.as_os_str().to_owned(),
     );
     // The application test refuses to touch configuration outside this root.
     env.insert(
@@ -275,7 +314,26 @@ pub fn run(executable: &Path, plugins_source: &Path, scratch: &Path) -> Result<P
             )
             .into());
         }
+        // A success status alone proves nothing: an executable that exits 0
+        // without opening Preferences would pass every phase. The phase counts
+        // only when its log shows the one named test passed.
+        let log_text = fs::read_to_string(base.join(format!("{index}-{phase}.log")))?;
+        if !log_text.contains("test result: ok. 1 passed; 0 failed") {
+            return Err(format!(
+                "Preferences phase {phase} did not report its test as passed; evidence: {}",
+                base.display()
+            )
+            .into());
+        }
         verify(phase, &before, &snapshot(&config)?)?;
+        let final_inputs = if published {
+            crate::plugin_install::release::published::verify(&plugins_source)?
+        } else {
+            crate::plugin_install::release::verify(&plugins_source)?
+        };
+        if final_inputs != prepared {
+            return Err("prepared plugin inputs changed during preferences acceptance".into());
+        }
         println!("PASS {phase}: actual GTK preferences and fresh-process state");
     }
     println!("Evidence: {}", base.display());

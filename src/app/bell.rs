@@ -11,7 +11,10 @@ use among::notifications::{Aggregate, Attention, Diagnostic, Failure, Focus, Hos
 use vte::prelude::*;
 
 mod command;
+mod desktop;
 mod sound;
+
+const DESKTOP_CONFIGURATION_FAILED: &str = "Desktop notifications are stopped because their policy could not be applied. Change a Desktop setting to retry.";
 
 pub(super) struct Backend {
     window: glib::WeakRef<adw::ApplicationWindow>,
@@ -23,14 +26,24 @@ pub(super) struct Backend {
     commands: RefCell<command::Adapter>,
     sound: Rc<sound::Shared>,
     audio_channel: among::notifications::Channel,
+    desktop: RefCell<among::notifications::desktop::Runtime>,
+    desktop_text: Rc<dyn Fn(Source) -> Option<among::notifications::desktop::Text>>,
     closed: Cell<bool>,
 }
 
 impl Backend {
-    pub(super) fn new(window: &adw::ApplicationWindow) -> Result<Rc<Self>, Failure> {
+    pub(super) fn new(
+        window: &adw::ApplicationWindow,
+        desktop_text: Rc<dyn Fn(Source) -> Option<among::notifications::desktop::Text>>,
+    ) -> Result<Rc<Self>, Failure> {
         let mut host = Host::new()?;
         let audio_channel =
             host.register_channel(among::notifications::Policy::DELIVERY_DEFAULT)?;
+        let desktop = among::notifications::desktop::Runtime::new(
+            &mut host,
+            Box::new(desktop::GioSender::new(window)),
+            glib::uuid_string_random().to_string(),
+        )?;
         let host = Rc::new(RefCell::new(host));
         let bridge = Rc::new(RefCell::new(among::plugin_notifications::Backend::new(
             host.clone(),
@@ -46,6 +59,8 @@ impl Backend {
             commands: RefCell::new(command::Adapter::new()),
             sound: sound::Shared::application(),
             audio_channel,
+            desktop: RefCell::new(desktop),
+            desktop_text,
             closed: Cell::new(false),
         });
         window.connect_is_active_notify({
@@ -106,6 +121,9 @@ impl Backend {
         }
         let event = self.host.borrow_mut().bell(source, focus, now);
         if let Ok(event) = event {
+            self.desktop
+                .borrow()
+                .ingress(&mut self.host.borrow_mut(), source, focus);
             let workspace = self.workspaces.borrow().get(&source.pane()).copied();
             let mut bridge = self.bridge.borrow_mut();
             bridge.set_focus(focus);
@@ -124,6 +142,9 @@ impl Backend {
         self.bridge.borrow_mut().set_focus(focus);
         self.sound
             .revalidate(self.audio_channel, self.preferences.borrow().audio, focus);
+        self.desktop
+            .borrow_mut()
+            .observe(&mut self.host.borrow_mut(), focus);
     }
 
     pub(super) fn focus(&self) -> Focus {
@@ -172,6 +193,10 @@ impl Backend {
                 }
             }
         }
+        let focus = self.focus();
+        self.desktop
+            .borrow_mut()
+            .observe(&mut self.host.borrow_mut(), focus);
     }
 
     pub(super) fn shutdown(&self) {
@@ -182,6 +207,7 @@ impl Backend {
         {
             let mut host = self.host.borrow_mut();
             host.remove_channel(self.audio_channel);
+            self.desktop.borrow_mut().shutdown(&mut host);
             self.commands.borrow_mut().shutdown(&mut host);
             let sources: Vec<_> = self
                 .terminals
@@ -204,6 +230,13 @@ impl Backend {
                 .ingress(&self.host, &self.bridge, self.audio_channel, Instant::now());
         }
         self.sound.poll();
+        let focus = self.focus();
+        self.desktop.borrow_mut().poll(
+            &mut self.host.borrow_mut(),
+            focus,
+            Instant::now(),
+            |source| (self.desktop_text)(source),
+        );
     }
 
     pub(super) fn is_stopped(&self) -> bool {
@@ -249,6 +282,36 @@ impl Backend {
     pub(super) fn set_workspaces(&self, workspaces: BTreeMap<u64, u64>) {
         *self.workspaces.borrow_mut() = workspaces;
     }
+    pub(super) fn desktop_is_quiescent(&self) -> bool {
+        self.desktop.borrow().is_quiescent()
+    }
+    pub(super) fn desktop_report(&self) -> Option<&'static str> {
+        use among::notifications::desktop::Availability;
+        let desktop = self.desktop.borrow();
+        if desktop.configuration_failure().is_some() {
+            return Some(DESKTOP_CONFIGURATION_FAILED);
+        }
+        match desktop.availability() {
+            Availability::Checking => Some("Checking the session notification service…"),
+            Availability::Unavailable => {
+                Some("No notification service is available on the session bus.")
+            }
+            Availability::Available => None,
+        }
+    }
+
+    pub(super) fn resolve_desktop_target(&self, target: &glib::Variant) -> Option<Source> {
+        let target = desktop::target(target)?;
+        self.desktop.borrow().resolve(&self.host.borrow(), &target)
+    }
+
+    #[cfg(test)]
+    pub(super) fn desktop_target(&self, pane: u64) -> Option<glib::Variant> {
+        let source = self.host.borrow().source(pane)?;
+        Some(desktop::target_variant(
+            &self.desktop.borrow().target(source),
+        ))
+    }
     pub(super) fn sync_provider_policies(&self) {
         let inventory = self.provider_inventory();
         let preferences = self.preferences.borrow();
@@ -285,7 +348,7 @@ impl Backend {
                 among::audio::DecoderPhase::Quarantined => {
                     return AudioReport::Problem(
                         "Sound cleanup is not confirmed; no new sound will play.".into(),
-                    )
+                    );
                 }
                 _ => {}
             }
@@ -395,9 +458,33 @@ impl Backend {
         }
     }
 
-    pub(super) fn configure(&self, preferences: Preferences) {
+    pub(super) fn configure(&self, preferences: Preferences) -> Result<(), &'static str> {
+        self.apply_preferences(preferences, true)
+    }
+
+    fn apply_preferences(
+        &self,
+        mut preferences: Preferences,
+        retry_desktop: bool,
+    ) -> Result<(), &'static str> {
+        if self.closed.get() {
+            return Err("Notification session closed");
+        }
+        let mut desktop_failed = false;
         {
             let mut host = self.host.borrow_mut();
+            if retry_desktop {
+                let mut desktop = self.desktop.borrow_mut();
+                // an unrelated edit cannot silently restore failed authority.
+                // desktop controls explicitly retry the same registered channel.
+                // A failure leaves the desktop policy as it was but must not
+                // stop the visual, sound and command policies from applying.
+                if let Err(reason) = desktop.configure(&mut host, preferences.desktop) {
+                    eprintln!("among: desktop policy could not be updated: {reason:?}");
+                    desktop_failed = true;
+                    preferences.desktop = self.preferences.borrow().desktop;
+                }
+            }
             host.set_visual_policy(preferences.visual);
             if self.preferences.borrow().audio != preferences.audio {
                 let _ = host.set_channel_policy(self.audio_channel, preferences.audio);
@@ -411,6 +498,10 @@ impl Backend {
             *self.preferences.borrow_mut() = preferences;
         }
         self.sync_provider_policies();
+        if desktop_failed {
+            return Err(DESKTOP_CONFIGURATION_FAILED);
+        }
+        Ok(())
     }
 
     pub(super) fn edit(&self, edit: &Edit) -> Result<(), &'static str> {
@@ -419,8 +510,7 @@ impl Backend {
         }
         let mut preferences = self.preferences();
         preferences.edit(edit)?;
-        self.configure(preferences);
-        Ok(())
+        self.apply_preferences(preferences, matches!(edit, Edit::Desktop(_)))
     }
 
     pub(super) fn event_count(&self) -> u64 {

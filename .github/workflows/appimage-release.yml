@@ -19,14 +19,14 @@ permissions:
   contents: read
 
 jobs:
-  plugin-candidate:
-    uses: ./.github/workflows/plugin-candidate.yml
+  published-plugins:
+    uses: ./.github/workflows/published-plugin-inputs.yml
     with:
-      artifact: plugin-candidate-appimage
+      artifact: published-plugin-appimage
 
   build:
     if: ${{ inputs.audio_context_drain_control != true }}
-    needs: plugin-candidate
+    needs: published-plugins
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -72,8 +72,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: plugin-candidate-appimage
-          path: /var/tmp/plugin-candidate
+          name: published-plugin-appimage
+          path: /var/tmp/published-plugin-assets
       - name: Install pinned Rust toolchain in the build container
         run: |
           base="https://static.rust-lang.org/rustup/archive/1.28.2/${RUST_HOST}"
@@ -103,7 +103,8 @@ jobs:
           test "${#source_sha}" -eq 40
           AMONG_CHECK_SOURCE_SHA="$source_sha" cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
           tools=tools/among-tools/target/release/among-tools
-          "$tools" ci-x11 "$tools" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" appimage-checker/observed-profile /var/tmp/plugin-candidate
+          "$tools" prepare-published-plugin-inputs .github/plugin-acceptance.json /var/tmp/published-plugin-assets "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          "$tools" ci-x11 "$tools" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" appimage-checker/observed-profile --published-inputs "$AMONG_CHECK_ROOT/official-plugin-inputs"
       - name: Name the candidate after the tag or the package version
         run: |
           version="$(tools/among-tools/target/release/among-tools appimage-version . "$REF_TYPE" "$REF_NAME")"

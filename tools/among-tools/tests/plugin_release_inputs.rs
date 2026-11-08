@@ -81,8 +81,8 @@ fn both_native_workflow_jobs_use_release_binaries_and_keep_required_behaviour_co
     assert_eq!(matrix[0]["runner"].as_str(), Some("ubuntu-24.04"));
     assert_eq!(matrix[1]["runner"].as_str(), Some("ubuntu-24.04-arm"));
     for control in [
-        "prepare-candidate-plugin-inputs",
-        "check-plugin-install",
+        "prepare-published-plugin-inputs",
+        "check-published-prerelease-install",
         "--example managed-status --example managed-pages",
         "real_companion_admits_only_after_review_and_publishes_correlated_status",
         "real_companion_identity_mismatch_never_becomes_admitted",
@@ -108,6 +108,145 @@ fn both_native_workflow_jobs_use_release_binaries_and_keep_required_behaviour_co
         assert!(
             !bytes.contains(obsolete),
             "obsolete input remains: {obsolete}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn published_selection_and_lifecycle_keep_separate_required_native_jobs() -> Result<()> {
+    let workflow: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(include_str!("../../../.github/workflows/checks.yml"))?;
+    let scripts = |job: &serde_yaml_ng::Value| -> Result<String> {
+        Ok(job["steps"]
+            .as_sequence()
+            .ok_or("job steps absent")?
+            .iter()
+            .filter_map(|step| step["run"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"))
+    };
+    for name in ["native", "published-development"] {
+        let job = &workflow["jobs"][name];
+        assert_eq!(job["needs"].as_str(), Some("published-plugins"));
+        assert!(job["if"].is_null());
+        assert!(job["continue-on-error"].is_null());
+        assert_eq!(
+            job["strategy"]["matrix"]["runner"],
+            serde_yaml_ng::to_value(["ubuntu-24.04", "ubuntu-24.04-arm"])?
+        );
+        let checkout = job["steps"]
+            .as_sequence()
+            .ok_or("steps absent")?
+            .iter()
+            .find(|step| {
+                step["uses"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("actions/checkout@"))
+            })
+            .ok_or("checkout absent")?;
+        assert_eq!(
+            checkout["with"]["ref"].as_str(),
+            Some("${{ github.event.pull_request.head.sha || github.sha }}")
+        );
+    }
+    let selection = scripts(&workflow["jobs"]["published-development"])?;
+    let lifecycle = scripts(&workflow["jobs"]["native"])?;
+    let input_download = workflow["jobs"]["published-development"]["steps"]
+        .as_sequence()
+        .ok_or("steps absent")?
+        .iter()
+        .find(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("actions/download-artifact@"))
+        })
+        .ok_or("published input download absent")?;
+    assert_eq!(
+        input_download["with"]["name"],
+        workflow["jobs"]["published-plugins"]["with"]["artifact"]
+    );
+    assert!(input_download["with"]["run-id"].is_null());
+    assert!(input_download["with"]["repository"].is_null());
+    for command in [
+        "prepare-published-plugin-inputs",
+        "export-plugin-catalogue",
+        "check-published-development-install",
+        "cargo +1.98.1 test --bin among --locked --no-run --message-format=json",
+    ] {
+        assert!(
+            selection.contains(command),
+            "required selection control missing: {command}"
+        );
+    }
+    assert!(!selection.contains("check-published-prerelease-install"));
+    assert!(!lifecycle.contains("check-published-development-install"));
+    assert!(lifecycle.contains("check-published-prerelease-install"));
+    assert!(lifecycle.contains("check-synthetic-plugin-replacement"));
+    Ok(())
+}
+
+#[test]
+fn required_consumers_share_one_published_pin_and_do_not_build_substitute_plugins() -> Result<()> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (file, consumer) in [
+        ("checks.yml", "native"),
+        ("deb-release.yml", "build"),
+        ("rpm-release.yml", "build"),
+        ("appimage-release.yml", "build"),
+        ("snap-build.yml", "snap"),
+        ("managed-transport.yml", "native-interop"),
+    ] {
+        let bytes = fs::read_to_string(root.join(".github/workflows").join(file))?;
+        let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(&bytes)?;
+        assert_eq!(
+            workflow["jobs"]["published-plugins"]["uses"].as_str(),
+            Some("./.github/workflows/published-plugin-inputs.yml"),
+            "{file}"
+        );
+        assert!(
+            workflow["jobs"]["published-plugins"]["if"].is_null(),
+            "{file}"
+        );
+        assert!(
+            workflow["jobs"]["published-plugins"]["continue-on-error"].is_null(),
+            "{file}"
+        );
+        assert_eq!(
+            workflow["jobs"][consumer]["needs"].as_str(),
+            Some("published-plugins"),
+            "{file}"
+        );
+        assert!(bytes.contains("prepare-published-plugin-inputs .github/plugin-acceptance.json") || bytes.contains("prepare-published-plugin-inputs \\\n            .github/plugin-acceptance.json"), "{file}");
+        assert!(
+            !bytes.contains("434653882"),
+            "release ID must live in one pin: {file}"
+        );
+        assert!(
+            !bytes.contains("8835249fbe2edb2a55a10080a4e0479e60de79c77901b4c7ca3c72844738d90a"),
+            "catalogue digest must live in one pin: {file}"
+        );
+        assert!(
+            !bytes.contains("uses: ./.github/workflows/plugin-candidate.yml"),
+            "{file}"
+        );
+    }
+    let producer = fs::read_to_string(root.join(".github/workflows/published-plugin-inputs.yml"))?;
+    assert!(producer.contains("fetch-published-plugin-assets"));
+    assert!(producer.contains(".github/plugin-acceptance.json"));
+    assert!(!producer.contains("continue-on-error"));
+    let checks = fs::read_to_string(root.join(".github/workflows/checks.yml"))?;
+    for control in [
+        "AMONG_OFFICIAL_PLUGINS=$packages",
+        "check-synthetic-plugin-replacement",
+        "export-plugin-catalogue",
+        "check-published-development-install",
+        "check-published-prerelease-install",
+        "check-published-preferences-from-cargo",
+    ] {
+        assert!(
+            checks.contains(control),
+            "required control absent: {control}"
         );
     }
     Ok(())

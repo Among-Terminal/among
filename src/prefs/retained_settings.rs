@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn present(parent: &gtk::Window, ctx: &PreferencesContext) {
+pub(super) fn present(parent: &gtk::Window, ctx: &PreferencesContext) -> adw::PreferencesWindow {
     let window = adw::PreferencesWindow::builder()
         .title("Retained plugin settings")
         .transient_for(parent)
@@ -84,4 +84,5 @@ pub(super) fn present(parent: &gtk::Window, ctx: &PreferencesContext) {
     page.add(&group);
     window.add(&page);
     window.present();
+    window
 }

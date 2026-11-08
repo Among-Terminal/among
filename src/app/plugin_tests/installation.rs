@@ -4,10 +4,85 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
 mod candidate;
+mod list;
 mod local_catalogue;
 mod pane_render;
-mod published_lifecycle;
+pub(in crate::app) mod published_lifecycle;
 mod published_selection;
+mod sources;
+
+/// An icon-only control, found by the widget name its row gives it.
+fn named_button(root: &impl IsA<gtk::Widget>, name: &str) -> gtk::Button {
+    widgets(root.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.widget_name() == name)
+        .unwrap_or_else(|| panic!("no control named {name}"))
+}
+
+/// Navigation transitions can leave the underlying list mapped briefly. Scope
+/// actions to the selected page so an identically labelled sibling action
+/// cannot be mistaken for the control the user is reviewing.
+fn plugin_page_button(view: &adw::PreferencesWindow, identity: &str, label: &str) -> gtk::Button {
+    let page = widgets(view.upcast_ref())
+        .into_iter()
+        .find(|widget| widget.widget_name() == format!("plugin-page:{identity}"))
+        .unwrap_or_else(|| panic!("no page for {identity}"));
+    button(&page, label)
+}
+
+/// Whether a banner under `root` carries `text` in its title.
+fn banner_says(root: &impl IsA<gtk::Widget>, text: &str) -> bool {
+    widgets(root.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::Banner>().ok())
+        .any(|banner| banner.title().contains(text))
+}
+
+/// The plugin list as its own Preferences window with test-owned jobs, so a
+/// controlled server stands in for GitHub while the page is the production one.
+fn list_window(
+    ctx: &Window,
+    parent: &adw::PreferencesWindow,
+    services: crate::prefs::PluginServices,
+) -> adw::PreferencesWindow {
+    let page = crate::prefs::plugins_page_for_test(&preferences_context(ctx), services);
+    let window = adw::PreferencesWindow::builder()
+        .transient_for(parent)
+        .modal(false)
+        .title("Plugin list")
+        .search_enabled(false)
+        .default_width(760)
+        .default_height(640)
+        .build();
+    window.add(&page);
+    window.present();
+    window
+}
+
+fn has_list_row(view: &impl IsA<gtk::Widget>, name: &str) -> bool {
+    widgets(view.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .any(|row| row.title().to_lowercase().starts_with(name))
+}
+
+fn channel_active(view: &impl IsA<gtk::Widget>, label: &str) -> bool {
+    widgets(view.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::ToggleButton>().ok())
+        .any(|button| button.label().as_deref() == Some(label) && button.is_active())
+}
+
+/// One of the Stable and Pre-release channel buttons.
+fn channel_button(view: &impl IsA<gtk::Widget>, label: &str) -> gtk::Button {
+    widgets(view.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::ToggleButton>().ok())
+        .find(|button| button.label().as_deref() == Some(label))
+        .unwrap_or_else(|| panic!("no channel button {label}"))
+        .upcast()
+}
 
 fn registered_source_row(view: &adw::PreferencesWindow, repository: u64) -> adw::ActionRow {
     widgets(view.upcast_ref())
@@ -101,7 +176,15 @@ fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
     preferences.set_visible_page(&page);
     let open_retained = || {
         focus(&preferences);
-        press(&button(&preferences, "Retained settings…"));
+        // the entry to retained settings is a row, shown only while some exist.
+        let entry = widgets(preferences.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+            .find(|row| row.title() == "Settings of removed plugins")
+            .unwrap();
+        wait_for(|| entry.is_mapped(), Duration::from_secs(3));
+        assert!(entry.grab_focus());
+        xdo(&["key", "--clearmodifiers", "Return"]);
         wait_for(
             || {
                 gtk::Window::list_toplevels().iter().any(|window| {
@@ -149,54 +232,46 @@ fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
     let plugin_row = widgets(preferences.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| {
-            widgets(row.upcast_ref())
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-                .any(|button| button.label().as_deref() == Some("Details…"))
-        })
+        .find(|row| row.widget_name() == KEY)
         .unwrap();
-    press(&button(&plugin_row, "Details…"));
+    press(&named_button(&plugin_row, "plugin-info"));
+    // the plugin page is a subpage of the same window; development-only
+    // package facts are absent from an ordinary run.
     wait_for(
-        || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
-                    window.title().as_deref() == Some("Plugin details") && window.is_visible()
-                })
-            })
-        },
+        || has_label(preferences.upcast_ref(), "Technical details"),
         Duration::from_secs(2),
     );
-    let details = gtk::Window::list_toplevels()
-        .into_iter()
-        .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-        .find(|window| window.title().as_deref() == Some("Plugin details") && window.is_visible())
-        .unwrap();
-    focus(&details);
-    assert!(has_label(details.upcast_ref(), "Release tag"));
-    assert!(has_label(details.upcast_ref(), "v1.0"));
-    assert!(has_label(details.upcast_ref(), "Resolved release commit"));
-    press(&button(&details, "Uninstall…"));
+    focus(&preferences);
+    assert!(!has_label(preferences.upcast_ref(), "Release tag"));
+    assert!(!has_label(
+        preferences.upcast_ref(),
+        "Resolved release commit"
+    ));
+    press(&button(&preferences, "Uninstall"));
     wait_for(
-        || details.visible_dialog().is_some(),
+        || preferences.visible_dialog().is_some(),
         Duration::from_secs(2),
     );
-    press(&button(&details.visible_dialog().unwrap(), "Uninstall"));
+    assert!(has_label(
+        preferences.visible_dialog().unwrap().upcast_ref(),
+        "It stops now if it is running. Your settings are kept."
+    ));
+    press(&button(&preferences.visible_dialog().unwrap(), "Uninstall"));
+    // a committed removal closes the page: no result dialog, no toast.
     wait_for(
-        || {
-            details
-                .visible_dialog()
-                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Plugin uninstalled"))
-        },
+        || crate::plugin::inventory::read(&root).unwrap().is_empty(),
+        Duration::from_secs(10),
+    );
+    wait_for(
+        || !has_label(preferences.upcast_ref(), "Technical details"),
         Duration::from_secs(5),
     );
+    assert!(preferences.visible_dialog().is_none());
     assert_eq!(
         crate::settings::load(&config, crate::settings::Document::ManagedPlugins).unwrap(),
         original,
         "native uninstall has not deleted settings or grants"
     );
-    press(&button(&details.visible_dialog().unwrap(), "Close"));
-    details.destroy();
 
     let retained = open_retained();
     let row = retained_row(&retained, KEY);
@@ -392,6 +467,9 @@ fn retained_settings_deletion_is_separate_stale_safe_and_identity_scoped() {
 #[test]
 #[ignore = "requires isolated native keyboard input, Rust HTTPS and built managed processes"]
 fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins() {
+    // Recover previous is a package action of the development-mode Technical
+    // details; this process is a development run so the page offers it.
+    assert!(crate::plugin::development::fix(true));
     use crate::plugin::install::{
         source::tests::{install_at, package_route},
         test_managed_package,
@@ -729,6 +807,8 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
+    // the plugin page is a subpage of the Preferences window; the package
+    // actions of a development run sit under its Technical details.
     let open_details = || {
         focus(&preferences);
         let row = widgets(preferences.upcast_ref())
@@ -736,32 +816,25 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
             .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
             .find(|row| row.title() == "Equal display name")
             .unwrap();
-        press(&button(&row, "Details…"));
+        press(&named_button(&row, "plugin-info"));
         wait_for(
             || {
-                gtk::Window::list_toplevels().iter().any(|window| {
-                    window
-                        .downcast_ref::<adw::PreferencesWindow>()
-                        .is_some_and(|window| {
-                            window.title().as_deref() == Some("Plugin details")
-                                && window.is_visible()
-                        })
-                })
+                widgets(preferences.upcast_ref())
+                    .iter()
+                    .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
             },
             Duration::from_secs(3),
         );
-        let details = gtk::Window::list_toplevels()
-            .into_iter()
-            .filter_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
-            .find(|window| {
-                window.title().as_deref() == Some("Plugin details") && window.is_visible()
-            })
-            .unwrap();
-        focus(&details);
-        details
+        for widget in widgets(preferences.upcast_ref()) {
+            if let Some(expander) = widget.downcast_ref::<adw::ExpanderRow>() {
+                expander.set_expanded(true);
+            }
+        }
+        focus(&preferences);
+        preferences.clone()
     };
     let details = open_details();
-    press(&button(&details, "Recover previous…"));
+    press(&plugin_page_button(&details, KEY, "Recover previous…"));
     wait_for(
         || details.visible_dialog().is_some(),
         Duration::from_secs(2),
@@ -775,11 +848,7 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         "Recover previous",
     ));
     wait_for(
-        || {
-            details
-                .visible_dialog()
-                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Previous package selected"))
-        },
+        || banner_says(&details, "The previous version is selected"),
         Duration::from_secs(5),
     );
     wait_for(
@@ -801,8 +870,15 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         third.package_path(&root).join("executed").exists(),
         "recovery does not claim to reverse independently written effects"
     );
-    press(&button(&details.visible_dialog().unwrap(), "Close"));
-    details.destroy();
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(
+        || {
+            !widgets(details.upcast_ref())
+                .iter()
+                .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
+        },
+        Duration::from_secs(2),
+    );
     wait_for(
         || {
             ctx.state
@@ -848,20 +924,37 @@ fn explicit_update_consent_restarts_only_selected_plugin_and_later_disable_wins(
         Duration::from_secs(5),
     );
     let details = open_details();
-    press(&button(&details, "Uninstall…"));
+    press(&plugin_page_button(&details, KEY, "Uninstall"));
     wait_for(
         || details.visible_dialog().is_some(),
         Duration::from_secs(2),
     );
     screenshot_dialog(&details.visible_dialog().unwrap(), "uninstall-consent");
     press(&button(&details.visible_dialog().unwrap(), "Uninstall"));
+    // the page closes when the removal commits; no result dialog appears.
+    wait_for(
+        || crate::plugin::inventory::read(&root).unwrap().is_empty(),
+        Duration::from_secs(8),
+    );
     wait_for(
         || {
-            details
-                .visible_dialog()
-                .is_some_and(|dialog| has_label(dialog.upcast_ref(), "Plugin uninstalled"))
+            !widgets(details.upcast_ref())
+                .iter()
+                .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
         },
-        Duration::from_secs(8),
+        Duration::from_secs(5),
+    );
+    assert!(details.visible_dialog().is_none());
+    wait_for(
+        || {
+            gtk::prelude::GtkWindowExt::focus(&details).is_some_and(|focus| {
+                focus.is::<gtk::SearchEntry>()
+                    || focus
+                        .parent()
+                        .is_some_and(|parent| parent.is::<gtk::SearchEntry>())
+            })
+        },
+        Duration::from_secs(3),
     );
     assert!(crate::plugin::inventory::read(&root).unwrap().is_empty());
     assert!(ctx.state.borrow().plugins.managed_details(KEY).is_none());
@@ -1530,7 +1623,7 @@ fn native_install(close_after_commit: bool) {
     let installs: Vec<_> = widgets(view.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .filter(|button| button.label().as_deref() == Some("Install disabled"))
+        .filter(|button| button.label().as_deref() == Some("Install"))
         .collect();
     assert_eq!(
         installs.len(),
@@ -1561,7 +1654,7 @@ fn native_install(close_after_commit: bool) {
             || {
                 has_label(
                     view.upcast_ref(),
-                    "Installed github:12/sample disabled. Enable separately in Your plugins.",
+                    "Installed github:12/sample disabled. Switch it on from the Plugins page.",
                 )
             },
             Duration::from_secs(5),
@@ -1669,12 +1762,20 @@ fn focus(window: &impl IsA<gtk::Window>) -> String {
     id.to_string()
 }
 
+/// The first control with this label, preferring one that is shown: a window
+/// that holds the plugin page as a subpage also holds pages with their own
+/// buttons of the same label.
 fn button(root: &impl IsA<gtk::Widget>, label: &str) -> gtk::Button {
-    widgets(root.as_ref())
+    let all: Vec<_> = widgets(root.as_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some(label))
-        .unwrap()
+        .filter(|button| button.label().as_deref() == Some(label))
+        .collect();
+    all.iter()
+        .find(|button| button.is_mapped())
+        .or(all.first())
+        .unwrap_or_else(|| panic!("no button labelled {label}"))
+        .clone()
 }
 
 fn press(button: &gtk::Button) {
@@ -1707,6 +1808,104 @@ fn inspector() -> adw::PreferencesWindow {
         .unwrap()
 }
 
+type SourceLookup =
+    dyn Fn(
+        crate::plugin::install::source::Repository,
+    ) -> Result<crate::plugin::install::source::Job, crate::plugin::data::Problem>;
+
+fn source_lookup_window(
+    ctx: &Window,
+    parent: &adw::PreferencesWindow,
+    lookup: Rc<SourceLookup>,
+) -> adw::PreferencesWindow {
+    let page = crate::prefs::plugins_page_with_source_lookup_for_test(
+        &preferences_context(ctx),
+        crate::prefs::production_plugin_services_for_test(),
+        lookup,
+    );
+    let window = adw::PreferencesWindow::builder()
+        .transient_for(parent)
+        .modal(false)
+        .title("Source lookup")
+        .search_enabled(false)
+        .default_width(640)
+        .default_height(900)
+        .build();
+    window.add(&page);
+    window.present();
+    focus(&window);
+    window
+}
+
+fn open_source_lookup(window: &adw::PreferencesWindow) -> adw::Dialog {
+    assert!(window.visible_dialog().is_none());
+    press(&named_button(window, "plugins-add-source"));
+    // Presentation precedes the local source read that enables the address.
+    // The input is mapped during the opening animation; its geometry must
+    // also stop moving before keyboard and layout assertions use it.
+    let previous = Cell::new(None);
+    let changed_at = Cell::new(std::time::Instant::now());
+    wait_for(
+        || {
+            let bounds = window
+                .visible_dialog()
+                .filter(|dialog| dialog.title() == "Add source" && dialog.is_mapped())
+                .and_then(|dialog| {
+                    widgets(dialog.upcast_ref()).into_iter().find_map(|widget| {
+                        widget
+                            .downcast::<adw::EntryRow>()
+                            .ok()
+                            .filter(|entry| {
+                                entry.widget_name() == "source-repository"
+                                    && entry.is_mapped()
+                                    && entry.is_sensitive()
+                                    && entry.width() > 0
+                                    && entry.height() > 0
+                            })
+                            .and_then(|entry| entry.compute_bounds(window))
+                    })
+                })
+                .map(|bounds| [bounds.x(), bounds.y(), bounds.width(), bounds.height()]);
+            if bounds.is_none() || previous.replace(bounds) != bounds {
+                changed_at.set(std::time::Instant::now());
+                return false;
+            }
+            changed_at.get().elapsed() >= Duration::from_millis(75)
+        },
+        Duration::from_secs(2),
+    );
+    window.visible_dialog().unwrap()
+}
+
+fn wait_for_source_closed(window: &adw::PreferencesWindow, dialog: &adw::Dialog) {
+    // visible_dialog clears before the closing animation unmaps the old input.
+    wait_for(
+        || window.visible_dialog().is_none() && !dialog.is_mapped(),
+        Duration::from_secs(2),
+    );
+}
+
+fn source_preview_is_mapped(dialog: &adw::Dialog) -> bool {
+    widgets(dialog.upcast_ref()).iter().any(|widget| {
+        widget.downcast_ref::<adw::ActionRow>().is_some_and(|row| {
+            row.is_mapped()
+                && row.title() == "Equal display name — 1.0.0"
+                && row.subtitle().as_deref() == Some("Ready-built fixture")
+        })
+    })
+}
+
+fn source_identity_is_mapped(dialog: &adw::Dialog) -> bool {
+    widgets(dialog.upcast_ref()).iter().any(|widget| {
+        widget.downcast_ref::<adw::ActionRow>().is_some_and(|row| {
+            row.is_mapped()
+                && row.title() == "Read-only look-up"
+                && row.subtitle().as_deref()
+                    == Some("example/sample · repository 12 · publisher 34. Read-only preview; nothing installed or saved.")
+        })
+    })
+}
+
 fn screenshot_dialog(dialog: &adw::Dialog, name: &str) {
     wait_for(
         || dialog.is_mapped() && dialog.width() > 0,
@@ -1727,7 +1926,17 @@ fn screenshot_dialog(dialog: &adw::Dialog, name: &str) {
     println!("Native dialog scene screenshot: {}", path.display());
 }
 
+/// Lets a subpage slide in or out before it is measured or photographed.
+fn settle() {
+    let start = std::time::Instant::now();
+    wait_for(
+        || start.elapsed() >= Duration::from_millis(700),
+        Duration::from_secs(3),
+    );
+}
+
 fn screenshot(window: &impl IsA<gtk::Window>, name: &str) {
+    settle();
     let id = focus(window);
     let path = crate::test_isolation::check_root().join(format!("{name}.png"));
     assert!(std::process::Command::new("import")
@@ -1766,6 +1975,10 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         .unwrap()
         .join("managed-plugins.json");
     assert!(!config.exists());
+    let source_file = crate::plugin::install::registry::root()
+        .unwrap()
+        .join("sources.json");
+    let sources_before = std::fs::read(&source_file).ok();
     let app = application("com.github.among-terminal.plugin-layout-test");
     let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
@@ -1791,76 +2004,79 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         .into_iter()
         .find_map(|widget| widget.downcast::<gtk::SearchEntry>().ok())
         .unwrap();
-    let sources = button(&preferences, "Inspect repository…");
+    let sources = named_button(&preferences, "plugins-add-source");
     let source_bounds = contained(&sources, &preferences);
     let search_bounds = contained(&search, &preferences);
     assert!(
-        source_bounds.y() + source_bounds.height() < search_bounds.y(),
-        "repository action belongs to its own source section, not under plugin search"
+        search_bounds.y() + search_bounds.height() < source_bounds.y(),
+        "the add-source control belongs to the Available list, under the plugin search"
     );
-    let details = widgets(page.upcast_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.label().as_deref() == Some("Details…"))
-        .unwrap();
+    let details = named_button(&page, "plugin-info");
     contained(&details, &preferences);
     press(&details);
+    // the plugin page is a subpage of the same window.
     wait_for(
-        || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
-                    window.title().as_deref() == Some("Plugin details") && window.is_mapped()
-                })
-            })
-        },
+        || has_label(preferences.upcast_ref(), "Declared API 1.2 supported"),
         Duration::from_secs(2),
     );
-    let details = gtk::Window::list_toplevels()
-        .into_iter()
-        .find_map(|window| {
-            window
-                .downcast::<adw::PreferencesWindow>()
-                .ok()
-                .filter(|window| window.title().as_deref() == Some("Plugin details"))
-        })
-        .unwrap();
     assert!(has_label(
-        details.upcast_ref(),
-        "Declared API 1.2 supported"
-    ));
-    assert!(has_label(
-        details.upcast_ref(),
+        preferences.upcast_ref(),
         "Not observed in this session"
     ));
-    screenshot(&details, "plugin-details");
+    screenshot(&preferences, "plugin-page");
     xdo(&["key", "--clearmodifiers", "Escape"]);
-    wait_for(|| !details.is_visible(), Duration::from_secs(2));
-    focus(&preferences);
-    press(&button(&preferences, "Settings…"));
     wait_for(
         || {
-            gtk::Window::list_toplevels().iter().any(|window| {
-                window.downcast_ref::<gtk::Window>().is_some_and(|window| {
-                    window.title().as_deref() == Some("Plugin settings") && window.is_mapped()
-                })
-            })
+            !widgets(preferences.upcast_ref())
+                .iter()
+                .any(|widget| widget.is::<adw::ExpanderRow>() && widget.is_mapped())
         },
         Duration::from_secs(2),
     );
-    let editor = gtk::Window::list_toplevels()
-        .into_iter()
-        .find_map(|window| {
-            window
-                .downcast::<adw::PreferencesWindow>()
-                .ok()
-                .filter(|window| window.title().as_deref() == Some("Plugin settings"))
-        })
-        .unwrap();
-    screenshot(&editor, "plugin-settings");
+    focus(&preferences);
+    press(&named_button(&page, "plugin-settings"));
+    let editor = preferences.clone();
+    wait_for(
+        || {
+            widgets(editor.upcast_ref())
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+                .any(|field| field.title() == "Label" && field.is_mapped())
+        },
+        Duration::from_secs(2),
+    );
     let field = widgets(editor.upcast_ref())
         .into_iter()
-        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .filter_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .find(|field| field.title() == "Label" && field.is_mapped())
         .unwrap();
+    let settings_page = field
+        .ancestor(adw::NavigationPage::static_type())
+        .unwrap()
+        .downcast::<adw::NavigationPage>()
+        .unwrap();
+    let navigation = settings_page
+        .ancestor(adw::NavigationView::static_type())
+        .unwrap()
+        .downcast::<adw::NavigationView>()
+        .unwrap();
+    // A destination is mapped while it is still sliding into the window.
+    // Measure the requested page once it occupies its navigation view.
+    wait_for(
+        || {
+            navigation.visible_page().as_ref() == Some(&settings_page)
+                && settings_page
+                    .compute_bounds(&navigation)
+                    .is_some_and(|bounds| {
+                        bounds.x() == 0.0
+                            && bounds.y() == 0.0
+                            && bounds.width() == navigation.width() as f32
+                            && bounds.height() == navigation.height() as f32
+                    })
+        },
+        Duration::from_secs(2),
+    );
+    screenshot(&editor, "plugin-settings");
     let save = button(&editor, "Save");
     assert!(contained(&save, &editor).y() < contained(&field, &editor).y());
     assert!(!config.exists(), "inspection must not save defaults");
@@ -1880,33 +2096,33 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         "layout edit"
     );
     let saved = std::fs::read(&config).unwrap();
-    xdo(&["key", "--clearmodifiers", "alt+F4"]);
-    wait_for(|| !editor.is_visible(), Duration::from_secs(2));
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for(|| !field.is_mapped(), Duration::from_secs(2));
     focus(&preferences);
-    press(&button(&preferences, "Inspect repository…"));
-    let view = inspector();
-    screenshot(&view, "repository-empty");
+    let view = open_source_lookup(&preferences);
+    screenshot_dialog(&view, "repository-empty");
     assert!(
-        !preferences.is_modal() && !view.is_modal(),
-        "Preferences and inspection must leave the terminal available"
+        !preferences.is_modal(),
+        "the Add dialog belongs to Preferences and leaves the terminal window available"
     );
-    assert!(!button(&view, "Inspect").is_sensitive());
-    assert!(!button(&view, "Cancel request").is_visible());
-    let output = widgets(view.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
-        .unwrap();
+    assert!(!button(&view, "Look up").is_sensitive());
+    assert!(widgets(view.upcast_ref()).iter().all(|widget| widget
+        .downcast_ref::<gtk::Button>()
+        .is_none_or(|button| button.label().as_deref() != Some("Install"))));
     assert!(
-        !output.is_mapped(),
-        "idle state must not contain a blank result panel"
+        !widgets(view.upcast_ref())
+            .iter()
+            .any(|widget| widget.is::<gtk::TextView>()),
+        "the window keeps no raw metadata panel"
     );
     xdo(&["key", "--clearmodifiers", "Escape"]);
-    wait_for(|| !view.is_visible(), Duration::from_secs(2));
+    wait_for_source_closed(&preferences, &view);
     let held = Rc::new(Server::new(|_| Reply::held()));
     let ready = Rc::new(Server::new(normal));
     let requests = Rc::new(Cell::new(0));
-    crate::prefs::repositories::present_for_test(
-        preferences.upcast_ref(),
+    let lookup_window = source_lookup_window(
+        &ctx,
+        &preferences,
         Rc::new({
             let held = held.clone();
             let ready = ready.clone();
@@ -1922,83 +2138,76 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
             }
         }),
     );
-    let view = inspector();
-    // The registered sources sit above the request status and this page
-    // scrolls too; give every section room before comparing bounds.
-    let id = focus(&view);
-    xdo(&["windowsize", "--sync", &id, "640", "900"]);
-    wait_for(|| view.height() >= 800, Duration::from_secs(3));
+    let view = open_source_lookup(&lookup_window);
+    assert!(held.requests().is_empty() && ready.requests().is_empty());
     let entry = widgets(view.upcast_ref())
         .into_iter()
         .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
         .unwrap();
-    let inspect = button(&view, "Inspect");
+    let inspect = button(&view, "Look up");
     assert!(entry.grab_focus());
     xdo(&["type", "--clearmodifiers", "--delay", "0", "invalid"]);
     wait_for(|| entry.text() == "invalid", Duration::from_secs(2));
     xdo(&["key", "--clearmodifiers", "Return"]);
     wait_for(
-        || has_label(view.upcast_ref(), "Check the repository address"),
+        || has_label(view.upcast_ref(), "repository name is missing"),
         Duration::from_secs(2),
     );
     assert!(entry.has_css_class("error"));
     assert_eq!(requests.get(), 0);
-    screenshot(&view, "repository-invalid");
+    screenshot_dialog(&view, "repository-invalid");
     xdo(&["key", "--clearmodifiers", "ctrl+a"]);
     xdo(&["type", "--clearmodifiers", "--delay", "0", "example/sample"]);
     wait_for(|| entry.text() == "example/sample", Duration::from_secs(2));
     assert!(!entry.has_css_class("error"));
-    let field_bounds = contained(&entry, &view);
-    let inspect_bounds = contained(&inspect, &view);
+    let field_bounds = contained(&entry, &lookup_window);
+    let inspect_bounds = contained(&inspect, &lookup_window);
     assert!(
         inspect_bounds.y() >= field_bounds.y()
             && inspect_bounds.y() + inspect_bounds.height()
                 <= field_bounds.y() + field_bounds.height(),
-        "Inspect must sit alongside the address, not below it"
+        "Look up must sit alongside the address, not below it"
     );
     xdo(&["key", "--clearmodifiers", "Tab"]);
     wait_for(|| inspect.has_focus(), Duration::from_secs(2));
     xdo(&["key", "--clearmodifiers", "Return"]);
     wait_for(|| !held.requests().is_empty(), Duration::from_secs(5));
-    let cancel = button(&view, "Cancel request");
+    let cancel = button(&view, "Cancel");
     assert!(cancel.is_mapped() && cancel.is_sensitive() && !entry.is_sensitive());
-    contained(&cancel, &view);
-    screenshot(&view, "repository-loading");
+    contained(&cancel, &lookup_window);
+    screenshot_dialog(&view, "repository-loading");
     press(&cancel);
-    wait_for(
-        || has_label(view.upcast_ref(), "repository inspection cancelled"),
-        Duration::from_secs(2),
-    );
-    assert!(!cancel.is_visible() && entry.is_sensitive());
-    screenshot(&view, "repository-cancelled");
+    wait_for_source_closed(&lookup_window, &view);
+    assert!(!view.is_mapped());
+    assert_eq!(requests.get(), 1);
+    let view = open_source_lookup(&lookup_window);
+    let entry = widgets(view.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .unwrap();
+    assert!(!source_preview_is_mapped(&view));
+    assert!(has_label(view.upcast_ref(), "No request sent."));
+    screenshot_dialog(&view, "repository-cancelled");
     assert!(entry.grab_focus());
+    xdo(&["type", "--clearmodifiers", "--delay", "0", "example/sample"]);
+    wait_for(|| entry.text() == "example/sample", Duration::from_secs(2));
     xdo(&["key", "--clearmodifiers", "Return"]);
     wait_for(
-        || has_label(view.upcast_ref(), "Metadata preview ready"),
+        || source_preview_is_mapped(&view) && source_identity_is_mapped(&view),
         Duration::from_secs(6),
     );
-    let output = widgets(view.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
-        .unwrap();
-    assert!(output.is_mapped());
-    assert!(output
-        .buffer()
-        .text(
-            &output.buffer().start_iter(),
-            &output.buffer().end_iter(),
-            false
-        )
-        .contains("example/sample (repository 12, publisher 34)"));
+    assert!(widgets(view.upcast_ref()).iter().all(|widget| widget
+        .downcast_ref::<gtk::Button>()
+        .is_none_or(|button| button.label().as_deref() != Some("Install"))));
     assert_eq!(requests.get(), 2);
     assert_eq!(ready.requests().len(), 5);
-    screenshot(&view, "repository-result");
-    let id = focus(&view);
+    screenshot_dialog(&view, "repository-result");
+    let id = focus(&lookup_window);
     xdo(&["windowsize", "--sync", &id, "480", "620"]);
-    wait_for(|| view.width() <= 480, Duration::from_secs(2));
+    wait_for(|| lookup_window.width() <= 480, Duration::from_secs(2));
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
-    contained(&inspect, &view);
-    screenshot(&view, "repository-dark-narrow");
+    contained(&button(&view, "Look up"), &lookup_window);
+    screenshot_dialog(&view, "repository-dark-narrow");
     assert!(entry.grab_focus());
     xdo(&["key", "--clearmodifiers", "ctrl+a"]);
     xdo(&[
@@ -2008,19 +2217,23 @@ fn repository_and_plugin_windows_have_clear_native_layout_and_keyboard_actions()
         "0",
         "another/repository",
     ]);
-    wait_for(|| !output.is_mapped(), Duration::from_secs(2));
+    wait_for(|| !source_preview_is_mapped(&view), Duration::from_secs(2));
+    assert!(!button(&view, "Add source").is_sensitive());
     assert_eq!(
         requests.get(),
         2,
         "editing an address is inert and hides the old result"
     );
     assert_eq!(std::fs::read(&config).unwrap(), saved);
+    assert_eq!(std::fs::read(&source_file).ok(), sources_before);
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     assert!(!root.join("executed").exists());
-    view.destroy();
+    view.close();
+    wait_for_source_closed(&lookup_window, &view);
+    lookup_window.destroy();
     preferences.destroy();
     ctx.window.destroy();
-    println!("PASS native repository source/search separation, labelled details, Save above fields and actual saved values; inline Inspect through real Tab/Enter, invalid/idle/loading/cancel/result states, dark narrow layout and inert address edits; Preferences and inspection are nonmodal. Simultaneous terminal input is exercised separately.");
+    println!("PASS native repository source/search separation, labelled details, Save above fields and actual saved values; inline Look up through real Tab/Enter, invalid/idle/loading/cancel/result states, exact repository/publisher and plugin version preview, dark narrow layout and inert address edits; Preferences leaves the terminal available. Simultaneous terminal input is exercised separately.");
 }
 
 #[test]
@@ -2040,6 +2253,10 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
     let directory = crate::settings::directory().unwrap();
     let before = ["plugins.json", "managed-plugins.json", "shortcuts.json"]
         .map(|name| std::fs::read(directory.join(name)).ok());
+    let source_file = crate::plugin::install::registry::root()
+        .unwrap()
+        .join("sources.json");
+    let sources_before = std::fs::read(&source_file).ok();
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
     focus(&ctx.window);
     open_preferences(&ctx);
@@ -2055,29 +2272,19 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
         .unwrap();
     preferences.set_visible_page(&page);
     focus(&preferences);
-    press(&button(&preferences, "Inspect repository…"));
-    wait_for(
-        || {
-            gtk::Window::list_toplevels()
-                .iter()
-                .filter_map(|widget| widget.downcast_ref::<gtk::Window>())
-                .any(|window| window.title().as_deref() == Some("Inspect public GitHub repository"))
-        },
-        Duration::from_secs(2),
-    );
-    let first = inspector();
-    assert!(has_label(first.upcast_ref(), "No request has been sent."));
+    let first = open_source_lookup(&preferences);
+    assert!(has_label(first.upcast_ref(), "No request sent."));
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
-    focus(&first);
-    xdo(&["key", "--clearmodifiers", "alt+F4"]);
-    wait_for(|| !first.is_visible(), Duration::from_secs(2));
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for_source_closed(&preferences, &first);
     drop(first);
 
     let held = Rc::new(Server::new(|_| Reply::held()));
     let ready = Rc::new(Server::new(normal));
     let requests = Rc::new(Cell::new(0));
-    crate::prefs::repositories::present_for_test(
-        preferences.upcast_ref(),
+    let lookup_window = source_lookup_window(
+        &ctx,
+        &preferences,
         Rc::new({
             let held = held.clone();
             let ready = ready.clone();
@@ -2093,42 +2300,25 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
             }
         }),
     );
-    let view = inspector();
+    let view = open_source_lookup(&lookup_window);
     let entry = widgets(view.upcast_ref())
         .into_iter()
         .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
         .unwrap();
-    let output = widgets(view.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::TextView>().ok())
-        .unwrap();
-    let text = || {
-        output
-            .buffer()
-            .text(
-                &output.buffer().start_iter(),
-                &output.buffer().end_iter(),
-                false,
-            )
-            .to_string()
-    };
-    focus(&view);
     wait_for(|| entry.is_mapped(), Duration::from_secs(2));
     assert!(entry.grab_focus());
     xdo(&["type", "--clearmodifiers", "--delay", "0", "example/sample"]);
     wait_for(|| entry.text() == "example/sample", Duration::from_secs(2));
     assert!(held.requests().is_empty() && ready.requests().is_empty());
-    press(&button(&view, "Inspect"));
+    press(&button(&view, "Look up"));
     wait_for(|| !held.requests().is_empty(), Duration::from_secs(5));
-    assert!(has_label(
-        view.upcast_ref(),
-        "Inspecting public repository metadata…"
-    ));
+    assert!(has_label(view.upcast_ref(), "Looking up…"));
     assert!(!entry.is_sensitive());
     eprintln!(
-        "repository modal state: preferences={} inspection={}",
+        "repository modal state: preferences={} source_window={} add_dialog_mapped={}",
         preferences.is_modal(),
-        view.is_modal()
+        lookup_window.is_modal(),
+        view.is_mapped()
     );
     focus(&ctx.window);
     apply_focus(&ctx);
@@ -2151,7 +2341,7 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
                 eprintln!(
                     "repository input diagnostic: terminal={:?} inspection={:?} xfocus={}",
                     terminal.text_format(vte::Format::Text),
-                    text(),
+                    source_preview_is_mapped(&view),
                     xdo(&["getwindowfocus"])
                 );
             }
@@ -2160,30 +2350,30 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
         Duration::from_secs(2),
     );
     assert_eq!(std::fs::read_to_string(proof).unwrap(), "inspected");
-    assert!(has_label(
-        view.upcast_ref(),
-        "Inspecting public repository metadata…"
-    ));
-    focus(&view);
-    press(&button(&view, "Cancel request"));
-    wait_for(
-        || has_label(view.upcast_ref(), "repository inspection cancelled"),
-        Duration::from_secs(2),
-    );
+    assert!(has_label(view.upcast_ref(), "Looking up…"));
+    focus(&lookup_window);
+    press(&button(&view, "Cancel"));
+    wait_for_source_closed(&lookup_window, &view);
     assert_eq!(requests.get(), 1);
-    assert!(text().is_empty());
-    press(&button(&view, "Inspect"));
+    assert!(!view.is_mapped());
+    let view = open_source_lookup(&lookup_window);
+    let entry = widgets(view.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<adw::EntryRow>().ok())
+        .unwrap();
+    assert!(!source_preview_is_mapped(&view));
+    assert!(entry.grab_focus());
+    xdo(&["type", "--clearmodifiers", "--delay", "0", "example/sample"]);
+    wait_for(|| entry.text() == "example/sample", Duration::from_secs(2));
+    press(&button(&view, "Look up"));
     wait_for(
-        || {
-            has_label(
-                view.upcast_ref(),
-                "Metadata inspected. No installation, registration or activation was performed.",
-            )
-        },
+        || source_preview_is_mapped(&view) && source_identity_is_mapped(&view),
         Duration::from_secs(6),
     );
-    assert!(text().contains("example/sample (repository 12, publisher 34)"));
-    assert!(text().contains("inspection does not install or enable plugins"));
+    assert!(widgets(view.upcast_ref()).iter().all(|widget| widget
+        .downcast_ref::<gtk::Button>()
+        .is_none_or(|button| button.label().as_deref() != Some("Install"))));
+    assert_eq!(requests.get(), 2);
     assert_eq!(ready.requests().len(), 5);
     assert!(ready.requests()[2].starts_with("GET /repositories/12/releases/assets/12 "));
     assert_eq!(ctx.state.borrow().plugins.supervised_count(), 0);
@@ -2194,9 +2384,11 @@ fn repository_inspection_is_inert_then_cancellable_while_terminal_input_continue
     let after = ["plugins.json", "managed-plugins.json", "shortcuts.json"]
         .map(|name| std::fs::read(directory.join(name)).ok());
     assert_eq!(after, before);
-    focus(&view);
-    xdo(&["key", "--clearmodifiers", "alt+F4"]);
-    wait_for(|| !view.is_visible(), Duration::from_secs(2));
+    assert_eq!(std::fs::read(&source_file).ok(), sources_before);
+    focus(&lookup_window);
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    wait_for_source_closed(&lookup_window, &view);
+    lookup_window.destroy();
     preferences.destroy();
     ctx.window.destroy();
     println!("PASS production inspection opens inertly; the same native controls with test-only TLS roots/loopback DNS drive actual HTTPS, cancellation and revision-pinned preview while real terminal input works; no plugin starts or preference writes");

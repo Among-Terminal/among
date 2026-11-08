@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reqwest::{Client, Url};
@@ -19,10 +19,16 @@ use crate::plugin::origin::Origin;
 
 pub(super) mod release;
 
+/// What a refresh reports when the repository has no stable release yet.
+pub const NO_STABLE_RELEASE: Problem = release::NO_STABLE_RELEASE;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_REDIRECTS: usize = 3;
+// A refusal message is classification evidence only. Bound it independently
+// of catalogues and never expose response text in diagnostics.
+const MAX_REFUSAL_BYTES: usize = 4096;
 static WORKERS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +86,16 @@ pub struct Inspection {
 }
 
 impl Inspection {
+    #[cfg(test)]
+    pub(crate) fn observed_release_for_test(
+        &self,
+    ) -> (
+        &crate::plugin::inventory::release::ReleaseSnapshot,
+        &crate::plugin::inventory::ReleaseBinding,
+    ) {
+        (&self.release.snapshot, &self.release.binding)
+    }
+
     pub fn validate_source(&self) -> Result<(), Problem> {
         official::validate(&self.origin())
     }
@@ -164,6 +180,9 @@ impl Inspection {
             compatibility,
         })
     }
+    /// The human-readable inspection preview. Only the tests read it now;
+    /// the window that showed it is gone.
+    #[cfg(test)]
     pub fn summary(&self, check: impl Fn() -> Result<(), Problem>) -> Result<String, Problem> {
         let mut lines = vec![format!("{}/{} (repository {}, publisher {}) at {}", self.repository.owner, self.repository.name,
             self.repository_id, self.publisher_id, self.catalogue_revision), "Metadata snapshot only; inspection does not install or enable plugins. Hashes establish content consistency, not publisher authentication.".into()];
@@ -262,6 +281,27 @@ impl Inspection {
     }
 }
 
+const NOT_NEWER_LOWER: Problem =
+    Problem("the offered version is lower than the installed one; no downgrade is offered");
+const NOT_NEWER_SAME: Problem = Problem("this version is already installed");
+
+/// The outcome of comparing an offered version with an installed plugin.
+#[derive(Clone, Debug)]
+pub enum UpdateVerdict {
+    /// A newer version that passes every update rule.
+    Update(Box<Selection>),
+    /// A development prerelease of the same plugin identity, which replaces
+    /// the installed generation after its own confirmation and keeps none of
+    /// its grants.
+    Replace(Box<Selection>),
+    /// The installed version is the offered one or newer.
+    Current,
+    /// An update is not offered for a reason worth showing: unordered
+    /// versions, same version with different bytes, another identity or
+    /// settings that would not migrate.
+    Withheld(Problem),
+}
+
 #[derive(Clone, Debug)]
 pub struct Selection {
     repository_id: u64,
@@ -339,11 +379,7 @@ impl Selection {
         };
         match order {
             std::cmp::Ordering::Greater => return Ok(()),
-            std::cmp::Ordering::Less => {
-                return Err(Problem(
-                    "the offered version is lower than the installed one; no downgrade is offered",
-                ))
-            }
+            std::cmp::Ordering::Less => return Err(NOT_NEWER_LOWER),
             std::cmp::Ordering::Equal => {}
         }
         if entry.receipt.manifest_sha256 != self.version.manifest_sha256
@@ -355,9 +391,33 @@ impl Selection {
             ));
         }
         if !entry.receipt.requires_development() {
-            return Err(Problem("this version is already installed"));
+            return Err(NOT_NEWER_SAME);
         }
         Ok(())
+    }
+
+    /// What the offered version means for an installed plugin of the same
+    /// identity, using exactly the rules of `for_update`. "Nothing newer" is
+    /// told apart from a refusal the user may need to hear about.
+    pub fn update_verdict(
+        self,
+        entry: &crate::plugin::inventory::Entry,
+        stored: Option<&Value>,
+    ) -> UpdateVerdict {
+        if self.is_prerelease() {
+            // a prerelease never updates: it replaces after its own confirmation.
+            return match self.replacing(entry, stored) {
+                Ok(selection) => UpdateVerdict::Replace(Box::new(selection)),
+                Err(problem) => UpdateVerdict::Withheld(problem),
+            };
+        }
+        match self.for_update(entry, stored) {
+            Ok(selection) => UpdateVerdict::Update(Box::new(selection)),
+            Err(problem) if problem == NOT_NEWER_LOWER || problem == NOT_NEWER_SAME => {
+                UpdateVerdict::Current
+            }
+            Err(problem) => UpdateVerdict::Withheld(problem),
+        }
     }
 
     /// Confirms that this prerelease replaces the installed generation of the
@@ -410,8 +470,18 @@ impl Selection {
         self.release.snapshot.is_prerelease()
     }
 
+    #[cfg(test)]
     pub fn identity(&self) -> String {
         format!("github:{}/{}", self.repository_id, self.version.manifest.id)
+    }
+
+    /// Bytes the package of this selection occupies in the release.
+    pub fn package_size(&self) -> u64 {
+        self.artifact.size
+    }
+
+    pub fn manifest(&self) -> &crate::plugin::manifest::Manifest {
+        &self.version.manifest
     }
 
     pub fn review_description(&self) -> String {
@@ -471,9 +541,20 @@ impl Selection {
     }
 }
 
+/// Limits reported by the response that refused a source check. An omitted or
+/// malformed header stays unknown; a permission refusal alone is not a limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RateLimit {
+    pub remaining: Option<u64>,
+    pub retry_after: Option<u64>,
+}
+
+type RateObservation = Arc<Mutex<Option<RateLimit>>>;
+
 pub struct Job {
     cancelled: Arc<AtomicBool>,
     result: mpsc::Receiver<Result<Inspection, Problem>>,
+    rate_limit: RateObservation,
 }
 
 pub(super) struct Permit;
@@ -533,6 +614,8 @@ impl Job {
         let permit = Permit::acquire()?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = cancelled.clone();
+        let rate_limit = Arc::new(Mutex::new(None));
+        let worker_rate_limit = rate_limit.clone();
         let (send, result) = mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name("among-repository".into())
@@ -554,6 +637,7 @@ impl Job {
                             client,
                             cancelled: worker_cancelled,
                             deadline: Instant::now() + OPERATION_TIMEOUT,
+                            rate_limit: Some(worker_rate_limit),
                         };
                         operation.inspect_target(target).await
                     });
@@ -565,7 +649,15 @@ impl Job {
                 let _ = send.send(outcome);
             })
             .map_err(|_| Problem("cannot start the repository network worker"))?;
-        Ok(Self { cancelled, result })
+        Ok(Self {
+            cancelled,
+            result,
+            rate_limit,
+        })
+    }
+
+    pub fn rate_limit(&self) -> Option<RateLimit> {
+        self.rate_limit.lock().ok().and_then(|limit| *limit)
     }
 
     pub fn cancel(&self) {
@@ -646,6 +738,7 @@ impl InstallJob {
                         client,
                         cancelled,
                         deadline: Instant::now() + OPERATION_TIMEOUT,
+                        rate_limit: None,
                     };
                     operation.install(selection, &root, state).await
                 });
@@ -722,6 +815,11 @@ impl InstallJob {
         }
     }
 
+    /// Whether a stop request can still take effect: before commitment starts.
+    pub fn can_cancel(&self) -> bool {
+        self.state.load(Ordering::Acquire) < COMMITTING
+    }
+
     pub fn phase(&self) -> &'static str {
         match self.state.load(Ordering::Acquire) {
             DOWNLOADING
@@ -780,9 +878,58 @@ struct Operation {
     client: Client,
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
+    rate_limit: Option<RateObservation>,
 }
 
 impl Operation {
+    async fn observe_refusal(&self, response: &mut reqwest::Response) -> Result<(), Problem> {
+        let status = response.status().as_u16();
+        let number = |name| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+        };
+        let remaining = number("x-ratelimit-remaining");
+        let retry_after = number("retry-after");
+        let mut limited =
+            status == 429 || (status == 403 && (remaining == Some(0) || retry_after.is_some()));
+        if status == 403 && !limited {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = self.wait(response.chunk()).await? {
+                if bytes.len().saturating_add(chunk.len()) > MAX_REFUSAL_BYTES {
+                    return Err(Problem(
+                        "GitHub refusal body exceeds its diagnostic byte budget",
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            limited = data::parse_unique(&bytes, MAX_REFUSAL_BYTES)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .map(str::to_ascii_lowercase)
+                })
+                .is_some_and(|message| {
+                    message.starts_with("api rate limit exceeded")
+                        || message.contains("secondary rate limit")
+                });
+        }
+        if limited {
+            if let Some(observation) = &self.rate_limit {
+                if let Ok(mut observation) = observation.lock() {
+                    *observation = Some(RateLimit {
+                        remaining,
+                        retry_after,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
     fn progress(&self, state: &AtomicU8, previous: u8, next: u8) -> Result<(), Problem> {
         self.check()?;
         state
@@ -969,6 +1116,7 @@ impl Operation {
                 continue;
             }
             if matches!(response.status().as_u16(), 403 | 429) {
+                self.observe_refusal(&mut response).await?;
                 return Err(Problem(
                     "GitHub access or rate limit refused this request; retry later",
                 ));
@@ -1079,6 +1227,7 @@ impl Operation {
                 continue;
             }
             if matches!(response.status().as_u16(), 403 | 429) {
+                self.observe_refusal(&mut response).await?;
                 return Err(Problem(
                     "GitHub access or rate limit refused this request; retry later",
                 ));

@@ -9,13 +9,13 @@ permissions:
   contents: read
 
 jobs:
-  plugin-candidate:
-    uses: ./.github/workflows/plugin-candidate.yml
+  published-plugins:
+    uses: ./.github/workflows/published-plugin-inputs.yml
     with:
-      artifact: plugin-candidate-transport
+      artifact: published-plugin-transport
 
   native-interop:
-    needs: plugin-candidate
+    needs: published-plugins
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -40,8 +40,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: plugin-candidate-transport
-          path: ${{ runner.temp }}/plugin-candidate
+          name: published-plugin-transport
+          path: ${{ runner.temp }}/published-plugin-assets
       - name: Native build prerequisites
         run: |
           sudo apt-get update
@@ -52,7 +52,7 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
           rustc +1.98.1 --version --verbose
           test "$(rustc +1.98.1 --version --verbose | sed -n 's/^host: //p')" = "$EXPECTED_RUST_HOST"
-      - name: Prepare the native plugin packages built in CI
+      - name: Verify the exact published native plugin packages
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/managed-transport-interop"
@@ -60,7 +60,7 @@ jobs:
           echo "INTEROP_ROOT=$root" >> "$GITHUB_ENV"
           CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 build --locked --manifest-path tools/among-tools/Cargo.toml
           CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 test --locked --manifest-path tools/among-tools/Cargo.toml --test plugin_release_inputs
-          "$PWD/target/debug/among-tools" prepare-candidate-plugin-inputs "$RUNNER_TEMP/plugin-candidate" "$root/official"
+          "$PWD/target/debug/among-tools" prepare-published-plugin-inputs .github/plugin-acceptance.json "$RUNNER_TEMP/published-plugin-assets" "$root/official"
           cp "$root/official/inputs.json" "$root/published-release-inputs.json"
           cp "$root/official/latest.json" "$root/published-release.json"
           cp "$root/official/initial-ref.json" "$root/published-tag-ref.json"
@@ -287,7 +287,7 @@ jobs:
           case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
           sha256sum -c "$root/host-test-sha256.txt"
           AMONG_CHECK_ROOT="$root/release-install" "$PWD/target/debug/among-tools" ci-x11 \
-            "$PWD/target/debug/among-tools" check-plugin-install "$app_test" "$root/official" \
+            "$PWD/target/debug/among-tools" check-published-prerelease-install "$app_test" "$root/official" \
             2>&1 | tee "$root/published-native-install.log"
       - name: Observe real resource widgets and keyboard lifecycle
         run: |

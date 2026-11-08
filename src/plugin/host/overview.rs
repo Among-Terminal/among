@@ -31,6 +31,8 @@ pub struct Overview {
     pub protection_details: Option<String>,
     /// The reduced level a refused start could be allowed to use.
     pub consent_offer: Option<crate::plugin::sandbox::level::Protection>,
+    /// Below full protection was allowed, is offered or was observed.
+    pub weaker_protection: bool,
 }
 
 impl Overview {
@@ -52,6 +54,7 @@ impl Overview {
             protection: None,
             protection_details: None,
             consent_offer: None,
+            weaker_protection: false,
         }
     }
 
@@ -117,6 +120,7 @@ impl PluginHost {
                         .as_ref()
                         .map(|record| record.details()),
                     consent_offer: plugin.confinement.awaiting,
+                    weaker_protection: plugin.confinement.weaker(),
                 };
                 if let Some(entry) = &plugin.managed {
                     overview.origin = format!("{} · {}", entry.receipt.source_label(), entry.key());

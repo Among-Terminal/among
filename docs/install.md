@@ -55,6 +55,35 @@ third-party trust and missing-repository/update warnings remain applicable.
 Debian/Ubuntu APT catalogue publication is separate work, not a feature of these
 standalone packages. Third-party components keep their own licence terms.
 
+## Desktop notification integration
+
+Desktop bell notifications use the application id `com.github.among-terminal`.
+GNOME Shell requires a matching `com.github.among-terminal.desktop` entry in its
+application search path. The DEB and RPM install that entry; the Snap recipe also
+includes it and currently uses `confinement: classic`.
+
+Desktop notification banners and click-to-focus from an installed Snap on GNOME
+remain unverified for the 0.2.0 candidates; this integration is required before
+the stable release. The current package has `meta/gui/among.desktop`, which
+snapd normally exports with the Snap name prefix. The canonical desktop file
+inside the Snap does not establish matching registration in GNOME's host search
+path. See the [Snap desktop interface](https://snapcraft.io/docs/reference/interfaces/desktop-interface/)
+for filename handling.
+
+Running an extracted binary archive or a bare AppImage does not install a desktop
+entry. GNOME Shell may discard its notifications even though the session's
+notification service is running. Install the matching entry as shown in the
+[AppImage instructions](#appimage), or use the source installer. An
+AppImageLauncher entry named `appimagekit_…` alone does not match the GApplication
+id. Among reports a missing notification service, but GIO does not report this
+shell-side refusal. A sent notification is therefore never reported as displayed.
+
+The desktop file declares `X-GNOME-UsesNotifications=true` for GNOME's notification
+settings. It does not enable D-Bus activation; the click action targets the
+currently running application. Switching to strict Snap confinement requires a
+separate review of the `desktop` plug and notification-service D-Bus permissions.
+Flatpak packaging remains separate.
+
 ## From source
 
 From a source checkout, run as your normal user:
@@ -211,6 +240,7 @@ Terminal=false
 Categories=System;TerminalEmulator;
 StartupNotify=true
 StartupWMClass=among
+X-GNOME-UsesNotifications=true
 EOF
 ```
 

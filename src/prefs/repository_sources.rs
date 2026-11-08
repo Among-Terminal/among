@@ -18,9 +18,6 @@ pub(super) type Refresh = dyn Fn(u64) -> Result<Job, Problem>;
 pub(super) struct Panel {
     root: Option<PathBuf>,
     refresh: Rc<Refresh>,
-    // Present only in development mode: a source row then offers its newest
-    // prerelease.
-    prerelease: Option<Rc<Refresh>>,
     show: Rc<dyn Fn(Inspection)>,
     group: glib::WeakRef<adw::PreferencesGroup>,
     status: glib::WeakRef<adw::ActionRow>,
@@ -46,7 +43,6 @@ impl Panel {
         preview: &adw::PreferencesGroup,
         root: Option<PathBuf>,
         refresh: Rc<Refresh>,
-        prerelease: Option<Rc<Refresh>>,
         show: Rc<dyn Fn(Inspection)>,
     ) -> Rc<Self> {
         let group = adw::PreferencesGroup::new();
@@ -65,7 +61,6 @@ impl Panel {
         let panel = Rc::new(Self {
             root,
             refresh,
-            prerelease,
             show,
             group: group.downgrade(),
             status: status.downgrade(),
@@ -266,26 +261,6 @@ impl Panel {
                 });
                 row.add_suffix(&button);
             }
-            if self.prerelease.is_some() {
-                let button = gtk::Button::with_label("Use latest prerelease");
-                button.set_valign(gtk::Align::Center);
-                button.set_sensitive(!self.busy.get());
-                self.buttons.borrow_mut().push((button.downgrade(), true));
-                button.update_property(&[gtk::accessible::Property::Label(&format!(
-                    "Use latest prerelease of repository {}",
-                    source.origin.repository_id
-                ))]);
-                button.connect_clicked({
-                    let panel = Rc::downgrade(self);
-                    let expected = source.clone();
-                    move |_| {
-                        if let Some(panel) = panel.upgrade() {
-                            panel.inspect_prerelease(expected.as_ref().clone());
-                        }
-                    }
-                });
-                row.add_suffix(&button);
-            }
             group.add(&row);
             self.rows.borrow_mut().push(row);
         }
@@ -385,83 +360,6 @@ impl Panel {
                     "Source operation failed; retained registry/cache unchanged",
                     problem.0,
                 ),
-            }
-            panel.update_save();
-            glib::ControlFlow::Break
-        });
-    }
-
-    // A prerelease is shown for review and installation only. It never enters
-    // the source cache: an ordinary run reopening that cache must keep seeing
-    // the latest stable release.
-    fn inspect_prerelease(self: &Rc<Self>, expected: Registration) {
-        let Some(start) = self.prerelease.clone() else {
-            return;
-        };
-        if self.busy.replace(true) {
-            return;
-        }
-        self.clear();
-        self.update_save();
-        self.feedback(
-            "Looking for the newest prerelease",
-            "Nothing is installed or saved until you act on the result.",
-        );
-        let job = match start(expected.origin.repository_id) {
-            Ok(job) => Rc::new(job),
-            Err(problem) => {
-                self.busy.set(false);
-                self.update_save();
-                self.feedback("Prerelease lookup was not started", problem.0);
-                return;
-            }
-        };
-        let cancel = gtk::Button::with_label("Cancel source request");
-        cancel.set_valign(gtk::Align::Center);
-        cancel.connect_clicked({
-            let job = job.clone();
-            move |button| {
-                job.cancel();
-                button.set_sensitive(false);
-            }
-        });
-        if let Some(status) = self.status.upgrade() {
-            status.add_suffix(&cancel);
-        }
-        let panel = Rc::downgrade(self);
-        let cancel = cancel.downgrade();
-        let generation = self.generation.get();
-        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-            let Some(panel) = panel.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let Some(outcome) = job.poll() else {
-                return glib::ControlFlow::Continue;
-            };
-            panel.busy.set(false);
-            if let (Some(status), Some(cancel)) = (panel.status.upgrade(), cancel.upgrade()) {
-                status.remove(&cancel);
-            }
-            match outcome {
-                Ok(inspection) => {
-                    let change = inspection.origin().compare(&expected.origin);
-                    if let Err(problem) = inspection.validate_source() {
-                        panel.feedback("Official source identity mismatch", problem.0);
-                    } else if change == Change::IdentityChanged
-                        || change == Change::PublisherChanged
-                    {
-                        panel.feedback("Prerelease not shown", change.description());
-                    } else {
-                        if generation == panel.generation.get() {
-                            (panel.show)(inspection);
-                        }
-                        panel.feedback(
-                            "Newest prerelease ready for review",
-                            "It was not saved as source metadata. Review each package below.",
-                        );
-                    }
-                }
-                Err(problem) => panel.feedback("No prerelease to use", problem.0),
             }
             panel.update_save();
             glib::ControlFlow::Break

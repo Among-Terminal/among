@@ -126,6 +126,33 @@ pub fn run(root: &Path, binary: &Path, profile: &Path, scratch: &Path) -> Result
     let mut h = fresh(binary, scratch, "live-status")?;
     let names = ["clock", "system-status", "pane-pwd"];
     profile::replay(profile, &h.base)?;
+    let development = profile::development_replay(profile)?;
+    if development {
+        let mut ordinary = fresh(binary, scratch, "live-status-ordinary-prerelease")?;
+        profile::replay(profile, &ordinary.base)?;
+        ordinary.start("ordinary")?;
+        wait(&mut ordinary, 0, 15, |text| {
+            text.contains("plugin_development=false")
+                && text.contains("development install: it starts only when Among is started with --plugin-development")
+                && names.iter().all(|name| text.contains(&format!("{name}=Unavailable")))
+        })?;
+        // Observe another complete report before accepting the refusal. The
+        // positive replay gets a separate profile and a separate primary process.
+        let offset = ordinary.text()?.len();
+        wait(&mut ordinary, offset, 15, |text| {
+            text.contains("plugin_development=false")
+                && names
+                    .iter()
+                    .all(|name| text.contains(&format!("{name}=Unavailable")))
+        })?;
+        require(
+            !ordinary.text()?.contains("=Running"),
+            "ordinary replay executed a development-only plugin",
+        )?;
+        ordinary.clean_log(&ordinary.log)?;
+        ordinary.stop(false)?;
+        println!("PASS ordinary production replay refused all three published prerelease plugins without --plugin-development; evidence: {}", ordinary.base.display());
+    }
     let docs = fs::read_to_string(root.join("docs/plugins.md"))?;
     let hook = docs
         .split_once("among_osc7() {")
@@ -136,7 +163,11 @@ pub fn run(root: &Path, binary: &Path, profile: &Path, scratch: &Path) -> Result
     fs::write(h.base.join("steps"), b"split\nsplit\nnew-workspace\n")?;
     h.env
         .insert("AMONG_SCRIPT".into(), h.base.join("steps").into_os_string());
-    let pid = h.start("app")?;
+    let pid = if development {
+        h.start_with_arguments("app", &["--plugin-development"])?
+    } else {
+        h.start("app")?
+    };
     let host = fault::Host::observe(pid)?;
     wait(&mut h, 0, 15, |text| {
         text.contains("sidebar_states=[0:0:false:3 1:1:false:1]")

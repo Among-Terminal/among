@@ -42,6 +42,7 @@ fn effective(
     Ok((registrations, problem.or(official_problem)))
 }
 
+#[cfg(test)]
 fn current(root: &Path, check: &impl Fn() -> Result<(), Problem>) -> Result<Registration, Problem> {
     if let Some(official) = cached(root, check)? {
         return Ok(official);
@@ -87,6 +88,7 @@ pub(crate) fn run(
             problem,
         });
     }
+    #[cfg(test)]
     if let Request::Cached(expected) = &request {
         if expected.is_official() {
             let current = current(root, &check)?;

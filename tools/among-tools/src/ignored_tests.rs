@@ -94,8 +94,32 @@ pub fn names(listing: &str) -> Result<Vec<String>> {
     Ok(names.into_iter().collect())
 }
 
+/// The application must declare its desktop contract in the actual listing.
+/// Tools and example binaries have their own cases and do not declare it.
+pub fn selected_names(records: &str, executable: &Path, listing: &str) -> Result<Vec<String>> {
+    let selected = names(listing)?;
+    for line in records.lines().filter(|line| !line.trim().is_empty()) {
+        let item = storage::parse_json(line.as_bytes())?;
+        if item["reason"] == "compiler-artifact"
+            && item["profile"]["test"] == true
+            && item["executable"].as_str() == executable.to_str()
+            && item["target"]["name"] == "among"
+            && item["target"]["kind"] == serde_json::json!(["bin"])
+            && selected
+                .iter()
+                .filter(|name| name.as_str() == crate::desktop_notifications::TEST)
+                .count()
+                != 1
+        {
+            return Err(format!("application test executable must select exactly one desktop notification contract: {}", executable.display()).into());
+        }
+    }
+    Ok(selected)
+}
+
 pub fn run(records: &Path, scratch: &Path) -> Result<usize> {
-    let executables = executables(&fs::read_to_string(records)?)?;
+    let records = fs::read_to_string(records)?;
+    let executables = executables(&records)?;
     fs::create_dir_all(scratch)?;
     let base = scratch.join(format!(
         "among-ignored-{}-{}",
@@ -125,7 +149,7 @@ pub fn run(records: &Path, scratch: &Path) -> Result<usize> {
         if !listing.wait(Duration::from_secs(30))?.success() {
             return Err("test executable listing failed".into());
         }
-        for name in names(&fs::read_to_string(&log_path)?)? {
+        for name in selected_names(&records, &executable, &fs::read_to_string(&log_path)?)? {
             let args = vec![
                 executable
                     .to_str()

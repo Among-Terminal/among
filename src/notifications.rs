@@ -27,6 +27,7 @@ use effect::{Scope, ScopeIdentity, ScopeKind};
 static SESSION: AtomicU64 = AtomicU64::new(0);
 
 pub mod commands;
+pub mod desktop;
 pub mod preferences;
 pub mod providers;
 
@@ -122,6 +123,10 @@ impl Policy {
     };
     pub const DELIVERY_DEFAULT: Self = Self {
         enabled: false,
+        eligibility: Eligibility::ApplicationBackground,
+    };
+    pub const DESKTOP_DEFAULT: Self = Self {
+        enabled: true,
         eligibility: Eligibility::ApplicationBackground,
     };
 
@@ -307,6 +312,7 @@ struct LiveSource {
 
 #[derive(Debug)]
 struct DeliveryChannel {
+    kind: Option<Kind>,
     policy: Policy,
     revision: u64,
     live: Scope,
@@ -624,6 +630,7 @@ impl Host {
             .filter(|(_, channel)| {
                 channel.live.is_current()
                     && channel.registered.is_current()
+                    && channel.kind.is_none_or(|accepted| accepted == kind)
                     && channel.policy.permits(source, focus)
             })
             .map(|(id, channel)| (*id, channel.revision))
@@ -643,6 +650,20 @@ impl Host {
     }
 
     pub fn register_channel(&mut self, policy: Policy) -> Result<Channel, Failure> {
+        self.register_channel_kind(policy, None)
+    }
+
+    /// Desktop delivery accepts semantic terminal bells only. Application and
+    /// managed events must not occupy this channel's bounded queue.
+    pub fn register_terminal_bell_channel(&mut self, policy: Policy) -> Result<Channel, Failure> {
+        self.register_channel_kind(policy, Some(Kind::TerminalBell))
+    }
+
+    fn register_channel_kind(
+        &mut self,
+        policy: Policy,
+        kind: Option<Kind>,
+    ) -> Result<Channel, Failure> {
         self.prune_revoked_channels();
         self.next_channel = self.next_channel.checked_add(1).ok_or(Failure::Exhausted)?;
         let id = Channel {
@@ -652,6 +673,7 @@ impl Host {
         self.channels.insert(
             id,
             DeliveryChannel {
+                kind,
                 policy,
                 revision: 0,
                 live: Scope::new(ScopeIdentity {
@@ -800,6 +822,13 @@ impl Host {
     /// zero-backlog adapters consume current admission only, never a later replay.
     pub fn discard_pending(&mut self, channel: Channel) {
         self.pending.retain(|job| job.channel != channel);
+    }
+
+    /// Revoke one adapter's queued work for a source without disturbing other
+    /// sources or channels. Adapters use this at ingress for stricter policy.
+    pub fn discard_pending_source(&mut self, channel: Channel, source: Source) {
+        self.pending
+            .retain(|job| job.channel != channel || job.event.source != Some(source));
     }
 
     /// skipping cooling sources allows a quiet sibling to progress. a repeated

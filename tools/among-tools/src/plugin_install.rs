@@ -131,15 +131,76 @@ fn native_test(
 
 /// The required acceptance cases over the same candidate bytes.
 pub fn development(executable: &Path, inputs: &Path, assets: &Path, scratch: &Path) -> Result<()> {
+    development_cases(
+        executable,
+        inputs,
+        assets,
+        scratch,
+        &DEVELOPMENT_TESTS,
+        false,
+    )
+}
+
+pub fn published_development(
+    executable: &Path,
+    inputs: &Path,
+    assets: &Path,
+    scratch: &Path,
+) -> Result<()> {
+    release::published::verify(inputs)?;
+    development_cases(
+        executable,
+        inputs,
+        assets,
+        scratch,
+        &[DEVELOPMENT_TESTS[0], DEVELOPMENT_TESTS[2]],
+        true,
+    )
+}
+
+pub fn synthetic_replacement(
+    executable: &Path,
+    inputs: &Path,
+    assets: &Path,
+    scratch: &Path,
+) -> Result<()> {
+    if release::verify(inputs)?["candidate"] != true {
+        return Err("synthetic replacement requires explicitly synthetic candidate inputs".into());
+    }
+    development_cases(
+        executable,
+        inputs,
+        assets,
+        scratch,
+        &[DEVELOPMENT_TESTS[1]],
+        false,
+    )
+}
+
+fn development_cases(
+    executable: &Path,
+    inputs: &Path,
+    assets: &Path,
+    scratch: &Path,
+    tests: &[(&str, &str)],
+    published: bool,
+) -> Result<()> {
     crate::preferences::owned_display()?;
     let executable = executable.canonicalize()?;
     let inputs = inputs.canonicalize()?;
     let assets = assets.canonicalize()?;
-    release::verify(&inputs)?;
+    let prepared = if published {
+        release::published::verify(&inputs)?
+    } else {
+        release::verify(&inputs)?
+    };
     fs::create_dir_all(scratch)?;
-    for (test, marker) in DEVELOPMENT_TESTS {
+    for &(test, marker) in tests {
         let base = storage::private_directory(scratch, "among-development-install-check")?;
         let mut environment = native_environment(&base, &inputs)?;
+        if published {
+            environment.insert("AMONG_PUBLISHED_PRERELEASE_ACCEPTANCE".into(), "1".into());
+        }
         environment.insert("AMONG_CHECK_ROOT".into(), base.clone().into_os_string());
         environment.insert(
             "AMONG_LOCAL_PLUGIN_CATALOGUE".into(),
@@ -158,24 +219,55 @@ pub fn development(executable: &Path, inputs: &Path, assets: &Path, scratch: &Pa
             );
             return Err(format!("{test} not accepted; evidence: {}", base.display()).into());
         }
-        println!("{marker}; candidate acceptance, not published bytes");
+        let final_inputs = if published {
+            release::published::verify(&inputs)?
+        } else {
+            release::verify(&inputs)?
+        };
+        if final_inputs != prepared {
+            return Err("prepared inputs changed during development acceptance".into());
+        }
+        println!(
+            "{marker}; {}",
+            if published {
+                "actual published prerelease bytes"
+            } else {
+                "synthetic candidate acceptance"
+            }
+        );
     }
     Ok(())
 }
 
 pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> {
+    lifecycle(executable, inputs, scratch, false)
+}
+
+pub fn published_prerelease(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> {
+    release::published::verify(inputs)?;
+    lifecycle(executable, inputs, scratch, true)
+}
+
+fn lifecycle(executable: &Path, inputs: &Path, scratch: &Path, published: bool) -> Result<PathBuf> {
     crate::preferences::owned_display()?;
     let executable = executable.canonicalize()?;
     let inputs = inputs.canonicalize()?;
-    let prepared = release::verify(&inputs)?;
-    // The ordinary lifecycle accepts a stable release; a prerelease observation
-    // is only for its own optional job.
-    if prepared["release_snapshot"]["prerelease"] == true {
+    let prepared = if published {
+        release::published::verify(&inputs)?
+    } else {
+        release::verify(&inputs)?
+    };
+    // Ordinary installation remains stable-only. Published prerelease testing
+    // needs both its explicit wrapper and the verified published receipt.
+    if !published && prepared["release_snapshot"]["prerelease"] == true {
         return Err("published installation acceptance refuses prerelease inputs".into());
     }
     fs::create_dir_all(scratch)?;
     let base = storage::private_directory(scratch, "among-release-install-check")?;
-    let environment = native_environment(&base, &inputs)?;
+    let mut environment = native_environment(&base, &inputs)?;
+    if published {
+        environment.insert("AMONG_PUBLISHED_PRERELEASE_ACCEPTANCE".into(), "1".into());
+    }
     let (status, output) = native_test(&executable, NATIVE_TEST, &environment, &base)?;
     if !status.success()
         || !output.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
@@ -193,7 +285,12 @@ pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> 
         )
         .into());
     }
-    if release::verify(&inputs)? != prepared {
+    let final_inputs = if published {
+        release::published::verify(&inputs)?
+    } else {
+        release::verify(&inputs)?
+    };
+    if final_inputs != prepared {
         return Err("prepared release observation changed during native installation".into());
     }
     let profile = base.join(".runtime-published-live-profile");
@@ -206,6 +303,14 @@ pub fn run(executable: &Path, inputs: &Path, scratch: &Path) -> Result<PathBuf> 
         return Err(
             "native test did not export its observed published installation profile".into(),
         );
+    }
+    if published {
+        storage::atomic_write(
+            &profile,
+            Path::new("publisher-observation.json"),
+            &serde_json::to_vec_pretty(&release::published::publication_record(&inputs)?)?,
+            0o600,
+        )?;
     }
     println!("Published profile: {}", profile.display());
     println!(

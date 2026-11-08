@@ -14,6 +14,7 @@ use std::time::Duration;
 pub(crate) mod fixture;
 mod observation;
 pub use observation::select;
+pub mod published;
 
 pub const REPOSITORY: u64 = 1431055733;
 pub const PUBLISHER: u64 = 339567100;
@@ -40,11 +41,18 @@ fn fetch(root: &Path, url: &str, name: &str, limit: u64, asset: bool) -> Result<
         .create_new(true)
         .mode(0o600)
         .open(&destination)?;
+    // The log is named after the whole file name: replacing the extension would
+    // give among-plugins.json and among-plugins.sig the same log.
+    let mut log_name = destination
+        .file_name()
+        .ok_or("download target has no file name")?
+        .to_owned();
+    log_name.push(".curl.log");
     let log = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(destination.with_extension("curl.log"))?;
+        .open(destination.with_file_name(log_name))?;
     let environment = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
     let maximum = limit.to_string();
     let mut arguments = vec![
@@ -318,6 +326,10 @@ fn unpack(root: &Path, archive: &Path, plugin: &str, artifact: &Value) -> Result
 
 fn repository(root: &Path, name: &str) -> Result<()> {
     let repository = metadata(root, "repositories/1431055733", name)?;
+    check_repository(&repository)
+}
+
+fn check_repository(repository: &Value) -> Result<()> {
     if repository["id"] != REPOSITORY
         || repository["owner"]["id"] != PUBLISHER
         || repository["private"] != false
@@ -337,8 +349,17 @@ fn latest(root: &Path, name: &str) -> Result<Value> {
 }
 
 fn resolve(root: &Path, snapshot: &Value, pass: &str) -> Result<(Value, Value)> {
+    resolve_with(root, snapshot, pass, metadata)
+}
+
+fn resolve_with(
+    root: &Path,
+    snapshot: &Value,
+    pass: &str,
+    load: impl Fn(&Path, &str, &str) -> Result<Value>,
+) -> Result<(Value, Value)> {
     let tag = text(snapshot, "tag")?;
-    let reference = metadata(
+    let reference = load(
         root,
         &format!("repositories/{REPOSITORY}/git/ref/tags/{tag}"),
         &format!("{pass}-ref.json"),
@@ -358,7 +379,7 @@ fn resolve(root: &Path, snapshot: &Value, pass: &str) -> Result<(Value, Value)> 
         }
         chain.push(json!([kind, sha]));
         if kind == "commit" {
-            let commit = metadata(
+            let commit = load(
                 root,
                 &format!("repositories/{REPOSITORY}/git/commits/{sha}"),
                 &format!("{pass}-commit.json"),
@@ -371,7 +392,7 @@ fn resolve(root: &Path, snapshot: &Value, pass: &str) -> Result<(Value, Value)> 
         if kind != "tag" || depth == 8 {
             return Err("release tag chain is unsupported or exceeds eight annotations".into());
         }
-        let annotation = metadata(
+        let annotation = load(
             root,
             &format!("repositories/{REPOSITORY}/git/tags/{sha}"),
             &format!("{pass}-tag-{depth}.json"),
