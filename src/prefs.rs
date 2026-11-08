@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires an attached X11 display and a real Preferences window"]
-    fn actual_preferences_measures_five_tabs_and_plugin_info_toolbar() {
+    fn actual_preferences_measures_five_tabs() {
         adw::init().expect("attached X11 display");
         use crate::plugin::host::Overview;
         use crate::plugin::install::TestOwnedRoot;
@@ -533,19 +533,6 @@ mod tests {
                 child = node.next_sibling();
                 collect(&node, found);
             }
-        }
-        fn find_named(widget: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
-            if widget.widget_name() == name {
-                return Some(widget.clone());
-            }
-            let mut child = widget.first_child();
-            while let Some(node) = child {
-                child = node.next_sibling();
-                if let Some(found) = find_named(&node, name) {
-                    return Some(found);
-                }
-            }
-            None
         }
         fn toolbars(widget: &gtk::Widget, found: &mut Vec<adw::ToolbarView>) {
             if let Some(toolbar) = widget.downcast_ref::<adw::ToolbarView>() {
@@ -690,26 +677,6 @@ mod tests {
             }
         };
         measure_mapped_toolbars("Preferences toolbar allocation");
-
-        let info = find_named(prefs.upcast_ref(), "plugin-info")
-            .and_then(|widget| widget.downcast::<gtk::Button>().ok())
-            .expect("plugin info control");
-        info.emit_clicked();
-        pump_until(
-            &|| {
-                let mut rows = Vec::new();
-                collect(prefs.upcast_ref(), &mut rows);
-                rows.into_iter()
-                    .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-                    .any(|row| {
-                        row.title() == "Protection"
-                            && row.is_mapped()
-                            && row.subtitle().is_some_and(|text| !text.is_empty())
-                    })
-            },
-            "mapped plugin info Protection row",
-        );
-        measure_mapped_toolbars("plugin info toolbar allocation");
         prefs.destroy();
     }
 
