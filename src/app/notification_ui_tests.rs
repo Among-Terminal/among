@@ -42,7 +42,10 @@ fn preferences(ctx: &Window) -> adw::PreferencesWindow {
         .filter_map(|widget| widget.downcast::<adw::PreferencesPage>().ok())
         .filter_map(|page| page.name().map(|name| name.to_string()))
         .collect();
-    assert_eq!(order, ["plugins", "notifications", "keyboard", "about"]);
+    assert_eq!(
+        order,
+        ["plugins", "notifications", "keyboard", "terminal", "about"]
+    );
     // The tests below drive notification controls, so show that page for them
     // after confirming that Preferences opens on Plugins.
     window.set_visible_page_name("notifications");
