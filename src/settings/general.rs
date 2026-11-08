@@ -46,6 +46,62 @@ mod tests {
     };
 
     #[test]
+    fn desktop_preferences_load_inertly_and_retry_the_latest_explicit_edit() {
+        let root =
+            std::env::temp_dir().join(format!("among-desktop-general-test-{}", std::process::id()));
+        let mut storage = PreferencesStorage::new(Some(root.clone()));
+        let defaults = storage.load(Document::General).unwrap();
+        assert_eq!(
+            Preferences::parse(&defaults).unwrap().desktop,
+            Policy::DESKTOP_DEFAULT
+        );
+        assert!(!root.exists(), "loading a fresh profile wrote defaults");
+        storage
+            .general_changed(Edit::Visual(Policy::VISUAL_DEFAULT))
+            .unwrap();
+        let file = root.join("general.json");
+        let mut old = load(&file, Document::General).unwrap();
+        assert!(
+            old["notifications"].get("desktop").is_none(),
+            "an unrelated edit wrote the new default"
+        );
+        old["notifications"]["desktop"] = json!({"future": {"keep": 7}});
+        old["future"] = json!("opaque");
+        std::fs::write(&file, b"malformed; do not repair").unwrap();
+        storage
+            .general_changed(Edit::Desktop(Policy::DESKTOP_DEFAULT))
+            .unwrap_err();
+        let disabled = Policy {
+            enabled: false,
+            eligibility: Eligibility::Always,
+        };
+        storage
+            .general_changed(Edit::Desktop(disabled))
+            .unwrap_err();
+        assert_eq!(std::fs::read(&file).unwrap(), b"malformed; do not repair");
+        std::fs::write(&file, serde_json::to_vec(&old).unwrap()).unwrap();
+        storage
+            .general_changed(Edit::Visual(Policy::VISUAL_DEFAULT))
+            .unwrap();
+        assert!(storage.pending_general.is_empty());
+        let document = load(&file, Document::General).unwrap();
+        let restart = PreferencesStorage::new(Some(root.clone()))
+            .load(Document::General)
+            .unwrap();
+        assert_eq!(Preferences::parse(&restart).unwrap().desktop, disabled);
+        assert_eq!(
+            document["notifications"]["desktop"]["future"],
+            json!({"keep": 7})
+        );
+        assert_eq!(document["future"], "opaque");
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn legacy_owner_controlled_directory_does_not_make_general_session_only() {
         let root = std::env::temp_dir().join(format!(
             "among-general-legacy-directory-{}",

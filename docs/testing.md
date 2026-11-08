@@ -20,6 +20,128 @@ builds only that target, and the tests that need an example then fail at once
 with "build --example notification-plugin first" or a similar message. Before
 such a run, execute `cargo build --locked --examples`.
 
+## Desktop notification contract
+
+Build the application test executable with `cargo test --locked --bin among
+--no-run --message-format=json`, then use its absolute executable path:
+
+```sh
+among-tools ci-x11 among-tools check-desktop-notifications /absolute/path/to/among-test-executable
+```
+
+The full-window GTK test owns `org.gtk.Notifications` on the runner's private
+session bus; it refuses to replace an existing owner. It rings a real VTE terminal
+and checks the actual `AddNotification` body and field names, application id,
+normal priority, icon, complete default-action target, stable replacement id and
+withdrawal on focus, close and normal shutdown. It also checks viewed/off
+suppression, hostile OSC-title sanitisation, the settings row and missing-service
+reporting. Activation calls `org.freedesktop.Application.ActivateAction` over
+D-Bus for another workspace, a hidden sibling of an expanded pane, a closed pane
+and a previous instance token.
+
+The named-sender private-bus tests
+`app::bell::desktop::named::tests::gtk_named_private_bus` and
+`app::bell::desktop::named::tests::portal_named_private_bus` drive the production
+`GioSender` against fake services. The GTK case checks the real
+`AddNotification`/`RemoveNotification` payload, removal from the old unique owner
+when the same id is added to a new owner, and raw error and malformed-reply
+reporting. The portal case checks the forced-GTK fallback, autostart, an early
+`RemoveNotification` before the held `AddNotification` reply, held Add/Remove
+replies and the shared drain budget. Both prove that a named route never falls
+back to freedesktop delivery.
+
+A separate private-bus FDO fixture holds the `Notify` reply and checks the raw
+freedesktop payload, automatic `CloseNotification` after a viewed/off withdrawal,
+coalescing while a reply is pending and the real application action handler. It
+binds each server id to the reply's unique owner; the scenarios cover the first
+owner, an A-to-B owner swap, a retired owner whose late activation token and
+action still select the old target while its Close reply is held, a foreign owner
+that must not inherit that identity, and removal of the identity when the Close
+replies, fails or the drain budget expires. A direct GIO control keeps the
+original early-withdrawal loss as a measured comparison.
+Failure to observe the held reply or the daemon-side close is a test failure, not
+a product pass.
+The checker first copies a bounded regular executable into its private evidence
+directory, then enumerates and runs that same read-only snapshot. `result.json`
+keeps the original `executable` path, the `executed_snapshot` path and the snapshot's
+SHA-256, so replacing a Cargo output cannot change which image the report names.
+Logs include the recorded calls. A Rust test that runs zero cases is a failure. Evidence stays below
+`AMONG_CHECK_ROOT`.
+
+The required native CI jobs on Ubuntu 24.04 amd64 and arm64 run this exact ignored
+application case through `run-ignored-tests`. Each case owns its display and
+session bus, and its recorded D-Bus calls and test result appear in the job log.
+The standalone command above also writes the executable hash and a result file.
+The ignored-test runner requires the exact desktop case in the selected
+application binary's actual listing. Tools and example binaries keep their own
+test sets; removing or renaming the application case fails the native job.
+
+This checks application integration on an owned X11 session. Use the separate
+GNOME checker to observe real banners and window activation:
+
+```sh
+among-tools check-gnome-notifications /absolute/source/root /absolute/native/among wayland /absolute/new/evidence-wayland
+among-tools check-gnome-notifications /absolute/source/root /absolute/native/among x11 /absolute/new/evidence-x11 --xvfb /absolute/path/to/Xvfb
+```
+
+The runner needs Bubblewrap with unprivileged user namespaces, GNOME Shell,
+`gdbus`, `dbus-daemon` and their system runtime dependencies. X11 also needs
+Xvfb; its default path is `/usr/bin/Xvfb`. The Shell `Eval` implementation must
+await returned Promises, as upstream GNOME Shell 46 and later do. A capability
+probe runs before virtual input is created; unsupported synchronous Eval is a
+prerequisite failure, with the observed reply in `eval-capability.txt`.
+It copies the native application,
+checker, optional Xvfb and matching desktop entry into a new private evidence
+directory. Run it directly: it creates its own display and session bus.
+The headless seat owns virtual pointer and keyboard devices; without keyboard
+capability, Wayland cannot deliver keyboard focus to GTK even when Mutter has
+selected the window. `seat-ready.json` records the observed input devices.
+The other-project scenario requires a fresh Among self-check showing workspace 1
+active before ringing the source in workspace 0. Its initial state is retained in
+`project-before-app.log`; a no-op workspace action cannot pass as cross-project
+activation. Timeouts from the outer namespace process include the evidence path.
+The mount namespace exposes `/usr` read-only, selected system configuration,
+minimal `/dev`, private runtime directories and the fixture directory. It has
+no host HOME, desktop sockets, session bus, network or device mounts.
+The fixture uses Cairo for the application, disables its accessibility backend
+and limits Mesa software rendering to two threads. These settings apply only
+to the owned test processes.
+
+The checker inspects the actual Shell notification source, complete action
+target, banner allocation and window focus.
+The selected mode sets `GDK_BACKEND` for Among. Every window snapshot also records
+Mutter's actual `get_client_type()` as `client_type` and `client_type_value`;
+the checker rejects an Among window whose client type differs from that mode.
+This distinguishes a Wayland client from an Xwayland client in a Wayland Shell.
+A virtual pointer clicks the banner body for a minimised window, another GNOME
+desktop, another Among project and
+a terminal hidden by an expanded sibling. The last case must restore the
+layout. It also closes a source, observes withdrawal and dispatches its captured
+action from a real pointer release on an owned Shell test control with that
+event's timestamp. This models a late action race; the remaining terminal must
+stay selected. The control has its own Shell input region on both X11 and
+Wayland; the pointer clicks its measured allocation. The result records the
+input device, button, timestamp and action target. It does not claim a
+click on an already withdrawn banner.
+`inputs.json` identifies the copied executables by SHA-256. Shell and application
+logs, JSON observations and PNG screenshots remain in the evidence directory;
+`observations.jsonl` preserves each poll, including Shell notification policy,
+queue, presence and banner state, so a timed-out final snapshot cannot hide an
+earlier banner. The owned pointer moves before each BEL to register user activity.
+Before the first BEL, the pointer closes any visible Shell startup banners using
+their real close buttons; `startup-dismissals.json` records the banner identity,
+button allocation and observed removal.
+`result.json` appears only after every scenario passes. A missing prerequisite,
+failed compositor or blocked activation returns an error with the evidence path.
+
+This runner exercises its owned virtual GNOME session. A packaged application
+on a physical desktop and distribution-specific integration still need their
+own observations. GNOME's focus-prevention behaviour must be reported as
+observed; the application does not bypass it. Repeat the private-bus check on
+Ubuntu 24.04 and Fedora before accepting those target environments.
+
+## Additional graphical fixtures
+
 The ignored graphical tests also use `target/debug/notification-command-fixture`.
 Cargo does not build it: the integration tests (`notification_commands`,
 `command_effect_authority`) compile `tests/fixtures/notification-command.rs` with
@@ -234,10 +356,10 @@ packaged behavior or whole-release acceptance.
 ## Published-plugin native checks
 
 `managed-transport.yml` runs on native amd64 and arm64 runners. Production clock,
-system-status and pane-pwd executables come from the official repository's latest
-stable immutable release; they are not compiled by the host check. A missing
-ordinary release is a failed prerequisite, not permission to use the historical
-prerelease or a default-branch catalogue.
+system-status and pane-pwd executables come from the exact immutable official
+prerelease pinned in `.github/plugin-acceptance.json`. The same required input
+producer serves Checks, DEB, RPM, AppImage and Snap. None of these acceptance paths
+builds replacement official plugin executables.
 
 `among-tools prepare-official-plugin-inputs <new-directory>` validates the numeric
 repository/publisher, complete bounded release inventory and full tag chain. It
@@ -253,27 +375,55 @@ supervised admission, stale-reply, paging, timezone, resource and keyboard contr
 remain mandatory. Transport fixture receipts remain synthetic and do not prove
 repository installation.
 
-Until a release is published, CI checks candidate bytes.
-`plugin-candidate.yml` builds the plugins from one pinned among-plugins commit (the
-one the official `v0.2.0-rc.1` release candidate was built from) on
-amd64 and arm64 with the catalogue, and
-`among-tools prepare-candidate-plugin-inputs <assets> <new-directory>` makes the
-same input directory as `prepare-official-plugin-inputs`, marked `candidate`, with
-synthetic release documents that still pass the stable observation. The host
-tests then answer from a controlled HTTPS server; UI, client, installer and
-packages are real. This is candidate acceptance, because CI builds differ from
-the approved preparation. `capture-package-plugin-profile` takes the same assets
-as an optional last argument.
+`published-plugin-inputs.yml` runs
+`among-tools fetch-published-plugin-assets <pin> <new-directory>`. It observes the
+exact numeric release ID, refuses drafts, mutable releases and non-prereleases,
+checks the tag's complete binding against the pinned source, and verifies the
+catalogue digest and all downloaded assets. It repeats the repository, release,
+inventory and tag observation before uploading the bytes and original API bodies.
+This live final observation occurs in the producer, before native consumers run.
 
-`among-tools check-development-install <among-test-executable> <inputs> <assets>`
-runs three native tests in their own processes: selection of the release in the
-inspector; a stable install replaced by the prerelease and rebound by the stable
-release of the same bytes; and installation of the same packages from a local
-catalogue. The last two start the package under the flag. `prepare-official-plugin-inputs --prerelease` observes a real published
-prerelease; its manual job is not required before publication.
+`among-tools prepare-published-plugin-inputs <pin> <assets> <new-directory>` checks
+both stored API observations and the producer receipt, then reconstructs native
+paths offline with the existing catalogue, archive-member, ELF and source-delivery
+checks. Its receipt keeps `candidate:false` and `prerelease:true`.
+`among-tools export-plugin-catalogue <inputs> <new-directory>` exports only the
+unchanged catalogue and verified native archives under their original release
+names, for a separate local development catalogue test.
+
+`among-tools check-published-development-install <among-test-executable> <inputs>
+<local-catalogue>` runs the release-selection and local-install tests in separate
+processes. `among-tools check-published-prerelease-install <among-test-executable>
+<inputs>` runs the full UI lifecycle with the explicit test-only development
+adapter. Neither changes the product's ordinary stable-only policy. Native tests
+with `candidate:false` use the production GitHub HTTPS client for source refresh
+and installation. They compare its live snapshot, tag binding and installed bytes
+with the independently prepared inputs. The local catalogue case reads the
+verified archive bytes locally; synthetic replacement uses its owned HTTPS fixture.
+The aggregate preferences phases use `check-published-preferences-from-cargo`
+with the same verified inputs and explicit test-only mode. Ordinary preferences
+commands retain their existing mode and do not inherit this flag from the caller.
+
+Checks runs the complete published selection/local wrapper in the required
+`published-development` job on amd64 and arm64. The full published lifecycle stays
+in `native`, together with the separate synthetic replacement case. Counting the
+API calls in code, for a one-page release list and a tag directly targeting a
+commit, the selection test issues 23 requests and the lifecycle issues 39; putting both in one
+job would exceed the anonymous 60-request budget. The local case, preferences
+persistence fixture and subsequent profile replay make no GitHub requests.
+Separate jobs keep these API budgets separate, but do not guarantee independent
+public IP quotas or a fresh GitHub allowance. Prior traffic, another job sharing
+an address or additional release-list pages can still exhaust the available
+budget; rate refusal remains a failing acceptance result.
+
+The mandatory `check-synthetic-plugin-replacement` case retains the separate
+replacement/rebinding fixture over those archive bytes. It requires explicitly
+synthetic candidate inputs from `prepare-candidate-plugin-inputs` and invents its
+release documents. Its result proves replacement behaviour, not publication.
 
 `among-tools check-plugin-install <among-test-executable> <input-directory>` requires
-an owned X11 display and an isolated check root. It runs the exact ignored host test
+stable inputs, an owned X11 display and an isolated check root. Both lifecycle
+wrappers run the exact ignored host test
 `app::plugin_tests::installation::real_published_official_packages_install_review_enable_disable_uninstall`.
 An absent test, failed download, changed source/asset, ignored/zero-test result or
 missing lifecycle assertion is a failure, never a fallback to the old standalone
@@ -282,10 +432,9 @@ must be demonstrated by that host test before this check can pass. Preparing the
 inputs alone establishes none of those behaviours or application-RC readiness.
 
 `among-tools check-resource-measurements <profile>` takes the profile that
-`check-plugin-install` observed. It accepts the installed `system-status`
+the applicable lifecycle wrapper observed. It accepts the installed `system-status`
 executable only when the receipt, manifest, artifact and executable digests and size
-match the release candidate catalogue of the same run (a published release once
-one exists), then drives it over the managed handshake and compares
+match the published catalogue of the same run, then drives it over the managed handshake and compares
 CPU, MEM and root-DISK with independent `/proc` and `df -P /` readings. No plugin
 is built from this repository. The only plugin executable the host still builds is
 `examples/fake-plugin.rs`, a labelled protocol and failure-control fixture; it
@@ -294,10 +443,12 @@ never stands in for an official plugin.
 Package workflows compile exactly the `among` binary test target with
 `AMONG_CHECK_SOURCE_SHA` set to the checkout's full HEAD. The compile-time value is
 exported only with the observed runtime profile. `capture-package-plugin-profile`
+receives `--published-inputs <prepared-directory>` from every package producer and
 requires a clean checkout before and after the actual UI lifecycle, one Cargo test
 artifact whose manifest and `src/main.rs` belong to that checkout, an unchanged
 test-executable digest, and a matching compiled-in source SHA. Its bounded internal
-transfer includes exact file hashes and the completed lifecycle observation.
+transfer includes exact file hashes, the completed lifecycle observation, the
+publication pin and original initial/final API bodies in `publisher-observation.json`.
 Its `release-inputs.json` preserves the prepared release observation so replay
 checks every selected receipt's full snapshot, catalogue and tag binding against
 the same source, without embedded historical release/asset constants.
@@ -311,6 +462,13 @@ excluded from screenshot/failure uploads. No profile is a public application ass
 On compiler-free hosts the selected AppImage/Snap/DEB/RPM/archive executable renders
 that observed profile. This is packaged **renderer replay**, not observation of
 installation or access review through that packaged executable.
+For the pinned published prerelease, replay first checks the raw publication
+observations and keeps the profile's original prerelease receipts. It starts the
+production executable without a development flag and requires all three plugins
+to stay unavailable. A separate fresh replay then explicitly starts the same
+executable with `--plugin-development` and checks the existing renderer, terminal
+and fault-containment behaviour. Stable profiles keep the ordinary launch. Missing
+publication evidence or a synthetic prerelease refuses the development replay.
 
 ## Cross-repository managed transport
 
@@ -558,7 +716,7 @@ not verified.
 runs the released `clock`, `pane-pwd` and `system-status` binaries as managed plugins. It needs
 `AMONG_OFFICIAL_PLUGINS=<directory>` holding one extracted release package per plugin identifier
 (`clock/`, `pane-pwd/`, `system-status/`). Without the variable it prints `NOT VERIFIED` and passes, except
-under `AMONG_REQUIRE_SANDBOX=1`, where it fails; the `native` CI job extracts the candidate packages of the
+under `AMONG_REQUIRE_SANDBOX=1`, where it fails; the `native` CI job extracts the published packages of the
 runner's architecture and sets both. Only the `native` job of `checks.yml` runs these tests; the package
 workflows only build the test executables.
 

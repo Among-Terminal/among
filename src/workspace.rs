@@ -496,6 +496,26 @@ impl WorkspaceSet {
         true
     }
 
+    /// A notification targets an existing pane, including one hidden behind an
+    /// expanded sibling. Restore only that destination's expansion; directional
+    /// focus retains its ordinary rule of staying inside an expanded pane.
+    pub fn focus_notification(&mut self, pane: PaneId) -> bool {
+        let Some(index) = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.panes().contains(&pane))
+        else {
+            return false;
+        };
+        let workspace = &mut self.workspaces[index];
+        if workspace.zoomed.is_some_and(|zoomed| zoomed != pane) {
+            workspace.zoomed = None;
+        }
+        workspace.focused = pane;
+        self.active = index;
+        true
+    }
+
     pub fn activate_next(&mut self) {
         if self.workspaces.is_empty() {
             return;
@@ -535,6 +555,38 @@ mod tests {
 
     fn workspace() -> Workspace {
         Workspace::new("one".into(), PaneId(1), 0)
+    }
+
+    #[test]
+    fn notification_focus_finds_the_destination_and_restores_only_a_hidden_sibling() {
+        let mut set = three();
+        let first = set.workspaces()[0].focused;
+        let second = set.workspaces()[1].focused;
+        assert!(set.focus_notification(first));
+        assert_eq!(set.active_index(), 0);
+        assert_eq!(set.active().focused, first);
+        let sibling = PaneId(99);
+        assert_eq!(
+            set.active_mut().split_focused(1000, 500, sibling),
+            Some(sibling)
+        );
+        set.active_mut().toggle_zoom();
+        assert_eq!(set.active().zoomed, Some(sibling));
+        assert!(set.focus_notification(sibling));
+        assert_eq!(set.active().zoomed, Some(sibling));
+        assert!(set.focus_notification(second));
+        assert_eq!(set.active_index(), 1);
+        assert_eq!(set.workspaces()[0].zoomed, Some(sibling));
+        assert!(set.focus_notification(first));
+        assert_eq!(set.active_index(), 0);
+        assert_eq!(set.active().focused, first);
+        assert_eq!(set.active().zoomed, None);
+        let previous_names = names(&set);
+        let focused = set.active().focused;
+        assert!(!set.focus_notification(PaneId(u64::MAX)));
+        assert_eq!(set.active_index(), 0);
+        assert_eq!(set.active().focused, focused);
+        assert_eq!(names(&set), previous_names);
     }
 
     #[test]

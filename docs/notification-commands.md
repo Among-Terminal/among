@@ -1,7 +1,7 @@
 # Optional command backend
 
 `among::notifications::commands` executes real, optional local command attempts.
-Its core API is GTK-free. [General](preferences.md#general-notifications) accepts
+Its core API is GTK-free. [Notifications](preferences.md#notifications) accepts
 and stores explicit configuration; the normal VTE adapter owns registration,
 shared-tick polling and retirement. No command is configured or enabled by default.
 
@@ -9,6 +9,77 @@ The inherited procfs PID-truncation finding is closed by the framed-selector
 repair and its independent re-review. That disposition is specific to PID
 selection; it does not establish packaged self-exec, every exceptional cleanup
 path, combined UI acceptance or release readiness.
+
+## Desktop bell notifications
+
+The built-in desktop channel sends a system notification for a terminal bell.
+It is enabled with Among in background by default, including when an upgraded
+profile has no `notifications.desktop` entry. The Desktop group on the
+Notifications page controls this independently from sound and commands.
+
+The title is the workspace name. The body is `Bell in '<title>'` followed by its
+directory, omitting unknown title/directory parts. A missing workspace name uses
+`Among Terminal`; a missing terminal title uses `Bell`. Terminal metadata can
+include a title set by a program through an OSC escape; the body does not use
+an OSC notification message. Program-controlled text can appear
+in the notification centre and on a lock screen; disable the channel if that is
+unsuitable for the session.
+
+Title and body are capped at 128 and 512 Unicode scalar values respectively
+(at most 512 and 2048 UTF-8 bytes). These are payload budgets, not measured display
+sizes. Invalid UTF-8 becomes replacement characters, whitespace is collapsed,
+other C0/C1 controls and `<`, `>` and `&` are removed. Cuts preserve UTF-8 character
+boundaries but may split a combining sequence. No OSC 9/777/99 message parser is
+installed. The optional command's JSON event remains free of title and directory.
+
+Repeated bells from one terminal use the same notification id. The existing core
+allows one attempt per terminal every two seconds, and the desktop adapter allows
+one attempt globally per 100 ms. Pending work stays in the core's bounded queue
+with its source coalescing and fairness; there is no separate retry queue. A
+confirmed missing service discards pending desktop work, so it does not replay
+when the service returns. While initial service discovery is pending, work stays
+in that same bounded queue and is revalidated before delivery. A registered
+freedesktop service or the selected portal route can be activated when it has no
+current bus owner.
+
+Among delivers the three desktop routes with direct named D-Bus senders on its GIO
+session connection: `org.gtk.Notifications` for GNOME, the
+`org.freedesktop.portal.Notification` portal interface when the portal route is
+selected, and `org.freedesktop.Notifications` for the freedesktop daemon. It does
+not use GIO's `GNotification`/`GApplication.send_notification` backend, because
+that backend loses a withdrawal made before the `Notify`/`AddNotification` reply.
+Add and Remove calls are asynchronous: the GTK route addresses the discovered
+unique owner, while the portal and freedesktop routes address the well-known name,
+and the freedesktop server id stays bound to the unique owner that returned it.
+The route is selected before the first delivery and kept for the process. Closing
+or viewing the originating terminal, a policy edit and normal exit withdraw its
+outstanding notification, including a send whose reply arrives after a
+withdrawal. Normal exit drains real freedesktop and named cleanup inside one
+absolute 30-second budget, and a held reply does not extend it. A viewed terminal
+never notifies, even with Always selected. Desktop delivery does not request sound;
+the audio channel retains its own policy, and a daemon may have its own sound
+preferences.
+
+Clicking selects the exact originating terminal and workspace. If an expanded
+sibling hides it, the layout is restored. The action binds the backend's random
+incarnation token and the core's session, generation and pane identifiers. Closed
+or stale targets only raise the current window; they do not select a replacement
+terminal. The sidebar's collapsed state is preserved.
+
+Among can report that no session notification service is available, but a
+successful D-Bus call cannot confirm display or
+report every shell refusal. See [desktop-entry requirements](install.md#desktop-notification-integration)
+for binary archives and AppImages. Notification clicks are handled by the running
+application; restarting it through a notification is not enabled.
+
+API references: the
+[freedesktop notification specification](https://specifications.freedesktop.org/notification-spec/latest/)
+documents `Notify`, `CloseNotification`, server ids, replacement and the absence
+of a display guarantee; the
+[portal notification interface](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Notification.html)
+documents `AddNotification` and `RemoveNotification`; the
+[`org.freedesktop.Application` D-Bus interface](https://docs.gtk.org/gio/class.Application.html#dbus)
+documents the `ActivateAction` call that click handling uses.
 
 ## Configuration and admission
 

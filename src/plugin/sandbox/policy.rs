@@ -150,6 +150,10 @@ const COMMON: &[Denied] = &[
     always("fchmod", libc::SYS_fchmod),
     always("fchmodat", libc::SYS_fchmodat),
     always("fchmodat2", 452),
+    // Path-based file attributes (Linux 6.17), outside Landlock mediation.
+    // Both supported native syscall tables assign these same numbers.
+    always("file_getattr", 468),
+    always("file_setattr", 469),
     always("fchown", libc::SYS_fchown),
     always("fchownat", libc::SYS_fchownat),
     always("setxattr", libc::SYS_setxattr),
@@ -269,6 +273,8 @@ mod tests {
         list.iter().copied().collect()
     }
 
+    /// Keep the complete reviewed baseline independent of the generated
+    /// rules so changing a mapping cannot silently remove a denied call.
     #[test]
     fn the_filtered_calls_are_exactly_the_reviewed_list() {
         // written out here, not derived from the table: removing or adding a
@@ -330,6 +336,8 @@ mod tests {
             "fchmod",
             "fchmodat",
             "fchmodat2",
+            "file_getattr",
+            "file_setattr",
             "fchown",
             "fchownat",
             "setxattr",
@@ -461,6 +469,8 @@ mod tests {
             "fchmod",
             "fchmodat",
             "fchmodat2",
+            "file_getattr",
+            "file_setattr",
             "fchown",
             "fchownat",
             "setxattr",
@@ -629,6 +639,8 @@ mod review_tests {
     /// Name fragments of calls whose reach a reviewer has to judge.
     const WATCHED: &[&str] = &[
         "xattr",
+        "file_getattr",
+        "file_setattr",
         "chmod",
         "chown",
         "utime",

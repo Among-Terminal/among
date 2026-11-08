@@ -81,6 +81,53 @@ fn transfer_refuses_wrong_host_source_architecture_and_missing_lifecycle_boundar
 }
 
 #[test]
+fn a_published_profile_cannot_drop_its_transfer_pin_and_raw_publication_evidence() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut record = fixture.envelope()?;
+    let bytes = serde_json::to_vec(
+        &json!({"candidate":false,"published_pin":{"release_id":434653882u64}}),
+    )?;
+    fs::write(fixture.0.join("release-inputs.json"), &bytes)?;
+    let declaration = record["files"]
+        .as_array_mut()
+        .ok_or("files absent")?
+        .iter_mut()
+        .find(|entry| entry["path"] == "release-inputs.json")
+        .ok_or("release proof absent")?;
+    declaration["size"] = json!(bytes.len());
+    declaration["sha256"] = json!(storage::sha256(bytes.as_slice())?);
+    fixture.save(&record)?;
+    assert!(validate(&fixture.0, SOURCE).is_err());
+    record["published_pin"] = json!({"release_id":434653882u64});
+    fixture.save(&record)?;
+    assert!(validate(&fixture.0, SOURCE).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_prerelease_profile_cannot_downgrade_by_removing_both_pins_and_rehashing_its_manifest(
+) -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut record = fixture.envelope()?;
+    let bytes =
+        serde_json::to_vec(&json!({"candidate":false,"release_snapshot":{"prerelease":true}}))?;
+    fs::write(fixture.0.join("release-inputs.json"), &bytes)?;
+    let declaration = record["files"]
+        .as_array_mut()
+        .ok_or("files absent")?
+        .iter_mut()
+        .find(|entry| entry["path"] == "release-inputs.json")
+        .ok_or("release proof absent")?;
+    declaration["size"] = json!(bytes.len());
+    declaration["sha256"] = json!(storage::sha256(bytes.as_slice())?);
+    fixture.save(&record)?;
+    assert!(record.get("published_pin").is_none());
+    assert!(!fixture.0.join("publisher-observation.json").exists());
+    assert!(validate(&fixture.0, SOURCE).is_err());
+    Ok(())
+}
+
+#[test]
 fn transfer_refuses_modified_missing_duplicate_unrecorded_and_link_inputs() -> Result<()> {
     for mutation in [
         "modified",

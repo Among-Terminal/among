@@ -86,9 +86,10 @@ and restores them on startup. A Faulted process remains desired-enabled until
 you disable it. Save failures are reported as session-only changes; see
 [Preferences storage](preferences.md).
 
-Open Preferences → Plugins → Inspect repository. Inspect a public repository,
-choose a compatible version and use **Install disabled**. The row identifies the
-chosen manifest version, OS/architecture, exact asset ID and size. Selection uses
+Open Preferences → Plugins. **Available** lists compatible packages from saved
+sources; use **Install** on the desired plugin. A new installation stays disabled.
+To use another publisher, add its repository through **Add source**, then install
+from Available. Selection uses
 the actual host architecture and declared runtime/libc requirements, not filenames.
 Native amd64 and arm64 packages are separate downloads; the source archive is not
 an installation payload. Packages also contain manifests and licensing material.
@@ -109,26 +110,42 @@ execution without a fallback. Refusal does not delete unrelated files or setting
 Among packages (DEB, RPM, Snap, AppImage and the binary archive) carry no
 plugins. The official ones (clock, system-status, pane-pwd) come from the
 repository `Among-Terminal/among-plugins` through the always-present registered
-source **Official plugins for Among Terminal** in Preferences → Plugins. Its row
-shows the repository and publisher identity and the age of the retained
-snapshot, offers **Cached** and **Refresh**, and has no **Remove source** button.
+source in Preferences → Plugins → Sources. It is marked **Official** and has no
+removal control. The saved catalogue appears directly in Available, without a
+network request. On first launch, **Load** checks the official source explicitly;
+without a saved catalogue and without network access, the list remains unloaded.
 
-- **Refresh** reads the current metadata over the network and keeps it for offline
-  use; a failed or cancelled refresh leaves the previous cache and every installed
-  plugin unchanged.
-- **Cached** opens the retained snapshot without a network request and is
-  available only when a snapshot exists and the source itself is available (a
-  source shown as unavailable, for example after a publisher mismatch, keeps it
-  disabled).
-- On a first launch without network access the row has no retained snapshot
-  ("No retained snapshot; refresh when online"): **Cached** is disabled and the
-  catalogue stays unavailable until a refresh succeeds. Nothing is installed in
-  the meantime.
+Choose **Install**, then review access and enable the installed plugin separately.
+Opening pages and checking catalogues never installs, enables or grants access.
 
-From the opened catalogue choose a compatible version and use **Install
-disabled**, then review the access request and enable the plugin as described
-above. Showing the row, refreshing or opening a cached catalogue never installs,
-enables or grants access to anything.
+### Plugin sources
+
+Open **Sources** from the Plugins page to see each registered repository, its
+plugin count, the age of its saved list and the result of the last requested
+check. **Check source** checks one repository; **Check all** checks them in order.
+Both use the selected Stable or Pre-release channel. They stop at an observed
+GitHub rate limit and show the reported remaining count, or **unknown** when the
+response did not provide a valid count. No automatic retry or periodic check is
+scheduled. A permission refusal without a rate-limit indication does not stop
+the remaining sources.
+
+A successful stable check saves its catalogue for offline use. A failed check
+keeps the saved list, including its real age. Lists older than a day are marked.
+A publisher change keeps serving the old list until **Review…** and explicit
+approval replace its metadata. That approval does not grant installed code any
+new access. Publisher changes observed on Pre-release must be checked and
+approved on Stable, because prerelease catalogues are not persisted.
+
+**Add source** opens a read-only look-up. Enter `owner/repository` or a public
+GitHub repository URL and choose **Look up** to preview its catalogue. There is
+no installation action in the preview. **Add source** saves the registration and
+snapshot; **Cancel** saves neither. Up to 32 user sources can be registered
+besides the built-in official source.
+
+Removing a user source asks for confirmation and updates Available immediately.
+Its installed plugins keep running, their enabled choices and settings stay
+unchanged, and their rows show **source removed**. Adding the source again makes
+its saved offers available without reopening Preferences.
 
 ### Plugin development mode
 
@@ -149,7 +166,7 @@ becomes the first instance decides the mode.
 
 #### Install from a local catalogue
 
-In development mode the Plugin sources section has **Install from a local
+In development mode the Plugins page has **Install from a local
 catalogue**. Choose an `among-plugins.json` (schema 2, the same format as a
 release catalogue) with the package files it names in the same directory.
 Opening it reads metadata only. Each compatible version has its own
@@ -189,10 +206,12 @@ they do not start, even if their switch was left on: an enabled row then says
 that the install starts only with `--plugin-development`, and the details
 always do.
 
-#### Use the latest prerelease of a source
+#### Checking prerelease catalogues
 
-In development mode every row of Registered sources also has **Use latest
-prerelease**. Among reads up to three pages of 100 releases and picks the
+In development mode the Plugins page has a **Stable / Pre-release** switch,
+initially on Pre-release. An explicit catalogue refresh or source check uses
+that channel; there is no separate prerelease action. Among reads up to three
+pages of 100 releases and picks the
 non-draft prerelease with the greatest creation time, the greater numeric ID
 deciding a tie. A list that ends without a prerelease, and three full pages
 without one, are refused with their own reasons; the second says only that the
@@ -233,30 +252,35 @@ an install to the same version with different content.
 
 ### Native inventory
 
-Preferences → Plugins joins committed managed receipts
-and runtime observations by identity. Cards show origin/version and runtime state
-beside the desired enablement switch. Details shows the description (or its
-absence), declared compatibility, last observed wire API and package provenance;
-managed details use labelled, selectable rows rather than a single long alert.
-A never-run plugin does not receive an observed-compatible badge. Equal display names retain separate
-origin-scoped settings and switches; invalid selected packages remain visible.
+Preferences → Plugins shows Installed and Available from committed receipts,
+runtime observations and saved source snapshots. Opening it uses no network.
+The row shows its version, description, trust shield, info icon and one package
+action. A stable Running state needs no extra line; an unavailable or faulted
+state replaces the description with its reason. Faults keep the desired enable
+switch on. Equal display names retain separate identities and settings.
+
+The info icon opens a subpage with source, protection and access cards. Available
+plugins can be inspected before installation, without an enable switch or settings.
+**Technical details** shows identity and API compatibility in an ordinary run;
+development mode adds release provenance, digests, generation and recovery of a
+retained previous package. Values can be selected and copied. Protection is
+checked at start; an origin shield does not establish that sandboxing succeeded.
 
 Search matches name, description, identity and origin. Clearing search restores
 the same rows rather than redirecting an action to a sorted position. Background
 state changes update existing controls; they do not replace an open editor or
-discard unfinished settings text. Details/settings callbacks reject a removed or
-replaced package rather than silently retargeting an old action. The separate
-Plugin sources section opens repository inspection with a separate explicit
-Install disabled action for each compatible version; the search field filters
-only installed plugins. Merely inspecting metadata never installs or
-enables code. Registered sources have explicit Cached, Refresh and Remove source
-actions; source removal does not uninstall anything. Existing identities have a
-separate Apply update action. Managed Details exposes explicit recovery/removal;
-these do not modify legacy executables.
+discard unfinished settings text. Callbacks reject removed or replaced package
+generations. Plugin settings open as a further subpage; Back without Save discards
+edits. Notification roles are reviewed on the plugin page, without enabling or
+restarting code. Removing a registered source does not uninstall its plugins.
+Uninstall asks for confirmation and shows progress in the row. It cannot be
+cancelled once begun. A committed removal closes the page and retains settings;
+a failure leaves a persistent banner and the current installed state.
 
 ### Updating an installed package
 
-Inspect its repository and choose **Apply update…** for the desired version.
+Refresh the source explicitly, then choose **Update** when its saved catalogue
+offers a newer compatible version. Showing that action uses no network.
 The confirmation includes the selected version/target and access requirements.
 Only the selected plugin may restart. Publisher/access changes still require
 renewed review; changing an on-disk filename cannot inherit another identity.
@@ -801,37 +825,20 @@ installed/settings SHA-256 and executable/resource digests before replay. This
 ephemeral executable/manifest/lease snapshot is excluded from uploaded artifacts;
 it is not a second installer or a new package/source archive.
 
-## Repository package metadata — implementation in progress
+## Repository identity and cached metadata
 
-Preferences → Plugins → Plugin sources → Inspect repository opens a
-public-GitHub catalogue preview. Enter `owner/repository` or its public HTTPS
-GitHub URL, then use the adjacent Inspect button or press Enter. Loading exposes
-a Cancel request action; empty/error/cancelled states do not show a blank result
-panel. Editing the address hides the previous preview without sending a request.
-After inspecting a catalogue, each compatible version has an explicit **Install
-disabled** action for new identities, or **Apply update…** for a currently installed
-identity. Ordinary installation still refuses replacement. Updates have separate
-confirmation disclosing the exact version, access and target-only restart. Source
-inspection alone cannot install, update, enable or grant execution access. This is
-not full installer acceptance: integrated notification providers, separate settings
-deletion, independent security review, supported-platform observations and CI gates
-remain separate from the local managed-process workflows.
+See [Plugin sources](#plugin-sources) for the Sources page and the read-only Add
+source flow. Registration saves the inspected numeric repository/publisher
+identity and validated snapshot; looking up an address never grants access or
+changes an installed package.
 
-**Add source** explicitly saves the inspected numeric repository/publisher identity
-and validated snapshot. Inspection or address edits alone never register it.
-Registered sources reopen from bounded local storage without network access.
-**Cached** displays the actual retrieval timestamp, whether the snapshot is at least
-24 hours old, and that it is not an online check. A future timestamp/clock rollback
-is stale/uncertain, not fresh. No cache is a promise of network availability.
-
-**Refresh** requests the registered numeric GitHub repository ID, never the old
-owner/name alias. A rename retains identity. A changed numeric publisher requires
-the explicit **Approve publisher change** action; refresh does not silently approve
-it or grant installed code any access. Reusing an owner/repository spelling with a
-different numeric repository ID is a separate explicit addition, not an update.
-Failed/rate-limited/cancelled refresh keeps the committed cache and installed
-selection/switch/settings unchanged. **Remove source** removes discovery and its
-cache only; it neither disables nor uninstalls a selected package.
+Checking a saved source requests its numeric GitHub repository ID, never its old
+owner/name alias. A rename retains identity. Reusing an owner/repository spelling
+with a different numeric repository ID requires a separate explicit addition.
+The saved list's age comes from its actual retrieval timestamp. A future timestamp
+or clock rollback is stale/uncertain, not fresh; a cache is no promise of network
+availability. Failure, a rate limit or cancellation preserves the committed cache
+and the installed selection, enabled choice and settings.
 
 The application-owned **Official plugins for Among Terminal** row is always present,
 in addition to at most 32 custom sources. Its numeric repository `1431055733` and
@@ -934,8 +941,9 @@ Source receipts retain the canonical complete `release_snapshot` and
 the version revision). Offline inventory reads require both. The snapshot's
 release ID, selected asset ID/digest, catalogue digest and tag must agree with
 the committed receipt. Missing or inconsistent source observations refuse the
-read without repairing the receipt or changing user data. Details retain the
-selected package's API-observed release/asset IDs and exact catalogue digest. Matching
+read without repairing the receipt or changing user data. In development mode,
+Technical details retains the selected package's API-observed release/asset IDs
+and exact catalogue digest. Matching
 tag commits and asset hashes establish content consistency,
 not build reproducibility or independent publisher authentication. Run-time
 confinement is separate (see Confinement).
@@ -1031,11 +1039,11 @@ fresh activation still passes ordinary publisher/access/settings admission. Old
 generation leases stay supervised through reaping before deferred cleanup.
 Selected and actually running package versions are observed separately while the
 old supervisor stops. Numeric publisher/access changes and incompatible local
-settings can refuse activation; no downloaded migration code runs. Details →
-**Recover previous…** explicitly reselects the retained verified generation with
+settings can refuse activation; no downloaded migration code runs. In development
+mode, the plugin page's **Recover previous…** action explicitly reselects the retained verified generation with
 normal access/settings/API admission, without claiming rollback of external effects.
 
-Details → **Uninstall…** is separate from source deregistration. Confirmation
+The plugin page's **Uninstall** action is separate from source deregistration. Confirmation
 invalidates the identity's pending package worker, blocks stale enable/restart
 controls, withdraws contributions and stops its supervised process. Removal waits
 up to five seconds for actual stop acknowledgement, then commits absence and a new

@@ -14,33 +14,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  plugin-candidate:
-    uses: ./.github/workflows/plugin-candidate.yml
+  published-plugins:
+    uses: ./.github/workflows/published-plugin-inputs.yml
     with:
-      artifact: plugin-candidate-checks
+      artifact: published-plugin-checks
 
-  # Runs only by hand once the prerelease exists, and its failure fails nothing.
-  # It becomes a required release-candidate condition after publication.
-  published-prerelease:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    continue-on-error: true
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+  published-development:
+    needs: published-plugins
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '1'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Observe the published prerelease
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: published-plugin-checks
+          path: ${{ runner.temp }}/published-plugin-assets
+      - name: Native and isolated-display prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config \
+            librsvg2-common gsettings-desktop-schemas xvfb openbox dbus-x11 xdotool x11-utils imagemagick
+      - name: Build the exact current-source test and tooling
         run: |
           set -euo pipefail
+          echo "AMONG_CHECK_ROOT=$RUNNER_TEMP/among-published-development" >> "$GITHUB_ENV"
+          mkdir -m 700 "$RUNNER_TEMP/among-published-development"
           rustup toolchain install 1.98.1 --profile minimal
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
-          cargo +1.98.1 build --release --locked --manifest-path tools/among-tools/Cargo.toml
-          tools/among-tools/target/release/among-tools prepare-official-plugin-inputs --prerelease "$RUNNER_TEMP/official-prerelease"
+          cargo +1.98.1 build --locked --release --manifest-path tools/among-tools/Cargo.toml
+          cargo +1.98.1 test --bin among --locked --no-run --message-format=json > "$RUNNER_TEMP/published-development-tests.jsonl"
+      - name: Published selection and local development installation
+        run: |
+          set -euo pipefail
+          host_tests="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .target.kind == ["bin"] and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one actual among test executable") end' "$RUNNER_TEMP/published-development-tests.jsonl")"
+          case "$host_tests" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -f "$host_tests" && test -x "$host_tests" && test ! -L "$host_tests"
+          tool=tools/among-tools/target/release/among-tools
+          "$tool" prepare-published-plugin-inputs .github/plugin-acceptance.json \
+            "$RUNNER_TEMP/published-plugin-assets" "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          "$tool" export-plugin-catalogue "$AMONG_CHECK_ROOT/official-plugin-inputs" "$AMONG_CHECK_ROOT/published-local-catalogue"
+          "$tool" ci-x11 "$tool" check-published-development-install "$host_tests" \
+            "$AMONG_CHECK_ROOT/official-plugin-inputs" "$AMONG_CHECK_ROOT/published-local-catalogue"
 
   native:
-    needs: plugin-candidate
+    needs: published-plugins
     strategy:
       fail-fast: false
       matrix:
@@ -55,6 +80,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Kernel and Landlock facts
         # The runner image changes without notice, so the kernel and the
         # security modules of every run are kept with its evidence. The
@@ -82,8 +108,8 @@ jobs:
           } | tee "$facts/kernel-facts-${{ matrix.runner }}.txt"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: plugin-candidate-checks
-          path: ${{ runner.temp }}/plugin-candidate
+          name: published-plugin-checks
+          path: ${{ runner.temp }}/published-plugin-assets
       - name: Native and isolated-display prerequisites
         run: |
           sudo apt-get update
@@ -120,7 +146,7 @@ jobs:
           packages="$RUNNER_TEMP/official-packages"
           mkdir -m 700 "$packages"
           for id in clock pane-pwd system-status; do
-            set -- "$RUNNER_TEMP/plugin-candidate/$id"-*-linux-"$arch".tar.gz
+            set -- "$RUNNER_TEMP/published-plugin-assets/$id"-*-linux-"$arch".tar.gz
             test "$#" -eq 1
             test -f "$1"
             mkdir -m 700 "$packages/$id"
@@ -268,19 +294,25 @@ jobs:
             tools/among-tools/target/release/among-tools check-live-resize target/release/among
           cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/preferences-tests.jsonl"
           host_tests="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .target.kind == ["bin"] and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one actual among test executable") end' "$RUNNER_TEMP/preferences-tests.jsonl")"
+          tools/among-tools/target/release/among-tools prepare-published-plugin-inputs \
+            .github/plugin-acceptance.json "$RUNNER_TEMP/published-plugin-assets" "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          tools/among-tools/target/release/among-tools export-plugin-catalogue \
+            "$AMONG_CHECK_ROOT/official-plugin-inputs" "$AMONG_CHECK_ROOT/published-local-catalogue"
+          # Replacement/rebinding uses invented release documents over the same
+          # archive bytes. Keep it mandatory and separate from publication proof.
           tools/among-tools/target/release/among-tools prepare-candidate-plugin-inputs \
-            "$RUNNER_TEMP/plugin-candidate" "$AMONG_CHECK_ROOT/official-plugin-inputs"
+            "$RUNNER_TEMP/published-plugin-assets" "$AMONG_CHECK_ROOT/synthetic-plugin-inputs"
           tools/among-tools/target/release/among-tools ci-x11 \
-            tools/among-tools/target/release/among-tools check-development-install "$host_tests" \
-            "$AMONG_CHECK_ROOT/official-plugin-inputs" "$RUNNER_TEMP/plugin-candidate"
+            tools/among-tools/target/release/among-tools check-synthetic-plugin-replacement "$host_tests" \
+            "$AMONG_CHECK_ROOT/synthetic-plugin-inputs" "$AMONG_CHECK_ROOT/published-local-catalogue"
           tools/among-tools/target/release/among-tools ci-x11 \
-            tools/among-tools/target/release/among-tools check-plugin-install "$host_tests" \
+            tools/among-tools/target/release/among-tools check-published-prerelease-install "$host_tests" \
             "$AMONG_CHECK_ROOT/official-plugin-inputs" | tee "$AMONG_CHECK_ROOT/published-install.log"
           profile="$(awk '/^Published profile: / { count++; sub(/^Published profile: /, ""); path=$0 } END { if (count != 1) exit 1; print path }' "$AMONG_CHECK_ROOT/published-install.log")"
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-live-status . target/release/among "$profile"
           tools/among-tools/target/release/among-tools ci-x11 \
-            tools/among-tools/target/release/among-tools check-preferences-from-cargo \
+            tools/among-tools/target/release/among-tools check-published-preferences-from-cargo \
             "$RUNNER_TEMP/preferences-tests.jsonl" "$AMONG_CHECK_ROOT/official-plugin-inputs"
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-sessions target/release/among

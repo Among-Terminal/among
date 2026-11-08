@@ -45,6 +45,8 @@ pub struct AppState {
     pub workspaces: WorkspaceSet,
     pub panes: std::collections::BTreeMap<PaneId, Pane>,
     bells: Option<Rc<bell::Backend>>,
+    #[cfg(test)]
+    desktop_text_builds: Cell<usize>,
     /// Exit status of every process that has finished, per pane.
     ///
     /// Recorded rather than inferred, because a process that exited while its
@@ -238,6 +240,8 @@ impl AppState {
             workspaces: WorkspaceSet::new(Workspace::new("project".into(), first, 0)),
             panes: std::collections::BTreeMap::new(),
             bells: None,
+            #[cfg(test)]
+            desktop_text_builds: Cell::new(0),
             exited: std::collections::HashMap::new(),
             sidebar_collapsed: false,
             sidebar_width: None,
@@ -375,6 +379,63 @@ fn plugin_context(state: &AppState) -> Context {
         workspace_count: state.workspaces.len(),
         terminals,
         focused_pane: Some(state.workspaces.active().focused.0),
+    }
+}
+
+/// Resolve only a notification that is ready to be sent, using its terminal's
+/// current metadata. A weak reference lets a closed window release its state.
+fn desktop_text_resolver(
+    state: &Rc<RefCell<AppState>>,
+) -> Rc<dyn Fn(among::notifications::Source) -> Option<among::notifications::desktop::Text>> {
+    let state = Rc::downgrade(state);
+    Rc::new(move |source| {
+        let state = state.upgrade()?;
+        let state = state.borrow();
+        let pane_id = PaneId(source.pane());
+        let workspace = state
+            .workspaces
+            .workspaces()
+            .iter()
+            .find(|workspace| workspace.panes().contains(&pane_id))?;
+        let pane = state.pane(pane_id)?;
+        let title = pane.title();
+        let directory = pane.cwd();
+        #[cfg(test)]
+        state
+            .desktop_text_builds
+            .set(state.desktop_text_builds.get().wrapping_add(1));
+        Some(among::notifications::desktop::Text::new(
+            Some(workspace.name.as_bytes()),
+            title.as_deref().map(str::as_bytes),
+            directory.as_deref().map(str::as_bytes),
+        ))
+    })
+}
+
+/// Missing preferences use the documented defaults. A rejected saved document
+/// cannot silently enable desktop delivery; its load diagnostic stays visible.
+fn initial_notification_preferences(
+    settings: &mut crate::settings::PreferencesStorage,
+) -> among::notifications::preferences::Preferences {
+    let fallback = || among::notifications::preferences::Preferences {
+        desktop: among::notifications::Policy {
+            enabled: false,
+            ..among::notifications::Policy::DESKTOP_DEFAULT
+        },
+        ..among::notifications::preferences::Preferences::default()
+    };
+    let Some(document) = settings.load(crate::settings::Document::General) else {
+        return fallback();
+    };
+    match among::notifications::preferences::Preferences::parse(&document) {
+        Ok(preferences) => preferences,
+        Err(problem) => {
+            settings.problems.insert(
+                crate::settings::Document::General.filename().into(),
+                problem.into(),
+            );
+            fallback()
+        }
     }
 }
 
@@ -572,7 +633,7 @@ fn build_with_writer(
     let admission = application_plugins(app);
     let state = Rc::new(RefCell::new(AppState::new(admission.admission.clone())));
     admission.current.replace(Rc::downgrade(&state));
-    match bell::Backend::new(&window) {
+    match bell::Backend::new(&window, desktop_text_resolver(&state)) {
         Ok(backend) => {
             let mut state = state.borrow_mut();
             state.plugins = PluginHost::with_notification_backend(
@@ -585,16 +646,13 @@ fn build_with_writer(
     }
     {
         let mut state = state.borrow_mut();
-        if let Some(document) = state.settings.load(crate::settings::Document::General) {
-            if let Ok(preferences) =
-                among::notifications::preferences::Preferences::parse(&document)
-            {
-                if let Some(bells) = &state.bells {
-                    let source = preferences.sound.clone();
-                    bells.configure(preferences);
-                    bells.restore_sound(source);
-                }
+        let preferences = initial_notification_preferences(&mut state.settings);
+        if let Some(bells) = &state.bells {
+            let source = preferences.sound.clone();
+            if let Err(reason) = bells.configure(preferences) {
+                eprintln!("among: initial notification preferences could not be applied: {reason}");
             }
+            bells.restore_sound(source);
         }
         state.sidebar_width = state
             .settings
@@ -832,6 +890,7 @@ fn build_with_writer(
             if let Some(handler) = removal_handler.borrow_mut().take() {
                 app.disconnect(handler);
             }
+            app.remove_action("focus-pane");
             // Per-identity reservations span windows. A replacement cannot
             // overlap its predecessor, but unrelated identities may use free
             // slots even if one old group cannot yet be proven retired.
@@ -858,7 +917,10 @@ fn build_with_writer(
                     }
                 }
                 if state.plugins.is_stopped()
-                    && state.bells.as_ref().is_none_or(|bells| bells.is_stopped())
+                    && state
+                        .bells
+                        .as_ref()
+                        .is_none_or(|bells| bells.is_stopped() && bells.desktop_is_quiescent())
                 {
                     glib::ControlFlow::Break
                 } else {
@@ -869,6 +931,7 @@ fn build_with_writer(
     });
     *removal_handler.borrow_mut() = Some(handler);
 
+    install_desktop_action(&ctx);
     install_shortcuts(&ctx);
     install_tick(&ctx);
     install_sidebar_resize(&ctx);
@@ -2072,6 +2135,47 @@ fn rebuild(ctx: &Window) {
     apply_focus(ctx);
     refresh_slots(ctx);
     selfcheck(ctx, "rebuild");
+}
+
+/// Present inside the GApplication action so GTK can apply the activation
+/// token supplied by the desktop. Stale targets raise the existing window
+/// without changing its workspace, expansion, sidebar or selected terminal.
+fn install_desktop_action(ctx: &Window) {
+    let Some(application) = ctx.window.application() else {
+        return;
+    };
+    let action = gio::SimpleAction::new(
+        "focus-pane",
+        Some(&<(String, u64, u64, u64)>::static_variant_type()),
+    );
+    action.connect_activate({
+        let ctx = ctx.handle();
+        move |_, parameter| {
+            if ctx.state.borrow().session_closing {
+                ctx.window.present();
+                return;
+            }
+            let source = parameter.and_then(|target| {
+                ctx.state
+                    .borrow()
+                    .bells
+                    .as_ref()?
+                    .resolve_desktop_target(target)
+            });
+            if let Some(source) = source {
+                if ctx
+                    .state
+                    .borrow_mut()
+                    .workspaces
+                    .focus_notification(PaneId(source.pane()))
+                {
+                    switch_workspace(&ctx);
+                }
+            }
+            ctx.window.present();
+        }
+    });
+    application.add_action(&action);
 }
 
 /// A summary of everything the sidebar shows.
@@ -3971,11 +4075,16 @@ fn restore_expanded(ctx: &Window, pane: PaneId, generation: u64) {
 /// Closures rather than a reference to the window, so the preferences module
 /// does not have to know how the application stores its state.
 fn open_preferences(ctx: &Window) {
+    prefs::present(&ctx.window, preferences_context(ctx));
+}
+
+/// What the preferences window needs from this running application.
+fn preferences_context(ctx: &Window) -> prefs::PreferencesContext {
     // Opening an editor must not consume the live map: GTK keeps installed
     // accelerators working, which otherwise hides the loss until the next open.
     let bindings = Rc::new(RefCell::new(ctx.state.borrow().bindings.clone()));
 
-    let preferences = prefs::PreferencesContext {
+    prefs::PreferencesContext {
         general: general_context(ctx),
         on_closed: Rc::new({
             let window = ctx.handle();
@@ -3993,8 +4102,8 @@ fn open_preferences(ctx: &Window) {
         installations_changed: installation_observer(ctx),
         package_action: Rc::new({
             let window = ctx.handle();
-            move |receipt, action, parent| {
-                confirm_package_action(&window, receipt, action, parent.as_ref())
+            move |receipt, action, parent, events| {
+                confirm_package_action(&window, receipt, action, parent.as_ref(), events)
             }
         }),
         retained_settings: Rc::new({
@@ -4216,9 +4325,7 @@ fn open_preferences(ctx: &Window) {
                 report_settings_save(&window, result);
             }
         }),
-    };
-
-    prefs::present(&ctx.window, preferences);
+    }
 }
 
 fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
@@ -4308,6 +4415,10 @@ fn general_context(ctx: &Window) -> Option<prefs::general::Context> {
         review_role: Rc::new({
             let window = ctx.handle();
             move |name, parent| review_managed_access(&window, name, parent.as_ref(), false)
+        }),
+        desktop_report: Rc::new({
+            let backend = backend.clone();
+            move || backend.desktop_report().map(str::to_owned)
         }),
         audio_report: Rc::new(move || backend.audio_report()),
     })
@@ -4418,8 +4529,10 @@ fn confirm_package_action(
     expected: crate::plugin::inventory::Receipt,
     action: crate::plugin::install::mutation::Action,
     parent: Option<&gtk::Window>,
+    events: Rc<dyn Fn(prefs::PackageEvent)>,
 ) {
     use crate::plugin::install::mutation::{Action, Job};
+    use prefs::PackageEvent;
     let key = match expected.identity() {
         Ok(identity) => identity.key(),
         Err(_) => return,
@@ -4438,8 +4551,30 @@ fn confirm_package_action(
         .cloned()
         .unwrap_or_else(|| ctx.window.clone().upcast());
     let uninstall = action == Action::Uninstall;
-    let dialog=adw::AlertDialog::builder().heading(if uninstall {"Uninstall this plugin?"}else{"Recover the previous package?"})
-        .body(if uninstall {format!("{key}\nOnly this plugin will stop. Pending installs/updates, restarts, host actions and subscriptions are revoked before bounded supervised shutdown. Local settings are retained. Only committed removal removes its Installed entry; occupied owned generations are cleaned later. No uninstall hook runs.")}else{format!("{key}\nReselect the retained previous verified generation and restart only this plugin if it is still enabled. Local settings are retained; unsupported migrations are refused. Publisher/access review and runtime admission still apply. Independent filesystem/network effects cannot be rolled back.")}).build();
+    let name = ctx
+        .state
+        .borrow()
+        .plugins
+        .managed_details(&key)
+        .and_then(|(entry, _)| {
+            entry
+                .inspected
+                .ok()
+                .map(|inspected| inspected.manifest.name)
+        })
+        .unwrap_or_else(|| key.clone());
+    let dialog = adw::AlertDialog::builder()
+        .heading(if uninstall {
+            format!("Uninstall {name}?")
+        } else {
+            format!("Recover the previous package of {name}?")
+        })
+        .body(if uninstall {
+            "It stops now if it is running. Your settings are kept.".to_string()
+        } else {
+            "Reselect the retained previous verified generation and restart only this plugin if it is still enabled. Local settings are retained; unsupported migrations are refused. Publisher and access review and runtime admission still apply. Independent filesystem and network effects cannot be rolled back.".to_string()
+        })
+        .build();
     dialog.add_response("cancel", "Cancel");
     dialog.add_response(
         "apply",
@@ -4454,35 +4589,81 @@ fn confirm_package_action(
     if uninstall {
         dialog.set_response_appearance("apply", adw::ResponseAppearance::Destructive);
     }
-    dialog.connect_response(None,{
-        let window=ctx.handle();let parent=parent.downgrade();let observer=installation_observer(ctx);
-        move |_,response| {
-            if response!="apply" || window.state.borrow().exiting{return;}
-            let Some(parent)=parent.upgrade().filter(|parent|parent.is_visible()) else {return;};
-            let Some((entry,stored))=window.state.borrow().plugins.managed_details(&key).filter(|(entry,_)|entry.receipt==expected) else {return;};
-            let status=adw::AlertDialog::builder().heading("Package operation").body("Starting bounded package operation").build();status.add_response("close","Close");status.set_close_response("close");status.present(Some(&parent));
-            let job=crate::plugin::inventory::root().ok_or(crate::plugin::data::Problem("managed data directory is unavailable")).and_then(|root|Job::start(root,entry.receipt.clone(),action,stored));
-            let job=match job {Ok(job)=>job,Err(problem)=>{status.set_heading(Some("Package operation was not started"));status.set_body(problem.0);return;}};
-            if uninstall {
-                if let Err(problem)=window.state.borrow_mut().plugins.begin_removal(&expected){status.set_body(problem.0);return;}
-                let result=window.state.borrow_mut().settings.plugin_changed(&key,false);report_settings_save(&window,result);
-                window.state.borrow_mut().store.remove_source(&key);refresh_slots(&window);rebuild_sidebar(&window,false);
+    dialog.connect_response(None, {
+        let window = ctx.handle();
+        let parent = parent.downgrade();
+        let observer = installation_observer(ctx);
+        move |_, response| {
+            if response != "apply" || window.state.borrow().exiting {
+                return;
             }
-            status.set_body(&format!("{}\nIdentity {} · operation {}",job.phase(),job.identity,job.generation));
-            let state=window.state.clone();let key=key.clone();let observer=observer.clone();
-            glib::timeout_add_local(Duration::from_millis(50),move || {
-                if uninstall && state.borrow().plugins.supervised_stopped(&key){job.supervised_stopped();}
-                let Some(outcome)=job.poll() else {status.set_body(job.phase());return glib::ControlFlow::Continue;};
+            if parent.upgrade().is_none_or(|parent| !parent.is_visible()) {
+                return;
+            }
+            let Some((entry, stored)) = window
+                .state
+                .borrow()
+                .plugins
+                .managed_details(&key)
+                .filter(|(entry, _)| entry.receipt == expected)
+            else {
+                return;
+            };
+            let job = crate::plugin::inventory::root()
+                .ok_or(crate::plugin::data::Problem(
+                    "managed data directory is unavailable",
+                ))
+                .and_then(|root| Job::start(root, entry.receipt.clone(), action, stored));
+            let job = match job {
+                Ok(job) => job,
+                Err(problem) => {
+                    events(PackageEvent::Finished(Err(problem.to_string())));
+                    return;
+                }
+            };
+            if uninstall {
+                if let Err(problem) = window.state.borrow_mut().plugins.begin_removal(&expected) {
+                    events(PackageEvent::Finished(Err(problem.to_string())));
+                    return;
+                }
+                let result = window
+                    .state
+                    .borrow_mut()
+                    .settings
+                    .plugin_changed(&key, false);
+                report_settings_save(&window, result);
+                window.state.borrow_mut().store.remove_source(&key);
+                refresh_slots(&window);
+                rebuild_sidebar(&window, false);
+            }
+            events(PackageEvent::Started);
+            events(PackageEvent::Phase(job.phase().to_string()));
+            let state = window.state.clone();
+            let key = key.clone();
+            let observer = observer.clone();
+            let events = events.clone();
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                if uninstall && state.borrow().plugins.supervised_stopped(&key) {
+                    job.supervised_stopped();
+                }
+                let Some(outcome) = job.poll() else {
+                    events(PackageEvent::Phase(job.phase().to_string()));
+                    return glib::ControlFlow::Continue;
+                };
                 match outcome {
-                    Ok(commit)=>{
+                    Ok(commit) => {
                         observer();
-                        status.set_heading(Some(if commit.durability!=crate::settings::Durability::Durable {"Selection written; durability uncertain"}else if uninstall {"Plugin uninstalled"}else{"Previous package selected"}));
-                        status.set_body(if uninstall {"The removed selection is authoritative. Local settings are retained. Only owned unreferenced generations may be cleaned after leases are released; cleanup can remain deferred."}else{"Current enabled choice is preserved. Previous package selection does not bypass publisher/access review, settings compatibility or runtime admission. Independent external effects are not rolled back."});
-                        if let Some(root)=crate::plugin::inventory::root(){start_store_recovery(root);}
-                    },
-                    Err(problem)=>{
-                        if uninstall{state.borrow_mut().plugins.removal_failed(&key);}
-                        observer();status.set_heading(Some("Package operation failed or remained partial"));status.set_body(problem.0);
+                        events(PackageEvent::Finished(Ok(commit.durability)));
+                        if let Some(root) = crate::plugin::inventory::root() {
+                            start_store_recovery(root);
+                        }
+                    }
+                    Err(problem) => {
+                        if uninstall {
+                            state.borrow_mut().plugins.removal_failed(&key);
+                        }
+                        observer();
+                        events(PackageEvent::Finished(Err(problem.to_string())));
                     }
                 }
                 glib::ControlFlow::Break
@@ -5912,6 +6093,10 @@ mod plugin_tests;
 #[cfg(test)]
 mod bell_tests;
 #[cfg(test)]
+mod desktop_failure_tests;
+#[cfg(test)]
+mod desktop_notification_tests;
+#[cfg(test)]
 mod notification_ui_tests;
 
 #[cfg(test)]
@@ -6973,6 +7158,11 @@ mod tests {
     #[ignore = "requires isolated XDG directories, display and xdotool; driven by among-tools check-preferences"]
     fn preferences_persist_across_fresh_processes() {
         const CLOCK: &str = "github:1431055733/clock";
+        if super::plugin_tests::installation::published_lifecycle::prerelease_acceptance() {
+            // Persistence uses its own synthetic receipts; the executable and
+            // resource bytes must still belong to the pinned published input.
+            let _ = super::plugin_tests::installation::published_lifecycle::observed();
+        }
         fn seed_preferences_fixture() {
             use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
             let root = crate::plugin::inventory::root().unwrap();
@@ -7770,7 +7960,7 @@ mod tests {
                 save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
                 plugin_configuration: Rc::new(|_| crate::plugin::host::Configuration::NotApplied),
                 restart_plugin: Rc::new(|_, _, _| {}),
-                package_action: Rc::new(|_, _, _| {}),
+                package_action: Rc::new(|_, _, _, _| {}),
                 retained_settings: Rc::new(|| Ok(Vec::new())),
                 delete_retained_settings: Rc::new(|_| {
                     Err("no retained settings in this fixture".into())
@@ -7833,7 +8023,10 @@ mod tests {
                 row.height()
             );
         }
-        assert!(switch.is_focusable() && row.is_activatable());
+        assert!(
+            switch.is_focusable(),
+            "the plugin enable switch remains reachable by keyboard"
+        );
         assert!(switch.grab_focus());
         pump();
         let ids = std::process::Command::new("xdotool")

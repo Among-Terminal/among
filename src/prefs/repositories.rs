@@ -1,54 +1,17 @@
-//! inspection and explicit package installation are separate actions. neither
-//! grants host access nor supplies a new desired-enabled choice.
+//! adding a source starts from a read-only look-up. inspection and explicit
+//! package installation are separate actions. neither grants host access nor
+//! supplies a new desired-enabled choice.
 
 use super::*;
 use crate::plugin::data::Problem;
-use crate::plugin::install::source::{Inspection, InstallJob, Job, Repository, Selection};
-
-type Start = dyn Fn(Repository) -> Result<Job, Problem>;
-type Install = dyn Fn(Selection) -> Result<InstallJob, Problem>;
-
-pub(super) fn present(
-    parent: &gtk::Window,
-    changed: Rc<dyn Fn()>,
-    details: Rc<super::PluginDetailsQuery>,
-) {
-    present_complete(
-        parent,
-        Rc::new(Job::start),
-        installer(),
-        changed,
-        crate::plugin::install::registry::root(),
-        SourceRefresh::for_mode(crate::plugin::development::enabled()),
-        details,
-    );
-}
-
-/// How a registered source is refreshed. `prerelease` exists only in
-/// development mode, and its absence removes the action from every source row.
-struct SourceRefresh {
-    latest: Rc<super::repository_sources::Refresh>,
-    prerelease: Option<Rc<super::repository_sources::Refresh>>,
-}
-
-impl SourceRefresh {
-    /// The refresh actions of a process in the given mode. Only development
-    /// mode gets the prerelease action, so an ordinary window builds no such
-    /// button even before the job's own gate would refuse it.
-    fn for_mode(development: bool) -> Self {
-        Self {
-            latest: Rc::new(Job::refresh),
-            prerelease: development.then(|| {
-                Rc::new(Job::refresh_prerelease) as Rc<super::repository_sources::Refresh>
-            }),
-        }
-    }
-}
+use crate::plugin::install::source::InstallJob;
+#[cfg(test)]
+use crate::plugin::install::source::{Inspection, Job, Repository, Selection};
 
 #[cfg(test)]
-pub(crate) fn present_for_test(parent: &gtk::Window, start: Rc<Start>) {
-    present_with(parent, start, installer(), Rc::new(|| {}));
-}
+type Start = dyn Fn(Repository) -> Result<Job, Problem>;
+#[cfg(test)]
+type Install = dyn Fn(Selection) -> Result<InstallJob, Problem>;
 
 #[cfg(test)]
 pub(crate) fn present_installer_for_test(
@@ -58,16 +21,6 @@ pub(crate) fn present_installer_for_test(
     changed: Rc<dyn Fn()>,
 ) {
     present_with(parent, start, install, changed);
-}
-
-fn installer() -> Rc<Install> {
-    Rc::new(|selection| {
-        InstallJob::start(
-            selection,
-            crate::plugin::inventory::root()
-                .ok_or(Problem("managed data directory is unavailable"))?,
-        )
-    })
 }
 
 #[cfg(test)]
@@ -83,7 +36,7 @@ fn present_with(
         install,
         changed,
         crate::plugin::install::registry::root(),
-        SourceRefresh::for_mode(false),
+        Rc::new(Job::refresh),
         Rc::new(|_| None),
     );
 }
@@ -103,37 +56,8 @@ pub(crate) fn present_sources_for_test(
         install,
         changed,
         Some(root),
-        SourceRefresh {
-            latest: refresh,
-            prerelease: None,
-        },
+        refresh,
         Rc::new(|_| None),
-    );
-}
-
-/// Drives a source row's prerelease action with test-owned jobs and a chosen
-/// registry root; the rest of the window is the production one.
-#[cfg(test)]
-pub(crate) fn present_prerelease_for_test(
-    parent: &gtk::Window,
-    latest: Rc<super::repository_sources::Refresh>,
-    prerelease: Rc<super::repository_sources::Refresh>,
-    install: Rc<Install>,
-    changed: Rc<dyn Fn()>,
-    root: std::path::PathBuf,
-    details: Rc<super::PluginDetailsQuery>,
-) {
-    present_complete(
-        parent,
-        Rc::new(Job::start),
-        install,
-        changed,
-        Some(root),
-        SourceRefresh {
-            latest,
-            prerelease: Some(prerelease),
-        },
-        details,
     );
 }
 
@@ -151,18 +75,19 @@ pub(crate) fn present_updates_for_test(
         install,
         changed,
         crate::plugin::install::registry::root(),
-        SourceRefresh::for_mode(false),
+        Rc::new(Job::refresh),
         details,
     );
 }
 
+#[cfg(test)]
 fn present_complete(
     parent: &gtk::Window,
     start: Rc<Start>,
     install: Rc<Install>,
     changed: Rc<dyn Fn()>,
     source_root: Option<std::path::PathBuf>,
-    refresh: SourceRefresh,
+    refresh: Rc<super::repository_sources::Refresh>,
     details: Rc<super::PluginDetailsQuery>,
 ) {
     let window = adw::PreferencesWindow::builder()
@@ -211,30 +136,6 @@ fn present_complete(
     status.add_prefix(&spinner);
     let feedback = adw::PreferencesGroup::new();
     feedback.add(&status);
-    let preview = adw::PreferencesGroup::new();
-    preview.set_title("Repository metadata");
-    preview.set_description(Some("Read-only preview. Plugins run as your user inside a kernel sandbox where the kernel supports one. Hashes do not authenticate a publisher."));
-    preview.set_visible(false);
-    let result = gtk::TextView::builder()
-        .editable(false)
-        .cursor_visible(false)
-        .wrap_mode(gtk::WrapMode::WordChar)
-        .top_margin(12)
-        .bottom_margin(12)
-        .left_margin(12)
-        .right_margin(12)
-        .build();
-    result.update_property(&[gtk::accessible::Property::Label(
-        "Repository inspection result",
-    )]);
-    let scroll = gtk::ScrolledWindow::builder()
-        .child(&result)
-        .min_content_height(220)
-        .max_content_height(440)
-        .propagate_natural_height(true)
-        .build();
-    scroll.add_css_class("card");
-    preview.add(&scroll);
     let packages = adw::PreferencesGroup::new();
     packages.set_title("Select one ready-built version");
     packages.set_description(Some("New installations stay disabled. Applying an update is separate explicit consent to restart only that plugin; publisher/access changes still require runtime review."));
@@ -242,26 +143,13 @@ fn present_complete(
     page.add(&group);
     let package_rows = Rc::new(RefCell::new(Vec::new()));
     let show: Rc<dyn Fn(Inspection)> = Rc::new({
-        let preview = preview.downgrade();
-        let result = result.downgrade();
         let packages = packages.downgrade();
         let window = window.downgrade();
         let package_rows = package_rows.clone();
         move |inspection| {
-            let (Some(preview), Some(result), Some(packages), Some(window)) = (
-                preview.upgrade(),
-                result.upgrade(),
-                packages.upgrade(),
-                window.upgrade(),
-            ) else {
+            let (Some(packages), Some(window)) = (packages.upgrade(), window.upgrade()) else {
                 return;
             };
-            result.buffer().set_text(
-                &inspection
-                    .summary(|| Ok(()))
-                    .unwrap_or_else(|problem| problem.to_string()),
-            );
-            preview.set_visible(true);
             for row in package_rows.borrow_mut().drain(..) {
                 packages.remove(&row);
             }
@@ -276,16 +164,9 @@ fn present_complete(
             packages.set_visible(true);
         }
     });
-    let sources = super::repository_sources::Panel::new(
-        &page,
-        &preview,
-        source_root,
-        refresh.latest,
-        refresh.prerelease,
-        show.clone(),
-    );
+    let sources =
+        super::repository_sources::Panel::new(&page, &packages, source_root, refresh, show.clone());
     page.add(&feedback);
-    page.add(&preview);
     page.add(&packages);
     window.add(&page);
     let job = Rc::new(RefCell::<Option<Job>>::new(None));
@@ -308,7 +189,6 @@ fn present_complete(
         let job = job.clone();
         let inspect = inspect.downgrade();
         let status = status.downgrade();
-        let preview = preview.downgrade();
         let packages = packages.downgrade();
         let sources = sources.clone();
         move |entry| {
@@ -319,9 +199,6 @@ fn present_complete(
             sources.clear();
             if let Some(inspect) = inspect.upgrade() {
                 inspect.set_sensitive(!entry.text().trim().is_empty());
-            }
-            if let Some(preview) = preview.upgrade() {
-                preview.set_visible(false);
             }
             if let Some(packages) = packages.upgrade() {
                 packages.set_visible(false);
@@ -336,37 +213,23 @@ fn present_complete(
         let job = job.clone();
         let entry = entry.downgrade();
         let status = status.downgrade();
-        let result = result.downgrade();
         let cancel = cancel.downgrade();
         let spinner = spinner.downgrade();
-        let preview = preview.downgrade();
         let packages = packages.downgrade();
         let sources = sources.clone();
         move |inspect| {
-            let (
-                Some(entry),
-                Some(status),
-                Some(result),
-                Some(cancel),
-                Some(spinner),
-                Some(preview),
-            ) = (
+            let (Some(entry), Some(status), Some(cancel), Some(spinner)) = (
                 entry.upgrade(),
                 status.upgrade(),
-                result.upgrade(),
                 cancel.upgrade(),
                 spinner.upgrade(),
-                preview.upgrade(),
-            )
-            else {
+            ) else {
                 return;
             };
             if job.borrow().is_some() {
                 return;
             }
-            result.buffer().set_text("");
             sources.clear();
-            preview.set_visible(false);
             if let Some(packages) = packages.upgrade() {
                 packages.set_visible(false);
             }
@@ -484,6 +347,7 @@ fn present_complete(
     entry.grab_focus();
 }
 
+#[cfg(test)]
 fn installation_rows(
     group: &adw::PreferencesGroup,
     inspection: &Inspection,
@@ -503,7 +367,7 @@ fn installation_rows(
                 .build();
             row.set_subtitle_lines(0);
             let selection = inspection.select(&plugin.id, &version.manifest.version);
-            let button = gtk::Button::with_label("Install disabled");
+            let button = gtk::Button::with_label("Install");
             button.set_valign(gtk::Align::Center);
             button.update_property(&[gtk::accessible::Property::Label(&format!(
                 "Install {} version {} disabled",
@@ -582,6 +446,7 @@ fn installation_rows(
     rows
 }
 
+#[cfg(test)]
 fn run_install(
     button: &gtk::Button,
     row: &adw::ActionRow,
@@ -660,7 +525,7 @@ pub(super) fn run_job(
                         row.set_subtitle(&match outcome {
                                                 Ok(commit) => match commit.durability {
                                                     crate::settings::Durability::Durable if updating => "Update selected; previous verified generation retained. Current enabled choice is preserved; publisher/access and runtime admission can still refuse execution.".into(),
-                                                    crate::settings::Durability::Durable => format!("Installed {} disabled. Enable separately in Your plugins.", commit.receipt.key()),
+                                                    crate::settings::Durability::Durable => format!("Installed {} disabled. Switch it on from the Plugins page.", commit.receipt.key()),
                                                     _ => "Selection written; durability uncertain. Inspect the installed inventory before retrying.".into(),
                                                 },
                                                 Err(problem) => problem.to_string(),
@@ -677,25 +542,5 @@ pub(super) fn run_job(
                 glib::ControlFlow::Continue
             });
         }
-    }
-}
-
-#[cfg(test)]
-mod wiring_tests {
-    use super::*;
-
-    #[test]
-    fn only_development_mode_wires_the_prerelease_action_and_it_is_the_gated_job() {
-        assert!(SourceRefresh::for_mode(false).prerelease.is_none());
-        let action = SourceRefresh::for_mode(true)
-            .prerelease
-            .expect("development mode wires the prerelease action");
-        // The test process is ordinary, so the real prerelease job refuses
-        // before it starts a worker; the ordinary refresh would not.
-        let refused = action(12).err().expect("an ordinary process is refused");
-        assert!(
-            refused.0.contains("only in plugin development mode"),
-            "{refused}"
-        );
     }
 }

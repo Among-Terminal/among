@@ -665,7 +665,13 @@ pub(crate) mod tests {
     }
 
     pub fn fixture(root: &Path) -> Receipt {
-        let manifest = json!({"schema_version":1,"id":"sample","version":"1","name":"Sample",
+        fixture_version(root, "1")
+    }
+
+    /// The release fixture with a chosen manifest version, so update ordering
+    /// can be checked against real installed entries.
+    pub fn fixture_version(root: &Path, version: &str) -> Receipt {
+        let manifest = json!({"schema_version":1,"id":"sample","version":version,"name":"Sample",
             "description":"No probe","entrypoint":"plugin","api":{"major":1,"minor":2},
             "required_features":["status"],"settings":{"version":1,"apply":"live","fields":[
                 {"key":"label","label":"Label","kind":"string","default":"default"}]}})

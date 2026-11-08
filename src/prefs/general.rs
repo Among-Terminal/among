@@ -50,6 +50,7 @@ pub(crate) struct Context {
     pub cancel_audio: Rc<dyn Fn()>,
     pub audio_state: Rc<dyn Fn() -> AudioState>,
     pub audio_report: Rc<dyn Fn() -> AudioReport>,
+    pub desktop_report: Rc<dyn Fn() -> Option<String>>,
     pub providers: Rc<dyn Fn() -> Vec<among::plugin_notifications::ChannelView>>,
     pub roles: Rc<dyn Fn() -> Vec<crate::plugin::host::Overview>>,
     pub review_role: Rc<EnablePlugin>,
@@ -224,6 +225,20 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
     audio.add(&sound_widget);
     page.add(&audio);
 
+    let desktop = adw::PreferencesGroup::new();
+    desktop.set_title("Desktop");
+    let desktop_row = policy(
+        &desktop,
+        "Desktop notification",
+        "desktop",
+        current.desktop,
+        ctx,
+        &banner,
+        Edit::Desktop,
+    );
+    desktop_row.set_subtitle(&escape_display(&(ctx.desktop_report)().unwrap_or_default()));
+    page.add(&desktop);
+
     let commands = adw::PreferencesGroup::new();
     commands.set_title("Command");
     let save = gtk::Button::with_label("Save");
@@ -335,16 +350,10 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
     let provider_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
     provider_rows_refresh(&providers, ctx, &banner, &provider_rows);
     page.add(&providers);
-    let roles = adw::PreferencesGroup::new();
-    roles.set_title("Managed notification roles");
-    roles.set_description(Some("Review producer, delivery or neither for each process. UI contributions are independent. Stop a running plugin explicitly before changing access; saving a review here does not enable or restart it."));
-    let role_rows = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
-    role_rows_refresh(&roles, ctx, &role_rows);
-    page.add(&roles);
 
     let providers = providers.downgrade();
-    let roles = roles.downgrade();
     let provider_context = ctx.clone();
+    let desktop_row = desktop_row.downgrade();
     let banner = banner.downgrade();
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         let Some(banner) = banner.upgrade() else {
@@ -356,8 +365,10 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
         if let Some(group) = providers.upgrade() {
             provider_rows_refresh(&group, &provider_context, &banner, &provider_rows);
         }
-        if let Some(group) = roles.upgrade() {
-            role_rows_refresh(&group, &provider_context, &role_rows);
+        if let Some(row) = desktop_row.upgrade() {
+            row.set_subtitle(&escape_display(
+                &(provider_context.desktop_report)().unwrap_or_default(),
+            ));
         }
         glib::ControlFlow::Continue
     });
@@ -584,51 +595,47 @@ fn sound_row(ctx: &Context, banner: &adw::Banner) -> (adw::ActionRow, SoundRow) 
     (row, sound)
 }
 
-fn role_rows_refresh(
-    group: &adw::PreferencesGroup,
+/// Opens the existing consent review from the installed plugin's page. The
+/// role inventory excludes plugins that declare neither notification role.
+pub(super) fn role_row(
     ctx: &Context,
-    rows: &RefCell<std::collections::BTreeMap<String, adw::ActionRow>>,
-) {
-    let inventory = (ctx.roles)();
-    let mut rows = rows.borrow_mut();
-    rows.retain(|key, row| {
-        let retained = inventory.iter().any(|entry| entry.key == *key);
-        if !retained {
-            group.remove(row);
+    key: &str,
+    is_current: Rc<dyn Fn() -> bool>,
+) -> Option<adw::ActionRow> {
+    let entry = (ctx.roles)().into_iter().find(|entry| entry.key == key)?;
+    let row = adw::ActionRow::new();
+    row.set_title("Notification role");
+    row.set_subtitle_lines(0);
+    row.set_widget_name(&format!("notification-role-status:{}", entry.key));
+    let review = gtk::Button::with_label("Review role / access");
+    review.set_widget_name(&format!("notification-review-role:{}", entry.key));
+    review.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Review notification role and access for {}",
+        entry.key
+    ))]);
+    review.set_valign(gtk::Align::Center);
+    review.connect_clicked({
+        let callback = ctx.review_role.clone();
+        let key = entry.key.clone();
+        move |button| {
+            if !is_current() {
+                return;
+            }
+            callback(
+                &key,
+                button
+                    .root()
+                    .and_then(|root| root.downcast::<gtk::Window>().ok()),
+            )
         }
-        retained
     });
-    for entry in inventory {
-        let row = rows.entry(entry.key.clone()).or_insert_with(|| {
-            let row = row(group, &entry.key, "");
-            row.set_widget_name(&format!("notification-role-status:{}", entry.key));
-            let review = gtk::Button::with_label("Review role / access");
-            review.set_widget_name(&format!("notification-review-role:{}", entry.key));
-            review.update_property(&[gtk::accessible::Property::Label(&format!(
-                "Review notification role and access for {}",
-                entry.key
-            ))]);
-            review.set_valign(gtk::Align::Center);
-            review.connect_clicked({
-                let callback = ctx.review_role.clone();
-                let key = entry.key.clone();
-                move |button| {
-                    callback(
-                        &key,
-                        button
-                            .root()
-                            .and_then(|root| root.downcast::<gtk::Window>().ok()),
-                    )
-                }
-            });
-            row.add_suffix(&review);
-            row
-        });
-        row.set_subtitle(&escape_display(&format!(
-            "{} · {}",
-            entry.name, entry.declared
-        )));
-    }
+    row.add_suffix(&review);
+    row.set_activatable_widget(Some(&review));
+    row.set_subtitle(&escape_display(&format!(
+        "{} · {}",
+        entry.name, entry.declared
+    )));
+    Some(row)
 }
 
 fn provider_rows_refresh(
@@ -696,7 +703,11 @@ fn policy(
 ) -> adw::SwitchRow {
     let enabled = adw::SwitchRow::new();
     enabled.set_title(&escape_display(title));
-    enabled.set_widget_name(&format!("notification-{identity}-enabled"));
+    enabled.set_widget_name(&if identity == "desktop" {
+        "notification-desktop-switch".into()
+    } else {
+        format!("notification-{identity}-enabled")
+    });
     enabled.set_active(initial.enabled);
     group.add(&enabled);
     let condition = adw::ComboRow::new();
@@ -705,12 +716,24 @@ fn policy(
     condition
         .upcast_ref::<gtk::Widget>()
         .update_property(&[gtk::accessible::Property::Label(&format!("{title}: when"))]);
-    condition.set_widget_name(&format!("notification-{identity}-condition"));
+    condition.set_widget_name(&if identity == "desktop" {
+        "notification-desktop-when".into()
+    } else {
+        format!("notification-{identity}-condition")
+    });
     // The stored value is originating-terminal-unfocused: it also applies while
     // Among is in the background, which the label cannot say in a few words.
-    condition.set_tooltip_text(Some(
-        "\"Terminal not in view\" also applies while Among is in the background.",
-    ));
+    let explanation = if identity == "desktop" {
+        "Desktop notifications never alert for the terminal you are viewing. Always has the same effect as Terminal not in view, including while Among is in the background."
+    } else {
+        "\"Terminal not in view\" also applies while Among is in the background."
+    };
+    condition.set_tooltip_text(Some(explanation));
+    if identity == "desktop" {
+        condition
+            .upcast_ref::<gtk::Widget>()
+            .update_property(&[gtk::accessible::Property::Description(explanation)]);
+    }
     condition.set_model(Some(&gtk::StringList::new(&[
         "Always",
         "Terminal not in view",
@@ -801,6 +824,7 @@ mod tests {
             cancel_audio: Rc::new(move || cancels.set(cancels.get() + 1)),
             audio_state: Rc::new(move || state.get()),
             audio_report: Rc::new(move || report.borrow().clone()),
+            desktop_report: Rc::new(|| None),
             providers: Rc::new(Vec::new),
             roles: Rc::new(Vec::new),
             review_role: Rc::new(|_, _| {}),

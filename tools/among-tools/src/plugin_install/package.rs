@@ -84,14 +84,37 @@ fn host_test(root: &Path, records: &str) -> Result<PathBuf> {
     Ok(executable)
 }
 
-/// Observes a native installation for the package checks. `candidate` names
-/// CI-built release assets to use until a release is published; without it
-/// the inputs come from the published release.
+/// Legacy stable or explicitly synthetic capture. Required package workflows
+/// use `capture_published` with the prepared immutable prerelease instead.
 pub fn capture(
     root: &Path,
     records: &Path,
     output: &Path,
     candidate: Option<&Path>,
+    scratch: &Path,
+) -> Result<()> {
+    capture_inputs(root, records, output, candidate, None, scratch)
+}
+
+/// Capture installation of the exact prepared publisher bytes. The tool does
+/// not build a replacement plugin package or synthesize a stable release.
+pub fn capture_published(
+    root: &Path,
+    records: &Path,
+    output: &Path,
+    inputs: &Path,
+    scratch: &Path,
+) -> Result<()> {
+    super::release::published::verify(inputs)?;
+    capture_inputs(root, records, output, None, Some(inputs), scratch)
+}
+
+fn capture_inputs(
+    root: &Path,
+    records: &Path,
+    output: &Path,
+    candidate: Option<&Path>,
+    published: Option<&Path>,
     scratch: &Path,
 ) -> Result<()> {
     crate::preferences::owned_display()?;
@@ -100,13 +123,23 @@ pub fn capture(
     let record_sha = storage::sha256(record_bytes.as_slice())?;
     let executable = host_test(root, std::str::from_utf8(&record_bytes)?)?;
     let test_sha = storage::sha256(profile::bounded(&executable, 512 * 1024 * 1024)?.as_slice())?;
-    let inputs =
-        storage::private_directory(scratch, "among-package-profile-inputs")?.join("release");
-    match candidate {
-        Some(assets) => super::release::prepare_candidate(assets, &inputs)?,
-        None => super::release::prepare(&inputs)?,
+    let inputs = if let Some(inputs) = published {
+        inputs.canonicalize()?
+    } else {
+        let inputs =
+            storage::private_directory(scratch, "among-package-profile-inputs")?.join("release");
+        match candidate {
+            Some(assets) => super::release::prepare_candidate(assets, &inputs)?,
+            None => super::release::prepare(&inputs)?,
+        };
+        inputs
     };
-    let observed = super::run(&executable, &inputs, scratch)?;
+    let prepared = super::release::verify(&inputs)?;
+    let observed = if published.is_some() {
+        super::published_prerelease(&executable, &inputs, scratch)?
+    } else {
+        super::run(&executable, &inputs, scratch)?
+    };
     let lifecycle = storage::parse_json(&profile::bounded(
         &observed.join("published-release-lifecycle.json"),
         256 * 1024,
@@ -140,7 +173,7 @@ pub fn capture(
         })
         .collect::<Result<Vec<_>>>()?;
     let record = serde_json::to_vec_pretty(
-        &json!({"schema":1,"host_source_sha":source,"host_test_sha256":test_sha,"cargo_records_sha256":record_sha,"architecture":crate::platform::discover()?.architecture,"files":hashes,"lifecycle":lifecycle,"scope":"observed build-host installation/access; compiler-free package renderer replay only"}),
+        &json!({"schema":1,"host_source_sha":source,"host_test_sha256":test_sha,"cargo_records_sha256":record_sha,"architecture":crate::platform::discover()?.architecture,"files":hashes,"lifecycle":lifecycle,"published_pin":prepared.get("published_pin"),"scope":"observed build-host installation/access; compiler-free package renderer replay only"}),
     )?;
     if record.len() > 64 * 1024
         || record.len() + files.values().map(Vec::len).sum::<usize>() > 8 * 1024 * 1024
@@ -195,6 +228,25 @@ pub fn validate(directory: &Path, source: &str) -> Result<()> {
     )?;
     if metadata["host_source_sha"] != source {
         return Err("package profile test/source receipt differs".into());
+    }
+    let inputs = storage::parse_json(
+        files
+            .get(Path::new("release-inputs.json"))
+            .ok_or("package transfer omits its selected release")?,
+    )?;
+    if inputs["release_snapshot"]["prerelease"] == true
+        || !record["published_pin"].is_null()
+        || !inputs["published_pin"].is_null()
+    {
+        let publication = storage::parse_json(
+            files
+                .get(Path::new("publisher-observation.json"))
+                .ok_or("published package transfer omits its raw publication observation")?,
+        )?;
+        if record["published_pin"] != inputs["published_pin"] {
+            return Err("package transfer pin differs from its selected release".into());
+        }
+        super::release::published::validate_publication_record(&publication, &inputs)?;
     }
     let declared = record["files"]
         .as_array()

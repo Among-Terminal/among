@@ -121,6 +121,7 @@ impl Registration {
             self.origin.clone()
         }
     }
+    #[cfg(test)]
     pub fn display_title(&self) -> String {
         if self.is_official() {
             official::TITLE.into()
@@ -131,6 +132,7 @@ impl Registration {
     pub fn available(&self) -> Result<(), Problem> {
         official::validate(&self.origin)
     }
+    #[cfg(test)]
     pub fn snapshot_count(&self) -> usize {
         self.snapshots.len()
     }
@@ -138,11 +140,21 @@ impl Registration {
         self.snapshots.first().map(|snapshot| snapshot.retrieved_at)
     }
     pub fn stale_at(&self, now: u64) -> bool {
-        self.retrieved_at().is_none_or(|retrieved| {
-            now.checked_sub(retrieved)
-                .is_none_or(|age| age >= STALE_SECONDS)
-        })
+        self.retrieved_at()
+            .is_none_or(|retrieved| snapshot_is_stale(retrieved, now))
     }
+    /// The newest saved snapshot, decoded and validated again from its stored
+    /// bytes. `None` when the source has never been checked. Reads no network.
+    pub fn cached_inspection(&self) -> Option<Result<Inspection, Problem>> {
+        self.snapshots.first().map(Snapshot::inspection)
+    }
+}
+
+/// Whether a snapshot taken at `retrieved` is a day old or more at `now`. A
+/// clock that went backwards makes the age unknowable, which counts as stale.
+pub fn snapshot_is_stale(retrieved: u64, now: u64) -> bool {
+    now.checked_sub(retrieved)
+        .is_none_or(|age| age >= STALE_SECONDS)
 }
 
 pub fn official_source() -> Registration {
@@ -185,6 +197,7 @@ pub enum Request {
         inspection: Box<Inspection>,
     },
     Remove(Registration),
+    #[cfg(test)]
     Cached(Registration),
 }
 
@@ -199,6 +212,7 @@ pub enum Outcome {
         durability: Durability,
         problem: Option<Problem>,
     },
+    #[cfg(test)]
     Cached {
         inspection: Box<Inspection>,
         retrieved_at: u64,
@@ -716,11 +730,15 @@ fn run_user(
     begin_commit: impl FnOnce() -> Result<(), Problem>,
 ) -> Result<Outcome, Problem> {
     check()?;
-    if matches!(&request, Request::List | Request::Cached(_)) {
+    let read_only = matches!(&request, Request::List);
+    #[cfg(test)]
+    let read_only = read_only || matches!(&request, Request::Cached(_));
+    if read_only {
         let (document, _) = read(root, &check)?;
         check()?;
         return match request {
             Request::List => Ok(Outcome::List(document.registrations)),
+            #[cfg(test)]
             Request::Cached(expected) => {
                 let current = document
                     .registrations

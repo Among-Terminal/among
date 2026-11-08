@@ -140,6 +140,18 @@ fn package_profile_producers_stamp_one_exact_bin_test_from_a_valid_repo_local_sh
             "{file}"
         );
         assert!(
+            scripts.contains("prepare-published-plugin-inputs .github/plugin-acceptance.json"),
+            "{file}"
+        );
+        assert!(
+            scripts.contains("--published-inputs \"$AMONG_CHECK_ROOT/official-plugin-inputs\""),
+            "{file}"
+        );
+        assert!(
+            !scripts.contains("prepare-candidate-plugin-inputs"),
+            "{file}"
+        );
+        assert!(
             scripts.contains("cargo test --bin among --locked --no-run --message-format=json"),
             "{file}"
         );

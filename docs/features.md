@@ -84,6 +84,13 @@ Actions and plugin notifications do not show bottom pop-up messages. Diagnostics
 remain in stderr, with storage warnings also available in Settings; explicit
 plugin header, footer and sidebar content remains visible as before.
 
+A terminal bell sends a desktop notification while Among is in the background
+by default. It names the workspace and includes the terminal title and directory
+when available. Clicking it focuses that terminal, including in another project
+or behind an expanded sibling.
+The Desktop group in Notifications controls its policy. Notification text and
+delivery limits are described in [the notification guide](notification-commands.md#desktop-bell-notifications).
+
 [![Renaming and switching between Atlas and Orbit](media/features/05-workspaces.png)](media/features/05-workspaces.mp4)
 
 **Demonstrations:** [create, rename and switch](media/features/05-workspaces.mp4) ·

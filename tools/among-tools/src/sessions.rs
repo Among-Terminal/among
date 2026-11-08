@@ -374,13 +374,19 @@ impl Harness {
             .is_running()?)
     }
     pub fn start(&mut self, phase: &str) -> Result<u32> {
+        self.start_with_arguments(phase, &[])
+    }
+
+    pub fn start_with_arguments(&mut self, phase: &str, arguments: &[&str]) -> Result<u32> {
         self.stop(false)?;
         self.window.clear();
         self.log = self.base.join(format!("{phase}.log"));
         let log = File::create(&self.log)?;
+        let mut command = vec!["--", self.app.to_str().ok_or("app path is not UTF-8")?];
+        command.extend_from_slice(arguments);
         self.process = Some(OwnedProcess::spawn(
             Path::new("/usr/bin/dbus-run-session"),
-            &["--", self.app.to_str().ok_or("app path is not UTF-8")?],
+            &command,
             &self.env,
             &self.base,
             &log,

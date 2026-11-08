@@ -20,8 +20,6 @@ pub enum Action {
 pub struct Job {
     ready: Arc<AtomicBool>,
     result: mpsc::Receiver<Result<store::Commit, Problem>>,
-    pub identity: String,
-    pub generation: String,
     state: Arc<AtomicU8>,
 }
 
@@ -37,8 +35,6 @@ impl Job {
             Action::RestorePrevious => Ticket::acquire(&root, expected.identity()?)?,
             Action::Uninstall => Ticket::removal(&root, expected.identity()?)?,
         };
-        let identity = ticket.identity.clone();
-        let generation = ticket.generation.clone();
         let ready = Arc::new(AtomicBool::new(action != Action::Uninstall));
         let worker_ready = ready.clone();
         let state = Arc::new(AtomicU8::new(0));
@@ -66,8 +62,6 @@ impl Job {
         Ok(Self {
             ready,
             result,
-            identity,
-            generation,
             state,
         })
     }

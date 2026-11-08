@@ -683,24 +683,108 @@ fn the_released_official_plugins_still_produce_their_fragments_under_confinement
 
 #[test]
 fn a_stopped_plugin_with_a_stored_reduced_consent_still_carries_the_mark() {
-    // disabled, never started in this session, consent read from the local record.
-    let confined = confined(Setup {
-        local: json!({"enabled": false, "protection_consent": "reduced:2"}),
-        ..Setup::default()
-    });
-    assert!(confined.host.plugins[0].io.is_none());
-    let overview = confined.host.overview().remove(0);
-    let line = overview
-        .protection
-        .expect("the mark is shown while stopped");
-    assert!(line.contains("reduced protection allowed"), "{line}");
-    assert!(line.contains("runs with reduced protection"), "{line}");
+    // The current kernel offers full protection. A stored weaker consent must
+    // remain visible without predicting the next launch's applied level.
+    for (token, level, expected) in [
+        (
+            "reduced:1",
+            Protection::Reduced { abi: 1 },
+            "Reduced protection was allowed · reduced (Landlock ABI 1, below the required 3, and seccomp)",
+        ),
+        (
+            "reduced:2",
+            Protection::Reduced { abi: 2 },
+            "Reduced protection was allowed · reduced (Landlock ABI 2, below the required 3, and seccomp)",
+        ),
+        (
+            "seccomp-only",
+            Protection::SeccompOnly,
+            "Reduced protection was allowed · reduced (seccomp only, no Landlock)",
+        ),
+    ] {
+        let confined = confined(Setup {
+            probe: Some(Probe { landlock_abi: Some(3), seccomp: true }),
+            local: json!({"enabled": false, "protection_consent": token}),
+            ..Setup::default()
+        });
+        assert!(confined.host.plugins[0].io.is_none());
+        let overview = confined.host.overview().remove(0);
+        assert_eq!(overview.protection.as_deref(), Some(expected));
+        assert!(overview.weaker_protection);
+        assert!(!overview.enabled);
+        assert_eq!(overview.consent_offer, None);
+        assert_eq!(confined.host.consented_protection(KEY), Some(level));
+        assert!(confined.host.confinement_record(KEY).is_none());
+    }
     // no consent, no mark.
     let plain = self::confined(Setup {
         local: json!({"enabled": false}),
         ..Setup::default()
     });
     assert_eq!(plain.host.overview()[0].protection, None);
+}
+
+#[test]
+fn stored_reduced_consent_does_not_predict_a_later_full_start() {
+    if !kernel_offers_full_protection() {
+        return;
+    }
+    const ALLOWED: &str = "Reduced protection was allowed · reduced (Landlock ABI 2, below the required 3, and seccomp)";
+    let mut confined = confined(Setup {
+        probe: Some(Probe {
+            landlock_abi: Some(3),
+            seccomp: true,
+        }),
+        local: json!({"enabled": false, "protection_consent": "reduced:2"}),
+        ..Setup::default()
+    });
+    assert_eq!(
+        confined.host.overview()[0].protection.as_deref(),
+        Some(ALLOWED)
+    );
+    assert!(confined.host.overview()[0].weaker_protection);
+    assert!(confined.host.plugins[0].io.is_none());
+
+    confined.host.enable(KEY);
+    confined.answers();
+    let running = confined.host.overview().remove(0);
+    assert_eq!(
+        running.protection.as_deref(),
+        Some("Protection: full (Landlock ABI 3 and seccomp)")
+    );
+    assert!(
+        running.weaker_protection,
+        "stored consent keeps its visible mark"
+    );
+    assert!(running.enabled);
+    assert_eq!(running.consent_offer, None);
+    assert_eq!(
+        confined.host.consented_protection(KEY),
+        Some(Protection::Reduced { abi: 2 })
+    );
+    assert_eq!(
+        confined
+            .host
+            .confinement_record(KEY)
+            .unwrap()
+            .applied
+            .as_ref()
+            .unwrap()
+            .protection,
+        Protection::Full { abi: 3 }
+    );
+
+    confined.host.disable(KEY);
+    confined.wait(|host| host.plugins[0].io.is_none());
+    let stopped = confined.host.overview().remove(0);
+    assert_eq!(stopped.protection.as_deref(), Some(ALLOWED));
+    assert!(stopped.weaker_protection);
+    assert!(!stopped.enabled);
+    assert_eq!(stopped.protection_details, running.protection_details);
+    assert_eq!(
+        confined.host.consented_protection(KEY),
+        Some(Protection::Reduced { abi: 2 })
+    );
 }
 
 #[test]

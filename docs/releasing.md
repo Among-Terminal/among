@@ -339,6 +339,18 @@ and no personal token, GitHub App or secret; the repository setting
 
 ### Release candidates and the stable release
 
+Official plugin acceptance for the application candidate uses the immutable
+prerelease pinned in `.github/plugin-acceptance.json`. The required
+`published-plugin-inputs.yml` producer checks its exact numeric release ID, tag,
+source commit and catalogue SHA256, retains original API observations, and repeats
+the live observation after downloading all assets. Native consumers verify those
+downloaded bytes offline. Checks, managed transport and all four package producers
+use that publication; package profiles also bind the exact application source and
+host-test executable digest. Synthetic replacement fixtures remain separate.
+Changing this pin requires a reviewed change and acceptance of the new published
+inputs. A successful plugin-input preparation alone does not accept the
+application candidate or authorize a stable publication.
+
 The owner tests the exact commit before the stable release exists. Run the
 **Release tag** workflow by hand on `main` (Actions, Run workflow) with one of
 these inputs:

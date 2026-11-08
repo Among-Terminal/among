@@ -16,13 +16,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plugin-candidate:
-    uses: ./.github/workflows/plugin-candidate.yml
+  published-plugins:
+    uses: ./.github/workflows/published-plugin-inputs.yml
     with:
-      artifact: plugin-candidate-rpm
+      artifact: published-plugin-rpm
 
   build:
-    needs: plugin-candidate
+    needs: published-plugins
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -72,8 +72,8 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: plugin-candidate-rpm
-          path: /var/tmp/plugin-candidate
+          name: published-plugin-rpm
+          path: /var/tmp/published-plugin-assets
 
       - name: Build tooling without an installed Rust toolchain
         run: |
@@ -360,7 +360,8 @@ jobs:
           test "${#source_sha}" -eq 40
           AMONG_CHECK_SOURCE_SHA="$source_sha" cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
           tool="$AMONG_CHECK_ROOT/target/release/among-tools"
-          "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" "$AMONG_CHECK_ROOT/rpm-candidate/observed-profile" /var/tmp/plugin-candidate
+          "$tool" prepare-published-plugin-inputs .github/plugin-acceptance.json /var/tmp/published-plugin-assets "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" "$AMONG_CHECK_ROOT/rpm-candidate/observed-profile" --published-inputs "$AMONG_CHECK_ROOT/official-plugin-inputs"
           (cd "$AMONG_CHECK_ROOT/rpm-candidate" && sha256sum observed-profile/transfer.json >> SHA256SUMS)
 
       - name: Retain the candidate and its evidence

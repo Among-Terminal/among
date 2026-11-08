@@ -58,6 +58,28 @@ impl Reply {
             ..Self::json(Value::Null)
         }
     }
+
+    pub(crate) fn refused(status: u16, remaining: Option<&str>, retry_after: Option<&str>) -> Self {
+        let mut headers = Vec::new();
+        if let Some(value) = remaining {
+            headers.push(("x-ratelimit-remaining".into(), value.into()));
+        }
+        if let Some(value) = retry_after {
+            headers.push(("retry-after".into(), value.into()));
+        }
+        Self {
+            status,
+            headers,
+            ..Self::json(Value::Null)
+        }
+    }
+
+    pub(crate) fn forbidden(message: &str) -> Self {
+        Self {
+            status: 403,
+            ..Self::json(serde_json::json!({"message": message}))
+        }
+    }
 }
 
 pub(crate) struct Server {
@@ -226,6 +248,7 @@ impl Server {
                 client: self.client(true),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 deadline: Instant::now() + OPERATION_TIMEOUT,
+                rate_limit: None,
             }
             .inspect_target(Target::Registered(12, release::Channel::Prerelease)),
         )
@@ -253,6 +276,7 @@ impl Server {
                 client: self.client(trust),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 deadline: Instant::now() + OPERATION_TIMEOUT,
+                rate_limit: None,
             }
             .inspect(Repository::parse("example/sample").unwrap()),
         )
@@ -307,6 +331,118 @@ pub(crate) fn normal(request: &str) -> Reply {
             Vec::new(),
             request,
         )
+    }
+}
+
+#[test]
+fn source_jobs_observe_actual_rate_headers_without_reclassifying_permission_refusals() {
+    let _guard = JOB_TESTS.lock().unwrap();
+    for (status, remaining, retry_after, expected) in [
+        (
+            429,
+            None,
+            None,
+            Some(RateLimit {
+                remaining: None,
+                retry_after: None,
+            }),
+        ),
+        (
+            403,
+            Some("0"),
+            None,
+            Some(RateLimit {
+                remaining: Some(0),
+                retry_after: None,
+            }),
+        ),
+        (
+            403,
+            Some("9"),
+            Some("7"),
+            Some(RateLimit {
+                remaining: Some(9),
+                retry_after: Some(7),
+            }),
+        ),
+        (403, Some("9"), None, None),
+        (
+            429,
+            Some("invalid"),
+            Some("-1"),
+            Some(RateLimit {
+                remaining: None,
+                retry_after: None,
+            }),
+        ),
+    ] {
+        let server = Server::new(move |_| Reply::refused(status, remaining, retry_after));
+        let job = server.refresh(12).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = job.poll() {
+                assert_eq!(
+                    result.err(),
+                    Some(Problem(
+                        "GitHub access or rate limit refused this request; retry later"
+                    ))
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(job.rate_limit(), expected);
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "a refusal must not schedule a retry"
+        );
+    }
+}
+
+#[test]
+fn secondary_limit_messages_are_bounded_and_interrupted_bodies_remain_transport_failures() {
+    let _guard = JOB_TESTS.lock().unwrap();
+    for (message, expected) in [
+        ("You have exceeded a secondary rate limit. Please wait a few minutes before trying again.",Some(RateLimit {remaining:None,retry_after:None})),
+        ("API rate limit exceeded for the fixture IP",Some(RateLimit {remaining:None,retry_after:None})),
+        ("Resource not accessible by integration",None),
+    ] {
+        let server=Server::new(move|_|Reply::forbidden(message));
+        let job=server.refresh(12).unwrap();let deadline=Instant::now()+Duration::from_secs(5);
+        loop {if let Some(result)=job.poll(){assert_eq!(result.err(),Some(Problem("GitHub access or rate limit refused this request; retry later")));break;}assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(1));}
+        assert_eq!(job.rate_limit(),expected);assert_eq!(server.requests().len(),1);
+    }
+    for oversized in [false, true] {
+        let server = Server::new(move |_| {
+            let mut reply = Reply::forbidden("You have exceeded a secondary rate limit.");
+            if oversized {
+                reply.body=serde_json::json!({"message":"You have exceeded a secondary rate limit.","padding":"x".repeat(MAX_REFUSAL_BYTES)}).to_string().into_bytes();
+            } else {
+                reply.declared = Some(reply.body.len() + 100);
+            }
+            reply
+        });
+        let job = server.refresh(12).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = job.poll() {
+                assert_eq!(
+                    result.err(),
+                    Some(Problem(if oversized {
+                        "GitHub refusal body exceeds its diagnostic byte budget"
+                    } else {
+                        "repository response was interrupted or invalid"
+                    }))
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(job.rate_limit(), None);
+        assert_eq!(server.requests().len(), 1);
     }
 }
 
@@ -502,12 +638,35 @@ fn selected(metadata: &Value) -> Selection {
 }
 
 pub(crate) fn package_route(metadata: Value, archive: Vec<u8>, request: &str) -> Reply {
+    package_route_with_revision(metadata, archive, None, request)
+}
+
+/// A schema2 catalogue has a revision per version, not a root revision. Its
+/// owned server supplies the independent release-tag commit explicitly.
+pub(crate) fn package_route_at(
+    metadata: Value,
+    archive: Vec<u8>,
+    revision: &str,
+    request: &str,
+) -> Reply {
+    package_route_with_revision(metadata, archive, Some(revision), request)
+}
+
+fn package_route_with_revision(
+    metadata: Value,
+    archive: Vec<u8>,
+    revision: Option<&str>,
+    request: &str,
+) -> Reply {
     let path = request.split_whitespace().nth(1).unwrap();
+    let revision = revision
+        .map(str::to_owned)
+        .or_else(|| metadata["revision"].as_str().map(str::to_owned));
     match path {
         "/repositories/12/releases/latest" => Reply::json(release_document(&metadata)),
         "/repositories/12/releases/assets/12" => Reply::json(metadata),
-        "/repositories/12/git/ref/tags/v1.0" => Reply::json(serde_json::json!({"ref":"refs/tags/v1.0","object":{"type":"commit","sha":metadata["revision"]}})),
-        path if path == format!("/repositories/12/git/commits/{}", metadata["revision"].as_str().unwrap()) => Reply::json(serde_json::json!({"sha":metadata["revision"]})),
+        "/repositories/12/git/ref/tags/v1.0" => Reply::json(serde_json::json!({"ref":"refs/tags/v1.0","object":{"type":"commit","sha":revision.as_ref().unwrap()}})),
+        path if path == format!("/repositories/12/git/commits/{}", revision.as_ref().unwrap()) => Reply::json(serde_json::json!({"sha":revision.as_ref().unwrap()})),
         "/repositories/12/releases/assets/11" => Reply { status: 302, headers: vec![("Location".into(),
             "https://release-assets.githubusercontent.com/github-production-release-asset/12/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee?token=synthetic-delivery-token".into())], ..Reply::json(Value::Null) },
         path if path.starts_with("/github-production-release-asset/12/") => Reply { body: archive, ..Reply::json(Value::Null) },
@@ -598,6 +757,7 @@ pub(crate) fn install_at(
             client: server.client(true),
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: Instant::now() + OPERATION_TIMEOUT,
+            rate_limit: None,
         }
         .install(selected, root, &AtomicU8::new(DOWNLOADING)),
     )

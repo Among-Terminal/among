@@ -61,12 +61,17 @@ fn unsolicited_escape_consumes_the_next_command_character_in_real_bash_readline(
 fn status_startup_does_not_inject_readline_meta_prefix() -> among_tools::Result<()> {
     let source = include_str!("../src/live_status.rs");
     let startup = source
-        .split_once("let pid = h.start(\"app\")?;")
+        .split_once("let pid =")
         .ok_or("status startup absent")?
         .1
         .split_once("h.key(\"F11\")?")
         .ok_or("fullscreen check absent")?
         .0;
+    assert!(
+        startup.contains("h.start(\"app\")?")
+            && startup.contains("h.start_with_arguments(\"app\", &[\"--plugin-development\"])?"),
+        "both ordinary and published prerelease launches must remain inside the guarded startup"
+    );
     assert!(
         !startup.contains("h.key(\"Escape\")"),
         "unsolicited Escape must not reach the fresh shell"

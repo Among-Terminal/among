@@ -19,10 +19,16 @@ pub(crate) mod general;
 pub(crate) mod local_catalogue;
 pub(crate) mod notification_role;
 mod plugin_manager;
+mod plugin_page;
+mod plugin_row;
 mod plugin_settings;
 pub(crate) mod repositories;
+#[cfg(test)]
 mod repository_sources;
 mod retained_settings;
+mod source_dialog;
+pub(crate) mod sources;
+mod trust;
 
 pub(crate) type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
 pub(crate) type PluginDetailsQuery = dyn Fn(&str) -> Option<ManagedDetails>;
@@ -30,10 +36,21 @@ type ConfigurationQuery = dyn Fn(&str) -> Configuration;
 type EnablePlugin = dyn Fn(&str, Option<gtk::Window>);
 type AllowProtection = dyn Fn(&str, &str) -> Result<(), String>;
 type RestartPlugin = dyn Fn(&str, &str, Option<gtk::Window>);
+/// What a package operation (uninstall, recover previous) reports to the view
+/// that asked for it, in order: nothing until the user confirms, then
+/// `Started`, any number of `Phase` lines, and exactly one `Finished`. A
+/// refusal before the operation starts is a `Finished` without `Started`.
+pub enum PackageEvent {
+    Started,
+    Phase(String),
+    Finished(Result<crate::settings::Durability, String>),
+}
+
 type PackageAction = dyn Fn(
     crate::plugin::inventory::Receipt,
     crate::plugin::install::mutation::Action,
     Option<gtk::Window>,
+    Rc<dyn Fn(PackageEvent)>,
 );
 type SavePluginSettings = dyn Fn(
     &str,
@@ -311,6 +328,44 @@ fn attach_capture(
     window.add_controller(controller);
 }
 
+#[cfg(test)]
+pub(crate) use plugin_manager::Services as PluginServices;
+
+#[cfg(test)]
+pub(crate) fn production_plugin_services_for_test() -> PluginServices {
+    PluginServices::production()
+}
+
+/// Observes only a completed, validated session-only refresh from this page.
+#[cfg(test)]
+pub(crate) fn plugins_page_with_observation_for_test(
+    ctx: &PreferencesContext,
+    services: PluginServices,
+    observation: Rc<RefCell<Option<crate::plugin::install::source::Inspection>>>,
+) -> adw::PreferencesPage {
+    plugin_manager::page_with_observation(ctx, services, observation)
+}
+
+#[cfg(test)]
+pub(crate) fn plugins_page_with_source_lookup_for_test(
+    ctx: &PreferencesContext,
+    services: PluginServices,
+    lookup: Rc<source_dialog::Lookup>,
+) -> adw::PreferencesPage {
+    plugin_manager::page_with_lookup(ctx, services, lookup)
+}
+
+/// The Plugins page with test-owned source, refresh and install jobs, so a
+/// controlled server stands in for GitHub while the page itself is the
+/// production one.
+#[cfg(test)]
+pub(crate) fn plugins_page_for_test(
+    ctx: &PreferencesContext,
+    services: PluginServices,
+) -> adw::PreferencesPage {
+    plugin_manager::page_with(ctx, services)
+}
+
 fn plugins_page(ctx: &PreferencesContext) -> adw::PreferencesPage {
     let page = plugin_manager::page(ctx);
     page.set_name(Some("plugins"));
@@ -370,12 +425,30 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated GTK display"]
     fn the_card_marks_reduced_protection_and_offers_consent_only_while_a_start_waits() {
+        use crate::plugin::host::Overview;
+        use crate::plugin::install::TestOwnedRoot;
+        use crate::plugin::inventory;
         use crate::plugin::sandbox::level::{consent_message, Protection};
+
+        std::env::set_var("GTK_A11Y", "test");
         adw::init().expect("isolated GTK display");
-        fn context(overview: crate::plugin::host::Overview) -> PreferencesContext {
+
+        let root = TestOwnedRoot::new();
+        inventory::tests::fixture(&root.0);
+        let entry = inventory::read(&root.0).unwrap().remove(0);
+        let key = entry.key();
+        let generation = entry.receipt.generation.clone();
+
+        fn context(
+            key: &str,
+            entry: &crate::plugin::inventory::Entry,
+            overview: crate::plugin::host::Overview,
+        ) -> PreferencesContext {
+            let details_key = key.to_owned();
+            let details_entry = entry.clone();
             PreferencesContext {
                 general: None,
-                package_action: Rc::new(|_, _, _| {}),
+                package_action: Rc::new(|_, _, _, _| {}),
                 retained_settings: Rc::new(|| Ok(Vec::new())),
                 delete_retained_settings: Rc::new(|_| Err("no retained settings".into())),
                 installations_changed: Rc::new(|| {}),
@@ -383,7 +456,9 @@ mod tests {
                 storage_status: gtk::StringList::new(&[]),
                 bindings: Rc::new(RefCell::new(Bindings::defaults())),
                 plugin_inventory: Rc::new(move || vec![overview.clone()]),
-                plugin_details: Rc::new(|_| None),
+                plugin_details: Rc::new(move |asked| {
+                    (asked == details_key.as_str()).then(|| (details_entry.clone(), None))
+                }),
                 save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
                 plugin_configuration: Rc::new(|_| Configuration::NotApplied),
                 restart_plugin: Rc::new(|_, _, _| {}),
@@ -406,63 +481,251 @@ mod tests {
                 child = widget.next_sibling();
             }
         }
-        // the card of one plugin: its subtitle and its consent button, if any.
-        let card = |overview: crate::plugin::host::Overview| {
-            let page = plugins_page(&context(overview));
+        fn accessible_label(widget: &impl IsA<gtk::Accessible>, expected: &str) {
+            use glib::translate::*;
+            assert_eq!(std::env::var("GTK_A11Y").as_deref(), Ok("test"));
+            let accessible = widget.as_ref().to_glib_none().0;
+            let context = unsafe { gtk::ffi::gtk_accessible_get_at_context(accessible) };
+            assert!(
+                !context.is_null(),
+                "accessible property comparison requires a live AT context"
+            );
+            unsafe {
+                glib::gobject_ffi::g_object_unref(context.cast());
+            }
+            assert_ne!(
+                unsafe {
+                    gtk::ffi::gtk_test_accessible_has_property(
+                        accessible,
+                        gtk::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL,
+                    )
+                },
+                0,
+                "expected accessible property is absent"
+            );
+            let text = std::ffi::CString::new(expected).unwrap();
+            let error = unsafe {
+                gtk::ffi::gtk_test_accessible_check_property(
+                    accessible,
+                    gtk::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL,
+                    text.as_ptr(),
+                )
+            };
+            if !error.is_null() {
+                let problem = unsafe { std::ffi::CStr::from_ptr(error) }
+                    .to_string_lossy()
+                    .into_owned();
+                unsafe {
+                    glib::ffi::g_free(error.cast());
+                }
+                panic!("accessible property mismatch: {problem}");
+            }
+        }
+        fn assert_weaker(shield: &gtk::Button) {
+            assert!(shield.is_visible(), "the weaker-protection shield is shown");
+            assert_eq!(
+                shield.icon_name().as_deref(),
+                Some("dialog-warning-symbolic")
+            );
+            let tooltip = shield.tooltip_text().unwrap_or_default().to_string();
+            assert!(tooltip.starts_with("Weaker protection\n"), "{tooltip:?}");
+            accessible_label(shield, "Weaker protection");
+        }
+
+        // the row of one installed plugin: its page, row, shield and consent action.
+        let card = |overview: Overview| {
+            let page = plugins_page(&context(&key, &entry, overview));
             let mut rows = Vec::new();
             collect::<adw::ActionRow>(page.upcast_ref(), &mut rows);
             let row = rows
                 .into_iter()
-                .find(|row| row.title() == "sample")
-                .expect("the plugin's card");
+                .find(|row| row.widget_name().as_str() == key.as_str())
+                .expect("the installed plugin row");
             let mut buttons = Vec::new();
             collect::<gtk::Button>(row.upcast_ref(), &mut buttons);
-            let consent = buttons
-                .into_iter()
+            let shield = buttons
+                .iter()
+                .find(|button| button.widget_name().as_str() == "plugin-shield")
+                .cloned()
+                .expect("the row shield");
+            let allow = buttons
+                .iter()
                 .find(|button| button.label().as_deref() == Some("Allow reduced protection…"))
-                .expect("the card always carries the consent button; only its visibility changes");
-            (
-                row.subtitle().unwrap_or_default().to_string(),
-                consent.is_visible(),
-            )
+                .cloned()
+                .expect("the row consent action");
+            (page, row, shield, allow)
+        };
+
+        fn pump_until(condition: &dyn Fn() -> bool, what: &str) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !condition() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
+        // the real info page carries the protection line and the page consent action.
+        let protection_page = |page: &adw::PreferencesPage,
+                               row: &adw::ActionRow,
+                               shield: &gtk::Button,
+                               row_allow: &gtk::Button| {
+            let window = adw::PreferencesWindow::builder().default_width(760).build();
+            window.add(page);
+            window.present();
+            pump_until(
+                &|| row.is_mapped() && shield.is_mapped(),
+                "the installed row and shield to map",
+            );
+            assert_eq!(
+                row.ancestor(adw::PreferencesPage::static_type()),
+                Some((*page).clone().upcast::<gtk::Widget>())
+            );
+            assert_eq!(
+                shield
+                    .ancestor(adw::ActionRow::static_type())
+                    .and_then(|widget| widget.downcast::<adw::ActionRow>().ok()),
+                Some(row.clone())
+            );
+            if row_allow.is_visible() {
+                pump_until(&|| row_allow.is_mapped(), "the row consent action to map");
+            } else {
+                assert!(
+                    !row_allow.is_mapped(),
+                    "a hidden row consent action is not mapped"
+                );
+            }
+            let mut buttons = Vec::new();
+            collect::<gtk::Button>(row.upcast_ref(), &mut buttons);
+            let info = buttons
+                .iter()
+                .find(|button| button.widget_name().as_str() == "plugin-info")
+                .cloned()
+                .expect("the info control");
+            assert!(row.is_mapped() && shield.is_mapped());
+            info.emit_clicked();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let protection = loop {
+                let mut rows = Vec::new();
+                collect::<adw::ActionRow>(window.upcast_ref(), &mut rows);
+                if let Some(row) = rows.into_iter().find(|row| {
+                    row.title().as_str() == "Protection"
+                        && row.is_mapped()
+                        && row.subtitle().is_some_and(|text| !text.is_empty())
+                }) {
+                    break row;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the mapped plugin page protection card"
+                );
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            let subtitle = protection.subtitle().unwrap_or_default().to_string();
+            let mut buttons = Vec::new();
+            collect::<gtk::Button>(protection.upcast_ref(), &mut buttons);
+            let page_allow = buttons
+                .iter()
+                .find(|button| button.label().as_deref() == Some("Allow reduced protection…"))
+                .cloned()
+                .expect("the page consent action");
+            if page_allow.is_visible() {
+                pump_until(&|| page_allow.is_mapped(), "the page consent action to map");
+            } else {
+                assert!(
+                    !page_allow.is_mapped(),
+                    "a hidden page consent action is not mapped"
+                );
+            }
+            let visible = page_allow.is_visible();
+            window.destroy();
+            (subtitle, visible)
+        };
+
+        let overview = |state: PluginState,
+                        protection: Option<String>,
+                        consent_offer: Option<Protection>,
+                        weaker: bool| {
+            let mut info = Overview::fixture(&key, state, true);
+            info.name = "Sample".into();
+            info.description = "No probe".into();
+            info.generation = Some(generation.clone());
+            info.protection = protection;
+            info.consent_offer = consent_offer;
+            info.weaker_protection = weaker;
+            info
         };
 
         let offered = Protection::Reduced { abi: 2 };
-        let mut refused = crate::plugin::host::Overview::fixture(
-            "sample",
+        let reason = consent_message(offered, None);
+        let (page, row, shield, allow) = card(overview(
             PluginState::Unavailable {
-                reason: consent_message(offered, None),
+                reason: reason.clone(),
             },
+            Some(format!("Not started: {reason}")),
+            Some(offered),
             true,
-        );
-        refused.protection = Some(format!("Not started: {}", consent_message(offered, None)));
-        refused.consent_offer = Some(offered);
-        let (subtitle, button) = card(refused);
-        assert!(subtitle.contains(
-            "the kernel supports only Landlock ABI 2 (required: ABI 3, kernel 6.2 or newer); \
-             the plugin was not started."
         ));
-        assert!(button, "a refused start offers the consent action");
-
-        let mut full = crate::plugin::host::Overview::fixture("sample", PluginState::Running, true);
-        full.protection = Some("Protection: full (Landlock ABI 6 and seccomp)".into());
-        let (subtitle, button) = card(full);
-        assert!(subtitle.contains("Protection: full (Landlock ABI 6 and seccomp)"));
-        assert!(!subtitle.contains("reduced"));
-        assert!(!button, "full protection needs no consent");
-
-        let mut reduced =
-            crate::plugin::host::Overview::fixture("sample", PluginState::Running, true);
-        reduced.protection = Some(format!(
-            "Protection: {} · running with reduced protection",
-            offered.label()
-        ));
-        let (subtitle, button) = card(reduced);
-        assert!(subtitle.contains("running with reduced protection"));
+        let subtitle = row.subtitle().unwrap_or_default().to_string();
+        assert!(subtitle.contains("Unavailable ("), "{subtitle:?}");
+        assert!(subtitle.contains(&reason), "{subtitle:?}");
         assert!(
-            !button,
+            allow.is_visible(),
+            "a refused start offers the consent action"
+        );
+        assert_weaker(&shield);
+        let (page_text, page_allow) = protection_page(&page, &row, &shield, &allow);
+        assert!(page_text.contains("Not started:"), "{page_text:?}");
+        assert!(
+            page_text.contains("The kernel can give this plugin"),
+            "{page_text:?}"
+        );
+        assert!(page_allow, "the info page offers the consent action");
+
+        let (page, row, shield, allow) = card(overview(
+            PluginState::Running,
+            Some("Protection: full (Landlock ABI 6 and seccomp)".into()),
+            None,
+            false,
+        ));
+        assert_eq!(row.subtitle().as_deref(), Some("No probe"));
+        assert!(!allow.is_visible(), "full protection needs no consent");
+        assert!(shield.is_visible());
+        assert_eq!(shield.icon_name().as_deref(), Some("security-low-symbolic"));
+        let tooltip = shield.tooltip_text().unwrap_or_default().to_string();
+        assert!(
+            tooltip.starts_with("Plugin from another publisher\n"),
+            "{tooltip:?}"
+        );
+        let (page_text, page_allow) = protection_page(&page, &row, &shield, &allow);
+        assert_eq!(page_text, "Protection: full (Landlock ABI 6 and seccomp)");
+        assert!(!page_allow);
+
+        let (page, row, shield, allow) = card(overview(
+            PluginState::Running,
+            Some(format!(
+                "Protection: {} · running with reduced protection",
+                offered.label()
+            )),
+            None,
+            true,
+        ));
+        assert_eq!(row.subtitle().as_deref(), Some("No probe"));
+        assert!(
+            !allow.is_visible(),
             "an allowed plugin shows the permanent mark, not the action"
         );
+        assert_weaker(&shield);
+        let (page_text, page_allow) = protection_page(&page, &row, &shield, &allow);
+        assert!(
+            page_text.contains("running with reduced protection"),
+            "{page_text:?}"
+        );
+        assert!(!page_allow);
     }
 
     #[test]
@@ -489,9 +752,10 @@ mod tests {
         let enabled = state.clone();
         let disabled = state.clone();
         let desired = Rc::new(std::cell::Cell::new(true));
+        let observed_desired = desired.clone();
         let page = plugins_page(&PreferencesContext {
             general: None,
-            package_action: Rc::new(|_, _, _| {}),
+            package_action: Rc::new(|_, _, _, _| {}),
             retained_settings: Rc::new(|| Ok(Vec::new())),
             delete_retained_settings: Rc::new(|_| {
                 Err("no retained settings in this fixture".into())
@@ -548,13 +812,23 @@ mod tests {
             .ancestor(adw::ActionRow::static_type())
             .and_then(|widget| widget.downcast::<adw::ActionRow>().ok())
             .expect("live plugin row containing the switch");
-        assert!(row
-            .subtitle()
-            .is_some_and(|text| text.contains("Running") && text.contains("Local test fixture")));
+        let description = "Synthetic test registration";
+        assert_eq!(row.widget_name().as_str(), "clock");
+        assert_eq!(row.title().as_str(), "clock");
+        assert_eq!(row.subtitle().as_deref(), Some(description));
+        assert!(switch.is_active());
+        assert!(observed_desired.get());
+        assert!(matches!(&*state.borrow(), PluginState::Running));
         switch.set_active(false);
-        assert!(row.subtitle().is_some_and(|text| text.contains("Disabled")));
+        assert!(!switch.is_active());
+        assert!(!observed_desired.get());
+        assert!(matches!(&*state.borrow(), PluginState::Disabled));
+        assert_eq!(row.subtitle().as_deref(), Some(description));
         switch.set_active(true);
-        assert!(row.subtitle().is_some_and(|text| text.contains("Running")));
+        assert!(switch.is_active());
+        assert!(observed_desired.get());
+        assert!(matches!(&*state.borrow(), PluginState::Running));
+        assert_eq!(row.subtitle().as_deref(), Some(description));
         // force inventory refresh throughout a real keyboard animation. an
         // unchanged set_active(true) used to cancel Space before notify fired.
         gtk::Settings::default()
@@ -613,7 +887,9 @@ mod tests {
             !switch.is_active(),
             "refresh must not cancel a real pending keyboard toggle"
         );
-        assert!(row.subtitle().is_some_and(|text| text.contains("Disabled")));
+        assert!(matches!(&*state.borrow(), PluginState::Disabled));
+        assert!(!observed_desired.get());
+        assert_eq!(row.subtitle().as_deref(), Some(description));
         println!("PASS real Space completes despite overlapping inventory refreshes during GTK animation");
         window.set_child(None::<&gtk::Widget>);
         window.destroy();
@@ -639,24 +915,39 @@ mod tests {
             switch.is_active(),
             "actual process fault must not change desired enablement"
         );
+        assert!(observed_desired.get());
         *state.borrow_mut() = PluginState::Running;
-        while !row.subtitle().is_some_and(|text| text.contains("Running")) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while row.subtitle().as_deref() != Some(description) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "restart description never reached the real row"
+                "steady description never returned to the real row"
             );
             gtk::glib::MainContext::default().iteration(false);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(row.activatable_widget(), Some(switch.clone().upcast()));
+        assert!(matches!(&*state.borrow(), PluginState::Running));
+        assert!(observed_desired.get());
+        assert!(switch
+            .ancestor(adw::ActionRow::static_type())
+            .is_some_and(|widget| widget == row.clone().upcast::<gtk::Widget>()));
+        assert_eq!(
+            row.ancestor(adw::PreferencesPage::static_type()),
+            Some(page.clone().upcast::<gtk::Widget>())
+        );
         let weak = row.downgrade();
         drop(switch);
         drop(row);
         drop(page);
-        assert!(
-            weak.upgrade().is_none(),
-            "observer must not keep Preferences rows alive"
-        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while weak.upgrade().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "observer must not keep Preferences rows alive"
+            );
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

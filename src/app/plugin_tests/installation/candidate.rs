@@ -1,12 +1,11 @@
-//! Acceptance over CI-built candidate packages while no release is published.
-//! A controlled HTTPS server answers exactly as GitHub would, from the prepared
-//! inputs: the real UI, client, installer and packages run, and only the
-//! release documents are synthetic. The bytes are CI builds, not the approved
-//! preparation, so this is candidate acceptance.
+//! Development acceptance over candidate or unchanged published packages.
+//! The synthetic replacement case serves CI bytes through controlled HTTPS;
+//! published wrappers use real source jobs and omit that replacement case.
+//! Local-catalogue acceptance retains the packages' original bytes and makes
+//! no claim of repository or release provenance for the local installation.
 
 use super::published_lifecycle::{observed, Observed};
 use super::*;
-use crate::prefs::repositories::{present_prerelease_for_test, present_updates_for_test};
 use serde_json::{json, Value};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
@@ -95,26 +94,27 @@ fn details(ctx: &Window) -> Rc<crate::prefs::PluginDetailsQuery> {
     Rc::new(move |key: &str| state.borrow().plugins.managed_details(key))
 }
 
-/// Whether the prepared inputs are a candidate, and the inspector for them.
-/// Published inputs return false: the caller uses the production action.
-pub(super) fn present_inspector(ctx: &Window, preferences: &adw::PreferencesWindow) -> bool {
+/// Candidate jobs serve the prepared release and exact package bytes through
+/// owned TLS. Published acceptance keeps the production HTTPS jobs instead.
+pub(super) fn services() -> crate::prefs::PluginServices {
     let observed = observed();
     if observed.inputs["candidate"] != true {
-        return false;
+        return crate::prefs::production_plugin_services_for_test();
     }
     let server = candidate_server(&observed);
     let root = crate::plugin::inventory::root().unwrap();
-    present_updates_for_test(
-        preferences.upcast_ref(),
-        Rc::new({
+    crate::prefs::PluginServices {
+        root: crate::plugin::install::registry::root(),
+        refresh: Rc::new({
             let server = server.clone();
-            move |repository| server.job(repository)
+            move |repository| server.refresh(repository)
         }),
-        Rc::new(move |selection| server.install(selection, root.clone())),
-        changed(ctx),
-        details(ctx),
-    );
-    true
+        prerelease: Rc::new({
+            let server = server.clone();
+            move |repository| server.refresh_prerelease(repository)
+        }),
+        install: Rc::new(move |selection| server.install(selection, root.clone())),
+    }
 }
 
 fn preferences_page(ctx: &Window) -> adw::PreferencesWindow {
@@ -130,40 +130,27 @@ fn preferences_page(ctx: &Window) -> adw::PreferencesWindow {
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
-    assert!(has_label(page.upcast_ref(), "Plugin development mode"));
+    assert!(banner_says(&page, "Plugin development mode"));
     preferences
 }
 
-fn clock_row(view: &adw::PreferencesWindow) -> adw::ActionRow {
+const KEY: &str = "github:1431055733/clock";
+
+fn mapped_action(view: &adw::PreferencesWindow, label: &str) -> Option<gtk::Button> {
     widgets(view.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| {
-            row.subtitle()
-                .is_some_and(|subtitle| subtitle.starts_with("github:1431055733/clock · version"))
-        })
-        .unwrap()
-}
-
-fn wait_for_clock_row(view: &adw::PreferencesWindow) {
-    wait_for(
-        || {
-            widgets(view.upcast_ref())
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-                .any(|row| {
-                    row.subtitle().is_some_and(|subtitle| {
-                        subtitle.starts_with("github:1431055733/clock · version")
-                    })
+        .filter(|row| row.widget_name() == KEY && row.is_mapped())
+        .find_map(|row| {
+            widgets(row.upcast_ref()).into_iter().find_map(|widget| {
+                widget.downcast::<gtk::Button>().ok().filter(|button| {
+                    button.label().as_deref() == Some(label)
+                        && button.is_mapped()
+                        && button.is_sensitive()
                 })
-        },
-        Duration::from_secs(20),
-    );
+            })
+        })
 }
-
-const KEY: &str = "github:1431055733/clock";
-const INSTALLED: &str =
-    "Installed github:1431055733/clock disabled. Enable separately in Your plugins.";
 
 fn selected(ctx: &Window) -> crate::plugin::inventory::Receipt {
     ctx.state
@@ -264,36 +251,41 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
     let preferences = preferences_page(&ctx);
-    present_prerelease_for_test(
-        preferences.upcast_ref(),
-        Rc::new({
-            let server = server.clone();
-            move |id| server.refresh(id)
-        }),
-        Rc::new({
-            let server = server.clone();
-            move |id| server.refresh_prerelease(id)
-        }),
-        Rc::new({
-            let server = server.clone();
-            let root = root.clone();
-            move |selection| server.install(selection, root.clone())
-        }),
-        changed(&ctx),
-        registry,
-        details(&ctx),
+    let view = list_window(
+        &ctx,
+        &preferences,
+        crate::prefs::PluginServices {
+            root: Some(registry),
+            refresh: Rc::new({
+                let server = server.clone();
+                move |id| server.refresh(id)
+            }),
+            prerelease: Rc::new({
+                let server = server.clone();
+                move |id| server.refresh_prerelease(id)
+            }),
+            install: Rc::new({
+                let server = server.clone();
+                let root = root.clone();
+                move |selection| server.install(selection, root.clone())
+            }),
+        },
     );
-    let view = inspector();
     focus(&view);
+    // Development mode starts on the Pre-release channel; opening the page
+    // requested nothing.
+    assert!(channel_active(&view, "Pre-release"));
 
-    // An ordinary install first: Refresh shows the stable candidate.
-    press(&button(&view, "Refresh"));
-    wait_for_clock_row(&view);
-    press(&button(&clock_row(&view), "Install disabled"));
+    // An ordinary install first: the Stable channel's refresh shows the
+    // stable candidate in Available.
+    press(&channel_button(&view, "Stable"));
+    press(&named_button(&view, "plugins-refresh"));
+    println!("candidate_phase=stable_install identity={KEY}");
     wait_for(
-        || has_label(view.upcast_ref(), INSTALLED),
-        Duration::from_secs(30),
+        || mapped_action(&view, "Install").is_some(),
+        Duration::from_secs(20),
     );
+    press(&mapped_action(&view, "Install").unwrap());
     wait_for(
         || ctx.state.borrow().plugins.managed_details(KEY).is_some(),
         Duration::from_secs(5),
@@ -316,13 +308,23 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
         .unwrap();
 
     // The prerelease replaces it only through its confirmation.
-    press(&button(&view, "Use latest prerelease"));
+    press(&channel_button(&view, "Pre-release"));
+    press(&named_button(&view, "plugins-refresh"));
     wait_for(
-        || has_label(view.upcast_ref(), "Newest prerelease ready for review"),
+        || {
+            has_label(
+                view.upcast_ref(),
+                "Showing the newest pre-release catalogue. It is not saved.",
+            )
+        },
         Duration::from_secs(20),
     );
-    wait_for_clock_row(&view);
-    press(&button(&clock_row(&view), "Replace with prerelease…"));
+    println!("candidate_phase=prerelease_replace identity={KEY}");
+    wait_for(
+        || mapped_action(&view, "Replace").is_some(),
+        Duration::from_secs(5),
+    );
+    press(&mapped_action(&view, "Replace").unwrap());
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     press(&button(&view.visible_dialog().unwrap(), "Replace"));
     wait_for(
@@ -343,17 +345,16 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
     starts_under_the_flag(&ctx, KEY, Reach::Admitted);
 
     // The stable release of the same bytes and commit rebinds it.
-    press(&button(&view, "Refresh"));
+    press(&channel_button(&view, "Stable"));
+    press(&named_button(&view, "plugins-refresh"));
+    // Every row's stack also owns hidden controls. Only clock's mapped slot
+    // proves that its checked stable catalogue has replaced the prerelease.
+    println!("candidate_phase=stable_rebind identity={KEY}");
     wait_for(
-        || {
-            widgets(view.upcast_ref())
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-                .any(|button| button.label().as_deref() == Some("Apply update…"))
-        },
+        || mapped_action(&view, "Update").is_some(),
         Duration::from_secs(20),
     );
-    press(&button(&clock_row(&view), "Apply update…"));
+    press(&mapped_action(&view, "Update").unwrap());
     wait_for(|| view.visible_dialog().is_some(), Duration::from_secs(2));
     press(&button(&view.visible_dialog().unwrap(), "Apply update"));
     wait_for(
@@ -383,10 +384,38 @@ fn candidate_prerelease_replaces_an_install_and_a_stable_release_of_its_bytes_re
 #[test]
 #[ignore = "requires check-development-install: an owned display, a CI-built catalogue and its own process"]
 fn candidate_packages_install_from_a_local_catalogue_and_start_under_the_flag() {
-    assert!(crate::plugin::development::fix(true));
+    let published = super::published_lifecycle::prerelease_acceptance().then(observed);
+    if !crate::plugin::development::enabled() {
+        assert!(crate::plugin::development::fix(true));
+    }
     let assets = std::path::PathBuf::from(
         std::env::var_os("AMONG_LOCAL_PLUGIN_CATALOGUE").expect("the runner names the catalogue"),
     );
+    if let Some(observed) = &published {
+        use super::published_lifecycle::read_regular;
+        let catalogue = read_regular(&assets.join("among-plugins.json"), 1024 * 1024);
+        assert_eq!(
+            crate::plugin::inventory::checksum(&catalogue).unwrap(),
+            observed.inputs["catalogue_sha256"]
+        );
+        assert_eq!(
+            crate::plugin::install::metadata::Catalogue::parse(&catalogue).unwrap(),
+            observed.catalogue
+        );
+        for plugin in &observed.catalogue.plugins {
+            let artifact = plugin.versions[0].select(&observed.platform).unwrap();
+            let archive = read_regular(&assets.join(&artifact.asset), artifact.size);
+            assert_eq!(archive.len() as u64, artifact.size);
+            assert_eq!(
+                crate::plugin::inventory::checksum(&archive).unwrap(),
+                artifact.sha256
+            );
+            assert_eq!(
+                observed.snapshot.asset(&artifact.asset).unwrap().sha256,
+                artifact.sha256
+            );
+        }
+    }
     // The package files stay exactly as built; only the directory is the
     // author's own, not writable by others.
     let author = crate::test_isolation::check_root().join("candidate-catalogue");
@@ -438,6 +467,28 @@ fn candidate_packages_install_from_a_local_catalogue_and_start_under_the_flag() 
     assert_eq!(entries.len(), 1);
     assert!(entries[0].receipt.local().is_some());
     assert!(entries[0].inspected.is_ok());
+    if let Some(observed) = &published {
+        let clock = observed
+            .catalogue
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "clock")
+            .unwrap();
+        let version = &clock.versions[0];
+        let artifact = version.select(&observed.platform).unwrap();
+        let receipt = &entries[0].receipt;
+        assert_eq!(receipt.plugin_id, "clock");
+        assert_eq!(receipt.revision, observed.revision);
+        assert_eq!(receipt.manifest_sha256, version.manifest_sha256);
+        assert_eq!(receipt.package_sha256, artifact.sha256);
+        let local = receipt.local().unwrap();
+        assert_eq!(local.asset, artifact.asset);
+        assert_eq!(local.catalogue_sha256, observed.inputs["catalogue_sha256"]);
+        assert_eq!(
+            entries[0].inspected.as_ref().unwrap().manifest,
+            version.manifest
+        );
+    }
     starts_under_the_flag(&ctx, "development/clock", Reach::ClosesChannel);
     view.destroy();
     preferences.destroy();

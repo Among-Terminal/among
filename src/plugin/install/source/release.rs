@@ -27,6 +27,8 @@ const MAX_RELEASE_PAGES: usize = 3;
 // cut short: a truncated list could hide the newest prerelease.
 pub(super) const MAX_RELEASE_PAGE_BYTES: usize = 16 * 1024 * 1024;
 
+pub(super) const NO_STABLE_RELEASE: Problem =
+    Problem("no installable latest release is available; refresh and review when one is published");
 pub(super) const DEVELOPMENT_ONLY: &str =
     "prerelease sources are available only in plugin development mode";
 
@@ -169,7 +171,7 @@ impl Operation {
                 data::MAX_STATIC_BYTES,
             )
             .await.map_err(|problem| if problem.0 == "selected release tag or immutable Git object is unavailable; installation refused" {
-                Problem("no installable latest release is available; refresh and review when one is published")
+                NO_STABLE_RELEASE
             } else { problem })?;
         ReleaseSnapshot::from_value(&release)
     }

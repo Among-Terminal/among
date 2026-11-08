@@ -57,6 +57,19 @@ fn key_button(button: &gtk::Button) {
     pump_for(Duration::from_millis(150));
 }
 
+/// Reach the consent control through its plugin page, using the same info
+/// action as a keyboard user. Back from an earlier page leaves the list ready
+/// for a different identity's review.
+fn open_role_page(prefs: &adw::PreferencesWindow, identity: &str) {
+    while prefs.pop_subpage() {}
+    prefs.set_visible_page_name("plugins");
+    pump_for(Duration::from_millis(250));
+    let row: adw::ActionRow = named(prefs, identity);
+    let info: gtk::Button = named(&row, "plugin-info");
+    key_button(&info);
+    pump_for(Duration::from_millis(250));
+}
+
 fn toggle(row: &adw::SwitchRow) {
     // SwitchRow is the keyboard control; libadwaita deliberately makes its
     // internal switch non-focusable to avoid a duplicate tab stop.
@@ -116,7 +129,7 @@ fn app() -> (adw::Application, Window) {
     (app, ctx)
 }
 
-fn accessible_label(widget: &impl IsA<gtk::Accessible>, expected: &str) {
+pub(super) fn accessible_label(widget: &impl IsA<gtk::Accessible>, expected: &str) {
     accessible_property(widget, gtk::ffi::GTK_ACCESSIBLE_PROPERTY_LABEL, expected);
 }
 
@@ -387,7 +400,8 @@ fn ordinary_app_provider_controls_and_declarative_actions_use_one_live_core() {
         let row = descendants(plugin_page.upcast_ref())
             .into_iter()
             .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-            .find(|row| row.subtitle().is_some_and(|text| text.contains(identity)))
+            // a plugin row is named by the identity it shows.
+            .find(|row| row.widget_name().as_str() == identity)
             .unwrap();
         descendants(row.upcast_ref())
             .into_iter()
@@ -623,6 +637,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
             ctx.state.borrow().plugins.admitted_notification_role(key),
             None
         );
+        open_role_page(&prefs, key);
         let review: gtk::Button = named(&prefs, "notification-review-role:github:12/sample");
         key_button(&review);
         let dialog = prefs
@@ -739,6 +754,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
     let (_app, ctx) = app();
     let prefs = preferences(&ctx);
     let open = |identity: &str| {
+        open_role_page(&prefs, identity);
         eprintln!(
             "role review startup inventory: {:?}",
             ctx.state.borrow().plugins.overview()
@@ -751,7 +767,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
         key_button(&review);
         wait(
             || prefs.visible_dialog().is_some(),
-            "native access review from General",
+            "native access review from the plugin page",
         );
         prefs
             .visible_dialog()
@@ -870,7 +886,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
     let row = descendants(page.upcast_ref())
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
-        .find(|row| row.subtitle().is_some_and(|text| text.contains(key)))
+        .find(|row| row.widget_name().as_str() == key)
         .unwrap();
     let switch = descendants(row.upcast_ref())
         .into_iter()
@@ -894,7 +910,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
         .provider_inventory()
         .iter()
         .all(|channel| !channel.policy.enabled));
-    prefs.set_visible_page_name("notifications");
+    open_role_page(&prefs, key);
     wait(
         || {
             named::<adw::ActionRow>(&prefs, "notification-role-status:github:12/sample")
@@ -981,7 +997,7 @@ fn native_role_review_is_explicit_reachable_and_restored_without_starting_code()
         "fresh role process failed: {}",
         log.display()
     );
-    println!("PASS General role review is keyboard named/reachable with existing consent; required-both refuses, optional producer/delivery/neither is explicit, UI remains independent, reviewed/admitted roles differ honestly, no channel enablement/start/restart from save, explicit stop precedes role change, unknown settings/other identity survive and fresh process restores the stopped review");
+    println!("PASS plugin-page role review is keyboard named/reachable with existing consent; required-both refuses, optional producer/delivery/neither is explicit, UI remains independent, reviewed/admitted roles differ honestly, no channel enablement/start/restart from save, explicit stop precedes role change, unknown settings/other identity survive and fresh process restores the stopped review");
 }
 
 #[test]

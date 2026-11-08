@@ -193,8 +193,11 @@ An expanded pane is the only pane on screen and therefore the only focus target:
 is restored. The context menu still lists Split Pane, but the entry is inactive in
 that state. Close and restore keep working.
 
-Restore returns keyboard focus to its originating terminal; focus never moves to
-another pane during the expansion. Rebuilding the layout preserves independently
+Restore returns keyboard focus to its originating terminal. Directional focus stays
+on the expanded pane. Clicking a desktop bell notification for a hidden sibling
+restores that workspace's layout and focuses the terminal that rang. An activation
+for a closed terminal or a previous application instance raises the window without
+changing its current workspace or selected terminal. Rebuilding the layout preserves independently
 managed header content rather than treating it as part of expansion state. Focus-driven
 indicators follow their usual per-terminal lifecycle; restoring a sibling does not
 acknowledge them.

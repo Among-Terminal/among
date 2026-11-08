@@ -55,7 +55,7 @@ fn local_catalogue_installs_and_replaces_only_with_explicit_review_in_developmen
         .find(|page| page.title() == "Plugins")
         .unwrap();
     preferences.set_visible_page(&page);
-    assert!(has_label(page.upcast_ref(), "Plugin development mode"));
+    assert!(banner_says(&page, "Plugin development mode"));
     // The real entry point exists in development mode; the file chooser it
     // opens is replaced by the chosen path below.
     button(&page, "Install from local catalogue…");
@@ -93,7 +93,7 @@ fn local_catalogue_installs_and_replaces_only_with_explicit_review_in_developmen
     ));
     screenshot_dialog(&dialog, "local-catalogue-review");
     press(&button(&dialog, "Install"));
-    let installed = "Installed development/sample disabled. Enable separately in Your plugins.";
+    let installed = "Installed development/sample disabled. Switch it on from the Plugins page.";
     wait_for(
         || has_label(view.upcast_ref(), installed),
         Duration::from_secs(5),

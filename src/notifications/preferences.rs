@@ -9,6 +9,7 @@ use std::path::Path;
 pub struct Preferences {
     pub visual: Policy,
     pub audio: Policy,
+    pub desktop: Policy,
     pub sound: AudioSource,
     pub command: Policy,
     pub configuration: Option<Configuration>,
@@ -20,6 +21,7 @@ impl Default for Preferences {
         Self {
             visual: Policy::VISUAL_DEFAULT,
             audio: Policy::DELIVERY_DEFAULT,
+            desktop: Policy::DESKTOP_DEFAULT,
             sound: AudioSource::Builtin,
             command: Policy::DELIVERY_DEFAULT,
             configuration: None,
@@ -32,6 +34,7 @@ impl Default for Preferences {
 pub enum Edit {
     Visual(Policy),
     Audio(Policy),
+    Desktop(Policy),
     Sound(AudioSource),
     CommandPolicy(Policy),
     CommandConfiguration(Option<Configuration>),
@@ -125,6 +128,7 @@ impl Preferences {
         let get = |key| notifications.and_then(|value| value.get(key));
         let visual = policy(get("visual"), Policy::VISUAL_DEFAULT)?;
         let audio = policy(get("audio"), Policy::DELIVERY_DEFAULT)?;
+        let desktop = policy(get("desktop"), Policy::DESKTOP_DEFAULT)?;
         let sound = match get("audio").and_then(|value| value.get("source")) {
             None => AudioSource::Builtin,
             Some(Value::String(value)) if value == "builtin" => AudioSource::Builtin,
@@ -189,6 +193,7 @@ impl Preferences {
         Ok(Self {
             visual,
             audio,
+            desktop,
             sound,
             command,
             configuration,
@@ -204,6 +209,7 @@ impl Preferences {
             }
             Edit::Visual(policy) => self.visual = *policy,
             Edit::Audio(policy) => self.audio = *policy,
+            Edit::Desktop(policy) => self.desktop = *policy,
             Edit::Sound(sound) => self.sound = sound.clone(),
             Edit::CommandPolicy(policy) => {
                 if policy.enabled && self.configuration.is_none() {
@@ -251,6 +257,7 @@ pub fn merge(document: &mut Value, edit: &Edit) -> Result<(), String> {
         let key = match edit {
             Edit::Visual(_) => "visual",
             Edit::Audio(_) | Edit::Sound(_) => "audio",
+            Edit::Desktop(_) => "desktop",
             _ => "command",
         };
         if notifications.get(key).is_none() {
@@ -262,6 +269,7 @@ pub fn merge(document: &mut Value, edit: &Edit) -> Result<(), String> {
         Edit::Provider(_, policy)
         | Edit::Visual(policy)
         | Edit::Audio(policy)
+        | Edit::Desktop(policy)
         | Edit::CommandPolicy(policy) => {
             entry["enabled"] = json!(policy.enabled);
             entry["eligibility"] = json!(condition(policy.eligibility));
@@ -286,4 +294,118 @@ pub fn merge(document: &mut Value, edit: &Edit) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_and_existing_documents_inherit_enabled_background_desktop_alerts() {
+        for document in [
+            json!({"version": 1}),
+            json!({"version": 1, "notifications": {}}),
+            json!({"version": 1, "notifications": {"audio": {"enabled": true}}}),
+            json!({"version": 1, "notifications": {"desktop": {}}}),
+        ] {
+            let original = document.clone();
+            let preferences = Preferences::parse(&document).unwrap();
+            assert_eq!(preferences.desktop, Policy::DESKTOP_DEFAULT);
+            assert!(preferences.desktop.enabled);
+            assert_eq!(
+                preferences.desktop.eligibility,
+                Eligibility::ApplicationBackground
+            );
+            assert_eq!(document, original);
+        }
+        assert_eq!(Preferences::default().desktop, Policy::DESKTOP_DEFAULT);
+    }
+
+    #[test]
+    fn desktop_edits_round_trip_without_changing_other_policies_or_unknown_keys() {
+        let original = json!({
+            "version": 1, "future": {"opaque": [1, 2]},
+            "notifications": {
+                "future": 7,
+                "audio": {"enabled": true, "source": "builtin", "future": "keep"},
+                "desktop": {"future": {"keep": true}}
+            }
+        });
+        for eligibility in [
+            Eligibility::Always,
+            Eligibility::OriginatingTerminalUnfocused,
+            Eligibility::ApplicationBackground,
+        ] {
+            for enabled in [false, true] {
+                let policy = Policy {
+                    enabled,
+                    eligibility,
+                };
+                let mut document = original.clone();
+                let before = Preferences::parse(&document).unwrap();
+                merge(&mut document, &Edit::Desktop(policy)).unwrap();
+                let accepted = Preferences::parse(&document).unwrap();
+                let mut edited = before.clone();
+                edited.edit(&Edit::Desktop(policy)).unwrap();
+                assert_eq!(accepted, edited);
+                assert_eq!(accepted.desktop, policy);
+                assert_eq!(accepted.audio, before.audio);
+                assert_eq!(accepted.visual, before.visual);
+                assert_eq!(accepted.command, before.command);
+                assert_eq!(
+                    document["notifications"]["audio"],
+                    original["notifications"]["audio"]
+                );
+                assert_eq!(
+                    document["notifications"]["desktop"]["future"],
+                    original["notifications"]["desktop"]["future"]
+                );
+                assert_eq!(document["notifications"]["future"], 7);
+                assert_eq!(document["future"], original["future"]);
+            }
+        }
+    }
+
+    #[test]
+    fn partial_desktop_policies_inherit_only_the_missing_parts() {
+        let disabled = Preferences::parse(
+            &json!({"version": 1, "notifications": {"desktop": {"enabled": false}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            disabled.desktop,
+            Policy {
+                enabled: false,
+                eligibility: Eligibility::ApplicationBackground
+            }
+        );
+        let always = Preferences::parse(
+            &json!({"version": 1, "notifications": {"desktop": {"eligibility": "always"}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            always.desktop,
+            Policy {
+                enabled: true,
+                eligibility: Eligibility::Always
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_desktop_policies_are_refused_without_repair() {
+        for desktop in [
+            json!(null),
+            json!(false),
+            json!({"enabled": "true"}),
+            json!({"eligibility": 1}),
+            json!({"eligibility": "future"}),
+        ] {
+            let mut document = json!({"version": 1, "notifications": {"desktop": desktop}});
+            let original = document.clone();
+            assert!(Preferences::parse(&document).is_err());
+            assert!(merge(&mut document, &Edit::Desktop(Policy::DESKTOP_DEFAULT)).is_err());
+            assert_eq!(document, original);
+        }
+    }
 }
