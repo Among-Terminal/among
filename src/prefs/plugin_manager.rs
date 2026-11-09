@@ -689,13 +689,26 @@ fn poll_sources(env: &Rc<Env>) {
 
 #[cfg(test)]
 thread_local! {
-    static FIRST_OPEN_FETCH_FOR_TEST: Cell<bool> = const { Cell::new(false) };
+    static FIRST_OPEN_FETCH_FOR_TEST: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
-/// Turn the first-open fetch on for the rest of this test process.
+/// Turn the first-open fetch on for the page whose source directory is
+/// `root`, until the guard is dropped. Other pages in the process, such as the
+/// default Preferences page behind a test, never fetch.
 #[cfg(test)]
-pub(crate) fn enable_first_open_fetch_for_test() {
-    FIRST_OPEN_FETCH_FOR_TEST.with(|flag| flag.set(true));
+pub(crate) fn enable_first_open_fetch_for_test(root: PathBuf) -> FirstOpenFetchGuard {
+    FIRST_OPEN_FETCH_FOR_TEST.with(|slot| *slot.borrow_mut() = Some(root));
+    FirstOpenFetchGuard
+}
+
+#[cfg(test)]
+pub(crate) struct FirstOpenFetchGuard;
+
+#[cfg(test)]
+impl Drop for FirstOpenFetchGuard {
+    fn drop(&mut self) {
+        FIRST_OPEN_FETCH_FOR_TEST.with(|slot| slot.borrow_mut().take());
+    }
 }
 
 /// The first time the page opens with no saved catalogue of the official
@@ -706,9 +719,9 @@ pub(crate) fn enable_first_open_fetch_for_test() {
 fn check_on_first_open(env: &Rc<Env>) {
     // Tests that script their own refreshes and observations against a fake
     // source must not have this one consume them; the test of this behavior
-    // switches it on.
+    // switches it on for its own page only.
     #[cfg(test)]
-    if !FIRST_OPEN_FETCH_FOR_TEST.with(Cell::get) {
+    if FIRST_OPEN_FETCH_FOR_TEST.with(|slot| slot.borrow().clone()) != env.services.root {
         return;
     }
     let state = &env.state;

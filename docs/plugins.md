@@ -114,8 +114,10 @@ source in Preferences → Plugins → Sources. It is marked **Official** and has
 removal control. The saved catalogue appears directly in Available, without a
 network request. The first time Plugins opens with no saved catalogue, Among
 fetches the official list once by itself; a failure leaves a status page with the
-reason, and **Load** tries again. After a catalogue is saved, opening the page
-never fetches: the refresh button or **Load** does.
+reason, and **Load** tries again. When another saved source already offers plugins,
+the failure is shown above the list instead and the refresh button retries. After
+a catalogue is saved, opening the page never fetches: the refresh button or
+**Load** does.
 
 Choose **Install**, then review access and enable the installed plugin separately.
 Opening pages and checking catalogues never installs, enables or grants access.

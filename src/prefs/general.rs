@@ -305,12 +305,17 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
                 arguments.parse().and_then(|argv| {
                     Command::new(std::path::Path::new(program.text().as_str()), argv)
                         .map(Some)
-                        .map_err(|_| {
-                            flag(
+                        .map_err(|error| match error {
+                            // Each problem is reported on the field that holds it.
+                            among::notifications::commands::Error::InvalidArguments => arguments
+                                .problem(
+                                    "Too many or too long arguments, or one with a NUL character",
+                                ),
+                            _ => flag(
                                 &program,
                                 PROGRAM_TITLE,
-                                Some("Use an absolute path and short arguments"),
-                            );
+                                Some("Use an absolute path to the program"),
+                            ),
                         })
                 })
             };
@@ -464,11 +469,14 @@ impl ArgumentsField {
         if !self.json {
             return Ok(command_arguments::from_lines(&text));
         }
-        serde_json::from_str::<Vec<String>>(&text).map_err(|_| {
-            self.hint
-                .set_text("Arguments must be a JSON list of strings");
-            self.hint.add_css_class("error");
-        })
+        serde_json::from_str::<Vec<String>>(&text)
+            .map_err(|_| self.problem("Arguments must be a JSON list of strings"))
+    }
+
+    /// Say what is wrong with the arguments, on the field itself.
+    fn problem(&self, text: &str) {
+        self.hint.set_text(text);
+        self.hint.add_css_class("error");
     }
 }
 

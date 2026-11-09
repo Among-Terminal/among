@@ -285,7 +285,9 @@ fn an_empty_source_cache_is_fetched_once_on_first_open_and_load_tries_again() {
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
     let (preferences, _) = preferences_window(&ctx);
     let requests = Rc::new(Cell::new(0));
-    crate::prefs::enable_first_open_fetch_for_test();
+    // Only this page fetches by itself; the default Preferences page behind it
+    // has another source directory and stays offline.
+    let _fetch = crate::prefs::enable_first_open_fetch_for_test(empty.clone());
     let view = list_window(
         &ctx,
         &preferences,

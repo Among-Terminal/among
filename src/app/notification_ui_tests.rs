@@ -106,7 +106,8 @@ fn type_arguments(view: &gtk::TextView, arguments: &[&str]) {
         if index > 0 {
             xdo(&["key", "--clearmodifiers", "Return"]);
         }
-        xdo(&["type", "--clearmodifiers", "--delay", "1", argument]);
+        // `--` ends the options, so an argument such as `--verbose` is typed.
+        xdo(&["type", "--clearmodifiers", "--delay", "1", "--", argument]);
     }
     pump_for(Duration::from_millis(50));
     let buffer = view.buffer();

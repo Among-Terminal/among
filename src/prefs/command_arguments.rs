@@ -18,12 +18,12 @@ pub(super) fn to_lines(arguments: &[String]) -> Option<String> {
     Some(arguments.join("\n"))
 }
 
-/// The arguments in `text`: every non-empty line, exactly as written. A
-/// trailing carriage return of a Windows line ending is not part of the
-/// argument; leading and trailing spaces are.
+/// The arguments in `text`: every non-empty line, exactly as written. A line
+/// ends at a line feed or a carriage return, so Unix, Windows and old Mac line
+/// endings, alone or mixed in pasted text, all separate arguments; leading and
+/// trailing spaces belong to the argument.
 pub(super) fn from_lines(text: &str) -> Vec<String> {
-    text.split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+    text.split(['\n', '\r'])
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
         .collect()
@@ -73,9 +73,10 @@ mod tests {
     }
 
     #[test]
-    fn a_windows_line_ending_is_not_part_of_the_argument() {
+    fn every_line_ending_separates_arguments() {
         assert_eq!(from_lines("a\r\nb\r\n"), list(&["a", "b"]));
-        assert_eq!(from_lines("a\rb"), list(&["a\rb"]));
+        assert_eq!(from_lines("a\rb"), list(&["a", "b"]));
+        assert_eq!(from_lines("a\nb\rc\r\nd"), list(&["a", "b", "c", "d"]));
     }
 
     #[test]
