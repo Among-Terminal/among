@@ -100,7 +100,14 @@ fn type_arguments(view: &gtk::TextView, arguments: &[&str]) {
     assert!(view.grab_focus());
     xdo(&["key", "--clearmodifiers", "ctrl+a"]);
     let text = arguments.join("\n");
-    xdo(&["type", "--clearmodifiers", "--delay", "1", &text]);
+    // xdotool types a line feed as a key the text view ignores, so each line
+    // break is a real Return key press.
+    for (index, argument) in arguments.iter().enumerate() {
+        if index > 0 {
+            xdo(&["key", "--clearmodifiers", "Return"]);
+        }
+        xdo(&["type", "--clearmodifiers", "--delay", "1", argument]);
+    }
     pump_for(Duration::from_millis(50));
     let buffer = view.buffer();
     assert_eq!(
