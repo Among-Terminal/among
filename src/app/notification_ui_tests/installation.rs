@@ -335,9 +335,9 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
         &named(&prefs, "notification-command-program"),
         fixture.to_str().unwrap(),
     );
-    type_entry(
+    type_arguments(
         &named(&prefs, "notification-command-arguments"),
-        &json!(["hang", command_root]).to_string(),
+        &["hang", command_root.to_str().unwrap()],
     );
     key_button(&named(&prefs, "notification-command-save"));
     named::<adw::ComboRow>(&prefs, "notification-command-condition").set_selected(0);
@@ -633,9 +633,9 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
         "ordinary separate producer admission",
     );
     let prefs = preferences(&ctx);
-    type_entry(
+    type_arguments(
         &named(&prefs, "notification-command-arguments"),
-        &json!(["record", command_root]).to_string(),
+        &["record", command_root.to_str().unwrap()],
     );
     key_button(&named(&prefs, "notification-command-save"));
     prefs.destroy();
@@ -673,9 +673,9 @@ fn combined_provider_installation_lifecycle_rejects_stale_work_without_stopping_
     let payload: Value = serde_json::from_slice(&std::fs::read(payload).unwrap()).unwrap();
     assert_eq!(payload["kind"], "managed-notification");
     let prefs = preferences(&ctx);
-    type_entry(
+    type_arguments(
         &named(&prefs, "notification-command-arguments"),
-        &json!(["hang", command_root]).to_string(),
+        &["hang", command_root.to_str().unwrap()],
     );
     key_button(&named(&prefs, "notification-command-save"));
     prefs.destroy();

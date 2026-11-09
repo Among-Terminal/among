@@ -95,6 +95,28 @@ fn type_entry(row: &adw::EntryRow, text: &str) {
     assert_eq!(row.text(), text);
 }
 
+/// Type the command arguments with real keys, one per line.
+fn type_arguments(view: &gtk::TextView, arguments: &[&str]) {
+    assert!(view.grab_focus());
+    xdo(&["key", "--clearmodifiers", "ctrl+a"]);
+    let text = arguments.join("\n");
+    // xdotool types a line feed as a key the text view ignores, so each line
+    // break is a real Return key press.
+    for (index, argument) in arguments.iter().enumerate() {
+        if index > 0 {
+            xdo(&["key", "--clearmodifiers", "Return"]);
+        }
+        // `--` ends the options, so an argument such as `--verbose` is typed.
+        xdo(&["type", "--clearmodifiers", "--delay", "1", "--", argument]);
+    }
+    pump_for(Duration::from_millis(50));
+    let buffer = view.buffer();
+    assert_eq!(
+        buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+        text
+    );
+}
+
 fn app() -> (adw::Application, Window) {
     let config = PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap());
     crate::test_isolation::assert_below_check_root(&config);
@@ -1226,14 +1248,16 @@ fn general_controls_drive_production_commands_and_application_retirement() {
         "opening Preferences wrote defaults or prepared command cwd"
     );
     let program: adw::EntryRow = named(&prefs, "notification-command-program");
-    let arguments: adw::EntryRow = named(&prefs, "notification-command-arguments");
+    let arguments: gtk::TextView = named(&prefs, "notification-command-arguments");
     let save: gtk::Button = named(&prefs, "notification-command-save");
     let enabled: adw::SwitchRow = named(&prefs, "notification-command-enabled");
     assert!(!enabled.is_active() && !enabled.is_sensitive());
     type_entry(&program, fixture.to_str().unwrap());
-    type_entry(
+    // An argument with spaces, quotes and shell syntax is one argument: only
+    // the line break separates them, and nothing is run through a shell.
+    type_arguments(
         &arguments,
-        &serde_json::json!(["record", root.to_str().unwrap(), "; $HOME $(false)"]).to_string(),
+        &["record", root.to_str().unwrap(), "; $HOME $(false)"],
     );
     key_button(&save);
     assert!(enabled.is_sensitive() && !enabled.is_active());
@@ -1298,10 +1322,7 @@ fn general_controls_drive_production_commands_and_application_retirement() {
     );
     let tree = root.join("tree");
     std::fs::create_dir(&tree).unwrap();
-    type_entry(
-        &arguments,
-        &serde_json::json!(["tree", tree.to_str().unwrap()]).to_string(),
-    );
+    type_arguments(&arguments, &["tree", tree.to_str().unwrap()]);
     key_button(&save);
     real_bell(&ctx, &backend, first);
     wait(

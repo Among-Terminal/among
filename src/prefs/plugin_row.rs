@@ -194,7 +194,9 @@ pub(super) struct Row {
     warning: gtk::Image,
     version: gtk::Label,
     source: gtk::Label,
-    shield: gtk::Button,
+    /// A mark, not a control: it only explains the plugin's origin and
+    /// protection in its tooltip and accessible description.
+    shield: gtk::Image,
     info: gtk::Button,
     gear: gtk::Button,
     allow: gtk::Button,
@@ -238,7 +240,11 @@ impl Row {
         source.add_css_class("caption");
         source.add_css_class("dim-label");
         source.set_visible(false);
-        let shield = icon_button("security-high-symbolic", "", "plugin-shield");
+        let shield = gtk::Image::from_icon_name("security-high-symbolic");
+        shield.set_widget_name("plugin-shield");
+        shield.set_valign(gtk::Align::Center);
+        shield.set_margin_start(6);
+        shield.set_margin_end(6);
         let info = icon_button("help-about-symbolic", "Plugin details", "plugin-info");
         let gear = icon_button(
             "preferences-system-symbolic",
@@ -317,23 +323,37 @@ impl Row {
                 }
             }
         });
-        let window_of = |button: &gtk::Button| {
-            button
+        let window_of = |widget: &gtk::Button| {
+            widget
                 .root()
                 .and_then(|root| root.downcast::<adw::PreferencesWindow>().ok())
         };
-        self.info.connect_clicked({
+        // The details open from the info icon and also from the title and
+        // description area of the row: the row is the larger target, the icon
+        // stays for keyboard and assistive technology users who look for it.
+        let open_details = {
             let env = env.clone();
             let key = key.to_owned();
             let is_current = is_current.clone();
-            move |button| {
+            move |window: Option<adw::PreferencesWindow>| {
                 if !is_current() {
                     return;
                 }
-                if let Some(window) = window_of(button) {
+                if let Some(window) = window {
                     super::plugin_page::open(&env, &key, &window);
                 }
             }
+        };
+        self.info.connect_clicked({
+            let open_details = open_details.clone();
+            move |button| open_details(window_of(button))
+        });
+        self.row.set_activatable(true);
+        self.row.connect_activated(move |row| {
+            open_details(
+                row.root()
+                    .and_then(|root| root.downcast::<adw::PreferencesWindow>().ok()),
+            )
         });
         self.gear.connect_clicked({
             let env = env.clone();
@@ -530,7 +550,7 @@ impl Row {
         self.source.set_text(label.as_deref().unwrap_or(""));
         if let Some(origin) = origin {
             let shield = Shield::of(origin, weaker);
-            self.shield.set_icon_name(shield.icon_name());
+            self.shield.set_icon_name(Some(shield.icon_name()));
             let tooltip = shield.tooltip(&features);
             self.shield.set_tooltip_text(Some(&tooltip));
             self.shield.update_property(&[

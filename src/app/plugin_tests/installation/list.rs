@@ -176,12 +176,7 @@ fn plugin_list_is_built_offline_from_saved_sources_with_one_state_control_per_ro
     assert_eq!(shown_buttons(&notes), ["Install"]);
     assert!(has_label(notes.upcast_ref(), "acme/plugins"));
     // The shields tell the three origins apart in words, not colour alone.
-    let tooltip = |row: &adw::ActionRow| {
-        named_button(row, "plugin-shield")
-            .tooltip_text()
-            .unwrap()
-            .to_string()
-    };
+    let tooltip = |row: &adw::ActionRow| named_shield(row).tooltip_text().unwrap().to_string();
     assert!(tooltip(&status).starts_with("Official plugin\n"));
     assert!(tooltip(&notes).starts_with("Plugin from another publisher\n"));
     assert!(tooltip(&updated).starts_with("Plugin from another publisher\n"));
@@ -209,6 +204,17 @@ fn plugin_list_is_built_offline_from_saved_sources_with_one_state_control_per_ro
         .iter()
         .any(|widget| widget.is::<adw::SwitchRow>() && widget.is_mapped()));
     screenshot(&preferences, "plugin-available-page");
+    focus(&preferences);
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    settle();
+
+    // The title and description area of the row opens the same page as the
+    // info icon.
+    adw::prelude::ActionRowExt::activate(&status);
+    wait_for(
+        || has_label(preferences.upcast_ref(), "Checked when the plugin starts."),
+        Duration::from_secs(3),
+    );
     focus(&preferences);
     xdo(&["key", "--clearmodifiers", "Escape"]);
     settle();
@@ -266,7 +272,7 @@ fn plugin_list_is_built_offline_from_saved_sources_with_one_state_control_per_ro
 
 #[test]
 #[ignore = "requires an isolated display, xdotool and ImageMagick"]
-fn an_empty_source_cache_shows_a_status_page_and_asks_nothing_until_load_is_pressed() {
+fn an_empty_source_cache_is_fetched_once_on_first_open_and_load_tries_again() {
     let root = crate::plugin::inventory::root().unwrap();
     crate::test_isolation::assert_below_check_root(&root);
     let empty = crate::test_isolation::check_root().join("empty-sources");
@@ -279,6 +285,9 @@ fn an_empty_source_cache_shows_a_status_page_and_asks_nothing_until_load_is_pres
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
     let (preferences, _) = preferences_window(&ctx);
     let requests = Rc::new(Cell::new(0));
+    // Only this page fetches by itself; the default Preferences page behind it
+    // has another source directory and stays offline.
+    let _fetch = crate::prefs::enable_first_open_fetch_for_test(empty.clone());
     let view = list_window(
         &ctx,
         &preferences,
@@ -295,15 +304,8 @@ fn an_empty_source_cache_shows_a_status_page_and_asks_nothing_until_load_is_pres
             install: Rc::new(|_| Err(crate::plugin::data::Problem("nothing is installed here"))),
         },
     );
-    wait_for(
-        || has_label(view.upcast_ref(), "Plugin list not loaded"),
-        Duration::from_secs(5),
-    );
-    pump_for(Duration::from_millis(600));
-    assert_eq!(requests.get(), 0, "opening the page requested nothing");
-    screenshot(&view, "plugins-status");
-    press(&button(&view, "Load"));
-    wait_for(|| requests.get() == 1, Duration::from_secs(3));
+    // No button is pressed: with nothing saved, the page asks for the official
+    // list by itself, once, and shows why it could not get it.
     wait_for(
         || {
             has_label(
@@ -311,14 +313,22 @@ fn an_empty_source_cache_shows_a_status_page_and_asks_nothing_until_load_is_pres
                 "Could not load the list: this test has no network",
             )
         },
-        Duration::from_secs(3),
+        Duration::from_secs(5),
     );
-    assert_eq!(requests.get(), 1);
+    pump_for(Duration::from_millis(600));
+    assert_eq!(
+        requests.get(),
+        1,
+        "the first open fetched once and did not keep retrying"
+    );
+    screenshot(&view, "plugins-status");
+    press(&button(&view, "Load"));
+    wait_for(|| requests.get() == 2, Duration::from_secs(3));
     view.destroy();
     preferences.destroy();
     ctx.window.destroy();
     println!(
-        "PASS empty cache: status page, no request on open, one request on Load, the failure shown"
+        "PASS empty cache: one automatic request on first open, the failure shown, Load tries again"
     );
 }
 
@@ -648,7 +658,7 @@ fn plugin_controls_remain_named_and_operable_in_high_contrast_without_animation(
     assert!(adw::StyleManager::default().is_high_contrast());
     let (preferences, _) = preferences_window(&ctx);
     let row = row_by_identity(&preferences, "github:12/sample");
-    let shield = named_button(&row, "plugin-shield");
+    let shield = named_shield(&row);
     crate::app::notification_ui_tests::accessible_label(&shield, "Plugin from another publisher");
     assert!(shield
         .tooltip_text()

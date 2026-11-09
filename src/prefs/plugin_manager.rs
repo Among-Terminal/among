@@ -1,15 +1,16 @@
 //! the Plugins page: Installed and Available groups built from the saved
-//! snapshots of every registered source. opening the page reads saved files
-//! only; the network is used when the user presses Load or refresh, and
-//! never in the background. rows retain identity and widget instances while
-//! observations and search change.
+//! snapshots of every registered source. opening the page reads saved files;
+//! the one exception is a first open with no saved catalogue of the official
+//! source, which fetches it once. after that the network is used only when the
+//! user presses Load or refresh, never in the background. rows retain identity
+//! and widget instances while observations and search change.
 
 use super::plugin_row::{Row, Shown};
 use super::*;
 use crate::plugin::data::Problem;
 use crate::plugin::host::Overview;
 use crate::plugin::install::listing::{
-    self, Listing, Offer, SourceCatalogue, SourceState, Standing,
+    self, CatalogueState, Listing, Offer, SourceCatalogue, SourceState, Standing,
 };
 use crate::plugin::install::registry::{self, Outcome, Registration, Request};
 use crate::plugin::install::source::{self, Inspection, InstallJob, Job as SourceJob, Selection};
@@ -95,6 +96,9 @@ pub(super) struct State {
     loader: RefCell<Option<registry::Job>>,
     reload_requested: Cell<bool>,
     loaded: Cell<bool>,
+    /// Whether the first-open check of the official catalogue was decided: it
+    /// runs once per page, and only while no snapshot is saved.
+    first_open_decided: Cell<bool>,
     refreshing: RefCell<Option<Refreshing>>,
     channel: Cell<Channel>,
     notice: RefCell<Notice>,
@@ -113,6 +117,7 @@ impl State {
             loader: RefCell::new(None),
             reload_requested: Cell::new(false),
             loaded: Cell::new(false),
+            first_open_decided: Cell::new(false),
             refreshing: RefCell::new(None),
             channel: Cell::new(if development {
                 Channel::Prerelease
@@ -615,6 +620,7 @@ fn poll_sources(env: &Rc<Env>) {
     if let Some(outcome) = finished {
         state.loader.borrow_mut().take();
         state.loaded.set(true);
+        let loaded_ok = outcome.is_ok();
         match outcome {
             Ok(Outcome::EffectiveList {
                 registrations,
@@ -640,6 +646,8 @@ fn poll_sources(env: &Rc<Env>) {
         rebuild_catalogues(env);
         if state.reload_requested.replace(false) {
             start_load(env);
+        } else if loaded_ok {
+            check_on_first_open(env);
         }
     }
     let current = state.refreshing.borrow_mut().take();
@@ -676,6 +684,58 @@ fn poll_sources(env: &Rc<Env>) {
             }
         },
         None => {}
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FIRST_OPEN_FETCH_FOR_TEST: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Turn the first-open fetch on for the page whose source directory is
+/// `root`, until the guard is dropped. Other pages in the process, such as the
+/// default Preferences page behind a test, never fetch.
+#[cfg(test)]
+pub(crate) fn enable_first_open_fetch_for_test(root: PathBuf) -> FirstOpenFetchGuard {
+    FIRST_OPEN_FETCH_FOR_TEST.with(|slot| *slot.borrow_mut() = Some(root));
+    FirstOpenFetchGuard
+}
+
+#[cfg(test)]
+pub(crate) struct FirstOpenFetchGuard;
+
+#[cfg(test)]
+impl Drop for FirstOpenFetchGuard {
+    fn drop(&mut self) {
+        FIRST_OPEN_FETCH_FOR_TEST.with(|slot| slot.borrow_mut().take());
+    }
+}
+
+/// The first time the page opens with no saved catalogue of the official
+/// source, fetch it without waiting for a button: an empty Plugins page on a
+/// fresh install gives the user nothing to act on. Once a snapshot is saved the
+/// page shows it at once and never fetches by itself. A failed fetch leaves the
+/// status page with the reason and the Load button to try again.
+fn check_on_first_open(env: &Rc<Env>) {
+    // Tests that script their own refreshes and observations against a fake
+    // source must not have this one consume them; the test of this behavior
+    // switches it on for its own page only.
+    #[cfg(test)]
+    if FIRST_OPEN_FETCH_FOR_TEST.with(|slot| slot.borrow().clone()) != env.services.root {
+        return;
+    }
+    let state = &env.state;
+    if state.first_open_decided.replace(true) {
+        return;
+    }
+    let missing = state
+        .catalogues
+        .borrow()
+        .iter()
+        .find(|source| source.official)
+        .is_none_or(|official| matches!(official.state, CatalogueState::NoSnapshot));
+    if missing {
+        start_refresh(env);
     }
 }
 
@@ -1271,7 +1331,8 @@ fn refresh_available_header(env: &Env, ui: &Ui) {
             "Plugin list not loaded",
             match &notice {
                 Notice::Failed(problem) => format!("Could not load the list: {problem}"),
-                _ => "No list of plugins is saved on this computer yet. Nothing is requested until you press Load.".to_owned(),
+                _ => "No list of plugins is saved on this computer yet. Press Load to fetch it."
+                    .to_owned(),
             },
             Some("Load"),
         )

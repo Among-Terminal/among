@@ -16,6 +16,7 @@ use crate::plugin::host::{Configuration, PluginState};
 use crate::shortcuts::{self, Action, Bindings};
 
 mod about;
+mod command_arguments;
 pub(crate) mod general;
 pub(crate) mod local_catalogue;
 pub(crate) mod notification_role;
@@ -335,6 +336,8 @@ fn attach_capture(
 }
 
 #[cfg(test)]
+pub(crate) use plugin_manager::enable_first_open_fetch_for_test;
+#[cfg(test)]
 pub(crate) use plugin_manager::Services as PluginServices;
 
 #[cfg(test)]
@@ -528,7 +531,7 @@ mod tests {
                 panic!("accessible property mismatch: {problem}");
             }
         }
-        fn assert_weaker(shield: &gtk::Button) {
+        fn assert_weaker(shield: &gtk::Image) {
             assert!(shield.is_visible(), "the weaker-protection shield is shown");
             assert_eq!(
                 shield.icon_name().as_deref(),
@@ -550,9 +553,11 @@ mod tests {
                 .expect("the installed plugin row");
             let mut buttons = Vec::new();
             collect::<gtk::Button>(row.upcast_ref(), &mut buttons);
-            let shield = buttons
+            let mut images = Vec::new();
+            collect::<gtk::Image>(row.upcast_ref(), &mut images);
+            let shield = images
                 .iter()
-                .find(|button| button.widget_name().as_str() == "plugin-shield")
+                .find(|image| image.widget_name().as_str() == "plugin-shield")
                 .cloned()
                 .expect("the row shield");
             let allow = buttons
@@ -578,7 +583,7 @@ mod tests {
         // the real info page carries the protection line and the page consent action.
         let protection_page = |page: &adw::PreferencesPage,
                                row: &adw::ActionRow,
-                               shield: &gtk::Button,
+                               shield: &gtk::Image,
                                row_allow: &gtk::Button| {
             let window = adw::PreferencesWindow::builder().default_width(760).build();
             window.add(page);

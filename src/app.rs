@@ -5096,6 +5096,19 @@ fn confirm_managed_restart(
     dialog.present(Some(&parent));
 }
 
+/// How many characters wide the access review wants its text.
+const REVIEW_WIDTH_CHARS: i32 = 64;
+
+/// An empty label whose only job is to make an alert dialog ask for a readable
+/// width (see `review_managed_access`).
+fn wide_ruler() -> gtk::Label {
+    let ruler = gtk::Label::new(None);
+    ruler.set_wrap(true);
+    ruler.set_width_chars(REVIEW_WIDTH_CHARS);
+    ruler.set_max_width_chars(REVIEW_WIDTH_CHARS);
+    ruler
+}
+
 fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>, enable: bool) {
     let Some((entry, _)) = ctx.state.borrow().plugins.managed_details(name) else {
         return;
@@ -5109,6 +5122,15 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>,
             crate::plugin::sandbox::level::probe().best(),
         ))
         .build();
+    // The review text is long: the default alert width wraps it to a narrow
+    // column that needs scrolling. The dialog shrinks to its parent when that
+    // is narrower, so this is a ceiling, not a minimum window size.
+    // An alert's labels wrap at a narrow default width, so this long review
+    // text became a column of about 35 characters that needed scrolling. A
+    // wrapping label asks for width_chars wide but can shrink to its longest
+    // word, so the dialog grows to a readable width and still fits a narrow
+    // window. The same width comes from the labels of the full review below.
+    dialog.set_extra_child(Some(&wide_ruler()));
     dialog.add_response("cancel", "Cancel");
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("cancel"));
@@ -5198,6 +5220,8 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>,
     );
     let origin = gtk::Label::new(Some(&format!("{source} · {}", entry.key())));
     origin.set_wrap(true);
+    origin.set_width_chars(REVIEW_WIDTH_CHARS);
+    origin.set_max_width_chars(REVIEW_WIDTH_CHARS);
     controls.append(&origin);
     let reviewed = ctx.state.borrow().plugins.reviewed_notification_role(name);
     let admitted = ctx.state.borrow().plugins.admitted_notification_role(name);
@@ -5205,6 +5229,8 @@ fn review_managed_access(ctx: &Window, name: &str, parent: Option<&gtk::Window>,
         reviewed.as_ref().map(|role| prefs::notification_role::label(*role)).unwrap_or("Not accepted"),
         prefs::notification_role::label(admitted))));
     status.set_wrap(true);
+    status.set_width_chars(REVIEW_WIDTH_CHARS);
+    status.set_max_width_chars(REVIEW_WIDTH_CHARS);
     status.set_widget_name("notification-reviewed-admitted-role");
     controls.append(&status);
     let role_picker =

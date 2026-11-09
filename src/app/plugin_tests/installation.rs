@@ -20,6 +20,22 @@ fn named_button(root: &impl IsA<gtk::Widget>, name: &str) -> gtk::Button {
         .unwrap_or_else(|| panic!("no control named {name}"))
 }
 
+/// The shield of a row. It is a mark with a tooltip, not a control, so it is
+/// found as an image and must not be a button.
+fn named_shield(root: &impl IsA<gtk::Widget>) -> gtk::Image {
+    let found = widgets(root.as_ref())
+        .into_iter()
+        .find(|widget| widget.widget_name() == "plugin-shield")
+        .expect("the row has a shield");
+    assert!(
+        !found.is::<gtk::Button>(),
+        "the shield is not a control: pressing it would show nothing"
+    );
+    found
+        .downcast::<gtk::Image>()
+        .expect("the shield is an image")
+}
+
 /// Navigation transitions can leave the underlying list mapped briefly. Scope
 /// actions to the selected page so an identically labelled sibling action
 /// cannot be mistaken for the control the user is reviewing.
