@@ -95,6 +95,9 @@ jobs:
           cargo build --release --locked --example audio-probe --example audio-retirement-probe
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Capture actual source-bound installed plugin profile for packaged rendering
+        env:
+          # Read-only token for GitHub's unauthenticated API allowance only.
+          AMONG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           mkdir -p "$AMONG_CHECK_ROOT" appimage-checker

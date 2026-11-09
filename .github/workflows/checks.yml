@@ -52,6 +52,9 @@ jobs:
           cargo +1.98.1 build --locked --release --manifest-path tools/among-tools/Cargo.toml
           cargo +1.98.1 test --bin among --locked --no-run --message-format=json > "$RUNNER_TEMP/published-development-tests.jsonl"
       - name: Published selection and local development installation
+        env:
+          # Read-only token for GitHub's unauthenticated API allowance only.
+          AMONG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           host_tests="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .target.kind == ["bin"] and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one actual among test executable") end' "$RUNNER_TEMP/published-development-tests.jsonl")"
@@ -286,6 +289,9 @@ jobs:
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-plugin-development target/release/among
       - name: Isolated native X11 regressions
+        env:
+          # Read-only token for GitHub's unauthenticated API allowance only.
+          AMONG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tools/among-tools/target/release/among-tools ci-x11 \

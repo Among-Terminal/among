@@ -67,6 +67,7 @@ fn actual_environment_probe_preserves_both_hosted_markers_without_forwarding_cre
         ("RUNNER_ENVIRONMENT".into(), "github-hosted".into()),
         ("RUNNER_ENV".into(), "wrong-marker".into()),
         ("GH_TOKEN".into(), "synthetic-secret".into()),
+        ("AMONG_GITHUB_TOKEN".into(), "synthetic-api-token".into()),
     ]);
     let env = among_tools::display::launch_environment(&caller);
     let base = among_tools::storage::private_directory(&std::env::temp_dir(), "among-display-env")?;
@@ -87,6 +88,9 @@ fn actual_environment_probe_preserves_both_hosted_markers_without_forwarding_cre
     assert!(text
         .lines()
         .any(|line| line == "RUNNER_ENVIRONMENT=github-hosted"));
+    assert!(text
+        .lines()
+        .any(|line| line == "AMONG_GITHUB_TOKEN=synthetic-api-token"));
     assert!(!text.contains("synthetic-secret"));
     assert!(!text.contains("wrong-marker"));
     Ok(())

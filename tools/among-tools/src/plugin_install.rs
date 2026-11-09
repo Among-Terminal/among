@@ -57,6 +57,8 @@ fn native_environment(base: &Path, inputs: &Path) -> Result<BTreeMap<OsString, O
             "DISPLAY",
             "LIBGL_ALWAYS_SOFTWARE",
             "GSK_RENDERER",
+            // Sent by the application to api.github.com only.
+            "AMONG_GITHUB_TOKEN",
         ],
     );
     for (key, directory) in [

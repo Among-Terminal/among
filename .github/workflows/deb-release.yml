@@ -99,6 +99,9 @@ jobs:
           tools/among-tools/target/release/among-tools ci-deb-build . "$BUILD_TARGET" \
             "$BUILD_ARCH" "$BUILD_IMAGE" release-candidate
       - name: Observe native installation and bind its profile for compiler-free renderer replay
+        env:
+          # Read-only token for GitHub's unauthenticated API allowance only.
+          AMONG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           source_sha="$(git -c "safe.directory=$(pwd -P)" rev-parse HEAD)"
           case "$source_sha" in ''|*[!0-9a-f]*) echo 'invalid host source SHA' >&2; exit 1 ;; esac

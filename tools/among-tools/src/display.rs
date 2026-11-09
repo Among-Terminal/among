@@ -18,7 +18,18 @@ pub enum Mode {
 }
 
 pub fn launch_environment(caller: &BTreeMap<OsString, OsString>) -> BTreeMap<OsString, OsString> {
-    allowed_environment(caller, &["PATH", "GITHUB_ACTIONS", "RUNNER_ENVIRONMENT"])
+    // AMONG_GITHUB_TOKEN is the one credential the commands may receive: the
+    // application sends it to api.github.com only, to lift the unauthenticated
+    // request allowance that shared CI addresses exhaust.
+    allowed_environment(
+        caller,
+        &[
+            "PATH",
+            "GITHUB_ACTIONS",
+            "RUNNER_ENVIRONMENT",
+            "AMONG_GITHUB_TOKEN",
+        ],
+    )
 }
 
 pub fn read_display(reader: &mut impl Read, timeout: Duration) -> Result<String> {

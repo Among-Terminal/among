@@ -136,6 +136,13 @@ response did not provide a valid count. No automatic retry or periodic check is
 scheduled. A permission refusal without a rate-limit indication does not stop
 the remaining sources.
 
+GitHub counts unauthenticated API requests per network address (60 an hour),
+which busy shared addresses use up. Set the optional environment variable
+`AMONG_GITHUB_TOKEN` to a GitHub token to raise that allowance. A public-read
+token is enough. The token is sent only to `https://api.github.com`, never to
+the asset delivery host that package downloads redirect to, and an empty value
+is ignored. It is not stored, logged or shown in error text.
+
 A successful stable check saves its catalogue for offline use. A failed check
 keeps the saved list, including its real age. Lists older than a day are marked.
 A publisher change keeps serving the old list until **Review…** and explicit
