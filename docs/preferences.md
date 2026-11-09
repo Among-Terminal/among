@@ -43,8 +43,14 @@ when animations are off. Workspace hue and terminal allocation are not notificat
 state.
 
 Policy edits apply immediately. The command's absolute program (a text field with a
-file chooser) and literal arguments (a JSON list of strings) require **Save**, in
-the Command group's header. An empty program clears
+file chooser) and literal arguments require **Save**, in the Command group's
+header. The arguments are a multi-line field with one argument per line: spaces,
+quotes and shell characters in a line belong to that argument, nothing is split
+or unquoted, the command runs without a shell, and empty lines are not arguments
+(a line of spaces is). The saved settings keep the same list of strings, so
+settings saved with the earlier JSON-list field load unchanged. Arguments that a
+line cannot hold exactly, such as an empty one or one with a line break, are shown
+and edited as the JSON list they were saved as. An empty program clears
 configuration and disables the channel. Saving or enabling does not run a command
 or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
 
@@ -214,7 +220,9 @@ and saved catalogues without a network request. Search matches name, description
 identity or origin in both groups. Equal names remain separate identities. A row
 from a user source names its repository when several sources are registered; a
 removed source is labelled **source removed** and does not stop its installed
-plugins. Without a saved catalogue, **Load** requests it only when pressed.
+plugins. Without a saved catalogue, the first open fetches the official one once
+by itself; if that fails, a status page names the reason and **Load** tries again.
+Once a catalogue is saved, opening the page never fetches.
 
 Each row has one action slot: progress and an install cancellation control,
 **Update**, **Install**, or **Uninstall**. A new installation starts disabled.

@@ -112,8 +112,10 @@ plugins. The official ones (clock, system-status, pane-pwd) come from the
 repository `Among-Terminal/among-plugins` through the always-present registered
 source in Preferences → Plugins → Sources. It is marked **Official** and has no
 removal control. The saved catalogue appears directly in Available, without a
-network request. On first launch, **Load** checks the official source explicitly;
-without a saved catalogue and without network access, the list remains unloaded.
+network request. The first time Plugins opens with no saved catalogue, Among
+fetches the official list once by itself; a failure leaves a status page with the
+reason, and **Load** tries again. After a catalogue is saved, opening the page
+never fetches: the refresh button or **Load** does.
 
 Choose **Install**, then review access and enable the installed plugin separately.
 Opening pages and checking catalogues never installs, enables or grants access.
@@ -253,13 +255,16 @@ an install to the same version with different content.
 ### Native inventory
 
 Preferences → Plugins shows Installed and Available from committed receipts,
-runtime observations and saved source snapshots. Opening it uses no network.
+runtime observations and saved source snapshots. Opening it uses no network,
+except the single first-open fetch of the official list when none is saved.
 The row shows its version, description, trust shield, info icon and one package
-action. A stable Running state needs no extra line; an unavailable or faulted
+action. The shield is a mark, not a button: its tooltip says whose plugin it is
+and what it can read. A stable Running state needs no extra line; an unavailable or faulted
 state replaces the description with its reason. Faults keep the desired enable
 switch on. Equal display names retain separate identities and settings.
 
-The info icon opens a subpage with source, protection and access cards. Available
+The info icon, or a click on the row's title and description, opens a subpage with
+source, protection and access cards. Available
 plugins can be inspected before installation, without an enable switch or settings.
 **Technical details** shows identity and API compatibility in an ordinary run;
 development mode adds release provenance, digests, generation and recovery of a

@@ -283,19 +283,14 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
         }
     });
     commands.add(&program);
-    let arguments = adw::EntryRow::new();
-    arguments.set_title(ARGUMENTS_TITLE);
-    arguments.set_widget_name("notification-command-arguments");
-    arguments.set_text(
-        &current
+    let arguments = ArgumentsField::new(
+        current
             .configuration
             .as_ref()
-            .map(|config| serde_json::json!(config.arguments()).to_string())
-            .unwrap_or_else(|| "[]".into()),
+            .map_or(&[][..], Command::arguments),
     );
-    commands.add(&arguments);
+    commands.add(&arguments.row);
     program.connect_changed(|entry| flag(entry, PROGRAM_TITLE, None));
-    arguments.connect_changed(|entry| flag(entry, ARGUMENTS_TITLE, None));
     save.connect_clicked({
         let ctx = ctx.clone();
         let banner = banner.clone();
@@ -307,25 +302,17 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
             let configuration = if program.text().is_empty() {
                 Ok(None)
             } else {
-                serde_json::from_str::<Vec<String>>(&arguments.text())
-                    .map_err(|_| {
-                        flag(
-                            &arguments,
-                            ARGUMENTS_TITLE,
-                            Some("Arguments must be a JSON list of strings"),
-                        );
-                    })
-                    .and_then(|argv| {
-                        Command::new(std::path::Path::new(program.text().as_str()), argv)
-                            .map(Some)
-                            .map_err(|_| {
-                                flag(
-                                    &program,
-                                    PROGRAM_TITLE,
-                                    Some("Use an absolute path and short arguments"),
-                                );
-                            })
-                    })
+                arguments.parse().and_then(|argv| {
+                    Command::new(std::path::Path::new(program.text().as_str()), argv)
+                        .map(Some)
+                        .map_err(|_| {
+                            flag(
+                                &program,
+                                PROGRAM_TITLE,
+                                Some("Use an absolute path and short arguments"),
+                            );
+                        })
+                })
             };
             // An invalid value is reported on its own row, so nothing is sent.
             let Ok(configuration) = configuration else {
@@ -376,7 +363,114 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
 }
 
 const PROGRAM_TITLE: &str = "Program";
-const ARGUMENTS_TITLE: &str = "Arguments (JSON list)";
+
+const ARGUMENTS_HINT: &str = "One argument per line";
+const ARGUMENTS_JSON_HINT: &str =
+    "These arguments cannot be written one per line; edit them as a JSON list";
+
+/// The command's arguments: a multi-line field, one argument per line, so an
+/// argument may hold spaces and quotes without any quoting rules.
+///
+/// Arguments saved earlier that a line cannot hold exactly (an empty one, or
+/// one with a line break) are shown and edited as the JSON list they were saved
+/// as, so loading them never changes them.
+#[derive(Clone)]
+struct ArgumentsField {
+    row: adw::PreferencesRow,
+    view: gtk::TextView,
+    hint: gtk::Label,
+    json: bool,
+}
+
+impl ArgumentsField {
+    fn new(initial: &[String]) -> Self {
+        let (text, json) = match command_arguments::to_lines(initial) {
+            Some(text) => (text, false),
+            None => (serde_json::json!(initial).to_string(), true),
+        };
+        let row = adw::PreferencesRow::new();
+        row.set_title("Arguments");
+        row.set_activatable(false);
+        let hint = gtk::Label::new(Some(if json {
+            ARGUMENTS_JSON_HINT
+        } else {
+            ARGUMENTS_HINT
+        }));
+        hint.add_css_class("caption");
+        hint.add_css_class("dim-label");
+        hint.set_xalign(0.0);
+        hint.set_wrap(true);
+        let title = gtk::Label::new(Some("Arguments"));
+        title.set_xalign(0.0);
+        let view = gtk::TextView::new();
+        view.set_widget_name("notification-command-arguments");
+        view.set_monospace(true);
+        view.set_wrap_mode(gtk::WrapMode::None);
+        view.set_accepts_tab(false);
+        view.set_top_margin(6);
+        view.set_bottom_margin(6);
+        view.set_left_margin(8);
+        view.set_right_margin(8);
+        view.update_property(&[gtk::accessible::Property::Label("Arguments, one per line")]);
+        view.buffer().set_text(&text);
+        let scroll = gtk::ScrolledWindow::new();
+        scroll.set_child(Some(&view));
+        scroll.set_min_content_height(76);
+        scroll.set_max_content_height(180);
+        scroll.set_propagate_natural_height(true);
+        scroll.set_has_frame(true);
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        column.set_margin_top(10);
+        column.set_margin_bottom(10);
+        column.set_margin_start(12);
+        column.set_margin_end(12);
+        column.append(&title);
+        column.append(&hint);
+        column.append(&scroll);
+        row.set_child(Some(&column));
+        let field = Self {
+            row,
+            view,
+            hint,
+            json,
+        };
+        field.view.buffer().connect_changed({
+            let hint = field.hint.downgrade();
+            move |_| {
+                if let Some(hint) = hint.upgrade() {
+                    hint.remove_css_class("error");
+                    hint.set_text(if json {
+                        ARGUMENTS_JSON_HINT
+                    } else {
+                        ARGUMENTS_HINT
+                    });
+                }
+            }
+        });
+        field
+    }
+
+    fn text(&self) -> String {
+        let buffer = self.view.buffer();
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .to_string()
+    }
+
+    /// The arguments as written. A list that cannot be read is reported on the
+    /// field and gives `Err`.
+    fn parse(&self) -> Result<Vec<String>, ()> {
+        let text = self.text();
+        if !self.json {
+            return Ok(command_arguments::from_lines(&text));
+        }
+        serde_json::from_str::<Vec<String>>(&text).map_err(|_| {
+            self.hint
+                .set_text("Arguments must be a JSON list of strings");
+            self.hint.add_css_class("error");
+        })
+    }
+}
 
 /// The sound row's controls. Only weak references are kept, so the page's
 /// callbacks and timer never keep a closed window alive.
@@ -981,5 +1075,42 @@ mod tests {
             }
             assert!(!found, "{removed} should no longer exist");
         }
+    }
+}
+
+#[cfg(test)]
+mod arguments_tests {
+    use super::*;
+
+    fn list(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display"]
+    fn the_arguments_field_shows_one_per_line_and_reads_them_back_exactly() {
+        adw::init().expect("isolated GTK display");
+        let saved = list(&["--title", "a b", "\"quoted\"", "; $HOME"]);
+        let field = ArgumentsField::new(&saved);
+        assert_eq!(field.text(), "--title\na b\n\"quoted\"\n; $HOME");
+        assert_eq!(field.parse(), Ok(saved));
+        // Editing with blank lines in between changes nothing but the blanks.
+        field.view.buffer().set_text("x\n\n  y  \n\n");
+        assert_eq!(field.parse(), Ok(list(&["x", "  y  "])));
+        field.view.buffer().set_text("");
+        assert_eq!(field.parse(), Ok(Vec::new()));
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display"]
+    fn arguments_a_line_cannot_hold_stay_a_json_list_and_load_unchanged() {
+        adw::init().expect("isolated GTK display");
+        let saved = list(&["a", "", "two\nlines"]);
+        let field = ArgumentsField::new(&saved);
+        assert!(field.json);
+        assert_eq!(field.parse(), Ok(saved));
+        field.view.buffer().set_text("not json");
+        assert_eq!(field.parse(), Err(()));
+        assert!(field.hint.has_css_class("error"));
     }
 }
