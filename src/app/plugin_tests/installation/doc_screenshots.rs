@@ -283,9 +283,55 @@ fn every_preferences_tab_is_captured_for_the_documentation() {
     choose(&preferences, "terminal-text-background", "Solarized dark");
     choose(&preferences, "terminal-ansi-palette", "Solarized");
     shoot(&preferences, "terminal");
+    // The dropdown open. The high-contrast scheme is not captured here: it is
+    // chosen by the environment before the process starts, not by a call.
+    resize(&preferences, 640);
+    adw::prelude::ActionRowExt::activate(&first_of::<adw::ComboRow>(&preferences));
+    settle();
+    shoot(&preferences, "terminal-dropdown");
+    focus(&preferences);
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    settle();
     resize(&preferences, 680);
     show_tab(&preferences, "About");
     shoot(&preferences, "about");
+
+    // Search in the plugin list.
+    resize(&preferences, 640);
+    show_tab(&preferences, "Plugins");
+    let search: gtk::SearchEntry = first_of(&preferences);
+    focus(&preferences);
+    assert!(search.grab_focus());
+    xdo(&["type", "--clearmodifiers", "clock"]);
+    settle();
+    shoot(&preferences, "plugins-search");
+    xdo(&["key", "--clearmodifiers", "ctrl+a", "BackSpace"]);
+
+    // The add-source dialog, then the command arguments one per line.
+    focus(&preferences);
+    adw::prelude::ActionRowExt::activate(&row_titled(&preferences, "Sources"));
+    wait_for(
+        || has_label(preferences.upcast_ref(), "Add source"),
+        Duration::from_secs(3),
+    );
+    adw::prelude::ActionRowExt::activate(&row_titled(&preferences, "Add source"));
+    wait_for(
+        || preferences.visible_dialog().is_some(),
+        Duration::from_secs(3),
+    );
+    shoot(&preferences, "sources-add");
+    focus(&preferences);
+    xdo(&["key", "--clearmodifiers", "Escape"]);
+    settle();
+    back(&preferences);
+    resize(&preferences, 1100);
+    show_tab(&preferences, "Notifications");
+    let arguments: gtk::TextView = first_of(&preferences);
+    arguments
+        .buffer()
+        .set_text("--urgency=low\nAmong Terminal\nA bell rang");
+    settle();
+    shoot(&preferences, "notifications-command");
 
     // The same Plugins and Terminal tabs in the light scheme.
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceLight);
@@ -296,6 +342,76 @@ fn every_preferences_tab_is_captured_for_the_documentation() {
     show_tab(&preferences, "Plugins");
     resize(&preferences, 640);
     shoot(&preferences, "plugins-light");
+    preferences.destroy();
+    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+
+    // The main window: two panes, the sidebar, and the attention pulse of the
+    // pane that rang the bell while the other one has focus.
+    let id = focus(&ctx.window);
+    xdo(&["windowsize", "--sync", &id, "1100", "700"]);
+    let terminals = || {
+        widgets(ctx.window.upcast_ref())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<vte::Terminal>().ok())
+            .collect::<Vec<_>>()
+    };
+    xdo(&["key", "--clearmodifiers", "ctrl+shift+n"]);
+    wait_for(|| terminals().len() == 2, Duration::from_secs(5));
+    settle();
+    for terminal in terminals() {
+        terminal.feed_child(b"ls --color=always /usr; echo\n");
+    }
+    settle();
+    shoot(&ctx.window, "main-window");
+    let ringing = terminals()
+        .into_iter()
+        .find(|terminal| !terminal.has_focus())
+        .expect("one pane is unfocused");
+    ringing.feed_child(b"printf '\\a'\n");
+    shoot_now(&ctx.window, "main-window-bell");
+    ctx.window.destroy();
+}
+
+/// Like `shoot`, but without the settling pause: for a state that fades, such as
+/// the attention pulse of a pane.
+fn shoot_now(window: &impl IsA<gtk::Window>, name: &str) {
+    let id = focus(window);
+    let directory = crate::test_isolation::check_root().join("preferences");
+    std::fs::create_dir_all(&directory).unwrap();
+    assert!(std::process::Command::new("import")
+        .args(["-screen", "-window", &id])
+        .arg(directory.join(format!("{name}.png")))
+        .status()
+        .unwrap()
+        .success());
+}
+
+fn first_of<T: IsA<gtk::Widget>>(root: &impl IsA<gtk::Widget>) -> T {
+    widgets(root.as_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<T>().ok())
+        .find(|widget| widget.is_mapped())
+        .unwrap_or_else(|| panic!("no shown {}", std::any::type_name::<T>()))
+}
+
+/// What a user sees the first time Preferences opens with no saved sources and
+/// no network: the loading state and then the failure.
+#[test]
+#[ignore = "requires an isolated display, xdotool and ImageMagick"]
+fn the_first_open_without_a_network_is_captured_for_the_documentation() {
+    let app = application("com.github.among-terminal.preferences-first-open-test");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).unwrap();
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    let (preferences, _) = preferences_window(&ctx);
+    resize(&preferences, 640);
+    shoot_now(&preferences, "plugins-loading");
+    let end = std::time::Instant::now() + Duration::from_secs(8);
+    while std::time::Instant::now() < end {
+        glib::MainContext::default().iteration(false);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    shoot(&preferences, "plugins-offline");
     preferences.destroy();
     ctx.window.destroy();
 }

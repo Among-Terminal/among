@@ -11,7 +11,15 @@ use std::process::{Command, Stdio};
 
 /// The captures the documentation test writes, in the order they are listed in
 /// `docs/preferences.md`.
-pub const NAMES: [&str; 10] = [
+pub const NAMES: [&str; 18] = [
+    "plugins-loading",
+    "plugins-offline",
+    "plugins-search",
+    "sources-add",
+    "notifications-command",
+    "terminal-dropdown",
+    "main-window",
+    "main-window-bell",
     "plugins",
     "plugin-info",
     "plugin-access-review",
@@ -83,7 +91,13 @@ pub fn prepare(raw: &Path, output: &Path) -> Result<()> {
         if !status.success() {
             return Err(format!("convert failed for {name}").into());
         }
-        width = Some(check(name, &fs::read(&target)?, width)?);
+        // The main window is captured at its own size; only Preferences
+        // windows share one width.
+        if name.starts_with("main-window") {
+            check(name, &fs::read(&target)?, None)?;
+        } else {
+            width = Some(check(name, &fs::read(&target)?, width)?);
+        }
         println!("prepared {}", target.display());
     }
     Ok(())
