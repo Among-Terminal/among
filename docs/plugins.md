@@ -143,8 +143,10 @@ no scopes; read access to public data is enough. It is sent only to
 `https://api.github.com`, never to the asset delivery host that package
 downloads redirect to, and an empty value is ignored. It is removed from the
 environment at start-up, so terminals, the shell commands typed in them,
-plugins and the other helper processes do not receive it. It is not stored,
-logged or shown in error text.
+plugins and the other helper processes do not inherit it. A program run by the
+same user can still read it from the application's own
+`/proc/<pid>/environ`, so use a token without scopes. It is not stored, logged
+or shown in error text.
 
 A successful stable check saves its catalogue for offline use. A failed check
 keeps the saved list, including its real age. Lists older than a day are marked.

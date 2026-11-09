@@ -906,11 +906,17 @@ fn token_from_environment() -> Option<reqwest::header::HeaderValue> {
 /// Moves the token out of the process environment into memory.
 ///
 /// Every child the application starts (the terminal shell, notification
-/// commands, audio helpers, link openers) inherits the environment, and a
+/// commands, audio helpers, link openers) inherits the environment, so a
 /// token left there would be visible to each command typed in a pane and in
-/// `/proc/<pid>/environ`. Call this once, first thing in `main`, while the
-/// process is still single-threaded; the token stays available to the API
-/// requests only.
+/// that child's `/proc/<pid>/environ`. Call this once, first thing in `main`,
+/// while the process is still single-threaded; the token stays available to
+/// the API requests only.
+///
+/// Limit: `unsetenv` edits only the `environ` pointer array. The kernel copy
+/// of the start-up environment that `/proc/<application pid>/environ` shows
+/// keeps the original string, so a program run by the same user can still read
+/// the token from the application's own entry. The token needs no scopes, and
+/// a same-user process can already read the application's memory.
 pub fn take_token_from_environment() {
     token_from_environment();
     std::env::remove_var(TOKEN_VARIABLE);
