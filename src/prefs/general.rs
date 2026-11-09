@@ -497,6 +497,9 @@ impl ArgumentsField {
         self.view.update_state(&[gtk::accessible::State::Invalid(
             gtk::AccessibleInvalidState::True,
         )]);
+        // Focus moves to the editor, so a user who pressed Save is taken to
+        // the field and hears its description instead of staying on Save.
+        self.view.grab_focus();
     }
 }
 
