@@ -29,10 +29,14 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="0.2.0" date="2026-11-05" type="stable">
+    <release version="0.2.0" date="2026-11-09" type="stable">
       <description>
         <p>Features</p>
         <ul>
+          <li>preferences: add a Terminal tab for text, background and palette colours (#82)</li>
+          <li>preferences: refresh plugin management and add desktop bell notifications (#81)</li>
+          <li>preferences: lighter Notifications page with one play/stop sound row (#78)</li>
+          <li>preferences: add About page, build identity and new page order (#76)</li>
           <li>release: tag a release candidate before the stable release (#65)</li>
           <li>plugin: confine managed plugins with Landlock and seccomp (#63)</li>
           <li>notifications: consolidate owned audio authority and live consumers (#53)</li>
@@ -51,6 +55,10 @@
         </ul>
         <p>Bug fixes</p>
         <ul>
+          <li>ui: pulse the unread stripe until focus and close details of a removed plugin (#75)</li>
+          <li>workspaces: keep dividers and the sidebar marker stable on switch (#77)</li>
+          <li>panes: keep the expanded pane header at its normal height (#73)</li>
+          <li>plugins: accept own-group write on store and settings directories (#74)</li>
           <li>release: show the version's highlights on a release candidate (#70)</li>
           <li>packaging: make the Debian and RPM package builds pass their test phases (#69)</li>
           <li>appimage: carry the runtime notice in every image (#59)</li>

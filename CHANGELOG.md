@@ -2,10 +2,14 @@
 
 User-visible changes of the application, newest first. Written by `among-tools release-prepare` from the titles of the merged pull requests.
 
-## 0.2.0 - 2026-11-05
+## 0.2.0 - 2026-11-09
 
 ### Features
 
+- preferences: add a Terminal tab for text, background and palette colours (#82)
+- preferences: refresh plugin management and add desktop bell notifications (#81)
+- preferences: lighter Notifications page with one play/stop sound row (#78)
+- preferences: add About page, build identity and new page order (#76)
 - release: tag a release candidate before the stable release (#65)
 - plugin: confine managed plugins with Landlock and seccomp (#63)
 - notifications: consolidate owned audio authority and live consumers (#53)
@@ -24,6 +28,10 @@ User-visible changes of the application, newest first. Written by `among-tools r
 
 ### Bug fixes
 
+- ui: pulse the unread stripe until focus and close details of a removed plugin (#75)
+- workspaces: keep dividers and the sidebar marker stable on switch (#77)
+- panes: keep the expanded pane header at its normal height (#73)
+- plugins: accept own-group write on store and settings directories (#74)
 - release: show the version's highlights on a release candidate (#70)
 - packaging: make the Debian and RPM package builds pass their test phases (#69)
 - appimage: carry the runtime notice in every image (#59)
