@@ -116,10 +116,11 @@ network request. The first time Plugins opens with no saved catalogue, Among
 fetches the official list once by itself; a failure leaves a status page with the
 reason, and **Load** tries again. When another saved source already offers plugins,
 the failure is shown above the list instead and the refresh button retries. The
-automatic fetch depends only on the official catalogue: while it is not saved,
-opening the page fetches it even if a catalogue of another source is saved. Once
-the official catalogue is saved, opening the page never fetches: the refresh
-button or **Load** does.
+automatic fetch depends only on the official catalogue: when Plugins opens and it
+is not saved, it is fetched once, even if a catalogue of another source is saved.
+A failed fetch is not repeated while the page stays open; the refresh button or
+**Load** retries. Once the official catalogue is saved, opening the page never
+fetches.
 
 Choose **Install**, then review access and enable the installed plugin separately.
 Opening pages and checking catalogues never installs, enables or grants access.

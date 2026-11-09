@@ -416,7 +416,11 @@ impl ArgumentsField {
         view.set_bottom_margin(6);
         view.set_left_margin(8);
         view.set_right_margin(8);
-        view.update_property(&[gtk::accessible::Property::Label("Arguments, one per line")]);
+        view.update_property(&[gtk::accessible::Property::Label(if json {
+            "Arguments, as a JSON list"
+        } else {
+            "Arguments, one per line"
+        })]);
         view.buffer().set_text(&text);
         let scroll = gtk::ScrolledWindow::new();
         scroll.set_child(Some(&view));
