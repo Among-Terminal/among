@@ -100,7 +100,7 @@ pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
         .modal(false)
         .search_enabled(false)
         // Wide enough for five full labels plus the native switcher padding.
-        .default_width(820)
+        .default_width(PREFERENCES_WIDTH)
         .build();
     window.set_title(Some("Preferences"));
     let on_closed = ctx.on_closed.clone();
@@ -115,10 +115,61 @@ pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
     window.add(&notifications);
     window.add(&shortcuts_page(&ctx));
     window.add(&terminal);
-    window.add(&about::page());
+    let about = about::page();
+    window.add(&about);
     window.set_visible_page(&plugins);
     equalize_tabs(&window);
+    window.set_default_height(default_height(&about, PREFERENCES_WIDTH, parent));
     window.present();
+}
+
+/// The width Preferences opens at, enough for five full tab labels.
+const PREFERENCES_WIDTH: i32 = 820;
+
+/// The window opens as tall as the About page needs, so its last row is not
+/// cut off and the page does not scroll. It is the tallest page that is meant
+/// to be seen whole; the others are lists and scroll. The height never goes
+/// below the libadwaita default and never above the monitor less room for the
+/// desktop's bars, so on a small screen About scrolls rather than the window
+/// outgrowing the screen.
+fn default_height(about: &adw::PreferencesPage, width: i32, parent: &impl IsA<gtk::Window>) -> i32 {
+    // The title bar and the switcher above the page.
+    const HEADER: i32 = 56;
+    const MINIMUM: i32 = 576;
+    const DESKTOP_BARS: i32 = 96;
+    let content = natural_content_height(about, width);
+    let wanted = (content + HEADER).max(MINIMUM);
+    let monitor_height = parent
+        .upcast_ref::<gtk::Window>()
+        .surface()
+        .and_then(|surface| gdk::Display::default()?.monitor_at_surface(&surface))
+        .map(|monitor| monitor.geometry().height());
+    match monitor_height {
+        Some(height) => wanted.min((height - DESKTOP_BARS).max(MINIMUM)),
+        None => wanted,
+    }
+}
+
+/// How tall a page's content wants to be at `width`, before it scrolls.
+fn natural_content_height(page: &adw::PreferencesPage, width: i32) -> i32 {
+    fn scrolled(widget: &gtk::Widget) -> Option<gtk::ScrolledWindow> {
+        if let Ok(found) = widget.clone().downcast::<gtk::ScrolledWindow>() {
+            return Some(found);
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if let Some(found) = scrolled(&current) {
+                return Some(found);
+            }
+            child = current.next_sibling();
+        }
+        None
+    }
+    scrolled(page.upcast_ref())
+        .and_then(|window| window.child())
+        .map_or(0, |content| {
+            content.measure(gtk::Orientation::Vertical, width).1
+        })
 }
 
 /// Give every tab of the page switcher the same width.
@@ -830,6 +881,49 @@ mod tests {
             "Preferences allocation",
         );
         assert_eq!(prefs.default_width(), 820, "production default width");
+        // The About page is meant to be seen whole: at the default size its
+        // last row must not need scrolling (unless the screen is too small for
+        // the window, in which case the window is capped at the screen).
+        prefs.set_visible_page_name("about");
+        pump_until(
+            &|| prefs.visible_page_name().as_deref() == Some("about"),
+            "the About page",
+        );
+        pump_until(&|| prefs.height() > 0, "Preferences height");
+        let about_scroll = {
+            let mut every = Vec::new();
+            collect(prefs.upcast_ref(), &mut every);
+            every
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::ScrolledWindow>().ok())
+                .find(|scroll| {
+                    scroll.is_mapped()
+                        && scroll
+                            .ancestor(adw::PreferencesPage::static_type())
+                            .and_then(|page| page.downcast::<adw::PreferencesPage>().ok())
+                            .is_some_and(|page| page.name().as_deref() == Some("about"))
+                })
+                .expect("the About page scrolled window")
+        };
+        let monitor_height = gdk::Display::default()
+            .and_then(|display| {
+                prefs
+                    .surface()
+                    .and_then(|surface| display.monitor_at_surface(&surface))
+            })
+            .map(|monitor| monitor.geometry().height())
+            .unwrap_or(i32::MAX);
+        let vertical = about_scroll.vadjustment();
+        if prefs.height() < monitor_height - 96 {
+            assert!(
+                vertical.upper() <= vertical.page_size() + 1.0,
+                "About scrolls at the default size: content {} in a view of {} (window {})",
+                vertical.upper(),
+                vertical.page_size(),
+                prefs.height()
+            );
+        }
+        prefs.set_visible_page_name("plugins");
         let widgets = {
             let mut widgets = Vec::new();
             collect(prefs.upcast_ref(), &mut widgets);

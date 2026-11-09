@@ -317,6 +317,11 @@ silently replaced.
 
 ## About
 
+Preferences opens 820 px wide and as tall as the About page needs (measured when
+the window is built), so that page shows whole without scrolling; the height is
+capped at the monitor height less room for the desktop's bars, and on a screen
+too small for that About scrolls instead. The other pages scroll as needed.
+
 The last page, named `about`, identifies the build. It shows the logo, the name,
 the version and the build (`Build <short commit> · <date>`; a part the build did
 not record is left out, and `Build unknown` shows when it recorded neither), then links to the
