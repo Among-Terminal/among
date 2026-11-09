@@ -18,6 +18,8 @@ mod settings;
 mod shortcuts;
 mod size;
 mod slots;
+mod terminal_appearance;
+mod terminal_appearance_source;
 mod tree;
 mod workspace;
 

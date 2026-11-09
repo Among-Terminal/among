@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.Terminal.ProfilesList" path="/org/gnome/terminal/legacy/profiles:/">
+    <key name="default" type="s">
+      <default>''</default>
+    </key>
+    <key name="list" type="as">
+      <default>[]</default>
+    </key>
+  </schema>
+  <schema id="org.gnome.Terminal.Legacy.Profile">
+    <key name="foreground-color" type="s">
+      <default>'#000000'</default>
+    </key>
+    <key name="background-color" type="s">
+      <default>'#ffffff'</default>
+    </key>
+    <key name="palette" type="s">
+      <default>''</default>
+    </key>
+    <key name="use-theme-colors" type="b">
+      <default>false</default>
+    </key>
+  </schema>
+</schemalist>

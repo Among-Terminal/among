@@ -1,4 +1,5 @@
-//! The preferences window: plugins, notifications, keyboard shortcuts and About.
+//! The preferences window: plugins, notifications, keyboard shortcuts, terminal
+//! appearance and About.
 //!
 //! Both features have to be inspectable and changeable *by the user*, not just by
 //! editing configuration. Putting them in one window is also what makes the
@@ -28,6 +29,7 @@ mod repository_sources;
 mod retained_settings;
 mod source_dialog;
 pub(crate) mod sources;
+pub(crate) mod terminal;
 mod trust;
 
 pub(crate) type ManagedDetails = (crate::plugin::inventory::Entry, Option<serde_json::Value>);
@@ -87,6 +89,7 @@ pub struct PreferencesContext {
     pub delete_retained_settings: Rc<DeleteRetainedSettings>,
     /// Rebuilds the window's shortcut controller after a rebind.
     pub bindings_changed: Rc<dyn Fn()>,
+    pub terminal: terminal::Context,
 }
 
 /// Open the preferences window, parented to the main window.
@@ -95,8 +98,8 @@ pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
         .transient_for(parent)
         .modal(false)
         .search_enabled(false)
-        // Wide enough that the four tab labels are shown in full.
-        .default_width(760)
+        // Wide enough for five full labels plus the native switcher padding.
+        .default_width(820)
         .build();
     window.set_title(Some("Preferences"));
     let on_closed = ctx.on_closed.clone();
@@ -105,9 +108,12 @@ pub fn present(parent: &impl IsA<gtk::Window>, ctx: PreferencesContext) {
     let plugins = plugins_page(&ctx);
     let notifications = general::page(ctx.general.as_ref());
     add_storage_status(&notifications, &ctx);
+    let terminal = terminal::page(&ctx);
+    add_storage_status(&terminal, &ctx);
     window.add(&plugins);
     window.add(&notifications);
     window.add(&shortcuts_page(&ctx));
+    window.add(&terminal);
     window.add(&about::page());
     window.set_visible_page(&plugins);
     equalize_tabs(&window);
@@ -466,6 +472,7 @@ mod tests {
                 disable_plugin: Rc::new(|_| {}),
                 allow_reduced_protection: Rc::new(|_, _| Ok(())),
                 bindings_changed: Rc::new(|| {}),
+                terminal: crate::prefs::terminal::test_context(),
             }
         }
         fn collect<T: IsA<gtk::Widget> + gtk::glib::object::IsClass>(
@@ -729,6 +736,214 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an attached X11 display and a real Preferences window"]
+    fn actual_preferences_measures_five_tabs() {
+        adw::init().expect("attached X11 display");
+        use crate::plugin::host::Overview;
+        use crate::plugin::install::TestOwnedRoot;
+        use crate::plugin::inventory;
+
+        let root = TestOwnedRoot::new();
+        inventory::tests::fixture(&root.0);
+        let entry = inventory::read(&root.0).unwrap().remove(0);
+        let key = entry.key();
+
+        fn context(
+            key: &str,
+            entry: &crate::plugin::inventory::Entry,
+            overview: Overview,
+        ) -> PreferencesContext {
+            let details_key = key.to_owned();
+            let details_entry = entry.clone();
+            PreferencesContext {
+                general: None,
+                package_action: Rc::new(|_, _, _, _| {}),
+                retained_settings: Rc::new(|| Ok(Vec::new())),
+                delete_retained_settings: Rc::new(|_| Err("no retained settings".into())),
+                installations_changed: Rc::new(|| {}),
+                on_closed: Rc::new(|| {}),
+                storage_status: gtk::StringList::new(&[]),
+                bindings: Rc::new(RefCell::new(Bindings::defaults())),
+                plugin_inventory: Rc::new(move || vec![overview.clone()]),
+                plugin_details: Rc::new(move |asked| {
+                    (asked == details_key.as_str()).then(|| (details_entry.clone(), None))
+                }),
+                save_plugin_settings: Rc::new(|_, _, _| Err("no settings in this fixture".into())),
+                plugin_configuration: Rc::new(|_| Configuration::NotApplied),
+                restart_plugin: Rc::new(|_, _, _| {}),
+                enable_plugin: Rc::new(|_, _| {}),
+                disable_plugin: Rc::new(|_| {}),
+                allow_reduced_protection: Rc::new(|_, _| Ok(())),
+                bindings_changed: Rc::new(|| {}),
+                terminal: crate::prefs::terminal::test_context(),
+            }
+        }
+        fn pump_until(condition: &dyn Fn() -> bool, what: &str) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !condition() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                gtk::glib::MainContext::default().iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        fn collect(widget: &gtk::Widget, found: &mut Vec<gtk::Widget>) {
+            found.push(widget.clone());
+            let mut child = widget.first_child();
+            while let Some(node) = child {
+                child = node.next_sibling();
+                collect(&node, found);
+            }
+        }
+        fn toolbars(widget: &gtk::Widget, found: &mut Vec<adw::ToolbarView>) {
+            if let Some(toolbar) = widget.downcast_ref::<adw::ToolbarView>() {
+                found.push(toolbar.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(node) = child {
+                child = node.next_sibling();
+                toolbars(&node, found);
+            }
+        }
+        let mut overview = Overview::fixture(&key, PluginState::Running, true);
+        overview.name = "Sample".into();
+        overview.description = "No probe".into();
+        overview.protection = Some(
+            "Protection: full (Landlock ABI 6 and seccomp) · running with reduced protection"
+                .into(),
+        );
+        let parent = gtk::Window::new();
+        present(&parent, context(&key, &entry, overview));
+        let prefs = gtk::Window::list_toplevels()
+            .into_iter()
+            .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+            .expect("Preferences window");
+        pump_until(
+            &|| prefs.is_mapped() && prefs.width() > 0,
+            "Preferences allocation",
+        );
+        assert_eq!(prefs.default_width(), 820, "production default width");
+        let widgets = {
+            let mut widgets = Vec::new();
+            collect(prefs.upcast_ref(), &mut widgets);
+            widgets
+        };
+        let tabs: Vec<_> = widgets
+            .iter()
+            .filter(|widget| widget.type_().name() == "AdwViewSwitcherButton" && widget.is_mapped())
+            .cloned()
+            .collect();
+        assert_eq!(tabs.len(), 5, "five mapped page tabs");
+        let widths: Vec<i32> = tabs.iter().map(|tab| tab.width()).collect();
+        let minimum = widths.iter().copied().min().unwrap_or(0);
+        let maximum = widths.iter().copied().max().unwrap_or(0);
+        assert!(
+            minimum > 0 && maximum - minimum <= 1,
+            "five homogeneous tabs must be mapped with at most one physical pixel of integer-allocation rounding: {widths:?}"
+        );
+        let expected_labels = ["Plugins", "Notifications", "Keyboard", "Terminal", "About"];
+        let mut seen_labels = Vec::new();
+        for (tab_index, tab) in tabs.iter().enumerate() {
+            let expected = expected_labels[tab_index];
+            let mut descendants = Vec::new();
+            collect(tab, &mut descendants);
+            let labels: Vec<gtk::Label> = descendants
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+                .filter(|label| !label.text().is_empty() && label.is_mapped())
+                .collect();
+            let before = seen_labels.len();
+            for label in labels {
+                let logical = label.layout().pixel_extents().1;
+                let text_width = logical.width();
+                let allocation = label.width().max(1);
+                let parent_width = tab
+                    .compute_bounds(prefs.upcast_ref::<gtk::Widget>())
+                    .map(|rect| rect.width() as i32)
+                    .unwrap_or(0);
+                let natural = label.measure(gtk::Orientation::Horizontal, -1).1;
+                let parent_measure = label
+                    .parent()
+                    .map(|parent| parent.measure(gtk::Orientation::Horizontal, -1));
+                eprintln!(
+                    "tab {tab_index} expected {expected:?}: text={:?} mapped={} ellipsized={} text_width={} natural={} allocation={} parent_width={} max_width_chars={} width_chars={} width_request={} halign={:?} hexpands={} parent_measure={parent_measure:?}",
+                    label.text(),
+                    label.is_mapped(),
+                    label.layout().is_ellipsized(),
+                    text_width,
+                    natural,
+                    allocation,
+                    parent_width,
+                    label.max_width_chars(),
+                    label.width_chars(),
+                    label.width_request(),
+                    label.halign(),
+                    label.hexpands()
+                );
+                assert!(
+                    !label.layout().is_ellipsized(),
+                    "tab label is not ellipsized: {:?}",
+                    label.text()
+                );
+                assert!(
+                    label.is_mapped() && label.width() > 0,
+                    "tab label is mapped with an allocation: {:?}",
+                    label.text()
+                );
+                assert!(
+                    text_width > 0 && text_width <= allocation && allocation <= parent_width,
+                    "tab label full text fits its mapped allocation: {:?} text {} allocation {} parent {}",
+                    label.text(),
+                    text_width,
+                    allocation,
+                    parent_width
+                );
+                seen_labels.push(label.text().to_string());
+            }
+            assert!(
+                seen_labels[before..].iter().any(|label| label == expected),
+                "tab {tab_index} must show {expected:?}; saw {:?}",
+                &seen_labels[before..]
+            );
+        }
+
+        let measure_mapped_toolbars = |what: &str| {
+            pump_until(
+                &|| {
+                    let mut found = Vec::new();
+                    toolbars(prefs.upcast_ref(), &mut found);
+                    found
+                        .iter()
+                        .any(|toolbar| toolbar.is_mapped() && toolbar.width() > 0)
+                },
+                what,
+            );
+            let mut found = Vec::new();
+            toolbars(prefs.upcast_ref(), &mut found);
+            for toolbar in found {
+                if !toolbar.is_mapped() || toolbar.width() <= 0 {
+                    continue;
+                }
+                let minimum = toolbar.measure(gtk::Orientation::Horizontal, -1).0;
+                eprintln!(
+                    "{what}: toolbar min={minimum} allocation={} mapped={}",
+                    toolbar.width(),
+                    toolbar.is_mapped()
+                );
+                assert!(
+                    minimum <= toolbar.width(),
+                    "toolbar minimum {minimum} exceeds allocation {}",
+                    toolbar.width()
+                );
+            }
+        };
+        measure_mapped_toolbars("Preferences toolbar allocation");
+        prefs.destroy();
+    }
+
+    #[test]
     fn plugin_states_are_described_for_the_user() {
         assert!(describe_state(&PluginState::Running).contains("Running"));
         assert!(describe_state(&PluginState::Disabled).contains("Disabled"));
@@ -791,6 +1006,7 @@ mod tests {
             }),
             allow_reduced_protection: Rc::new(|_, _| Err("no kernel in this fixture".into())),
             bindings_changed: Rc::new(|| {}),
+            terminal: crate::prefs::terminal::test_context(),
         });
         fn find<T: IsA<gtk::Widget> + gtk::glib::object::IsClass>(
             widget: &gtk::Widget,

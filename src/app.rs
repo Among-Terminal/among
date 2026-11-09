@@ -90,6 +90,9 @@ pub struct AppState {
     pub bindings: Bindings,
     settings: crate::settings::PreferencesStorage,
     settings_status: gtk::StringList,
+    terminal_source: crate::terminal_appearance::SourceSnapshot,
+    terminal_stored: crate::terminal_appearance::StoredAppearance,
+    terminal_appearance: crate::terminal_appearance::ResolvedAppearance,
     allocator: PaneAllocator,
     session_ready: bool,
     session_writer: Option<crate::session::Writer>,
@@ -236,6 +239,10 @@ impl AppState {
         // so a split can never mint an id that is already in use.
         let allocator = PaneAllocator::after(PaneId(1));
         let first = PaneId(1);
+        let terminal_source = crate::terminal_appearance_source::fallback_snapshot();
+        let terminal_stored = crate::terminal_appearance::StoredAppearance::default();
+        let terminal_appearance =
+            crate::terminal_appearance::resolve(terminal_stored, &terminal_source);
         Self {
             workspaces: WorkspaceSet::new(Workspace::new("project".into(), first, 0)),
             panes: std::collections::BTreeMap::new(),
@@ -258,6 +265,9 @@ impl AppState {
             bindings: Bindings::defaults(),
             settings: crate::settings::PreferencesStorage::new(crate::settings::directory()),
             settings_status: gtk::StringList::new(&[""]),
+            terminal_source,
+            terminal_stored,
+            terminal_appearance,
             allocator,
             session_ready: false,
             session_writer: None,
@@ -662,6 +672,15 @@ fn build_with_writer(
                     .get("sidebar_width")
                     .and_then(serde_json::Value::as_f64)
             });
+        // One startup snapshot. Pane creation and Preferences reuse it; neither
+        // triggers another GNOME read.
+        let terminal_source = crate::terminal_appearance_source::snapshot();
+        let terminal_stored = state.settings.terminal_appearance();
+        let terminal_appearance =
+            crate::terminal_appearance::resolve(terminal_stored, &terminal_source);
+        state.terminal_source = terminal_source;
+        state.terminal_stored = terminal_stored;
+        state.terminal_appearance = terminal_appearance;
         if let Some(value) = state.settings.load(crate::settings::Document::Shortcuts) {
             if let Some(overrides) = value
                 .get("overrides")
@@ -1252,6 +1271,27 @@ fn selfcheck(ctx: &Window, label: &str) {
             },
         )
         .collect();
+    // Actual VTE allocations in window coordinates. `tree_boxes` includes the
+    // pane chrome, so rendered-cell sampling uses this instead.
+    let terminal_rects: Vec<String> = state
+        .panes
+        .iter()
+        .filter_map(|(id, pane)| {
+            if !pane.terminal().is_mapped() {
+                return None;
+            }
+            pane.terminal_rect(ctx.window.upcast_ref()).map(|rect| {
+                format!(
+                    "{}:{}+{}+{}x{}",
+                    id.0,
+                    rect.x() as i32,
+                    rect.y() as i32,
+                    rect.width() as i32,
+                    rect.height() as i32
+                )
+            })
+        })
+        .collect();
     let sizes: Vec<String> = workspace
         .visible_panes()
         .iter()
@@ -1286,6 +1326,176 @@ fn selfcheck(ctx: &Window, label: &str) {
     // All toplevels, not the application's own windows: the preferences window
     // is a plain window and would not appear in the application's list.
     let open_windows = gtk::Window::list_toplevels().len();
+    // Preferences geometry and terminal-control state. Rendered checks bind
+    // these window coordinates to the window screenshot; no setter is used.
+    let preferences_window = gtk::Window::list_toplevels()
+        .into_iter()
+        .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok());
+    let mut prefs_rects = Vec::new();
+    let mut prefs_terminal = Vec::new();
+    let mut prefs_tabs = Vec::new();
+    let mut prefs_min = -1;
+    let mut prefs_allocated = -1;
+    if let Some(preferences_window) = &preferences_window {
+        fn find_named(widget: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
+            if widget.widget_name() == name {
+                return Some(widget.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                if let Some(found) = find_named(&current, name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        fn find_toolbar(widget: &gtk::Widget) -> Option<adw::ToolbarView> {
+            if let Some(toolbar) = widget.downcast_ref::<adw::ToolbarView>() {
+                return Some(toolbar.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                if let Some(found) = find_toolbar(&current) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        fn combo_id(name: &str, index: usize) -> String {
+            if index == 0 {
+                return "gnome-terminal-default".to_string();
+            }
+            match name {
+                "terminal-text-background" => crate::terminal_appearance::TEXT_BACKGROUND_CATALOGUE
+                    .get(index - 1)
+                    .map(|preset| preset.id.as_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                "terminal-ansi-palette" => crate::terminal_appearance::ANSI_PALETTE_CATALOGUE
+                    .get(index - 1)
+                    .map(|preset| preset.id.as_str().to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                _ => "unknown".to_string(),
+            }
+        }
+        fn collect_tabs(widget: &gtk::Widget, found: &mut Vec<gtk::Widget>) {
+            if widget.type_().name() == "AdwViewSwitcherButton" && widget.is_mapped() {
+                found.push(widget.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                collect_tabs(&current, found);
+            }
+        }
+        fn first_caption(widget: &gtk::Widget) -> Option<gtk::Label> {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                if label.is_mapped() && !label.text().is_empty() {
+                    return Some(label.clone());
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                if let Some(found) = first_caption(&current) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        struct TabObservation {
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            label: String,
+            text_width: i32,
+            label_alloc: i32,
+            parent_width: i32,
+            natural: i32,
+            ellipsized: bool,
+            mapped: bool,
+        }
+
+        let mut observations = Vec::new();
+        let mut tabs = Vec::new();
+        collect_tabs(preferences_window.upcast_ref(), &mut tabs);
+        for tab in tabs {
+            let Some(rect) = tab.compute_bounds(preferences_window.upcast_ref::<gtk::Widget>())
+            else {
+                continue;
+            };
+            let Some(label) = first_caption(&tab) else {
+                continue;
+            };
+            let text_width = label.layout().pixel_extents().1.width();
+            let natural = label.measure(gtk::Orientation::Horizontal, -1).1;
+            observations.push(TabObservation {
+                x: rect.x() as i32,
+                y: rect.y() as i32,
+                width: rect.width() as i32,
+                height: rect.height() as i32,
+                label: label.text().to_string(),
+                text_width,
+                label_alloc: label.width(),
+                parent_width: rect.width() as i32,
+                natural,
+                ellipsized: label.layout().is_ellipsized(),
+                mapped: tab.is_mapped(),
+            });
+        }
+        observations.sort_by_key(|row| (row.x, row.y));
+        for (index, row) in observations.into_iter().enumerate() {
+            prefs_tabs.push(serde_json::json!([
+                index,
+                row.label,
+                row.x,
+                row.y,
+                row.width,
+                row.height,
+                row.text_width,
+                row.label_alloc,
+                row.parent_width,
+                row.natural,
+                row.ellipsized,
+                row.mapped
+            ]));
+        }
+
+        if let Some(toolbar) = find_toolbar(preferences_window.upcast_ref()) {
+            prefs_min = toolbar.measure(gtk::Orientation::Horizontal, -1).0;
+            prefs_allocated = toolbar.width();
+        }
+        for name in ["terminal-text-background", "terminal-ansi-palette"] {
+            let Some(widget) = find_named(preferences_window.upcast_ref(), name) else {
+                continue;
+            };
+            if widget.is_mapped() {
+                if let Some(rect) =
+                    widget.compute_bounds(preferences_window.upcast_ref::<gtk::Widget>())
+                {
+                    prefs_rects.push(format!(
+                        "{name}:{}+{}+{}x{}",
+                        rect.x() as i32,
+                        rect.y() as i32,
+                        rect.width() as i32,
+                        rect.height() as i32
+                    ));
+                }
+            }
+            if let Some(row) = widget.downcast_ref::<adw::ComboRow>() {
+                let id = combo_id(name, row.selected() as usize);
+                let subtitle = row
+                    .subtitle()
+                    .map(|subtitle| subtitle.to_string())
+                    .unwrap_or_default();
+                prefs_terminal.push(format!("({name:?}, {id:?}, {subtitle:?})"));
+            }
+        }
+    }
+    let prefs_tabs = serde_json::to_string(&prefs_tabs).unwrap_or_else(|_| "[]".to_string());
     // Sidebar geometry, so a pointer test can find the rows without guessing
     // where the header bar and the split view put them.
     let sidebar_origin = ctx
@@ -1467,7 +1677,7 @@ fn selfcheck(ctx: &Window, label: &str) {
         .unwrap_or((0, 0));
 
     eprintln!(
-        "among[{label}]: workspaces={} active={} name={:?} visible={} panes={} paned_widgets={} focused={:?} area={}x{} origin={},{} tree_boxes=[{}] has_focus={has_focus} terminal_sizes=[{}] exited=[{}] sidebar_collapsed={collapsed} fullscreen={fullscreen} title_buttons={title_buttons:?} windows={open_windows} sidebar_origin={},{} sidebar_rows=[{}] sidebar_states=[{}] name_rects=[{}] names=[{}] rows_in_list={}",
+        "among[{label}]: workspaces={} active={} name={:?} visible={} panes={} paned_widgets={} focused={:?} area={}x{} origin={},{} tree_boxes=[{}] terminal_rects=[{}] has_focus={has_focus} terminal_sizes=[{}] exited=[{}] sidebar_collapsed={collapsed} fullscreen={fullscreen} title_buttons={title_buttons:?} windows={open_windows} sidebar_origin={},{} sidebar_rows=[{}] sidebar_states=[{}] name_rects=[{}] names=[{}] rows_in_list={}",
         state.workspaces.len(),
         active,
         workspace.name,
@@ -1480,6 +1690,7 @@ fn selfcheck(ctx: &Window, label: &str) {
         origin.0,
         origin.1,
         boxes.join(" "),
+        terminal_rects.join(" "),
         sizes.join(" "),
         finished.join(" "),
         sidebar_origin.0,
@@ -1490,6 +1701,14 @@ fn selfcheck(ctx: &Window, label: &str) {
         names.join("|"),
         workspace_list_rows(ctx),
     );
+    if preferences_window.is_some() {
+        eprintln!(
+            "among[{label}]: prefs_rects=[{}] prefs_min={prefs_min} prefs_allocated={prefs_allocated} prefs_terminal=[{}]",
+            prefs_rects.join(" "),
+            prefs_terminal.join(" ")
+        );
+    }
+    eprintln!("among[{label}]: prefs_tabs={prefs_tabs}");
 
     let plugins: Vec<String> = state
         .plugins
@@ -3631,10 +3850,15 @@ fn ensure_pane(ctx: &Window, id: PaneId) {
     }
     let expected = cwd.clone();
     let refresh = ctx.handle();
+    let colours = {
+        let state = ctx.state.borrow();
+        crate::pane::terminal_colours(&state.terminal_appearance)
+    };
     let pane = match Pane::new(
         id,
         signals,
         cwd,
+        &colours,
         Rc::new(move |result| match result {
             Ok(actual) => {
                 if actual != expected {
@@ -4070,6 +4294,104 @@ fn restore_expanded(ctx: &Window, pane: PaneId, generation: u64) {
     apply_focus(ctx);
 }
 
+fn terminal_view(state: &AppState) -> prefs::terminal::TerminalView {
+    use crate::terminal_appearance::{PaletteResolution, TextBackgroundResolution};
+
+    let appearance = &state.terminal_appearance;
+    let text_background_note = match &appearance.text_background {
+        TextBackgroundResolution::Exact(pair) => {
+            if appearance.text_background_id()
+                == crate::terminal_appearance::TextBackgroundId::GnomeTerminalDefault
+                && !matches_builtin_text_background(pair)
+            {
+                prefs::terminal::custom_source_note().to_string()
+            } else {
+                String::new()
+            }
+        }
+        TextBackgroundResolution::GrayOnBlackFallback { reason } => format!(
+            "GNOME Terminal default unavailable ({}). Using Gray on black.",
+            source_failure_text(reason)
+        ),
+    };
+    let palette_note = match &appearance.palette {
+        PaletteResolution::Exact(colours) => {
+            if appearance.ansi_palette_id()
+                == crate::terminal_appearance::AnsiPaletteId::GnomeTerminalDefault
+                && !matches_builtin_palette(colours)
+            {
+                "GNOME Terminal default (custom palette)".to_string()
+            } else {
+                String::new()
+            }
+        }
+        PaletteResolution::VteCompiledDefaults { reason } => format!(
+            "GNOME Terminal default palette unavailable ({}). Using VTE's compiled-in palette.",
+            source_failure_text(reason)
+        ),
+    };
+    prefs::terminal::TerminalView {
+        text_background: appearance.text_background_id(),
+        ansi_palette: appearance.ansi_palette_id(),
+        text_background_note,
+        palette_note,
+    }
+}
+
+fn matches_builtin_text_background(pair: &crate::terminal_appearance::TextBackgroundPair) -> bool {
+    crate::terminal_appearance::TEXT_BACKGROUND_CATALOGUE
+        .iter()
+        .any(|preset| preset.pair == *pair)
+}
+
+fn matches_builtin_palette(colours: &[crate::terminal_appearance::Rgba; 16]) -> bool {
+    crate::terminal_appearance::ANSI_PALETTE_CATALOGUE
+        .iter()
+        .any(|preset| preset.colours == *colours)
+}
+
+fn source_failure_text(reason: &crate::terminal_appearance::SourceFailure) -> &'static str {
+    (*reason).description()
+}
+
+fn update_terminal_appearance(
+    ctx: &Window,
+    edit: crate::settings::TerminalEdit,
+) -> prefs::terminal::TerminalView {
+    let (view, colours, terminals) = {
+        let mut state = ctx.state.borrow_mut();
+        match edit {
+            crate::settings::TerminalEdit::TextBackground(id) => {
+                state.terminal_stored.text_background = id;
+            }
+            crate::settings::TerminalEdit::AnsiPalette(id) => {
+                state.terminal_stored.ansi_palette = id;
+            }
+        }
+        let stored = state.terminal_stored;
+        let appearance = crate::terminal_appearance::resolve(stored, &state.terminal_source);
+        state.terminal_appearance = appearance;
+        let view = terminal_view(&state);
+        let colours = crate::pane::terminal_colours(&state.terminal_appearance);
+        let terminals = state
+            .panes
+            .values()
+            .map(|pane| pane.terminal().clone())
+            .collect::<Vec<_>>();
+        (view, colours, terminals)
+    };
+    for terminal in terminals {
+        crate::pane::apply_terminal_colours(&terminal, &colours);
+    }
+    let result = ctx
+        .state
+        .borrow_mut()
+        .settings
+        .terminal_appearance_changed(edit);
+    report_settings_save(ctx, result);
+    view
+}
+
 /// Open the preferences window, wiring it to the live application state.
 ///
 /// Closures rather than a reference to the window, so the preferences module
@@ -4095,6 +4417,27 @@ fn preferences_context(ctx: &Window) -> prefs::PreferencesContext {
         }),
         storage_status: ctx.state.borrow().settings_status.clone(),
         bindings: bindings.clone(),
+        terminal: prefs::terminal::Context {
+            view: {
+                let state = ctx.state.borrow();
+                terminal_view(&state)
+            },
+            text_background_changed: Rc::new({
+                let ctx = ctx.handle();
+                move |id| {
+                    update_terminal_appearance(
+                        &ctx,
+                        crate::settings::TerminalEdit::TextBackground(id),
+                    )
+                }
+            }),
+            ansi_palette_changed: Rc::new({
+                let ctx = ctx.handle();
+                move |id| {
+                    update_terminal_appearance(&ctx, crate::settings::TerminalEdit::AnsiPalette(id))
+                }
+            }),
+        },
         plugin_inventory: Rc::new({
             let state = ctx.state.clone();
             move || state.borrow().plugins.overview()
@@ -7773,6 +8116,90 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an isolated display and private XDG roots"]
+    fn opening_preferences_does_not_flush_a_pending_terminal_edit() {
+        fn pump() {
+            let end = std::time::Instant::now() + Duration::from_millis(500);
+            while std::time::Instant::now() < end {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("among-terminal-open-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("among")).unwrap();
+        std::fs::set_permissions(
+            root.join("among"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &root);
+        let target = root.join("original-terminal.json");
+        let original = br#"{"version":1,"external":true}"#.to_vec();
+        std::fs::write(&target, &original).unwrap();
+        let link = root.join("among/terminal.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        glib::set_prgname(Some("among-terminal-open-prefs-test"));
+        let app = adw::Application::builder()
+            .application_id("com.github.among-terminal.open-prefs-test")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let app_window = build_with_writer(&app, None, crate::session::Writer::new)
+            .expect("host window is built");
+        pump();
+        assert!(app_window
+            .state
+            .borrow_mut()
+            .settings
+            .terminal_appearance_changed(crate::settings::TerminalEdit::TextBackground(
+                crate::terminal_appearance::TextBackgroundId::GrayOnBlack,
+            ))
+            .is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+
+        // Repair the destination without changing its bytes. The old
+        // open_preferences retry would flush the pending text edit here.
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(&link, &original).unwrap();
+        open_preferences(&app_window);
+        pump();
+        let prefs = gtk::Window::list_toplevels()
+            .into_iter()
+            .find_map(|window| window.downcast::<adw::PreferencesWindow>().ok())
+            .expect("Preferences window opens");
+        prefs.destroy();
+        pump();
+        assert_eq!(
+            std::fs::read(&link).unwrap(),
+            original,
+            "opening and closing Preferences must not flush pending edits"
+        );
+
+        app_window
+            .state
+            .borrow_mut()
+            .settings
+            .terminal_appearance_changed(crate::settings::TerminalEdit::AnsiPalette(
+                crate::terminal_appearance::AnsiPaletteId::Tango,
+            ))
+            .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&link).unwrap()).unwrap();
+        assert_eq!(value["text_background"], "gray-on-black");
+        assert_eq!(value["ansi_palette"], "tango");
+        assert_eq!(value["external"], true);
+
+        app_window.window.destroy();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     #[ignore = "requires a display, window manager and xdotool; run alone with --test-threads=1"]
     fn preferences_reopen_and_switch_geometry_work_in_a_live_window() {
         fn pump() {
@@ -7979,6 +8406,7 @@ mod tests {
                 }),
                 allow_reduced_protection: Rc::new(|_, _| Err("no kernel in this fixture".into())),
                 bindings_changed: Rc::new(|| {}),
+                terminal: crate::prefs::terminal::test_context(),
             },
         );
         pump();
