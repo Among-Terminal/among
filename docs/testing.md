@@ -632,9 +632,14 @@ like any ignored graphical test, for example
 `among-tools prepare-preferences-screenshots RAW_DIR NEW_OUTPUT_DIR` then removes
 the window border, strips all PNG metadata and fails when a capture is missing,
 an output file already exists, an image is 300,000 bytes or larger, or the
-widths differ. It is the only step between the capture and the published files;
-the host's real user, paths and desktop never appear because the test runs in the
-owned display with its own `HOME`.
+widths differ. It never overwrites, so prepare into a new directory; a failed
+attempt can leave output files behind, so after fixing the capture retry with
+another new directory. When preparation succeeds, copy the ten prepared PNG
+files into `docs/media/preferences/`, replacing the existing ones. This is the
+only step between the capture and the published files; the host's real user,
+paths and desktop never appear because the test runs in the owned display with
+its own `HOME`. The tool runs `/usr/bin/convert` with a cleared environment, the
+same fixed path the other graphical checks use.
 
 ## Installer ENOSPC context
 
