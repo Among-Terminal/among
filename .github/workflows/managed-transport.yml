@@ -276,9 +276,6 @@ jobs:
           sudo apt-get install -y xvfb openbox xdotool dbus-x11 imagemagick x11-utils xauth fonts-dejavu-core
           CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 build --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Install the published native packages through the real UI
-        env:
-          # Read-only token for GitHub's unauthenticated API allowance only.
-          AMONG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           root="$INTEROP_ROOT"
@@ -289,6 +286,7 @@ jobs:
           ' "$root/host-tests.jsonl")"
           case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
           sha256sum -c "$root/host-test-sha256.txt"
+          AMONG_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           AMONG_CHECK_ROOT="$root/release-install" "$PWD/target/debug/among-tools" ci-x11 \
             "$PWD/target/debug/among-tools" check-published-prerelease-install "$app_test" "$root/official" \
             2>&1 | tee "$root/published-native-install.log"

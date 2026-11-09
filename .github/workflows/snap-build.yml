@@ -56,8 +56,6 @@ jobs:
           mkdir -m 700 "$RUNNER_TEMP/among-checks"
       - name: Capture native plugin profile before destructive Snap build changes the checkout
         env:
-          # Read-only token for GitHub's unauthenticated API allowance only.
-          AMONG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # The checkout is the pull request head, not GitHub's merge commit, so
           # the profile is bound to the head commit.
           EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -72,6 +70,7 @@ jobs:
           AMONG_CHECK_SOURCE_SHA="$source_sha" CARGO_BUILD_JOBS=1 cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
           tool=tools/among-tools/target/release/among-tools
           "$tool" prepare-published-plugin-inputs .github/plugin-acceptance.json "$RUNNER_TEMP/published-plugin-assets" "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          AMONG_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" package-plugin-profile --published-inputs "$AMONG_CHECK_ROOT/official-plugin-inputs"
           "$tool" check-package-plugin-profile package-plugin-profile "$EXPECTED_SOURCE"
       # The About page names the commit and its date. `sudo env` passes only what

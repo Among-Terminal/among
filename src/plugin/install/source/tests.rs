@@ -1651,3 +1651,52 @@ fn the_token_is_not_forwarded_when_an_asset_download_redirects_to_the_delivery_o
     }
     assert!(api > 0 && delivery == 1, "api={api} delivery={delivery}");
 }
+
+const CHILD_MARKER: &str = "AMONG_TEST_TOKEN_CHILD";
+
+/// Runs in a fresh copy of the test binary (see the test below) so that
+/// changing the process environment cannot disturb other tests.
+#[test]
+fn token_scrub_child_body() {
+    if std::env::var_os(CHILD_MARKER).is_none() {
+        return;
+    }
+    take_token_from_environment();
+    assert!(
+        token_from_environment().is_some(),
+        "the token must stay usable"
+    );
+    let output = std::process::Command::new("/usr/bin/env").output().unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !text.contains(TOKEN_VARIABLE),
+        "a child inherited the token variable"
+    );
+    assert!(
+        !text.contains(SYNTHETIC_TOKEN),
+        "a child inherited the token value"
+    );
+    assert!(
+        text.contains(CHILD_MARKER),
+        "the rest of the environment is kept"
+    );
+}
+
+#[test]
+fn taking_the_token_keeps_it_for_requests_and_hides_it_from_every_child() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "plugin::install::source::tests::token_scrub_child_body",
+        ])
+        .env(CHILD_MARKER, "1")
+        .env(TOKEN_VARIABLE, SYNTHETIC_TOKEN)
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{log}");
+    assert!(
+        log.contains("1 passed"),
+        "the child body must actually run: {log}"
+    );
+}

@@ -95,9 +95,6 @@ jobs:
           cargo build --release --locked --example audio-probe --example audio-retirement-probe
           cargo build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Capture actual source-bound installed plugin profile for packaged rendering
-        env:
-          # Read-only token for GitHub's unauthenticated API allowance only.
-          AMONG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           mkdir -p "$AMONG_CHECK_ROOT" appimage-checker
@@ -107,6 +104,7 @@ jobs:
           AMONG_CHECK_SOURCE_SHA="$source_sha" cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
           tools=tools/among-tools/target/release/among-tools
           "$tools" prepare-published-plugin-inputs .github/plugin-acceptance.json /var/tmp/published-plugin-assets "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          AMONG_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           "$tools" ci-x11 "$tools" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" appimage-checker/observed-profile --published-inputs "$AMONG_CHECK_ROOT/official-plugin-inputs"
       - name: Name the candidate after the tag or the package version
         run: |

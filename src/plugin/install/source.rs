@@ -894,8 +894,26 @@ fn authorization(value: &str) -> Option<reqwest::header::HeaderValue> {
     Some(header)
 }
 
+static TOKEN: std::sync::OnceLock<Option<reqwest::header::HeaderValue>> =
+    std::sync::OnceLock::new();
+
 fn token_from_environment() -> Option<reqwest::header::HeaderValue> {
-    authorization(&std::env::var(TOKEN_VARIABLE).ok()?)
+    TOKEN
+        .get_or_init(|| authorization(&std::env::var(TOKEN_VARIABLE).ok()?))
+        .clone()
+}
+
+/// Moves the token out of the process environment into memory.
+///
+/// Every child the application starts (the terminal shell, notification
+/// commands, audio helpers, link openers) inherits the environment, and a
+/// token left there would be visible to each command typed in a pane and in
+/// `/proc/<pid>/environ`. Call this once, first thing in `main`, while the
+/// process is still single-threaded; the token stays available to the API
+/// requests only.
+pub fn take_token_from_environment() {
+    token_from_environment();
+    std::env::remove_var(TOKEN_VARIABLE);
 }
 
 struct Operation {
