@@ -314,7 +314,7 @@ pub(super) fn page(ctx: Option<&Context>) -> adw::PreferencesPage {
                             _ => flag(
                                 &program,
                                 PROGRAM_TITLE,
-                                Some("Use an absolute path to the program"),
+                                Some("Use an absolute path of at most 16384 bytes"),
                             ),
                         })
                 })
@@ -439,9 +439,20 @@ impl ArgumentsField {
             hint,
             json,
         };
+        field
+            .view
+            .update_relation(&[gtk::accessible::Relation::DescribedBy(&[field
+                .hint
+                .upcast_ref()])]);
         field.view.buffer().connect_changed({
             let hint = field.hint.downgrade();
+            let view = field.view.downgrade();
             move |_| {
+                if let Some(view) = view.upgrade() {
+                    view.update_state(&[gtk::accessible::State::Invalid(
+                        gtk::AccessibleInvalidState::False,
+                    )]);
+                }
                 if let Some(hint) = hint.upgrade() {
                     hint.remove_css_class("error");
                     hint.set_text(if json {
@@ -477,6 +488,11 @@ impl ArgumentsField {
     fn problem(&self, text: &str) {
         self.hint.set_text(text);
         self.hint.add_css_class("error");
+        // Assistive technology reads the hint as the editor's description and
+        // learns that the value is invalid, not only that a label changed.
+        self.view.update_state(&[gtk::accessible::State::Invalid(
+            gtk::AccessibleInvalidState::True,
+        )]);
     }
 }
 
