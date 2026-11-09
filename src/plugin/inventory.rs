@@ -671,21 +671,44 @@ pub(crate) mod tests {
     /// The release fixture with a chosen manifest version, so update ordering
     /// can be checked against real installed entries.
     pub fn fixture_version(root: &Path, version: &str) -> Receipt {
-        let manifest = json!({"schema_version":1,"id":"sample","version":version,"name":"Sample",
-            "description":"No probe","entrypoint":"plugin","api":{"major":1,"minor":2},
+        fixture_plugin(
+            root,
+            Identity {
+                id: "sample",
+                name: "Sample",
+                description: "No probe",
+                repository: (12, "example", "sample"),
+            },
+            version,
+        )
+    }
+
+    /// Who a fixture plugin is and which release repository it came from.
+    pub struct Identity<'a> {
+        pub id: &'a str,
+        pub name: &'a str,
+        pub description: &'a str,
+        pub repository: (u64, &'a str, &'a str),
+    }
+
+    /// A release fixture with a chosen identity, for scenes that need several
+    /// plausible installed plugins rather than the generic Sample.
+    pub fn fixture_plugin(root: &Path, who: Identity<'_>, version: &str) -> Receipt {
+        let manifest = json!({"schema_version":1,"id":who.id,"version":version,"name":who.name,
+            "description":who.description,"entrypoint":"plugin","api":{"major":1,"minor":2},
             "required_features":["status"],"settings":{"version":1,"apply":"live","fields":[
                 {"key":"label","label":"Label","kind":"string","default":"default"}]}})
         .to_string();
         let receipt = Receipt {
             origin: Provenance::Release(ReleaseOrigin {
-                repository_id: 12,
-                owner: "example".into(),
-                repository: "sample".into(),
+                repository_id: who.repository.0,
+                owner: who.repository.1.into(),
+                repository: who.repository.2.into(),
                 release_id: 1,
                 asset_id: 2,
                 source: None,
             }),
-            plugin_id: "sample".into(),
+            plugin_id: who.id.into(),
             revision: "a".repeat(40),
             manifest_sha256: checksum(manifest.as_bytes()).unwrap(),
             package_sha256: "b".repeat(64),

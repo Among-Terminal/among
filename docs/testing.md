@@ -618,6 +618,24 @@ WCAG assessment. Screenshots supplement those property checks, not replace them.
 These source-bound local-receipt checks still do not establish repository package
 installation, update/uninstall or full packaged/platform acceptance.
 
+## Preferences screenshots
+
+The images in `docs/media/preferences/` come from one ignored graphical test,
+`app::plugin_tests::installation::doc_screenshots::every_preferences_tab_is_captured_for_the_documentation`.
+It builds a scene from sample official plugins plus one example third-party
+source (the catalogue sizes and the example source are synthetic), opens
+Preferences in the dark scheme, asserts the content each picture is meant to
+show, and writes raw window captures below `AMONG_CHECK_ROOT/preferences`. Run it
+like any ignored graphical test, for example
+`among-tools ci-x11 <among-test-executable> <test name> --exact --ignored --nocapture`.
+
+`among-tools prepare-preferences-screenshots RAW_DIR NEW_OUTPUT_DIR` then removes
+the window border, strips all PNG metadata and fails when a capture is missing,
+an output file already exists, an image is 300,000 bytes or larger, or the
+widths differ. It is the only step between the capture and the published files;
+the host's real user, paths and desktop never appear because the test runs in the
+owned display with its own `HOME`.
+
 ## Installer ENOSPC context
 
 `among-tools check-installer-enospc-from-cargo CARGO_TEST_RECORDS` selects the
