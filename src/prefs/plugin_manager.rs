@@ -687,12 +687,30 @@ fn poll_sources(env: &Rc<Env>) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static FIRST_OPEN_FETCH_FOR_TEST: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Turn the first-open fetch on for the rest of this test process.
+#[cfg(test)]
+pub(crate) fn enable_first_open_fetch_for_test() {
+    FIRST_OPEN_FETCH_FOR_TEST.with(|flag| flag.set(true));
+}
+
 /// The first time the page opens with no saved catalogue of the official
 /// source, fetch it without waiting for a button: an empty Plugins page on a
 /// fresh install gives the user nothing to act on. Once a snapshot is saved the
 /// page shows it at once and never fetches by itself. A failed fetch leaves the
 /// status page with the reason and the Load button to try again.
 fn check_on_first_open(env: &Rc<Env>) {
+    // Tests that script their own refreshes and observations against a fake
+    // source must not have this one consume them; the test of this behavior
+    // switches it on.
+    #[cfg(test)]
+    if !FIRST_OPEN_FETCH_FOR_TEST.with(Cell::get) {
+        return;
+    }
     let state = &env.state;
     if state.first_open_decided.replace(true) {
         return;

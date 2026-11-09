@@ -336,6 +336,8 @@ fn attach_capture(
 }
 
 #[cfg(test)]
+pub(crate) use plugin_manager::enable_first_open_fetch_for_test;
+#[cfg(test)]
 pub(crate) use plugin_manager::Services as PluginServices;
 
 #[cfg(test)]
