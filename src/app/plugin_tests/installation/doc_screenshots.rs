@@ -283,15 +283,9 @@ fn every_preferences_tab_is_captured_for_the_documentation() {
     choose(&preferences, "terminal-text-background", "Solarized dark");
     choose(&preferences, "terminal-ansi-palette", "Solarized");
     shoot(&preferences, "terminal");
-    // The dropdown open. The high-contrast scheme is not captured here: it is
-    // chosen by the environment before the process starts, not by a call.
-    resize(&preferences, 640);
-    adw::prelude::ActionRowExt::activate(&first_of::<adw::ComboRow>(&preferences));
-    settle();
-    shoot(&preferences, "terminal-dropdown");
-    focus(&preferences);
-    xdo(&["key", "--clearmodifiers", "Escape"]);
-    settle();
+    // Not captured: the open dropdown (its popup is a separate surface that the
+    // display, which has no compositor, paints black) and the high-contrast
+    // scheme (chosen by the environment before the process starts).
     resize(&preferences, 680);
     show_tab(&preferences, "About");
     shoot(&preferences, "about");
@@ -342,6 +336,11 @@ fn every_preferences_tab_is_captured_for_the_documentation() {
     show_tab(&preferences, "Plugins");
     resize(&preferences, 640);
     shoot(&preferences, "plugins-light");
+    // The main-window shots use the usual dark terminal look.
+    show_tab(&preferences, "Terminal");
+    choose(&preferences, "terminal-text-background", "Gray on black");
+    choose(&preferences, "terminal-ansi-palette", "Tango");
+    settle();
     preferences.destroy();
     adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
 

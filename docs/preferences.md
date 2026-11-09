@@ -372,10 +372,11 @@ More states, same scene:
 | Plugin search | ![Search](media/preferences/plugins-search.png) |
 | Add-source dialog | ![Add source](media/preferences/sources-add.png) |
 | Command group with one argument per line | ![Command arguments](media/preferences/notifications-command.png) |
-| Terminal dropdown open | ![Terminal dropdown](media/preferences/terminal-dropdown.png) |
 | Main window, two panes and the sidebar | ![Main window](media/app/main-window.png) |
 | Main window right after a bell in a pane | ![Main window after a bell](media/app/main-window-bell.png) |
 | Desktop notification for a bell (real GNOME Shell capture) | ![Desktop notification](media/app/desktop-notification.png) |
 
-Not covered: the high-contrast scheme (chosen by the environment before the
-process starts) and the sound row while playing (no audio device in the display).
+Not covered: the open terminal dropdown (the display has no compositor, so the
+popup surface renders black), the high-contrast scheme (chosen by the environment
+before the process starts) and the sound row while playing (no audio device in
+the display).

@@ -11,13 +11,12 @@ use std::process::{Command, Stdio};
 
 /// The captures the documentation test writes, in the order they are listed in
 /// `docs/preferences.md`.
-pub const NAMES: [&str; 18] = [
+pub const NAMES: [&str; 17] = [
     "plugins-loading",
     "plugins-offline",
     "plugins-search",
     "sources-add",
     "notifications-command",
-    "terminal-dropdown",
     "main-window",
     "main-window-bell",
     "plugins",
