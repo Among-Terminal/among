@@ -11,7 +11,12 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 const SAMPLE: &str = "github:12/sample";
 const REMOVED: &str = "github:13/sample";
 
-fn origin(repository_id: u64, publisher_id: u64, owner: &str, repository: &str) -> Origin {
+pub(super) fn origin(
+    repository_id: u64,
+    publisher_id: u64,
+    owner: &str,
+    repository: &str,
+) -> Origin {
     Origin {
         repository_id,
         publisher_id,
@@ -21,7 +26,10 @@ fn origin(repository_id: u64, publisher_id: u64, owner: &str, repository: &str) 
 }
 
 /// Saves one source snapshot the way an explicit refresh would have.
-fn save_source(root: &std::path::Path, source: crate::plugin::install::source::Inspection) {
+pub(super) fn save_source(
+    root: &std::path::Path,
+    source: crate::plugin::install::source::Inspection,
+) {
     let job = registry::Job::start(root.to_path_buf(), Request::Add(Box::new(source))).unwrap();
     let outcome = RefCell::new(None);
     wait_for(
@@ -68,7 +76,7 @@ fn install_fixtures(root: &std::path::Path) {
     .unwrap();
 }
 
-fn preferences_window(ctx: &Window) -> (adw::PreferencesWindow, adw::PreferencesPage) {
+pub(super) fn preferences_window(ctx: &Window) -> (adw::PreferencesWindow, adw::PreferencesPage) {
     open_preferences(ctx);
     let preferences = gtk::Window::list_toplevels()
         .into_iter()

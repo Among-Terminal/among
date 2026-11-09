@@ -38,6 +38,7 @@ Usage:
   among-tools check-plugin-install <among-test-executable> <official-plugin-inputs>
   among-tools check-sessions <among-binary>
   among-tools check-terminal-colours (--installed|--source-build) [--source-sha SHA] <among-binary> <terminal-colour-fixture> <gnome-colours.json> [<gsettings-schema-dir>]
+  among-tools prepare-preferences-screenshots <raw-capture-directory> <new-output-directory>
   among-tools check-split-directory <among-binary>
   among-tools check-scroll-calibration <among-binary>
   among-tools check-sidebar-rename <among-binary>
@@ -907,6 +908,9 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
         }
         [command, binary] if command == "check-live-resize" => {
             among_tools::live_resize::run(Path::new(binary), &among_tools::scratch::root()?)?;
+        }
+        [command, raw, output] if command == "prepare-preferences-screenshots" => {
+            among_tools::preferences_screenshots::prepare(Path::new(raw), Path::new(output))?;
         }
         [command, rest @ ..] if command == "check-terminal-colours" => {
             among_tools::terminal_colours::run(rest)?;

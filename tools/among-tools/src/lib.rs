@@ -50,6 +50,7 @@ pub mod platform;
 pub mod plugin_development;
 pub mod plugin_install;
 pub mod preferences;
+pub mod preferences_screenshots;
 pub mod process;
 pub mod promotion;
 pub mod promotion_destinations;
