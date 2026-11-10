@@ -638,6 +638,7 @@ impl Job {
                             cancelled: worker_cancelled,
                             deadline: Instant::now() + OPERATION_TIMEOUT,
                             rate_limit: Some(worker_rate_limit),
+                            token: token_from_environment(),
                         };
                         operation.inspect_target(target).await
                     });
@@ -739,6 +740,7 @@ impl InstallJob {
                         cancelled,
                         deadline: Instant::now() + OPERATION_TIMEOUT,
                         rate_limit: None,
+                        token: token_from_environment(),
                     };
                     operation.install(selection, &root, state).await
                 });
@@ -874,14 +876,77 @@ fn client_builder() -> reqwest::ClientBuilder {
         .user_agent("AmongTerminal-repository-inspection/1")
 }
 
+/// Environment variable holding an optional GitHub token. Unauthenticated
+/// requests share a small per-address hourly allowance that hosted CI runners
+/// and users behind one NAT exhaust; a token raises it.
+const TOKEN_VARIABLE: &str = "AMONG_GITHUB_TOKEN";
+
+/// The `Authorization` value for `value`, or `None` when it is empty or cannot
+/// be sent as a header. The value is marked sensitive so that no `Debug`
+/// output of a request or header map can print it.
+fn authorization(value: &str) -> Option<reqwest::header::HeaderValue> {
+    let token = value.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let mut header = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")).ok()?;
+    header.set_sensitive(true);
+    Some(header)
+}
+
+static TOKEN: std::sync::OnceLock<Option<reqwest::header::HeaderValue>> =
+    std::sync::OnceLock::new();
+
+fn token_from_environment() -> Option<reqwest::header::HeaderValue> {
+    TOKEN
+        .get_or_init(|| authorization(&std::env::var(TOKEN_VARIABLE).ok()?))
+        .clone()
+}
+
+/// Moves the token out of the process environment into memory.
+///
+/// Every child the application starts (the terminal shell, notification
+/// commands, audio helpers, link openers) inherits the environment, so a
+/// token left there would be visible to each command typed in a pane and in
+/// that child's `/proc/<pid>/environ`. Call this once, first thing in `main`,
+/// while the process is still single-threaded; the token stays available to
+/// the API requests only.
+///
+/// Limit: `unsetenv` edits only the `environ` pointer array. The kernel copy
+/// of the start-up environment that `/proc/<application pid>/environ` shows
+/// keeps the original string, so a program run by the same user can still read
+/// the token from the application's own entry. The token needs no scopes, and
+/// a same-user process can already read the application's memory.
+pub fn take_token_from_environment() {
+    token_from_environment();
+    std::env::remove_var(TOKEN_VARIABLE);
+}
+
 struct Operation {
     client: Client,
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
     rate_limit: Option<RateObservation>,
+    /// Sent to `https://api.github.com` only. Redirects are followed by hand,
+    /// so every request passes through `authorize`, which drops the token for
+    /// any other origin (the asset CDN a download redirects to).
+    token: Option<reqwest::header::HeaderValue>,
 }
 
 impl Operation {
+    fn authorize(&self, request: reqwest::RequestBuilder, url: &Url) -> reqwest::RequestBuilder {
+        match &self.token {
+            Some(token)
+                if url.scheme() == "https"
+                    && url.host_str() == Some("api.github.com")
+                    && url.port().is_none() =>
+            {
+                request.header(reqwest::header::AUTHORIZATION, token.clone())
+            }
+            _ => request,
+        }
+    }
+
     async fn observe_refusal(&self, response: &mut reqwest::Response) -> Result<(), Problem> {
         let status = response.status().as_u16();
         let number = |name| {
@@ -1084,16 +1149,13 @@ impl Operation {
         let requested = url.clone();
         for redirects in 0..=MAX_REDIRECTS {
             self.check()?;
-            let mut response = self
-                .wait(
-                    self.client
-                        .get(url.clone())
-                        .header("Accept", "application/octet-stream")
-                        .header("Accept-Encoding", "identity")
-                        .header("Cache-Control", "no-cache")
-                        .send(),
-                )
-                .await?;
+            let request = self
+                .client
+                .get(url.clone())
+                .header("Accept", "application/octet-stream")
+                .header("Accept-Encoding", "identity")
+                .header("Cache-Control", "no-cache");
+            let mut response = self.wait(self.authorize(request, &url).send()).await?;
             if response.status().is_redirection() {
                 if redirects == MAX_REDIRECTS {
                     return Err(Problem("package redirect budget exceeded"));
@@ -1204,7 +1266,7 @@ impl Operation {
                 .header("Accept", "application/vnd.github+json")
                 .header("Cache-Control", "no-cache")
                 .header("Accept-Encoding", "identity");
-            let mut response = self.wait(request.send()).await?;
+            let mut response = self.wait(self.authorize(request, &url).send()).await?;
             if response.status().is_redirection() {
                 if redirects == MAX_REDIRECTS {
                     return Err(Problem("repository redirect budget exceeded"));

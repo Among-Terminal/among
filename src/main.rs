@@ -29,6 +29,8 @@ use gtk::{gio, glib};
 use vte::prelude::*;
 
 fn main() -> glib::ExitCode {
+    // Before any thread or child exists, so no child inherits the token.
+    plugin::install::source::take_token_from_environment();
     if let Some(code) = among::notifications::commands::supervisor_entry() {
         return glib::ExitCode::from(code);
     }

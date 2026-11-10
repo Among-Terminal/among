@@ -249,6 +249,7 @@ impl Server {
                 cancelled: Arc::new(AtomicBool::new(false)),
                 deadline: Instant::now() + OPERATION_TIMEOUT,
                 rate_limit: None,
+                token: None,
             }
             .inspect_target(Target::Registered(12, release::Channel::Prerelease)),
         )
@@ -267,6 +268,10 @@ impl Server {
     }
 
     pub(crate) fn inspect(&self, trust: bool) -> Result<Inspection, Problem> {
+        self.inspect_with_token(trust, None)
+    }
+
+    fn inspect_with_token(&self, trust: bool, token: Option<&str>) -> Result<Inspection, Problem> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -277,6 +282,7 @@ impl Server {
                 cancelled: Arc::new(AtomicBool::new(false)),
                 deadline: Instant::now() + OPERATION_TIMEOUT,
                 rate_limit: None,
+                token: token.and_then(authorization),
             }
             .inspect(Repository::parse("example/sample").unwrap()),
         )
@@ -748,6 +754,15 @@ pub(crate) fn install_at(
     selected: Selection,
     root: &std::path::Path,
 ) -> Result<store::Commit, Problem> {
+    install_with_token(server, selected, root, None)
+}
+
+fn install_with_token(
+    server: &Server,
+    selected: Selection,
+    root: &std::path::Path,
+    token: Option<&str>,
+) -> Result<store::Commit, Problem> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -758,6 +773,7 @@ pub(crate) fn install_at(
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: Instant::now() + OPERATION_TIMEOUT,
             rate_limit: None,
+            token: token.and_then(authorization),
         }
         .install(selected, root, &AtomicU8::new(DOWNLOADING)),
     )
@@ -1556,4 +1572,131 @@ fn real_install_workers_serialize_identity_and_use_fresh_operation_generations_a
         "a committed operation must never report a cancelled rollback"
     );
     assert_eq!(crate::plugin::inventory::read(&root.0).unwrap().len(), 1);
+}
+
+const SYNTHETIC_TOKEN: &str = "synthetic-token-value";
+
+/// Splits a recorded request into its lower-cased host and whether it carried
+/// the synthetic token as a bearer credential.
+fn host_and_credential(request: &str) -> (String, bool) {
+    let lowered = request.to_ascii_lowercase();
+    let host = lowered
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("every request names its host")
+        .to_owned();
+    (
+        host,
+        lowered.contains(&format!("authorization: bearer {SYNTHETIC_TOKEN}")),
+    )
+}
+
+#[test]
+fn an_empty_or_unsendable_token_is_ignored_and_a_real_one_never_prints() {
+    assert!(authorization("").is_none());
+    assert!(authorization("  \t ").is_none());
+    assert!(authorization("bad\nvalue").is_none());
+    let header = authorization(&format!(" {SYNTHETIC_TOKEN}\n")).unwrap();
+    assert!(header.is_sensitive());
+    assert!(!format!("{header:?}").contains(SYNTHETIC_TOKEN));
+}
+
+#[test]
+fn repository_requests_carry_the_token_only_when_one_is_provided() {
+    let _guard = JOB_TESTS.lock().unwrap();
+    let (metadata, archive) =
+        super::super::package::tests::managed_fixture("1.0.0", "managed-resource", |_| {});
+    for (token, expected) in [(None, false), (Some(SYNTHETIC_TOKEN), true)] {
+        let (metadata, archive) = (metadata.clone(), archive.clone());
+        let server =
+            Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+        server.inspect_with_token(true, token).unwrap();
+        let requests = server.requests();
+        assert!(!requests.is_empty());
+        for request in requests {
+            assert_eq!(
+                host_and_credential(&request),
+                ("api.github.com".to_owned(), expected),
+                "{request}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_token_is_not_forwarded_when_an_asset_download_redirects_to_the_delivery_origin() {
+    let _guard = JOB_TESTS.lock().unwrap();
+    let root = super::super::package::tests::OwnedRoot::new();
+    let (metadata, archive) =
+        super::super::package::tests::managed_fixture("1.0.0", "managed-resource", |_| {});
+    let server =
+        Server::new(move |request| package_route(metadata.clone(), archive.clone(), request));
+    let selected = server
+        .inspect(true)
+        .unwrap()
+        .select("sample", "1.0.0")
+        .unwrap();
+    let before = server.requests().len();
+    install_with_token(&server, selected, &root.0, Some(SYNTHETIC_TOKEN)).unwrap();
+    let mut api = 0;
+    let mut delivery = 0;
+    for request in server.requests().into_iter().skip(before) {
+        let (host, credential) = host_and_credential(&request);
+        if host == "api.github.com" {
+            api += 1;
+        } else {
+            delivery += 1;
+        }
+        assert_eq!(credential, host == "api.github.com", "{request}");
+    }
+    assert!(api > 0 && delivery == 1, "api={api} delivery={delivery}");
+}
+
+const CHILD_MARKER: &str = "AMONG_TEST_TOKEN_CHILD";
+
+/// Runs in a fresh copy of the test binary (see the test below) so that
+/// changing the process environment cannot disturb other tests.
+#[test]
+fn token_scrub_child_body() {
+    if std::env::var_os(CHILD_MARKER).is_none() {
+        return;
+    }
+    take_token_from_environment();
+    assert!(
+        token_from_environment().is_some(),
+        "the token must stay usable"
+    );
+    let output = std::process::Command::new("/usr/bin/env").output().unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !text.contains(TOKEN_VARIABLE),
+        "a child inherited the token variable"
+    );
+    assert!(
+        !text.contains(SYNTHETIC_TOKEN),
+        "a child inherited the token value"
+    );
+    assert!(
+        text.contains(CHILD_MARKER),
+        "the rest of the environment is kept"
+    );
+}
+
+#[test]
+fn taking_the_token_keeps_it_for_requests_and_hides_it_from_every_child() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "plugin::install::source::tests::token_scrub_child_body",
+        ])
+        .env(CHILD_MARKER, "1")
+        .env(TOKEN_VARIABLE, SYNTHETIC_TOKEN)
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{log}");
+    assert!(
+        log.contains("1 passed"),
+        "the child body must actually run: {log}"
+    );
 }

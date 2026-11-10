@@ -106,6 +106,7 @@ jobs:
           AMONG_CHECK_SOURCE_SHA="$source_sha" cargo test --bin among --locked --no-run --message-format=json > "$AMONG_CHECK_ROOT/package-host-tests.jsonl"
           tool=tools/among-tools/target/release/among-tools
           "$tool" prepare-published-plugin-inputs .github/plugin-acceptance.json /var/tmp/published-plugin-assets "$AMONG_CHECK_ROOT/official-plugin-inputs"
+          AMONG_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           "$tool" ci-x11 "$tool" capture-package-plugin-profile . "$AMONG_CHECK_ROOT/package-host-tests.jsonl" release-candidate/observed-profile --published-inputs "$AMONG_CHECK_ROOT/official-plugin-inputs"
           (cd release-candidate && sha256sum observed-profile/transfer.json >> native-checker.sha256)
       # Internal build artifacts are not public release assets or installed-runtime receipts.

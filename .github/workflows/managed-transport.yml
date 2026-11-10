@@ -286,6 +286,7 @@ jobs:
           ' "$root/host-tests.jsonl")"
           case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
           sha256sum -c "$root/host-test-sha256.txt"
+          AMONG_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           AMONG_CHECK_ROOT="$root/release-install" "$PWD/target/debug/among-tools" ci-x11 \
             "$PWD/target/debug/among-tools" check-published-prerelease-install "$app_test" "$root/official" \
             2>&1 | tee "$root/published-native-install.log"

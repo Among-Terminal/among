@@ -61,6 +61,9 @@ jobs:
           "$tool" prepare-published-plugin-inputs .github/plugin-acceptance.json \
             "$RUNNER_TEMP/published-plugin-assets" "$AMONG_CHECK_ROOT/official-plugin-inputs"
           "$tool" export-plugin-catalogue "$AMONG_CHECK_ROOT/official-plugin-inputs" "$AMONG_CHECK_ROOT/published-local-catalogue"
+          # The token lifts GitHub's unauthenticated API allowance; only this
+          # command receives it, never the build or the other checks.
+          AMONG_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           "$tool" ci-x11 "$tool" check-published-development-install "$host_tests" \
             "$AMONG_CHECK_ROOT/official-plugin-inputs" "$AMONG_CHECK_ROOT/published-local-catalogue"
 
@@ -305,6 +308,7 @@ jobs:
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-synthetic-plugin-replacement "$host_tests" \
             "$AMONG_CHECK_ROOT/synthetic-plugin-inputs" "$AMONG_CHECK_ROOT/published-local-catalogue"
+          AMONG_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           tools/among-tools/target/release/among-tools ci-x11 \
             tools/among-tools/target/release/among-tools check-published-prerelease-install "$host_tests" \
             "$AMONG_CHECK_ROOT/official-plugin-inputs" | tee "$AMONG_CHECK_ROOT/published-install.log"
