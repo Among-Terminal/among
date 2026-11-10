@@ -2,7 +2,7 @@
 
 User-visible changes of the application, newest first. Written by `among-tools release-prepare` from the titles of the merged pull requests.
 
-## 0.2.0 - 2026-11-09
+## 0.2.0 - 2026-11-10
 
 ### Features
 
@@ -28,6 +28,10 @@ User-visible changes of the application, newest first. Written by `among-tools r
 
 ### Bug fixes
 
+- plugins: authenticate GitHub API requests when a token is provided (#89)
+- preferences: open tall enough for the About page to show whole (#88)
+- preferences: first-open plugin list, plain shield, clickable rows, wider review, argument lines (#85)
+- sandbox: deny path-based file attribute syscalls (#79)
 - ui: pulse the unread stripe until focus and close details of a removed plugin (#75)
 - workspaces: keep dividers and the sidebar marker stable on switch (#77)
 - panes: keep the expanded pane header at its normal height (#73)
