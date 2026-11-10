@@ -28,6 +28,7 @@ User-visible changes of the application, newest first. Written by `among-tools r
 
 ### Bug fixes
 
+- sandbox: review the fchroot kernel call in the policy header test (#90)
 - plugins: authenticate GitHub API requests when a token is provided (#89)
 - preferences: open tall enough for the About page to show whole (#88)
 - preferences: first-open plugin list, plain shield, clickable rows, wider review, argument lines (#85)
