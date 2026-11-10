@@ -730,6 +730,12 @@ mod review_tests {
         ("prctl", "own process; no_new_privs is already set"),
         ("arch_prctl", "own process"),
         ("chroot", "needs CAP_SYS_CHROOT"),
+        (
+            "fchroot",
+            "needs CAP_SYS_CHROOT; without it only the special failfs root is accepted, and \
+             only with no_new_privs set, an unshared fs_struct and no earlier chroot, which \
+             moves the own root to an empty filesystem and so only removes the process's own access",
+        ),
         ("acct", "needs CAP_SYS_PACCT"),
         ("swapon", "needs CAP_SYS_ADMIN"),
         ("swapoff", "needs CAP_SYS_ADMIN"),
