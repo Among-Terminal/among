@@ -90,11 +90,24 @@ When a title changes on a pane that is **not** focused, the header is marked and
 stays marked until that pane is focused. A title change on the focused pane leaves
 no mark, because the user is already looking at it.
 
-A pane whose terminal has never set a title, which is rare because most shells do
-at every prompt, falls back to showing the pane's number.
+A pane whose terminal has no nonempty title falls back to showing the pane's
+number.
 
 Plugin content for the pane's header appears beside the title; neither replaces
 the other. See [plugins](plugins.md).
+
+## Terminal bells
+
+A terminal bell is separate from a title change. By default, a bell from an
+unfocused terminal marks its pane and workspace as unread. Focusing that terminal
+acknowledges the bell. The marker can pulse when system animations are enabled.
+When Among is in the background, bells also request desktop notifications by
+default. Clicking a notification activates its workspace and focuses its terminal,
+restoring the layout if another pane had been expanded.
+
+**Settings → Notifications** controls visual indicators, desktop delivery, sound
+and notification commands. Sound and commands start disabled. See
+[notification controls](notification-commands.md).
 
 ## Terminal context menu
 
@@ -142,8 +155,7 @@ target: nothing opens.
 
 A program that has enabled mouse reporting receives every click as before, except
 a Ctrl+click on an openable link: that click opens the link and the program is not
-told about it. VTE does not expose whether a program is reporting mice, so the
-gesture cannot be narrowed further; GNOME Terminal makes the same choice.
+told about it.
 
 A launch the desktop refuses is reported on stderr and the terminal stays usable;
 no dialog appears. A Ctrl+click in an unfocused pane focuses that pane before the
@@ -164,11 +176,10 @@ Ctrl+Shift+W    the pane and its process go, the layout closes up
     last one    a confirmation appears before the application exits
 ```
 
-A pane also closes when the process in it exits — typing `exit`, or a program
-that ends — following the same cascade. The exit is reported, naming the status
-when it is not zero, so a terminal disappearing is never mistaken for something
-the user did. Closing the window with the platform's close control takes the same
-path, including the confirmation.
+A pane also closes when its shell process exits, for example after typing `exit`,
+following the same cascade. The exit is reported on stderr, including the status
+when it is not zero. Closing the application window asks for confirmation while
+terminals are still running.
 
 The cascade stops at the last workspace: it asks rather than exiting, because
 every terminal's process goes with it.

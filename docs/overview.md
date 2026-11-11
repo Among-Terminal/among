@@ -30,6 +30,7 @@ It is retained here separately from the approved 23-second README film.
 - [Feature guide](features.md): demonstrations alongside controls and caveats.
 - [Panes](panes.md), [sessions](sessions.md), [preferences](preferences.md)
   and [plugins](plugins.md): detailed references.
+- [Plugin API](plugin-api.md): messages, access scopes and examples for authors.
 
 Use fullscreen to inspect terminal text. Previews link to MP4 files; GitHub
 inline playback is not assumed. The recordings use isolated synthetic projects,

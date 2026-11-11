@@ -62,21 +62,19 @@ GNOME Shell requires a matching `com.github.among-terminal.desktop` entry in its
 application search path. The DEB and RPM install that entry; the Snap recipe also
 includes it and currently uses `confinement: classic`.
 
-Desktop notification banners and click-to-focus from an installed Snap on GNOME
-remain unverified for the 0.2.0 candidates; this integration is required before
-the stable release. The current package has `meta/gui/among.desktop`, which
-snapd normally exports with the Snap name prefix. The canonical desktop file
-inside the Snap does not establish matching registration in GNOME's host search
-path. See the [Snap desktop interface](https://snapcraft.io/docs/reference/interfaces/desktop-interface/)
-for filename handling.
+For Snap installations, check the desktop entry exported to the host. The
+canonical desktop file inside the Snap does not by itself establish matching
+registration in GNOME's application search path. See
+[Snap packaging](snap.md) for the package's desktop integration limits.
 
 Running an extracted binary archive or a bare AppImage does not install a desktop
 entry. GNOME Shell may discard its notifications even though the session's
 notification service is running. Install the matching entry as shown in the
 [AppImage instructions](#appimage), or use the source installer. An
 AppImageLauncher entry named `appimagekit_…` alone does not match the GApplication
-id. Among reports a missing notification service, but GIO does not report this
-shell-side refusal. A sent notification is therefore never reported as displayed.
+id. Among reports a missing notification service. It sends through a selected
+GTK, portal or freedesktop D-Bus service; service acceptance does not prove that
+the desktop displayed a banner.
 
 The desktop file declares `X-GNOME-UsesNotifications=true` for GNOME's notification
 settings. It does not enable D-Bus activation; the click action targets the
@@ -150,8 +148,8 @@ tar -xzf among-terminal-ubuntu24.04-arm64.tar.gz -C ~/among
 No compiler, Rust toolchain or Among package is needed. The archive adds no
 applications-menu entry. The archive bundles no plugins. Install the official
 ones from the built-in source in Preferences → Plugins (see
-[plugins](plugins.md#installing)); on a first launch without network access the
-catalogue is shown as unavailable until a refresh succeeds. Installed plugins
+[plugins](plugins.md#installing)); if the first catalogue load fails, use
+**Load** to retry. Installed plugins
 stay disabled until you review their access and enable them. To remove Among,
 delete `~/among`. Settings,
 sessions and separately installed plugins are preserved.
@@ -263,15 +261,14 @@ AppImages also include 128 px and 256 px PNG variants of the approved mark for
 AppImageLauncher's file thumbnails. On the tested alpha-4 consumer, the SVG-only
 path produces fully transparent thumbnails despite a valid themed SVG. The
 integration regression decodes the generated thumbnails, not just the installed
-icon. Existing RC.1 files do not gain this correction automatically; integrate
-the corrected image rather than clearing unrelated thumbnail or icon caches.
+icon. Integrate the current image rather than clearing unrelated thumbnail or
+icon caches.
 
 The integration regression uses Debian 13 / GNOME Shell 48.7 / Wayland with
 AppImageLauncher `3.0.0-alpha-4-gha253~36951ec`. It integrates while Shell is
 already running, opens the integrated file without GIO launch hints, then checks
 menu activation, pin activation and fresh-process relaunch. Results apply to the
-actual image tested, not every integrator or desktop. Immutable 0.1.1 and the
-first 0.1.2 RC lack the unhinted-file-launch correction.
+actual image tested, not every integrator or desktop.
 
 For a controlled upgrade, close the old application and remove only its owned
 integration before integrating the replacement:
@@ -297,7 +294,8 @@ override its launcher. Among does not silently create host registration files.
 
 The image bundles no plugins. Install the official ones from the built-in
 source in Preferences → Plugins, as described in
-[plugins](plugins.md#installing); they stay disabled until you enable them.
+[plugins](plugins.md#installing); they stay disabled until you review their
+requested access and enable them.
 To remove Among,
 delete the AppImage file and, if you added them, the desktop entry and icon
 above. Settings, sessions and separately installed plugins are preserved.

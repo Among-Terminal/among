@@ -1,16 +1,12 @@
-# Preferences storage
+# Preferences
 
-The storage module uses `$XDG_CONFIG_HOME/among`, falling back to
+Settings use `$XDG_CONFIG_HOME/among`, falling back to
 `$HOME/.config/among` when XDG_CONFIG_HOME is absent or empty.
-
-## Notifications
 
 The pages are, in order, Plugins, Notifications, Keyboard, Terminal and About.
 Plugins is the visible page when the window opens. The tabs have equal widths.
-The Notifications page was called General before. Page/control automation uses
-identities (`plugins`, `notifications`, `keyboard`, `terminal`, `about` and
-`notification-…` widget names), not the first tab or first switch. The settings
-document is still `general.json`.
+
+## Notifications
 
 Notification choices use `general.json`, version 1. Missing fields inherit these
 in-memory defaults; opening Preferences never writes this document:
@@ -20,9 +16,9 @@ in-memory defaults; opening Preferences never writes this document:
 ```
 
 The page has four groups: Visual (**Highlight the terminal**), Sound (**Play a
-sound**), Desktop (**Desktop notification**) and Command (**Run a command**), plus a Plugin channels group only while
-an installed plugin declares a delivery channel. It carries no status rows or
-explanatory plates. The result of a save shows as a banner at the top only when it
+sound**), Desktop (**Desktop notification**) and Command (**Run a command**), plus
+a Plugin channels group for declared delivery channels and retained choices for
+unavailable plugins. The result of a save shows as a banner at the top only when it
 was not saved or its durability is uncertain; a durable save shows nothing. A value
 that cannot be used is reported on the row that holds it.
 
@@ -57,7 +53,7 @@ or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
 Desktop notifications are enabled for existing profiles too when
 `notifications.desktop` is absent. The default sends only while Among is in the
 background; a terminal currently viewed never sends a desktop notification,
-including with Always selected. If General cannot be read or validated, Desktop
+including with Always selected. If `general.json` cannot be read or validated, Desktop
 delivery stays off for that session; a missing file still uses the enabled
 default. The diagnostic and original file are retained. A bell names its
 workspace and includes the terminal title and directory when available.
@@ -68,8 +64,9 @@ activation only raises the window, preserving the captured workspace, terminal
 and layout; cancelling close restores navigation.
 Closing or focusing the source,
 turning the channel off, and normal exit withdraw its notifications. A missing
-session notification service is reported on the desktop row. GIO cannot confirm
-that a shell displayed a send; see [installation requirements](install.md#desktop-notification-integration).
+session notification service is reported on the desktop row. Acceptance by that
+service does not confirm that a banner appeared; see
+[installation requirements](install.md#desktop-notification-integration).
 A failed Desktop policy update withdraws its notifications and reports a problem
 on the Desktop row without saving the requested change. Change a Desktop setting
 to retry; other channels and idle ticks do not retry that failed update.
@@ -98,14 +95,11 @@ proof of output. See [audio limits and packaging](audio.md).
 
 Provider choices are keyed by full provider identity and channel ID under
 `notifications.providers[identity].channels[channel]`. Retained unavailable choices
-remain editable and are labelled unavailable, not delivered. A generic registry
-supplies typed policy/admission ownership. The ordinary application now connects
-the managed backend to the same live core and displays declared channel metadata,
-plugin enablement and admitted-owner state without starting code on inspection.
-New channels default off. Managed-origin command consumers retain owned backend
-authority; the audio owner retains and rechecks it on the shared tick and cancels
-a sound whose authority was revoked, whether by disabling the channel, removing
-the source pane or a stopped provider.
+remain editable and are labelled unavailable, with no delivery. The page shows
+each channel's name and description, whether its plugin is enabled and whether
+its process has been admitted. Inspecting a channel does not start its plugin.
+New channels default off. Audio playback is cancelled when its permission is
+revoked, its source pane is removed or its provider stops.
 
 Review a plugin's notification role on its [plugin page](#plugin-inventory-navigation).
 
@@ -113,9 +107,7 @@ Replacing a sound first cancels and retires the old decoder. A real Busy respons
 (Play pressed while the old decoder is still retiring) retains no replacement: the
 row says the previous sound is still stopping, and Play must be pressed again after
 the retirement is confirmed. Stop requests cancellation without persisting playback
-success. The owner accepts this explicit-retry UX detail, not decoder
-safety/platform acceptance. A newer Play diagnostic is not overwritten by older
-playback IDs.
+success. A newer Play diagnostic is not overwritten by an older playback's result.
 
 Notification edits re-read and merge the relevant fields, preserving unknown keys and
 other provider identities. Bounded unique-key JSON and safe owner-controlled paths
@@ -124,7 +116,15 @@ are not silently changed. Future versions, invalid known fields, symlinks and ma
 not repaired. Settings are outside packaged application trees. No transient
 attention, operation IDs or pending delivery jobs are persisted.
 
-Plugin choices keep the existing `plugins.json` format:
+## Stored settings
+
+Installed plugin choices, access reviews, reduced-protection consent and settings
+use `managed-plugins.json`, version 1. Entries in its `plugins` object are keyed by
+full identity, such as `github:123/clock`, so plugins from different repositories
+do not share preferences. Use Preferences to review access and enable a plugin.
+
+The old `plugins.json` file is left untouched and is not read for managed plugin
+enablement. Its legacy format was:
 
 ```json
 {"plugins": [{"name": "clock", "enabled": false}]}
@@ -208,8 +208,9 @@ That result is independent of pending/applied/rejected/restart-required process
 configuration. A plugin restart requires its own confirmation; opening a form or
 saving a restart-mode edit never restarts code automatically.
 
-Clock, resources and pane PWD remain optional and disabled by default. Only explicit
-user changes enable them. No terminal contents or workspace layouts are saved here.
+Plugins are installed separately and start disabled. Review their access before
+enabling them; see [installing plugins](plugins.md#installing). No terminal contents
+or workspace layouts are saved here.
 
 Developer checks are described in [the contributing guide](../CONTRIBUTING.md#checking-changes).
 
@@ -241,8 +242,9 @@ An available plugin has an info page too, without an enable switch or settings.
 without Save discards edits. **Notification role** opens the existing access
 review only for installed plugins that declare a notification role. Roles no
 longer appear on Notifications. **Technical details** is collapsed: ordinary runs
-show identity, repository and API compatibility; development runs add provenance,
-digests, generation and **Recover previous…** when a previous package exists.
+show identity, repository, declared API compatibility and observed API.
+Development runs add provenance, digests, generation and **Recover previous…**
+when a previous package exists.
 Use Tab/Shift+Tab for actions, Space for switches and Back or Escape to return.
 Saving settings remains separate from runtime application or restart consent.
 
@@ -293,10 +295,9 @@ loaded it says the plugin cannot be started.
 is saved per plugin in `managed-plugins.json` as `protection_consent`
 (`reduced:1`, `reduced:2` or `seccomp-only`). It covers that level and any stronger
 one; if a later start reaches a lower level, the plugin is refused again until you
-allow that one. The card's details list, for the latest start, the identity,
-generation, granted features, the digest of the policy applied, the Landlock ABI and
-enforcement the child reported, whether the seccomp filter loaded and the reason of
-any refusal.
+allow that one. In development mode, Technical details lists the latest start's
+identity, generation, granted features, policy digest, Landlock ABI and
+enforcement, seccomp result and any refusal reason.
 
 ## Terminal
 
@@ -317,10 +318,9 @@ silently replaced.
 
 ## About
 
-Preferences opens 820 px wide and as tall as the About page needs (measured when
-the window is built), so that page shows whole without scrolling; the height is
-capped at the monitor height less room for the desktop's bars, and on a screen
-too small for that About scrolls instead. The other pages scroll as needed.
+Preferences requests an initial width of 820 logical pixels. Its initial height
+fits the About page when possible, allowing room for the desktop's bars, with a
+minimum of 576 logical pixels. Pages scroll when their content does not fit.
 
 The last page, named `about`, identifies the build. It shows the logo, the name,
 the version and the build (`Build <short commit> · <date>`; a part the build did
@@ -335,12 +335,13 @@ The version, commit and date come from the build environment, not from git at
 run time; a build that was not given them shows the version from `Cargo.toml` and
 `unknown`. See [build identity](build.md#build-identity).
 
-**Copy build details** puts four lines on the clipboard for a bug report:
+**Copy build details** puts four lines on the clipboard for a bug report. For
+example, a source build without recorded build metadata on Debian 13 reports:
 
 ```text
-Among Terminal 0.2.0-rc.2
-Commit: 723e04b
-Built: 2026-11-05
+Among Terminal 0.2.0
+Commit: unknown
+Built: unknown
 System: Debian GNU/Linux 13 (trixie)
 ```
 

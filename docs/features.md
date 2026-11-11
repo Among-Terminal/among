@@ -71,6 +71,11 @@ Inactive workspaces keep their terminals and processes running. The sidebar
 collapse button reduces the list to a strip: colours and counts remain visible,
 and every workspace remains reachable.
 
+Drag a workspace entry onto the upper or lower half of another entry to place it
+before or after that workspace. This works in the expanded list and collapsed
+strip. The active workspace stays active, and **Alt+1…9** follows the new order.
+The order is saved with the [session](sessions.md).
+
 Drag a pane header onto a workspace entry to move that live terminal to another
 project. The destination is outlined before release, receives the pane after its
 last pane, becomes active and takes keyboard focus. A project that loses its only
@@ -172,13 +177,15 @@ Switches apply immediately and persist on restart.
 Directory changes need your shell to publish **OSC 7**; installing Starship alone
 does not supply it. Unknown directories are not replaced with another pane's
 path. Resource readings describe the plugin's process/mount namespace, which may
-differ from the whole host in a sandbox. Plugins run as separate processes, but
-that is fault isolation, not a security sandbox: install only trusted code.
+differ from the whole host. Installed plugins run in separate processes with
+seccomp restrictions and Landlock filesystem protection where supported.
+Settings asks for consent before using reduced protection. Review each plugin's
+requested access before enabling it; see [plugin protection](plugins.md).
 
 [![Toggling clock, resource meters and pane directories in Settings](media/features/06-plugins.png)](media/features/06-plugins.mp4)
 
 [Live status and directory integration](plugins.md#live-status-examples) ·
-[Third-party plugin protocol](plugins.md#protocol).
+[Plugin API reference](plugin-api.md).
 
 ## Restore a layout, not yesterday's commands
 
@@ -211,9 +218,13 @@ job: this is not a detach operation.
 
 ## Appearance and preferences
 
-The native interface supports light and dark styling. Shell prompts and terminal
-colours are configured separately; Among Terminal does not import GNOME Terminal
-profiles.
+The native interface supports light and dark styling. In **Settings → Terminal**,
+choose the default text/background pair and the ANSI palette independently.
+Both start with **GNOME Terminal default**, which reads colours from GNOME
+Terminal's default profile once at startup. If those colours are unavailable,
+Among uses its documented fallbacks. Built-in colour choices apply to all open
+terminals without restarting their shells. Shell prompt configuration remains
+with your shell. See [terminal preferences](preferences.md).
 
 [![The terminal listing in light and dark appearance](media/features/01-themes.png)](media/features/01-themes.mp4)
 

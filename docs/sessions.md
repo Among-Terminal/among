@@ -25,7 +25,7 @@ still open exits without launching terminals or altering the old snapshot.
 Activating an already running application does not ask again.
 
 Changed session state is checkpointed every two seconds by a separate ordered
-writer, normally reaching disk within three seconds. Unchanged state does not
+writer. Disk completion depends on storage availability. Unchanged state does not
 cause disk writes. Confirmed application exit saves the latest model before
 terminal teardown; canceling exit keeps the live session running. A crash can
 lose changes newer than the last completed checkpoint. Power loss or a storage

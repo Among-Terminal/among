@@ -61,6 +61,14 @@ optional `cargo install --git` source-build route, see
 - Add clocks, resource meters and per-pane status through separate-process plugins.
   Plugins are optional and disabled by default.
 
+## Documentation
+
+- [Overview](docs/overview.md) and [features](docs/features.md)
+- [Panes](docs/panes.md), [workspaces and sessions](docs/sessions.md), and [shortcuts](docs/shortcuts.md)
+- [Preferences](docs/preferences.md)
+- [Installing and writing plugins](docs/plugins.md)
+- [Plugin API reference](docs/plugin-api.md)
+
 ## Contributing
 
 For source builds and contributions, see [building](docs/build.md) and
