@@ -1,10 +1,6 @@
 use super::*;
 use crate::process::OwnedProcess;
-use std::{
-    collections::BTreeMap,
-    os::unix::{fs::PermissionsExt, process::ExitStatusExt},
-    time::Duration,
-};
+use std::{collections::BTreeMap, os::unix::process::ExitStatusExt, time::Duration};
 
 struct Fixture(PathBuf);
 
@@ -19,8 +15,7 @@ impl Fixture {
         let directory = self.0.join(directory);
         fs::create_dir(&directory)?;
         let path = directory.join("same-name");
-        fs::copy("/bin/sleep", &path)?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        crate::test_executable::copy_mode(Path::new("/bin/sleep"), &path, 0o700)?;
         Ok(path)
     }
     fn spawn(&self, path: &Path) -> Result<OwnedProcess> {
@@ -37,11 +32,9 @@ impl Fixture {
 /// Start the freshly copied fixture program and return once the child really
 /// is that program.
 ///
-/// The tests share one process, so a fork made by a concurrent test can still
-/// hold the write descriptor of a program that was copied a moment ago, and
-/// the kernel then refuses to execute it (`ETXTBSY`) until that other child
-/// reaches its own exec. The refusal is transient, so the start is retried
-/// for a bounded time and any other failure is returned at once.
+/// The fixture is written through the shared helper, which keeps its write
+/// descriptor out of the test process, so a fork made by a concurrent test
+/// cannot leave this executable busy at its start.
 ///
 /// A successful spawn is not yet proof that the child is the fixture program:
 /// the kernel releases the spawning thread slightly before `/proc/<pid>/exe`
@@ -50,18 +43,7 @@ impl Fixture {
 /// inode.
 fn launch(program: &Path, cwd: &Path, log: &File) -> Result<OwnedProcess> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let child = loop {
-        match OwnedProcess::spawn(program, &["30"], &BTreeMap::new(), cwd, log) {
-            Err(error)
-                if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                    error.kind() == std::io::ErrorKind::ExecutableFileBusy
-                }) && std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            other => break other?,
-        }
-    };
+    let child = OwnedProcess::spawn(program, &["30"], &BTreeMap::new(), cwd, log)?;
     let expected = inode(&File::open(program)?)?;
     while File::open(format!("/proc/{}/exe", child.id()))
         .ok()

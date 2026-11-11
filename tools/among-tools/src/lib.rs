@@ -82,6 +82,9 @@ pub mod stable_source;
 pub mod storage;
 pub mod store_credentials;
 pub mod terminal_colours;
+#[cfg(test)]
+#[path = "../tests/support/executable.rs"]
+mod test_executable;
 pub mod version_locations;
 pub mod window_controls;
 pub mod workspace_reorder;

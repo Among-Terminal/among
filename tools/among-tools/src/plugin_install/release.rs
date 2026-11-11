@@ -887,7 +887,7 @@ mod tests {
     use super::*;
     use std::fs::{self, File};
     use std::io::{self, Read, Seek, SeekFrom, Write};
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::DirBuilderExt;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -900,8 +900,7 @@ mod tests {
         let bin = root.join("bin");
         fs::DirBuilder::new().mode(0o700).create(&bin)?;
         let path = bin.join("curl");
-        fs::write(&path, format!("#!/bin/sh\n{body}\n"))?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+        crate::test_executable::write(&path, format!("#!/bin/sh\n{body}\n").as_bytes())?;
         Ok(path)
     }
 

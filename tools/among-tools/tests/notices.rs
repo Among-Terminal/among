@@ -4,6 +4,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
+#[path = "support/executable.rs"]
+mod executable;
+
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -101,8 +104,8 @@ fn actual_cli_uses_two_locked_metadata_calls_separates_stderr_and_detects_stale_
     fs::create_dir(f.0.join("bin"))?;
     fs::create_dir(f.0.join("output"))?;
     let cargo = f.0.join("bin/cargo");
-    fs::write(&cargo,format!("#!/bin/sh\n[ \"$1 $2 $3 $4 $5 $6\" = 'metadata --locked --offline --format-version 1 --manifest-path' ] || exit 12\nprintf '%s\\n' \"$7\" >> '{}'\nprintf 'synthetic diagnostic\\n' >&2\nexec /bin/cat '{}'\n",f.0.join("calls").display(),graph.display()))?;
-    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))?;
+    let script = format!("#!/bin/sh\n[ \"$1 $2 $3 $4 $5 $6\" = 'metadata --locked --offline --format-version 1 --manifest-path' ] || exit 12\nprintf '%s\\n' \"$7\" >> '{}'\nprintf 'synthetic diagnostic\\n' >&2\nexec /bin/cat '{}'\n",f.0.join("calls").display(),graph.display());
+    executable::write(&cargo, script.as_bytes())?;
     let run = |mode: &str| {
         std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
             .env_clear()
@@ -384,8 +387,8 @@ fn actual_cli_generates_and_checks_supplemental_bytes_before_any_publication() -
     fs::create_dir(f.0.join("bin"))?;
     fs::create_dir(f.0.join("output"))?;
     let cargo = f.0.join("bin/cargo");
-    fs::write(&cargo, format!("#!/bin/sh\n[ \"$1 $2 $3\" = 'metadata --locked --offline' ] || exit 12\nexec /bin/cat '{}'\n",graph_path.display()))?;
-    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))?;
+    let script = format!("#!/bin/sh\n[ \"$1 $2 $3\" = 'metadata --locked --offline' ] || exit 12\nexec /bin/cat '{}'\n",graph_path.display());
+    executable::write(&cargo, script.as_bytes())?;
     let run = |mode: &str| {
         std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
             .env_clear()

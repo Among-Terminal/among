@@ -1,15 +1,20 @@
 use among_tools::{storage, Result};
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{fs, process::Command};
+
+#[path = "support/executable.rs"]
+mod executable;
 
 #[test]
 fn actual_apprun_preserves_arguments_working_directory_and_host_loader_environment() -> Result<()> {
     let root = storage::private_directory(&std::env::temp_dir(), "among-apprun-test")?;
     fs::create_dir_all(root.join("usr/bin"))?;
-    fs::copy(env!("CARGO_BIN_EXE_among-apprun"), root.join("AppRun"))?;
-    fs::write(root.join("usr/bin/among"), b"#!/bin/sh\nprintf '%s\\n' \"$AMONG_APPDIR\" \"$LD_LIBRARY_PATH\" \"$GSETTINGS_SCHEMA_DIR\" \"$XDG_DATA_DIRS\" \"$PWD\" \"$@\"\n")?;
-    fs::set_permissions(
-        root.join("usr/bin/among"),
-        fs::Permissions::from_mode(0o755),
+    executable::copy(
+        std::path::Path::new(env!("CARGO_BIN_EXE_among-apprun")),
+        &root.join("AppRun"),
+    )?;
+    executable::write(
+        &root.join("usr/bin/among"),
+        b"#!/bin/sh\nprintf '%s\\n' \"$AMONG_APPDIR\" \"$LD_LIBRARY_PATH\" \"$GSETTINGS_SCHEMA_DIR\" \"$XDG_DATA_DIRS\" \"$PWD\" \"$@\"\n",
     )?;
     let output = Command::new(root.join("AppRun"))
         .env_clear()
