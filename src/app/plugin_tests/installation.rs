@@ -4,6 +4,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 
 mod candidate;
+mod doc_media;
 mod doc_screenshots;
 mod list;
 mod local_catalogue;

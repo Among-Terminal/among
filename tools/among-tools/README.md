@@ -371,6 +371,23 @@ its resulting association. Positive end-to-end packaging of a complete audited
 Snap remains pending. See [source delivery](../../docs/source-delivery.md) for
 scope and prerequisites; no command here establishes legal sign-off or publication.
 
+## Documentation media
+
+`media all APP_TEST NEW_OUTPUT` runs the two documentation scenarios in their
+own owned displays, prepares the published PNG/MP4 files and writes
+`media.json`. `media stills` and `media notification` run one scenario each;
+`media verify OUTPUT` checks the manifest, hashes, image dimensions and the
+video stream. The application scene lives in the test binary as
+`app::plugin_tests::installation::doc_media`; the tool starts the display, so
+the command is not run under `ci-x11` or `isolated-x11`.
+
+The tool needs the pinned display image from
+`containers/Dockerfile.display`, which carries Xvfb, Xephyr, GNOME Shell,
+ImageMagick, ffmpeg, xsetroot and the `/work` fixture directory. See
+[docs/media.md](../../docs/media.md) for the full command and the published
+sizes. Missing display tools, a missing scenario output or a scene failure are
+errors; nothing is skipped.
+
 ## Stable promotion admission (partial port)
 
 `check-promotion-admission RECORD_JSON GATES_JSON ARTIFACT_DIRECTORY --approved`
