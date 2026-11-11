@@ -2,7 +2,7 @@
 
 User-visible changes of the application, newest first. Written by `among-tools release-prepare` from the titles of the merged pull requests.
 
-## 0.2.0 - 2026-11-10
+## 0.2.0 - 2026-11-12
 
 ### Features
 
@@ -28,6 +28,7 @@ User-visible changes of the application, newest first. Written by `among-tools r
 
 ### Bug fixes
 
+- plugins: install plugins carried over from an earlier release (#93)
 - sandbox: review the fchroot kernel call in the policy header test (#90)
 - plugins: authenticate GitHub API requests when a token is provided (#89)
 - preferences: open tall enough for the About page to show whole (#88)
