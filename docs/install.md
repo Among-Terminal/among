@@ -10,7 +10,8 @@ ownership. Native build prerequisites are in [building](build.md).
 Keep licensing, screenshot and release fields in the
 [AppStream metadata](../data/com.github.among-terminal.metainfo.xml).
 The native package identity check in [deb.rs](../tools/among-tools/src/deb.rs)
-requires its current release to match the upstream tag, including an RC suffix.
+requires its newest release to carry the base version of the upstream tag: a
+candidate tag `v0.2.0-rc.1` needs the entry `0.2.0`, without the RC suffix.
 Preserve earlier release entries when preparing a package.
 
 Validate the local-file card separately from the installed application entry;
