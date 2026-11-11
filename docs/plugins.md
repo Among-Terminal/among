@@ -61,12 +61,13 @@ unavailable. Keep the hook valid for both consumers:
 The Snap workflow copies this file into its checker input.
 This is the tested copy of the hook on the site's
 [sessions page](https://among-terminal.github.io/sessions/#directory-reporting);
-both copies must change together.
+both copies must change together. The hook returns the status of the command
+that ran before it, so later `PROMPT_COMMAND` entries still see that status.
 
 ```sh
 among_osc7() {
-    local LC_ALL=C directory uri='file://' byte encoded i
-    directory=$(pwd -P && printf '.') || return
+    local status=$? LC_ALL=C directory uri='file://' byte encoded i
+    directory=$(pwd -P && printf '.') || return "$status"
     directory=${directory%.}
     directory=${directory%$'\n'}
     for ((i=0; i<${#directory}; i++)); do
@@ -77,6 +78,7 @@ among_osc7() {
         esac
     done
     printf '\033]7;%s\007' "$uri"
+    return "$status"
 }
 PROMPT_COMMAND="among_osc7${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 among_osc7
