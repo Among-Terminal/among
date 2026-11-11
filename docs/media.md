@@ -59,7 +59,7 @@ tools/among-tools/target/release/among-tools media verify \
 and GNOME stack, ImageMagick, ffmpeg and `xsetroot`; the image also owns
 `/work`, the synthetic project path that may appear in a notification.
 
-The two pictures and the recording write only below the output directory.
+The stills and the recording write only below the output directory.
 `raw/` contains the untouched captures and stays as evidence. `media.json`
 records every published file, its size, dimensions and SHA-256.
 
