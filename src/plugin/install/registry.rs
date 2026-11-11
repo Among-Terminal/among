@@ -76,6 +76,11 @@ struct Snapshot {
     sha256: String,
     catalogue: String,
     release: super::source::release::ResolvedRelease,
+    // The earlier releases a catalogue refers to for versions it carries
+    // over. A catalogue without such references never writes this key, so its
+    // stored form is the one written before references existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    carried: Vec<super::source::release::ResolvedRelease>,
 }
 
 impl Snapshot {
@@ -89,6 +94,7 @@ impl Snapshot {
         let mut inspection = Inspection::from_release(
             self.origin.clone(),
             self.release.clone(),
+            self.carried.clone(),
             self.catalogue.as_bytes().to_vec(),
         )?;
         if inspection.catalogue_revision != self.revision {
@@ -798,6 +804,7 @@ fn run_user(
         let validated = Inspection::from_release(
             inspection.origin(),
             inspection.release.clone(),
+            inspection.carried.clone(),
             inspection.catalogue_bytes.clone(),
         )?;
         if validated.catalogue != inspection.catalogue
@@ -820,6 +827,7 @@ fn run_user(
         }
         let snapshot = Snapshot {
             release: inspection.release.clone(),
+            carried: inspection.carried.clone(),
             origin: origin.clone(),
             revision: inspection.catalogue_revision.clone(),
             retrieved_at: inspection.retrieved_at,
@@ -880,6 +888,7 @@ fn run_user(
                 || old.sha256 != snapshot.sha256
                 || old.origin != snapshot.origin
                 || old.release != snapshot.release
+                || old.carried != snapshot.carried
         });
         registration.snapshots.insert(0, snapshot);
         registration.snapshots.truncate(MAX_SNAPSHOTS);

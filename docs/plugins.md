@@ -100,6 +100,20 @@ grant access or enable code. Enable separately through the manager's access revi
 An installed script still requires its declared interpreter; the installer neither
 compiles code nor runs arbitrary installation commands.
 
+A release need not ship a plugin that did not change. Its catalogue may list
+such a version with `"release": {"id": <release id>, "tag": "<tag>"}`, naming
+the earlier release of the same repository that holds the package. Among then
+reads that release from the release API and applies to it the checks it applies
+to the catalogue's own release: published, immutable, the tag resolving to the
+version's `revision`, the package among its assets with the stated size and
+SHA-256, and the same re-observation before the installation commits. The
+reference is refused when it names the catalogue's own release, a draft, a
+mutable release, another tag than the release has, or, in a stable release's
+catalogue, a prerelease; when the package is also an asset of the new release;
+and when the catalogue ships no version of its own. A catalogue may refer to at
+most eight earlier releases. The installed record names the earlier release, so
+the plugin is the same installation whichever of the two catalogues offered it.
+
 Only committed managed installation records supply inventory. Copying a file into
 `among/plugins`, retaining a filename in `plugins.json`, or placing an arbitrary
 manifest on disk does not install or authorize it. Missing/changed manifests refuse
@@ -199,6 +213,8 @@ writable by others, not writable by a group other than your own primary group,
 and not symbolic links; a package with another
 size or digest is refused before it is unpacked. If the catalogue changes
 between review and commit, nothing is installed and you review it again.
+A local catalogue whose version carries a `release` reference is refused: a
+file has no repository in which to find that release.
 
 A local package has none of the provenance a release has: no repository or
 publisher identity, no release, no immutability and no tag-to-commit
@@ -880,6 +896,9 @@ without committing a registration/cache change. There are at most four snapshots
 per source. A duplicate revision/digest/full release-and-tag snapshot replaces
 its retrieval observation rather than consuming another slot. A changed release
 ID or inventory is a different snapshot even when the catalogue bytes match.
+A snapshot of a catalogue that refers to earlier releases also holds those
+releases as they were observed; an older build refuses such a snapshot, as it
+refuses the catalogue itself.
 Publisher reapproval drops the previous publisher's cached snapshots.
 
 Source edits use no-follow owned storage, a bounded worker/shared two-credit

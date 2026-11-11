@@ -82,6 +82,9 @@ pub struct Inspection {
     pub catalogue: Catalogue,
     pub(super) catalogue_bytes: Vec<u8>,
     pub(super) release: release::ResolvedRelease,
+    /// The earlier releases the catalogue refers to for versions it carries
+    /// over, exactly those and in the order of their ids.
+    pub(super) carried: Vec<release::ResolvedRelease>,
     compatibility: std::collections::BTreeMap<(String, String), Result<usize, Problem>>,
 }
 
@@ -116,9 +119,14 @@ impl Inspection {
         self.release.snapshot.is_prerelease()
     }
 
+    /// Admits a catalogue with the releases observed for it: its own and,
+    /// in `carried`, every earlier one it refers to. A version is held by its
+    /// own release unless it names another, and each check below is made
+    /// against the release that holds the version.
     pub(super) fn from_release(
         origin: Origin,
         release: release::ResolvedRelease,
+        carried: Vec<release::ResolvedRelease>,
         bytes: Vec<u8>,
     ) -> Result<Self, Problem> {
         official::validate(&origin)?;
@@ -133,17 +141,58 @@ impl Inspection {
             ));
         }
         let catalogue = Catalogue::parse(&bytes)?;
+        let references = catalogue.references()?;
+        // One catalogue has one stored form: no release it does not name,
+        // none missing, none twice.
+        if carried.len() != references.len()
+            || carried.iter().zip(&references).any(|(held, reference)| {
+                held.snapshot.id != reference.id || held.snapshot.tag != reference.tag
+            })
+        {
+            return Err(Problem(
+                "the earlier releases observed are not the ones the catalogue refers to",
+            ));
+        }
+        for held in &carried {
+            held.validate()?;
+            release::refuse_own_release(&release.snapshot, held.snapshot.id, &held.snapshot.tag)?;
+            if held.snapshot.is_prerelease() && !release.snapshot.is_prerelease() {
+                return Err(Problem(release::PRERELEASE_BEHIND_ORDINARY));
+            }
+        }
         let platform = Platform::current();
         let mut compatibility = std::collections::BTreeMap::new();
+        let mut ships_its_own = false;
         for plugin in &catalogue.plugins {
             for version in &plugin.versions {
-                if version.revision != release.binding.commit {
+                let holder = match &version.release {
+                    None => {
+                        ships_its_own = true;
+                        &release
+                    }
+                    Some(reference) => carried
+                        .iter()
+                        .find(|held| held.snapshot.id == reference.id)
+                        .ok_or(Problem(
+                            "the earlier releases observed are not the ones the catalogue refers to",
+                        ))?,
+                };
+                if version.revision != holder.binding.commit {
                     return Err(Problem(
                         "catalogue version revision disagrees with the resolved release-tag commit",
                     ));
                 }
                 for artifact in &version.artifacts {
-                    let observed = release.snapshot.asset(&artifact.asset)?;
+                    // The release tool leaves a carried package out of the new
+                    // release. Were it there as well, the catalogue would name
+                    // two sources for one package.
+                    if version.release.is_some() && release.snapshot.asset(&artifact.asset).is_ok()
+                    {
+                        return Err(Problem(
+                            "a carried version's package is also an asset of the catalogue's own release",
+                        ));
+                    }
+                    let observed = holder.snapshot.asset(&artifact.asset)?;
                     if observed.size != artifact.size || observed.sha256 != artifact.sha256 {
                         return Err(Problem("catalogue package name, size or digest disagrees with its release asset"));
                     }
@@ -165,6 +214,13 @@ impl Inspection {
                 );
             }
         }
+        // A release exists because something changed; the release tool makes
+        // none that only repeats earlier ones.
+        if !ships_its_own {
+            return Err(Problem(
+                "release catalogue carries every version over and ships none of its own",
+            ));
+        }
         Ok(Self {
             repository_id: origin.repository_id,
             publisher_id: origin.publisher_id,
@@ -177,6 +233,7 @@ impl Inspection {
             catalogue,
             catalogue_bytes: bytes,
             release,
+            carried,
             compatibility,
         })
     }
@@ -220,7 +277,10 @@ impl Inspection {
                     state,
                     version.manifest.description,
                     version.revision,
-                    self.release.snapshot.id,
+                    version
+                        .release
+                        .as_ref()
+                        .map_or(self.release.snapshot.id, |reference| reference.id),
                     version.manifest_sha256
                 ));
                 if lines.iter().map(String::len).sum::<usize>() > 24 * 1024 {
@@ -255,21 +315,49 @@ impl Inspection {
             .get(artifact_index)
             .ok_or(Problem("selected asset is unavailable"))?
             .clone();
-        Ok(Selection {
-            repository_id: self.repository_id,
-            repository: self.repository.clone(),
-            version,
-            artifact,
-            release: self.release.clone(),
-            previous: None,
-            fresh_consent: false,
-            source: SourceReceipt {
+        let carried = match &version.release {
+            None => None,
+            Some(reference) => Some(
+                self.carried
+                    .iter()
+                    .find(|held| held.snapshot.id == reference.id)
+                    .ok_or(Problem(
+                        "the earlier releases observed are not the ones the catalogue refers to",
+                    ))?
+                    .clone(),
+            ),
+        };
+        // The receipt names the release that holds the package, with that
+        // release's own catalogue asset, tag and commit. For a carried
+        // version it is therefore the record an installation from the earlier
+        // release itself would have written, and the same version found
+        // through either catalogue is recognised as already installed.
+        let source = match &carried {
+            None => SourceReceipt {
                 publisher_id: self.publisher_id,
                 catalogue_revision: self.catalogue_revision.clone(),
                 catalogue_sha256: crate::plugin::inventory::checksum(&self.catalogue_bytes)?,
                 release_snapshot: Box::new(self.release.snapshot.clone()),
                 release_binding: self.release.binding.clone(),
             },
+            Some(holder) => SourceReceipt {
+                publisher_id: self.publisher_id,
+                catalogue_revision: holder.binding.commit.clone(),
+                catalogue_sha256: holder.snapshot.asset("among-plugins.json")?.sha256.clone(),
+                release_snapshot: Box::new(holder.snapshot.clone()),
+                release_binding: holder.binding.clone(),
+            },
+        };
+        Ok(Selection {
+            repository_id: self.repository_id,
+            repository: self.repository.clone(),
+            version,
+            artifact,
+            release: self.release.clone(),
+            carried,
+            previous: None,
+            fresh_consent: false,
+            source,
         })
     }
 
@@ -308,13 +396,29 @@ pub struct Selection {
     repository: Repository,
     version: super::metadata::Version,
     artifact: super::metadata::Artifact,
+    /// The release whose catalogue offers the version.
     release: release::ResolvedRelease,
+    /// The earlier release that holds the package of a carried version.
+    carried: Option<release::ResolvedRelease>,
     source: SourceReceipt,
     previous: Option<Receipt>,
     fresh_consent: bool,
 }
 
 impl Selection {
+    /// The release that holds the selected package: the earlier one a carried
+    /// version names, otherwise the catalogue's own.
+    fn holder(&self) -> &release::ResolvedRelease {
+        self.carried.as_ref().unwrap_or(&self.release)
+    }
+
+    /// Whether a prerelease is involved at all: as the holder of the package
+    /// or as the release whose catalogue offered it. Either needs development
+    /// mode, because an ordinary instance observes stable releases only.
+    fn involves_prerelease(&self) -> bool {
+        self.is_prerelease() || self.release.snapshot.is_prerelease()
+    }
+
     fn origin(&self) -> Origin {
         Origin {
             repository_id: self.repository_id,
@@ -464,10 +568,12 @@ impl Selection {
         self.previous.is_some() && !self.fresh_consent
     }
 
-    /// Whether the selected package comes from a development prerelease. The
-    /// pre-commit re-observation repeats this same channel.
+    /// Whether the selected package comes from a development prerelease: the
+    /// release that holds it decides, and the receipt records that release. A
+    /// version a prerelease catalogue carries over from a stable release is
+    /// that stable release's package.
     pub fn is_prerelease(&self) -> bool {
-        self.release.snapshot.is_prerelease()
+        self.holder().snapshot.is_prerelease()
     }
 
     #[cfg(test)]
@@ -703,7 +809,7 @@ impl InstallJob {
     pub fn start(selection: Selection, root: PathBuf) -> Result<Self, Problem> {
         // A prerelease selection can still come from a cached inspection made
         // in an earlier development run; an ordinary instance must not commit it.
-        if selection.is_prerelease() && !crate::plugin::development::enabled() {
+        if selection.involves_prerelease() && !crate::plugin::development::enabled() {
             return Err(Problem(release::DEVELOPMENT_ONLY));
         }
         Self::start_with(selection, root, None)
@@ -1035,14 +1141,15 @@ impl Operation {
         let version = &selected.version;
         let artifact = &selected.artifact;
         artifact.compatibility(&Platform::current()?)?;
+        let holder = selected.holder();
         let mut receipt = Receipt {
             origin: crate::plugin::inventory::Provenance::Release(
                 crate::plugin::inventory::ReleaseOrigin {
                     repository_id: selected.repository_id,
                     owner: selected.repository.owner.clone(),
                     repository: selected.repository.name.clone(),
-                    release_id: selected.release.snapshot.id,
-                    asset_id: selected.release.snapshot.asset(&artifact.asset)?.id,
+                    release_id: holder.snapshot.id,
+                    asset_id: holder.snapshot.asset(&artifact.asset)?.id,
                     source: Some(selected.source.clone()),
                 },
             ),
@@ -1069,8 +1176,8 @@ impl Operation {
         } else {
             transaction.refuse_existing(&receipt)?;
         }
-        let release = self.resolve_release(&selected).await?;
-        if release != selected.release {
+        let observed = self.resolve_release(&selected).await?;
+        if observed.release != selected.release || observed.carried != selected.carried {
             return Err(Problem(
                 "release tag or snapshot changed since review; refresh and review again",
             ));
@@ -1079,7 +1186,7 @@ impl Operation {
             .release_mut()
             .and_then(|origin| origin.source.as_mut())
             .ok_or(Problem("selected package has no source receipt"))?
-            .release_binding = release.binding.clone();
+            .release_binding = observed.holder().binding.clone();
         self.download(&selected, &mut transaction.archive, state)
             .await?;
         transaction
@@ -1097,7 +1204,7 @@ impl Operation {
             artifact,
             || self.check(),
         )?;
-        if self.resolve_release(&selected).await? != release {
+        if self.resolve_release(&selected).await? != observed {
             return Err(Problem("release snapshot, tag or immutable peel chain changed during installation; selection was not committed"));
         }
         self.check_selection_identity(&selected).await?;
@@ -1128,7 +1235,7 @@ impl Operation {
         output: &mut std::fs::File,
         state: &AtomicU8,
     ) -> Result<(), Problem> {
-        let asset = selected.release.snapshot.asset(&selected.artifact.asset)?;
+        let asset = selected.holder().snapshot.asset(&selected.artifact.asset)?;
         self.download_asset(selected.repository_id, asset, output)
             .await?;
         self.progress(state, DOWNLOADING, VERIFYING)
@@ -1418,7 +1525,15 @@ impl Operation {
         self.download_asset(id, catalogue_asset, &mut bytes).await?;
         // Check the transfer digest before a catalogue parser receives these bytes.
         let release = self.resolve_tag(id, snapshot).await?;
-        let inspection = Inspection::from_release(origin, release, bytes)?;
+        // Each earlier release the catalogue refers to is observed the way
+        // its own release was, through the same deadline, cancellation and
+        // refusal handling. The reference count is bounded by the parser.
+        let mut carried = Vec::new();
+        for reference in Catalogue::parse(&bytes)?.references()? {
+            release::refuse_own_release(&release.snapshot, reference.id, &reference.tag)?;
+            carried.push(self.referenced_release(id, reference, channel).await?);
+        }
+        let inspection = Inspection::from_release(origin, release, carried, bytes)?;
         self.check()?;
         Ok(inspection)
     }

@@ -149,6 +149,7 @@ fn write(
     let validated = Inspection::from_release(
         inspection.origin(),
         inspection.release.clone(),
+        inspection.carried.clone(),
         inspection.catalogue_bytes.clone(),
     )?;
     if validated.catalogue != inspection.catalogue
@@ -196,6 +197,7 @@ fn write(
     }
     let snapshot = Snapshot {
         release: inspection.release.clone(),
+        carried: inspection.carried.clone(),
         origin: origin.clone(),
         revision: inspection.catalogue_revision.clone(),
         retrieved_at: inspection.retrieved_at,
@@ -210,6 +212,7 @@ fn write(
             || old.sha256 != snapshot.sha256
             || old.origin != snapshot.origin
             || old.release != snapshot.release
+            || old.carried != snapshot.carried
     });
     let protected = (
         registration.origin.repository_id,
