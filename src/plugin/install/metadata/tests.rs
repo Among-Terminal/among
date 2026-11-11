@@ -384,3 +384,184 @@ fn script_runtimes_and_dependencies_need_installed_executables_not_guessed_versi
         "retained cache metadata remains parseable but unsupported wrapper selection is refused"
     );
 }
+
+fn carried(id: &str, release: Value) -> Value {
+    let mut value = version(id);
+    value["release"] = release;
+    value
+}
+
+fn catalogue_of(versions: Vec<Value>) -> Value {
+    let plugins = versions
+        .into_iter()
+        .map(|version| json!({"id":version["manifest"]["id"],"versions":[version]}))
+        .collect::<Vec<_>>();
+    json!({"schema_version":2,"plugins":plugins})
+}
+
+#[test]
+fn a_catalogue_made_by_the_release_tool_carry_over_parses_and_keeps_an_existing_reference() {
+    use crate::plugin::install::source::tests::carried_releases::carry_over;
+    let first_release = catalogue_of(vec![version("first"), version("second")]);
+    assert!(parse(&first_release).is_ok());
+    // The second release changes `first`; `second` is carried from the first.
+    let mut changed = version("first");
+    changed["revision"] = json!("e".repeat(40));
+    changed["manifest"]["version"] = json!("1.1.0");
+    let mut rebuilt = version("second");
+    rebuilt["revision"] = json!("e".repeat(40));
+    let second_release = carry_over(
+        &first_release,
+        &catalogue_of(vec![changed.clone(), rebuilt.clone()]),
+        &["second"],
+        434653882,
+        "v0.2.0",
+    );
+    assert_eq!(
+        second_release["plugins"][1]["versions"][0]["release"],
+        json!({"id":434653882u64,"tag":"v0.2.0"})
+    );
+    assert_eq!(
+        second_release["plugins"][1]["versions"][0]["revision"],
+        "a".repeat(40)
+    );
+    let original = parse(&first_release)
+        .unwrap()
+        .plugins
+        .remove(1)
+        .versions
+        .remove(0);
+    let parsed = parse(&second_release).unwrap();
+    assert_eq!(parsed.plugins[0].versions[0].release, None);
+    let mut kept = parsed.plugins[1].versions[0].clone();
+    assert_eq!(
+        kept.release.take(),
+        Some(ReleaseReference {
+            id: 434653882,
+            tag: "v0.2.0".into()
+        })
+    );
+    assert_eq!(kept, original, "only the reference was added");
+    assert_eq!(parsed.references().unwrap().len(), 1);
+    // The third release changes `first` again; the entry of `second` keeps
+    // the reference to the release that holds its files.
+    changed["revision"] = json!("f".repeat(40));
+    changed["manifest"]["version"] = json!("1.2.0");
+    rebuilt["revision"] = json!("f".repeat(40));
+    let third_release = carry_over(
+        &second_release,
+        &catalogue_of(vec![changed, rebuilt]),
+        &["second"],
+        434999999,
+        "v0.3.0",
+    );
+    assert_eq!(
+        third_release["plugins"][1], second_release["plugins"][1],
+        "carried verbatim"
+    );
+    assert_eq!(parse(&third_release).unwrap().plugins[1], parsed.plugins[1]);
+    // The single-version form reads the same envelope.
+    let mut alone = single();
+    alone["release"] = json!({"id":434653882u64,"tag":"v0.2.0"});
+    assert_eq!(
+        parse(&alone).unwrap().plugins[0].versions[0]
+            .release
+            .as_ref()
+            .map(|reference| reference.id),
+        Some(434653882)
+    );
+}
+
+#[test]
+fn a_malformed_release_reference_is_refused() {
+    for release in [
+        Value::Null,
+        json!({}),
+        json!({"id":5}),
+        json!({"tag":"v0.9"}),
+        json!({"id":0,"tag":"v0.9"}),
+        json!({"id":-5,"tag":"v0.9"}),
+        json!({"id":"5","tag":"v0.9"}),
+        json!({"id":5.5,"tag":"v0.9"}),
+        json!({"id":null,"tag":"v0.9"}),
+        json!({"id":5,"tag":""}),
+        json!({"id":5,"tag":9}),
+        json!({"id":5,"tag":null}),
+        json!({"id":5,"tag":"v0..9"}),
+        json!({"id":5,"tag":"v0.9 final"}),
+        json!({"id":5,"tag":"refs/tags/.v0.9"}),
+        json!({"id":5,"tag":"v0.9","repository":"example/other"}),
+        json!({"id":5,"tag":"v0.9","repository_id":13}),
+        json!({"id":5,"tag":"v0.9","asset_id":51}),
+        json!([5, "v0.9"]),
+        json!("v0.9"),
+        json!(5),
+    ] {
+        let document = catalogue_of(vec![version("first"), carried("second", release.clone())]);
+        assert!(parse(&document).is_err(), "{release}");
+    }
+    // The same key under another name or at another level stays unknown.
+    let mut misplaced = catalogue_of(vec![version("first"), version("second")]);
+    misplaced["plugins"][1]["release"] = json!({"id":5,"tag":"v0.9"});
+    assert!(parse(&misplaced).is_err());
+    let mut misplaced = catalogue_of(vec![version("first"), version("second")]);
+    misplaced["release"] = json!({"id":5,"tag":"v0.9"});
+    assert!(parse(&misplaced).is_err());
+    let mut artifact = catalogue_of(vec![version("first"), version("second")]);
+    artifact["plugins"][1]["versions"][0]["artifacts"][0]["release"] = json!({"id":5,"tag":"v0.9"});
+    assert!(parse(&artifact).is_err());
+}
+
+#[test]
+fn distinct_referenced_releases_are_bounded_and_named_consistently() {
+    let referring = |count: u64| {
+        let mut versions = vec![version("fresh")];
+        for index in 0..count {
+            versions.push(carried(
+                &format!("kept-{index}"),
+                json!({"id": 100 + index, "tag": format!("v0.{index}")}),
+            ));
+        }
+        catalogue_of(versions)
+    };
+    let most = MAX_CARRIED_RELEASES as u64;
+    assert_eq!(
+        parse(&referring(most))
+            .unwrap()
+            .references()
+            .unwrap()
+            .iter()
+            .map(|reference| reference.id)
+            .collect::<Vec<_>>(),
+        (100..100 + most).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        parse(&referring(most + 1)).unwrap_err().0,
+        "catalogue refers to more earlier releases than the host follows"
+    );
+    // Many plugins held by one release are one referenced release.
+    let mut versions = vec![version("fresh")];
+    for index in 0..20 {
+        versions.push(carried(
+            &format!("kept-{index}"),
+            json!({"id":100,"tag":"v0.1"}),
+        ));
+    }
+    parse(&catalogue_of(versions)).unwrap();
+    // One release has one tag and one tag names one release.
+    for other in [
+        json!({"id":100,"tag":"v0.2"}),
+        json!({"id":101,"tag":"v0.1"}),
+    ] {
+        let document = catalogue_of(vec![
+            version("fresh"),
+            carried("kept", json!({"id":100,"tag":"v0.1"})),
+            carried("other", other.clone()),
+        ]);
+        assert_eq!(
+            parse(&document).unwrap_err().0,
+            "catalogue names one earlier release under two identities",
+            "{other}"
+        );
+    }
+}

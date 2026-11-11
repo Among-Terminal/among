@@ -40,8 +40,7 @@ jobs:
           path: ${{ runner.temp }}/published-plugin-assets
       - name: Native and isolated-display prerequisites
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config \
+          bash scripts/ci/apt-install.sh -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config \
             librsvg2-common gsettings-desktop-schemas xvfb openbox dbus-x11 xdotool x11-utils imagemagick
       - name: Build the exact current-source test and tooling
         run: |
@@ -115,8 +114,7 @@ jobs:
           path: ${{ runner.temp }}/published-plugin-assets
       - name: Native and isolated-display prerequisites
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config \
+          bash scripts/ci/apt-install.sh -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config \
             desktop-file-utils appstream librsvg2-common gsettings-desktop-schemas xvfb openbox dbus-x11 \
             xdotool x11-utils imagemagick squashfs-tools pulseaudio-utils
       - name: Check root on the runner's disk

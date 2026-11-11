@@ -16,10 +16,29 @@ pub const MAX_ARTIFACTS: usize = 8;
 pub const MAX_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_MEMBERS: usize = 2048;
+/// Distinct earlier releases one catalogue may refer to. Each costs a refresh
+/// three API requests (the release, its tag reference, the commit; more when
+/// the tag is annotated) on top of the five for the latest release itself,
+/// and GitHub allows an unauthenticated address 60 requests an hour. Eight
+/// keep such a refresh at 29 requests, so that it and the installation of a
+/// carried plugin (15 more) fit one hour's allowance. A repository that
+/// ships at least one plugin in every release, as the release tool requires,
+/// needs nine plugins to refer to eight releases.
+pub const MAX_CARRIED_RELEASES: usize = 8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Catalogue {
     pub plugins: Vec<Plugin>,
+}
+
+/// The earlier release of the same repository that holds the package of a
+/// version carried over unchanged. The catalogue only points: the host reads
+/// that release from the release API and takes every fact from there.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseReference {
+    pub id: u64,
+    pub tag: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +53,9 @@ pub struct Version {
     pub manifest_sha256: String,
     pub manifest: Manifest,
     pub artifacts: Vec<Artifact>,
+    /// Absent for a version whose package is an asset of the catalogue's own
+    /// release.
+    pub release: Option<ReleaseReference>,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +163,24 @@ struct RawVersion {
     manifest_sha256: String,
     manifest: Value,
     artifacts: Vec<Artifact>,
+    #[serde(default, deserialize_with = "stated_reference")]
+    release: Option<ReleaseReference>,
+}
+
+// A present key must hold a reference written as an object: `null` is not a
+// way to write "none", and the derived reader alone would also take the two
+// values as a bare array.
+fn stated_reference<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ReleaseReference>, D::Error> {
+    use serde::de::Error;
+    let value = Value::deserialize(deserializer)?;
+    if !value.is_object() {
+        return Err(D::Error::custom("a release reference is an object"));
+    }
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(D::Error::custom)
 }
 
 impl Catalogue {
@@ -161,12 +201,14 @@ impl Catalogue {
                 return Err(Problem("unsupported catalogue schema version"));
             }
             let version = Version::parse(value)?;
-            return Ok(Self {
+            let catalogue = Self {
                 plugins: vec![Plugin {
                     id: version.manifest.id.clone(),
                     versions: vec![version],
                 }],
-            });
+            };
+            catalogue.references()?;
+            return Ok(catalogue);
         };
         if plugins.is_empty() || plugins.len() > MAX_PLUGINS {
             return Err(Problem("catalogue plugin count exceeds its bounds"));
@@ -194,7 +236,39 @@ impl Catalogue {
                 versions: vec![version],
             });
         }
-        Ok(Self { plugins: accepted })
+        let catalogue = Self { plugins: accepted };
+        catalogue.references()?;
+        Ok(catalogue)
+    }
+
+    /// Every earlier release this catalogue refers to, once each, ordered by
+    /// release id.
+    pub fn references(&self) -> Result<Vec<&ReleaseReference>, Problem> {
+        let references = self
+            .plugins
+            .iter()
+            .flat_map(|plugin| &plugin.versions)
+            .filter_map(|version| version.release.as_ref())
+            .collect::<BTreeSet<_>>();
+        let ids = references
+            .iter()
+            .map(|reference| reference.id)
+            .collect::<BTreeSet<_>>();
+        let tags = references
+            .iter()
+            .map(|reference| reference.tag.as_str())
+            .collect::<BTreeSet<_>>();
+        if ids.len() != references.len() || tags.len() != references.len() {
+            return Err(Problem(
+                "catalogue names one earlier release under two identities",
+            ));
+        }
+        if references.len() > MAX_CARRIED_RELEASES {
+            return Err(Problem(
+                "catalogue refers to more earlier releases than the host follows",
+            ));
+        }
+        Ok(references.into_iter().collect())
     }
 }
 
@@ -236,11 +310,20 @@ impl Version {
             }
             artifact.validate(&manifest, &raw.manifest_sha256)?;
         }
+        if raw.release.as_ref().is_some_and(|reference| {
+            reference.id == 0
+                || !crate::plugin::inventory::ReleaseBinding::supported_tag(&reference.tag)
+        }) {
+            return Err(Problem(
+                "a carried version needs a positive release id and a supported exact tag",
+            ));
+        }
         Ok(Self {
             revision: raw.revision,
             manifest_sha256: raw.manifest_sha256,
             manifest,
             artifacts: raw.artifacts,
+            release: raw.release,
         })
     }
 }

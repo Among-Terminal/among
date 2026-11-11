@@ -373,3 +373,17 @@ fn a_cancelled_local_installation_changes_nothing_new_or_replacing() {
         assert_eq!(entries[0].receipt, outcome.unwrap().receipt);
     }
 }
+
+#[test]
+fn a_local_catalogue_cannot_carry_a_version_over_from_a_published_release() {
+    let root = OwnedRoot::new();
+    let author = Author::new(&root);
+    let mut version = author.version.clone();
+    version["release"] = json!({"id":5,"tag":"v0.9"});
+    author.write_catalogue(&version);
+    let problem = LocalCatalogue::read(&author.catalogue()).unwrap_err();
+    assert_eq!(
+        problem.0,
+        "a local catalogue cannot carry a version over from a published release; it has no repository to resolve the release in"
+    );
+}

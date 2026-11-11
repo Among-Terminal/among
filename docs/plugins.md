@@ -163,6 +163,39 @@ Refuse inconsistent observations without repairing the record. The cached
 resolved release holds the complete peel chain; the committed binding holds the
 tag, reference object and resolved commit.
 
+### Versions carried over from an earlier release
+
+A release need not ship a plugin that did not change. Its catalogue may list
+such a version with `"release": {"id": <release id>, "tag": "<tag>"}`, naming
+the earlier release of the same repository that holds the package. The host
+reads that release from the release API and applies to it the checks it applies
+to the catalogue's own release: published, immutable, the tag resolving to the
+version's `revision`, the package among its assets with the stated size and
+SHA-256, and the same re-observation before the installation commits. Versions
+in one catalogue may therefore describe different release commits.
+
+The reference is refused when it names the catalogue's own release, a draft, a
+mutable release, another tag than the release has, or, in a stable release's
+catalogue, a prerelease; when the package is also an asset of the new release;
+and when the catalogue ships no version of its own. A catalogue may refer to at
+most eight earlier releases. A local catalogue whose version carries a `release`
+reference is refused: a file has no repository in which to find that release.
+
+The receipt records the referenced release, including the SHA-256 of that
+release's own `among-plugins.json` asset as stated by the release API, so the
+plugin is the same installation whichever of the two catalogues offered it.
+Accepted limit: the host does not download that earlier catalogue or check
+whether it lists the carried entry, and the receipt does not retain the digest
+of the newer catalogue that offered the version.
+
+A snapshot of a catalogue that refers to earlier releases also holds those
+releases as they were observed, under `carried`. This key is written only when
+the catalogue refers to earlier releases. A build without support for this key
+rejects the whole source registry document that contains it: with the key in
+`sources.json` custom sources are not shown, and with it in `official.json` the
+official source reports a problem. Reading these files does not rewrite them,
+and there is no automatic conversion for older builds.
+
 ## Polling and process retirement
 
 The [host poller](../src/plugin/host.rs) rotates its starting plugin each time.

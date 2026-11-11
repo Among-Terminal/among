@@ -1,11 +1,13 @@
 name: Snap build and installed checks
 
+# The Snap is published later from an already released tag, so this workflow
+# runs on demand, when called by another workflow, and once a day on main. It
+# depends on the Snap Store and must not block unrelated pull requests.
 on:
   workflow_dispatch:
   workflow_call:
-  pull_request:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
@@ -44,12 +46,11 @@ jobs:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
           test "$(dpkg --print-architecture)" = "$EXPECTED_ARCH"
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends snapd squashfs-tools xvfb openbox dbus-x11 xdotool x11-utils imagemagick
+          bash scripts/ci/apt-install.sh -y --no-install-recommends snapd squashfs-tools xvfb openbox dbus-x11 xdotool x11-utils imagemagick
           sudo systemctl start snapd.socket
           timeout 180 sudo snap wait system seed.loaded
-          sudo snap install core24
-          sudo snap install snapcraft --classic --channel=8.x/stable
+          bash scripts/ci/snap-store-install.sh core24
+          bash scripts/ci/snap-store-install.sh snapcraft --classic --channel=8.x/stable
           # Job-level env cannot read the runner context; later steps and the
           # failure-evidence upload below take the root from here.
           echo "AMONG_CHECK_ROOT=$RUNNER_TEMP/among-checks" >> "$GITHUB_ENV"
@@ -60,7 +61,7 @@ jobs:
           # the profile is bound to the head commit.
           EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          bash scripts/ci/apt-install.sh -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
           rustup toolchain install 1.98.1 --profile minimal
           rustup override set 1.98.1
           CARGO_BUILD_JOBS=1 cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
@@ -135,7 +136,7 @@ jobs:
       - name: Build native acceptance drivers outside Snap payload
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          bash scripts/ci/apt-install.sh -y --no-install-recommends libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
           rustup toolchain install 1.98.1 --profile minimal
           rustup override set 1.98.1
           cargo build --locked --release --manifest-path tools/among-tools/Cargo.toml --bin among-tools
@@ -221,8 +222,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install verification prerequisites
         run: |
-          sudo apt-get update
-          sudo apt-get install -y squashfs-tools
+          bash scripts/ci/apt-install.sh -y squashfs-tools
       - name: Collect both built Snaps
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -290,7 +290,7 @@ jobs:
           docker exec among-clean-runtime systemctl restart apparmor snapd.apparmor
           timeout 180 sh -c 'until docker exec among-clean-runtime snap version; do sleep 2; done'
           docker exec among-clean-runtime timeout 180 snap wait system seed.loaded
-          docker exec among-clean-runtime snap install core24
+          bash scripts/ci/snap-store-install.sh --in-container among-clean-runtime core24
           docker exec among-clean-runtime sh -eu -c 'cd /input; sha256sum -c SHA256SUMS'
           docker exec among-clean-runtime snap install --dangerous --classic /input/among.snap
       - name: Execute bound native checkers without build tools or source checkout
