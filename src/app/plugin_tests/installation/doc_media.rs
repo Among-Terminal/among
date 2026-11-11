@@ -506,6 +506,14 @@ fn capture_root(name: &str) {
     eprintln!("media still: {}", path.display());
 }
 
+fn set_backdrop() {
+    let status = Command::new("xsetroot")
+        .args(["-solid", "#20262f"])
+        .status()
+        .expect("xsetroot");
+    assert!(status.success(), "xsetroot failed");
+}
+
 fn capture_window(name: &str, window: &impl IsA<gtk::Window>) {
     settle();
     let id = focus(window);
@@ -736,6 +744,7 @@ fn capture_stills() {
 
     let app = application("com.github.among-terminal.doc-media-stills");
     let ctx = build_with_writer(&app, None, crate::session::Writer::new).expect("application");
+    set_backdrop();
     wait_for(
         || ctx.window.visible_dialog().is_some(),
         Duration::from_secs(5),
