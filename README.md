@@ -11,11 +11,13 @@ A native GNOME terminal multiplexer built with Rust, GTK4, libadwaita and VTE.
 Keep shells running in split panes and named workspaces, with keyboard controls
 and optional status plugins.
 
+[![Among Terminal: split panes, workspaces and live status](docs/media/among-terminal-preview.gif)](https://among-terminal.github.io/features/)
+
 ## Installation
 
-Download the file for your system. The links always fetch the
-[latest release](https://github.com/Among-Terminal/among/releases/latest); no
-Rust toolchain or compilation is needed.
+See the [installation guide](https://among-terminal.github.io/install/) for
+packages, requirements, verification, updates and removal.
+Downloads are on the [releases page](https://github.com/Among-Terminal/among/releases).
 
 | x86-64 (`amd64`) | ARM 64-bit (`arm64`) |
 |---|---|
@@ -26,56 +28,31 @@ Rust toolchain or compilation is needed.
 | [![Download Linux AppImage for amd64](https://img.shields.io/badge/Linux-AppImage_amd64-333333?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-amd64.AppImage) | [![Download Linux AppImage for arm64](https://img.shields.io/badge/Linux-AppImage_arm64-333333?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/Among-Terminal/among/releases/latest/download/among-terminal-arm64.AppImage) |
 
 AppImages require glibc 2.39 or newer.
+Verify downloads with the release's [SHA256SUMS](https://github.com/Among-Terminal/among/releases/latest/download/SHA256SUMS)
+as described in the installation guide.
 
-`uname -m` prints `x86_64` for amd64 and `aarch64` for arm64. Install from the
-download directory, using the file name you downloaded:
+## User guides
 
-```sh
-sudo apt install ./among-terminal-ubuntu24.04-amd64.deb   # Debian, Ubuntu
-sudo dnf install ./among-terminal-fedora44-amd64.rpm      # Fedora
-chmod +x among-terminal-amd64.AppImage && ./among-terminal-amd64.AppImage
-```
+- [Overview](https://among-terminal.github.io/overview/) and [features](https://among-terminal.github.io/features/)
+- [Panes and workspaces](https://among-terminal.github.io/panes/), [sessions](https://among-terminal.github.io/sessions/) and [shortcuts](https://among-terminal.github.io/shortcuts/)
+- [Preferences](https://among-terminal.github.io/preferences/) and [plugins](https://among-terminal.github.io/plugins/)
 
-Start **Among Terminal** from the applications menu, or run `among`. To verify
-downloads, put [SHA256SUMS](https://github.com/Among-Terminal/among/releases/latest/download/SHA256SUMS)
-next to them and run `sha256sum --check --ignore-missing SHA256SUMS`.
+## Plugin authors
 
-The [installation guide](docs/install.md) covers AppImage requirements, binary
-archives, updates and removal. Earlier versions and their notes are on the
-[releases page](https://github.com/Among-Terminal/among/releases). For the
-optional `cargo install --git` source-build route, see
-[building from source](docs/build.md#cargo-install-from-git).
+The [plugin template](https://github.com/Among-Terminal/among-plugin-template)
+contains the [author guide](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/guide.md),
+[API reference](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/api.md)
+and [release instructions](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/releasing.md).
 
-[![Among Terminal: split panes, workspaces and live status](docs/media/among-terminal-preview.gif)](https://among-terminal.github.io/#demo)
+## Contributors and packagers
 
-[Watch the demo](https://among-terminal.github.io/#demo) ·
-[Feature guide](https://among-terminal.github.io/features/) ·
-[Plugin development](https://among-terminal.github.io/plugin-development/)
-
-## Features
-
-- Split, resize and rearrange panes without restarting their shells.
-- Switch between named, colour-coded workspaces with a collapsible sidebar.
-- Navigate by keyboard, zoom a pane and customize shortcuts.
-- Restore workspace layouts and directories into fresh shells.
-- Add clocks, resource meters and per-pane status through separate-process plugins.
-  Plugins are optional and disabled by default.
-
-## Documentation
-
-- [Overview](docs/overview.md) and [features](docs/features.md)
-- [Panes](docs/panes.md), [workspaces and sessions](docs/sessions.md), and [shortcuts](docs/shortcuts.md)
-- [Preferences](docs/preferences.md)
-- [Installing and writing plugins](docs/plugins.md)
-- [Plugin API reference](docs/plugin-api.md)
-
-## Contributing
-
-For source builds and contributions, see [building](docs/build.md) and
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development process and documentation
+map, and [building from source](docs/build.md) for build requirements.
+This repository keeps build, development and packaging documentation.
 
 ## License
 
 Original code and examples are [Apache-2.0](LICENSE).
 Third-party components retain their own terms: see [NOTICE](NOTICE),
-[dependency notices](THIRD_PARTY/inventory.json) and [licensing](docs/licensing.md).
+[dependency notices](THIRD_PARTY/inventory.json) and
+[licensing](https://among-terminal.github.io/licensing/).

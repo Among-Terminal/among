@@ -1,42 +1,11 @@
-# Installing Among Terminal
+# Installer and desktop integration
 
-## Ready-made packages
+Ready-made downloads and end-user installation instructions live in the
+[installation guide](https://among-terminal.github.io/install/).
+This document covers source installation, package integration and installer
+ownership. Native build prerequisites are in [building](build.md).
 
-Every [GitHub Release](https://github.com/Among-Terminal/among/releases) carries
-the same files for x86-64 (`amd64`) and ARM 64-bit (`arm64`), under names without
-a version. `https://github.com/Among-Terminal/among/releases/latest/download/<file>`
-always fetches the file from the newest stable release; the README links the
-DEB, RPM and AppImage files, while this guide also covers binary archives.
-`uname -m` prints `x86_64` for amd64 and `aarch64` for arm64.
-
-| Your system | Files | Details |
-|---|---|---|
-| Debian 13, Ubuntu 24.04 | `among-terminal-<debian13 or ubuntu24.04>-<arch>.deb` | [Debian packaging](debian-packaging.md#installing-a-built-package) |
-| Fedora 43, Fedora 44 | `among-terminal-<fedora43 or fedora44>-<arch>.rpm` | [RPM packaging](rpm-packaging.md#choosing-the-package-for-your-system) |
-| Other distributions with glibc 2.39 or newer | `among-terminal-<arch>.AppImage` | [AppImage](#appimage) |
-| Debian 13, Ubuntu 24.04 without a package manager | `among-terminal-<debian13 or ubuntu24.04>-<arch>.tar.gz` | [Binary archive](#binary-archive) |
-
-```sh
-sudo apt install ./among-terminal-ubuntu24.04-amd64.deb
-sudo dnf install ./among-terminal-fedora44-amd64.rpm
-```
-
-APT and DNF install the libraries Among needs from the distribution. Each
-release also carries `SHA256SUMS`; download it next to your file and check it:
-
-```sh
-sha256sum --check --ignore-missing SHA256SUMS
-```
-
-The line for your file must end in `OK`. Releases are immutable: once
-published, their files and tag cannot change. GitHub records an attestation for
-each release; with the GitHub CLI, `gh release verify-asset <tag> <file> --repo
-Among-Terminal/among` checks a downloaded file against it.
-
-To update, download the newer release's file and install it the same way. Close
-and reopen Among to use the new version.
-
-### Local DEB cards in GNOME Software
+## Local DEB cards in GNOME Software
 
 On Debian 13 with GNOME Software 48.3 / PackageKit 1.3.1, opening a standalone
 DEB shows package fallback information: `among-terminal`, a generic package
@@ -45,323 +14,168 @@ the package makes its desktop name and application icon available in the
 Installed list, but reopening the DEB can still show the fallback card.
 
 Among ships Apache-2.0 project licensing, a public UI screenshot and release
-notes in AppStream metadata. A separately indexed AppStream component can show
-those fields; valid bundled XML alone does not make the local-file path use it.
-Native package builds bind the current AppStream release to the package's
-upstream version, including its RC suffix, without rewriting release history.
+notes in AppStream metadata. A separately indexed component can show those
+fields; valid bundled XML alone does not make the local-file path use it.
+Native builds bind the current AppStream release to the package's upstream
+version, including its RC suffix, without rewriting release history.
 
 Local installation adds no Among repository or signing key. The consumer's
 third-party trust and missing-repository/update warnings remain applicable.
-Debian/Ubuntu APT catalogue publication is separate work, not a feature of these
-standalone packages. Third-party components keep their own licence terms.
+APT catalogue publication is separate from standalone packaging. Third-party
+components retain their own licence terms.
 
 ## Desktop notification integration
 
-Desktop bell notifications use the application id `com.github.among-terminal`.
-GNOME Shell requires a matching `com.github.among-terminal.desktop` entry in its
-application search path. The DEB and RPM install that entry; the Snap recipe also
-includes it and currently uses `confinement: classic`.
+Desktop bell notifications use `com.github.among-terminal`. GNOME Shell requires
+a matching `com.github.among-terminal.desktop` in its application search path.
+DEB and RPM install it; the Snap recipe includes it with `confinement: classic`.
+For Snap, check the entry exported to the host: the canonical file inside the
+Snap alone does not prove registration. See [Snap packaging](snap.md).
 
-For Snap installations, check the desktop entry exported to the host. The
-canonical desktop file inside the Snap does not by itself establish matching
-registration in GNOME's application search path. See
-[Snap packaging](snap.md) for the package's desktop integration limits.
+The file declares `X-GNOME-UsesNotifications=true` for GNOME settings. It does
+not enable D-Bus activation; click actions address the running application.
+Strict Snap confinement requires a separate review of the `desktop` plug and
+notification-service D-Bus permissions. Flatpak packaging remains separate.
 
-Running an extracted binary archive or a bare AppImage does not install a desktop
-entry. GNOME Shell may discard its notifications even though the session's
-notification service is running. Install the matching entry as shown in the
-[AppImage instructions](#appimage), or use the source installer. An
-AppImageLauncher entry named `appimagekit_…` alone does not match the GApplication
-id. Among reports a missing notification service. It sends through a selected
-GTK, portal or freedesktop D-Bus service; service acceptance does not prove that
-the desktop displayed a banner.
-
-The desktop file declares `X-GNOME-UsesNotifications=true` for GNOME's notification
-settings. It does not enable D-Bus activation; the click action targets the
-currently running application. Switching to strict Snap confinement requires a
-separate review of the `desktop` plug and notification-service D-Bus permissions.
-Flatpak packaging remains separate.
+Bare AppImages and extracted archives install no desktop entry. GNOME may discard
+notifications even when a session service runs. An `appimagekit_…` entry alone
+does not match the notification identity. Among reports a missing service and
+sends through the selected GTK, portal or freedesktop D-Bus service. Acceptance
+does not prove a banner appeared. Manual registration is documented on the
+[site](https://among-terminal.github.io/install/#desktop-notification-integration).
 
 ## From source
 
-From a source checkout, run as your normal user:
+From a checkout, run as your normal user:
 
 ```sh
 sh scripts/install.sh --install-deps
 ```
 
-Rust/Cargo 1.98 or newer is required for the native installer bootstrap and source
-build. No project interpreter is used. `--install-deps` uses
-`sudo apt-get` to install Debian/Ubuntu build dependencies. It does not install
-Rust or change your toolchain. On other distributions install GTK 4.12+,
-libadwaita 1.5+, GTK4 VTE 0.76+, a C toolchain, pkg-config and a gdk-pixbuf SVG
-loader first, then run:
+Rust/Cargo 1.98 or newer is required for the native installer bootstrap and
+source build. `--install-deps` uses `sudo apt-get` for Debian/Ubuntu build
+dependencies; it neither installs Rust nor changes the toolchain. No project
+interpreter is used. Elsewhere, install GTK 4.12+, libadwaita 1.5+, GTK4 VTE
+0.76+, a C toolchain, pkg-config and a gdk-pixbuf SVG loader, then run:
 
 ```sh
 sh scripts/install.sh
 ```
 
-The installer builds with `cargo install --path … --locked` into a temporary
-staging directory before replacing installed files. No build runs under sudo.
-Launch **Among Terminal** from the applications menu, or `~/.local/bin/among`.
-If `~/.local/bin` is already in PATH, the command is `among`.
-The installer does not edit shell startup files. If the menu does not refresh
-immediately, log out and back in.
+The installer runs `cargo install --path … --locked` in temporary staging before
+replacing installed files. No build runs under sudo. The executable is
+`~/.local/bin/among`; PATH determines whether `among` finds it. The installer
+does not edit shell startup files. A desktop session may require logout and
+login before its applications menu refreshes.
 
-## Binary archive
+## AppImage process environment
 
-A binary archive holds the same executables as the DEB of the same release,
-without a package manager. It is built for one distribution and architecture
-and does not bundle libraries: the distribution must provide them.
+The AppImage bundles GTK, libadwaita, VTE and their dependencies, with the host
+library requirements listed on the site. Its launcher exports no library,
+GSettings or XDG data search path. Among configures bundled schemas, MIME data
+and image loaders inside its own process.
 
-| Your system | File |
-|---|---|
-| Debian 13, x86-64 | `among-terminal-debian13-amd64.tar.gz` |
-| Debian 13, ARM 64-bit | `among-terminal-debian13-arm64.tar.gz` |
-| Ubuntu 24.04, x86-64 | `among-terminal-ubuntu24.04-amd64.tar.gz` |
-| Ubuntu 24.04, ARM 64-bit | `among-terminal-ubuntu24.04-arm64.tar.gz` |
+The runtime sets `APPIMAGE`, `APPDIR`, `ARGV0` and, when mounted, `OWD`. Among
+does not remove them, so terminal children inherit them. Clean-host checks cover
+explicit extraction and `AppRun`; the isolated GNOME integration check uses
+`--appimage-extract-and-run`, which extracts to a temporary directory on each start.
 
-`dpkg --print-architecture` prints `amd64` or `arm64`. Download the archive and
-the release's `SHA256SUMS` into one directory and verify the archive:
-
-```sh
-sha256sum --check --ignore-missing SHA256SUMS
-```
-
-The line for the archive must end in `OK`. Install the runtime libraries.
-`INSTALL.txt` inside the archive lists the exact packages and minimum versions
-the DEB of the same build depends on; on Debian 13 and Ubuntu 24.04 this
-installs them:
-
-```sh
-sudo apt-get install --no-install-recommends libgtk-4-1 libadwaita-1-0 libvte-2.91-gtk4-0 librsvg2-common libgtk-4-media-gstreamer gstreamer1.0-plugins-good
-```
-
-Extract into a new directory and start Among:
-
-```sh
-mkdir ~/among
-tar -xzf among-terminal-ubuntu24.04-arm64.tar.gz -C ~/among
-~/among/bin/among
-```
-
-No compiler, Rust toolchain or Among package is needed. The archive adds no
-applications-menu entry. The archive bundles no plugins. Install the official
-ones from the built-in source in Preferences → Plugins (see
-[plugins](plugins.md#installing)); if the first catalogue load fails, use
-**Load** to retry. Installed plugins
-stay disabled until you review their access and enable them. To remove Among,
-delete `~/among`. Settings,
-sessions and separately installed plugins are preserved.
-
-## AppImage
-
-An AppImage is one executable file that carries Among together with GTK,
-libadwaita, VTE and the libraries they need. It installs nothing.
-
-| Your system | File |
-|---|---|
-| x86-64 | `among-terminal-amd64.AppImage` |
-| ARM 64-bit | `among-terminal-arm64.AppImage` |
-
-Supported hosts: Debian 13, Ubuntu 24.04 and Fedora 43 on both architectures;
-these are the hosts its release checks start it on. It needs GNU C library
-2.39 or newer, because it is built on Ubuntu 24.04. Some libraries are not
-bundled and must come from the host: the C and C++ runtime, X11 and XCB,
-Wayland client, fontconfig, FreeType, HarfBuzz, FriBidi, Expat, GMP,
-libgpg-error, com_err, zlib and the host OpenGL/EGL/GLES, GBM and DRM stack.
-The release checks install them on otherwise
-clean hosts with:
-
-```sh
-sudo apt-get install libwayland-client0 libx11-6 libxcb1 libfontconfig1 libfreetype6 libharfbuzz0b \
-  libfribidi0 libexpat1 libgmp10 libgpg-error0 libcom-err2 zlib1g libstdc++6 fonts-dejavu-core \
-  libgl1 libegl1 libgles2 libgbm1 libdrm2 libx11-xcb1
-sudo dnf install libwayland-client libX11 libxcb fontconfig freetype harfbuzz fribidi expat gmp \
-  libgpg-error libcom_err zlib-ng-compat libstdc++ dejavu-sans-fonts \
-  libglvnd-glx libglvnd-egl libglvnd-gles mesa-libgbm libdrm libX11-xcb
-```
-
-The first line is for Debian and Ubuntu, the second for Fedora.
-
-Download the AppImage and the release's `SHA256SUMS` into one directory, verify
-it, make it executable and start it:
-
-```sh
-sha256sum --check --ignore-missing SHA256SUMS
-chmod +x among-terminal-amd64.AppImage
-./among-terminal-amd64.AppImage
-```
-
-The AppImage mounts itself with FUSE, which needs `fusermount3` from the
-`fuse3` package (`sudo apt-get install fuse3` or `sudo dnf install fuse3`).
-Without FUSE it prints `Cannot mount AppImage, please check your FUSE setup`.
-Then extract it and start the extracted copy instead:
-
-```sh
-./among-terminal-amd64.AppImage --appimage-extract
-./squashfs-root/AppRun
-```
-
-This creates `squashfs-root/` in the current directory; move or delete it like
-any directory. The upstream runtime also offers `--appimage-extract-and-run`,
-which extracts to a temporary directory on every start
-([AppImage documentation](https://docs.appimage.org/user-guide/troubleshooting/fuse.html));
-The package clean-host checks cover the extraction above. The separate isolated
-GNOME integration check uses the runtime's extract-and-run mode.
-
-The AppImage's launcher exports no library, GSettings or XDG data search
-path; Among sets up its bundled schemas, MIME data and image loaders inside
-its own process. The AppImage runtime sets `APPIMAGE`, `APPDIR`, `ARGV0` and,
-when mounted, `OWD` before starting Among, and Among does not remove them, so
-programs started in its shells inherit them.
-
-The AppImage does not add itself to the applications menu. Its desktop entry
-uses the ID `com.github.among-terminal`. To add a menu entry for the file at
-`~/Applications/among.AppImage`:
-
-```sh
-mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
-cd ~/Applications
-./among.AppImage --appimage-extract usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg
-cp squashfs-root/usr/share/icons/hicolor/scalable/apps/com.github.among-terminal.svg \
-  ~/.local/share/icons/hicolor/scalable/apps/
-rm -r squashfs-root
-cat > ~/.local/share/applications/com.github.among-terminal.desktop <<EOF
-[Desktop Entry]
-Type=Application
-Name=Among Terminal
-Comment=Organize live terminals in project workspaces
-Exec=$HOME/Applications/among.AppImage
-Icon=com.github.among-terminal
-Terminal=false
-Categories=System;TerminalEmulator;
-StartupNotify=true
-StartupWMClass=among
-X-GNOME-UsesNotifications=true
-EOF
-```
-
-If you move or rename the AppImage, edit `Exec=` accordingly.
-
-### AppImageLauncher
+## AppImageLauncher integration
 
 AppImageLauncher creates its own `appimagekit_…-Among_Terminal.desktop` entry and
-icon name. Builds from this source bind an AppImage's Wayland surface to that
-entry when its launch context identifies the same AppImage file. If a file-manager
-or terminal launch has no valid GIO hint, a unique existing AppImageLauncher entry
-whose executable matches that exact file supplies the association. No entry is
-created automatically, and ambiguous duplicate registrations are not guessed.
-The global
-GApplication ID, configuration paths and native desktop entry remain unchanged.
-The `GIO_LAUNCHED_DESKTOP_FILE` hints used for this association are removed before
-terminal children start. Launches without a matching registration keep the normal identity.
+icon name. The host binds an AppImage Wayland surface to that entry when launch
+context identifies the same image. Without a valid GIO hint, a unique existing
+entry whose executable matches the exact file supplies the association.
+Ambiguous duplicates are not guessed and no registration is created automatically.
+Global GApplication identity, configuration paths and native entries are unchanged.
+`GIO_LAUNCHED_DESKTOP_FILE` hints are removed before terminal children start.
+An unmatched launch keeps normal identity.
 
-AppImages also include 128 px and 256 px PNG variants of the approved mark for
-AppImageLauncher's file thumbnails. On the tested alpha-4 consumer, the SVG-only
-path produces fully transparent thumbnails despite a valid themed SVG. The
-integration regression decodes the generated thumbnails, not just the installed
-icon. Integrate the current image rather than clearing unrelated thumbnail or
-icon caches.
+Images carry 128 px and 256 px PNG variants of the approved mark. The tested
+alpha-4 consumer produces transparent thumbnails on the SVG-only path despite
+a valid themed SVG. The integration regression decodes generated thumbnails.
+Integrate the current image without clearing unrelated icon or thumbnail caches.
 
-The integration regression uses Debian 13 / GNOME Shell 48.7 / Wayland with
-AppImageLauncher `3.0.0-alpha-4-gha253~36951ec`. It integrates while Shell is
-already running, opens the integrated file without GIO launch hints, then checks
-menu activation, pin activation and fresh-process relaunch. Results apply to the
-actual image tested, not every integrator or desktop.
+The regression uses Debian 13 / GNOME Shell 48.7 / Wayland and AppImageLauncher
+`3.0.0-alpha-4-gha253~36951ec`. It integrates while Shell is running, opens the
+file without GIO hints, then checks menu activation, pin activation and a fresh
+process launch. This evidence covers the tested image and consumer only.
 
-For a controlled upgrade, close the old application and remove only its owned
-integration before integrating the replacement:
+The site's installation page does not yet contain this controlled upgrade
+procedure. Close the old process and remove only its owned integration:
 
 ```sh
 ail-cli unintegrate "/actual/integrated/old.AppImage"
 ail-cli integrate "/path/to/new.AppImage"
 ```
 
-Use the old entry's actual `Exec` path: AppImageLauncher can move the image to a
-hash-suffixed filename. Pin the newly generated entry. Beside a native package,
-AppImageLauncher can suffix the display name with `(1)`; native DEB pins remain
-separate. Do not delete unrelated desktop entries or reset the entire dock.
-Old pins, duplicate manual launchers and icon caches can still refer to older
-files; an invisible icon is not proof of which layer failed.
-
-Without a host desktop registration, GNOME Wayland may show a technical
-application ID and generic icon for a directly executed AppImage. Its embedded
-icon does not register an application with the host shell. Use AppImageLauncher
-or the explicit manual desktop entry above. If a native DEB is installed,
-prefer AppImageLauncher's distinct entry: a manual entry with the native ID can
-override its launcher. Among does not silently create host registration files.
-
-The image bundles no plugins. Install the official ones from the built-in
-source in Preferences → Plugins, as described in
-[plugins](plugins.md#installing); they stay disabled until you review their
-requested access and enable them.
-To remove Among,
-delete the AppImage file and, if you added them, the desktop entry and icon
-above. Settings, sessions and separately installed plugins are preserved.
+Use the old entry's actual `Exec` path; AppImageLauncher may move the image to
+a hash-suffixed filename. Pin the replacement entry. Beside a native package,
+AppImageLauncher may suffix the display name with `(1)`; native DEB pins remain
+separate. Do not delete unrelated entries or reset the dock. Old pins, duplicate
+manual launchers and caches can reference older files; an invisible icon alone
+does not identify the failed layer. Without registration, a direct GNOME Wayland
+launch may show a technical ID and generic icon. Beside a DEB, prefer the distinct
+AppImageLauncher entry: a manual native-ID entry can override the DEB launcher.
 
 ## Cargo installation (binary only)
 
-With the native prerequisites from [building](build.md) installed:
+Keep these package-identity examples synchronized with the package metadata;
+`among-tools` checks them as Debian source inputs. With the native prerequisites
+from [building](build.md) installed:
 
 ```sh
 cargo install --git https://github.com/Among-Terminal/among --locked among
 among
 ```
 
-This builds the moving default branch and installs only the executable in Cargo's
-bin directory (normally `~/.cargo/bin`). It does not install a desktop entry,
-icons or plugins. Use the source installer above for desktop integration.
-Do not run Cargo as root. Rerun the command to update, and remove this binary with:
+This builds the moving default branch into Cargo's bin directory, normally
+`~/.cargo/bin`. It installs no desktop entry, icons or plugins. Do not run Cargo
+as root. Rerun the command to update; remove this binary with:
 
 ```sh
 cargo uninstall among
 ```
 
-Settings, sessions and separately installed plugins are preserved.
+Settings, sessions and separately installed plugins remain.
 
 ## Update and remove
 
-Rerun the installation command from the updated checkout to update.
-Close and relaunch the application to use the new binary; installation never
-closes running terminals for you.
+Rerun installation from the updated checkout. Installation never closes running
+terminals; relaunch to use the new binary. Remove a source installation with:
 
 ```sh
 sh scripts/install.sh --uninstall
 ```
 
-The checkout is not required for removal: run `~/.local/bin/among-uninstall`.
-
-Removal preserves application preferences, sessions and separately installed
-plugins. Only files recorded by this installer are removed. Existing unrelated
-files, symlinks and locally modified installed files block both replacement and
-removal; move conflicting files aside before retrying. A binary previously
-installed by `cargo install` under `~/.cargo/bin` is not removed or updated;
-use the applications-menu entry or the absolute path above to avoid ambiguity.
+The installed `~/.local/bin/among-uninstall` works without the checkout.
+Only recorded files are removed; preferences, sessions and separately installed
+plugins remain. Unrelated files, symlinks and locally modified installed files
+block replacement and removal. Move conflicts aside before retrying. Cargo's
+`~/.cargo/bin/among` is neither updated nor removed; use the menu or absolute path
+to distinguish installations.
 
 ## Prebuilt executable
 
-To install an already built native binary and the same desktop assets:
+Install a native binary with the same desktop assets:
 
 ```sh
 sh scripts/install.sh --binary ./target/release/among
 ```
 
-The binary must match your architecture and installed native libraries. This
-mode does not build the application or install dependencies, nor certify binary
-compatibility. The shell launcher builds the headless Rust installer if it is
-missing. To avoid that bootstrap, supply prebuilt `among-tools` and its sibling
-`among-uninstall` (both native for this machine):
+The binary must match the architecture and native libraries. This mode neither
+builds Among nor installs dependencies or certifies compatibility. The shell
+launcher builds the headless Rust installer if missing. To avoid bootstrap,
+supply native `among-tools` and its sibling `among-uninstall` from the same
+checked build:
 
 ```sh
 AMONG_TOOLS=/absolute/path/among-tools sh scripts/install.sh --binary ./among
 ```
 
-The two tooling binaries must come from the same checked build. Once installed,
-`~/.local/bin/among-uninstall` does not need Cargo, an interpreter or the checkout.
-A valid version-1 installation made by the old installer is upgraded only after
-its helper and launcher pass the existing ownership/hash checks; edited legacy
-files block the upgrade instead of being deleted.
+The installed uninstaller requires no Cargo, interpreter or checkout. A valid
+version-1 installation made by the old installer is upgraded only after helper
+and launcher ownership/hash checks pass. Edited legacy files block the upgrade.
 
 ## Installed files
 
@@ -370,17 +184,14 @@ files block the upgrade instead of being deleted.
 - `$XDG_DATA_HOME/applications/com.github.among-terminal.desktop`
 - `$XDG_DATA_HOME/icons/hicolor/scalable/apps/com.github.among-terminal.svg`
 - `$XDG_DATA_HOME/metainfo/com.github.among-terminal.metainfo.xml`
-- `$XDG_DATA_HOME/doc/among/`: license, notice and third-party license inventory
+- `$XDG_DATA_HOME/doc/among/`: license, notice and third-party inventory
 - `$XDG_STATE_HOME/among-installer/install.json`: ownership and content hashes
 
-The XDG defaults are `~/.local/share` and `~/.local/state`. Use the same HOME
-and XDG directories for installation, updates and removal. A lock prevents
-simultaneous installers. Each file is replaced atomically; ordinary write
-failures roll back installed files. Power loss or forced termination during
-installation is not a transaction across all files and may require recovery.
-Rollback of changed files can itself fail if storage becomes full or unwritable;
-the installer reports those errors rather than claiming recovery. Originals
-whose bytes and mode already match the saved state do not need to be rewritten.
-
-Optional plugins remain a separate installation from the built-in official
-source in Preferences → Plugins; see [plugins](plugins.md#installing).
+Defaults are `~/.local/share` and `~/.local/state`. Installation, update and
+removal must use the same HOME and XDG directories. A lock excludes simultaneous
+installers. Each replacement is atomic; ordinary write errors roll back installed
+files. Power loss or forced termination is not a transaction across all files
+and may require recovery. Rollback can fail on full or unwritable storage and
+must report that failure. Originals whose bytes and mode match saved state need
+no rewrite. Optional plugins remain a separate installation through the official
+source; see [plugins](https://among-terminal.github.io/plugins/#installing).

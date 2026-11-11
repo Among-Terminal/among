@@ -1,28 +1,15 @@
-# Sessions
+# Session storage
 
-Session snapshots live at `${XDG_DATA_HOME:-$HOME/.local/share}/among/session.json`.
-This is independent of `plugins.json` and `shortcuts.json`: saving a session does
-not rewrite preferences, install plugins or modify shell configuration.
+The [session guide](https://among-terminal.github.io/sessions/) owns restoration
+controls and shell directory reporting. `src/session.rs` owns the snapshot format.
+
+`session::path` uses `XDG_DATA_HOME` whenever it is set, including empty or
+relative values. Only an unset value falls back to `$HOME/.local/share`.
+The resulting base is joined with `among/session.json`; if both variables are
+unset, no path is available. Session writes are independent of preference files,
+plugin installation and shell configuration.
 
 ## Saving and restoring
-
-A new application process with a valid snapshot asks **Restore** or **Start new**.
-Restore recreates each terminal as a fresh shell in its saved directory, including
-inactive workspaces, and restores the active workspace and its focused pane.
-The saved sidebar sequence includes manual drag-and-drop ordering. Restore brings
-back that order, with the same workspace active at its new position; Alt+1 through
-Alt+9 then use those restored positions. Ordering is part of the session, not a
-separate preference, and does not bypass the Restore/Start new decision.
-A pane moved to another workspace by dragging its header is saved as part of the
-destination workspace, with its own directory; a workspace that lost its last
-pane this way is not restored. The format is unchanged.
-It does not resume old processes, repeat commands, restore scrollback or retain
-temporary pane zoom. The window opens maximized as usual.
-
-Start new (also Escape) opens the usual single-terminal workspace. Its next
-checkpoint replaces the previous session. Closing the window while the prompt is
-still open exits without launching terminals or altering the old snapshot.
-Activating an already running application does not ask again.
 
 Changed session state is checkpointed every two seconds by a separate ordered
 writer. Disk completion depends on storage availability. Unchanged state does not
@@ -35,15 +22,9 @@ If a saved directory is deleted or inaccessible, the shell uses an accessible
 home or startup directory. Settings shows affected panes. VTE can silently fall
 back during spawning; the host reads the new process's actual `/proc/<pid>/cwd`
 rather than assuming the requested path was used. Only the actual known location
-is recorded. A workspace's first terminal keeps the normal startup directory; a
-terminal created by [splitting a pane](panes.md#splitting-a-pane) starts in that
-pane's directory instead, and records it because it really started there.
-
-For directory changes after launch, the shell must publish OSC 7. See the tested
-[Bash integration](plugins.md#live-status-examples). This does not require enabling
-pane-pwd or any other plugin, and Among Terminal never edits your shell files.
-For example, after enabling the optional Bash hook, `cd /tmp` is recorded on the
-next checkpoint even when the workspace is inactive.
+is recorded. A split records the directory the new shell actually started in.
+OSC 7 reports update known directories even for inactive workspaces and do not
+depend on enabling plugins. See [directory reporting](https://among-terminal.github.io/sessions/#directory-reporting).
 
 Storage failures are reported in Settings without blocking terminal input. Later
 checkpoints retry after the problem is fixed. Invalid or future-version documents
