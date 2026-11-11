@@ -7,22 +7,16 @@ ownership. Native build prerequisites are in [building](build.md).
 
 ## Local DEB cards in GNOME Software
 
-On Debian 13 with GNOME Software 48.3 / PackageKit 1.3.1, opening a standalone
-DEB shows package fallback information: `among-terminal`, a generic package
-icon, `Unknown License`, `No Screenshots` and no release description. Installing
-the package makes its desktop name and application icon available in the
-Installed list, but reopening the DEB can still show the fallback card.
+Keep licensing, screenshot and release fields in the
+[AppStream metadata](../data/com.github.among-terminal.metainfo.xml).
+The native package identity check in [deb.rs](../tools/among-tools/src/deb.rs)
+requires its current release to match the upstream tag, including an RC suffix.
+Preserve earlier release entries when preparing a package.
 
-Among ships Apache-2.0 project licensing, a public UI screenshot and release
-notes in AppStream metadata. A separately indexed component can show those
-fields; valid bundled XML alone does not make the local-file path use it.
-Native builds bind the current AppStream release to the package's upstream
-version, including its RC suffix, without rewriting release history.
-
-Local installation adds no Among repository or signing key. The consumer's
-third-party trust and missing-repository/update warnings remain applicable.
-APT catalogue publication is separate from standalone packaging. Third-party
-components retain their own licence terms.
+Validate the local-file card separately from the installed application entry;
+valid AppStream XML does not establish how GNOME Software displays a standalone
+DEB. Consumer-facing limitations belong in the
+[installation guide](https://among-terminal.github.io/install/).
 
 ## Desktop notification integration
 
@@ -93,30 +87,19 @@ An unmatched launch keeps normal identity.
 
 Images carry 128 px and 256 px PNG variants of the approved mark. The tested
 alpha-4 consumer produces transparent thumbnails on the SVG-only path despite
-a valid themed SVG. The integration regression decodes generated thumbnails.
-Integrate the current image without clearing unrelated icon or thumbnail caches.
+a valid themed SVG. The integration regression must decode generated thumbnails
+without clearing unrelated icon or thumbnail caches.
 
 The regression uses Debian 13 / GNOME Shell 48.7 / Wayland and AppImageLauncher
 `3.0.0-alpha-4-gha253~36951ec`. It integrates while Shell is running, opens the
 file without GIO hints, then checks menu activation, pin activation and a fresh
 process launch. This evidence covers the tested image and consumer only.
 
-The site's installation page does not yet contain this controlled upgrade
-procedure. Close the old process and remove only its owned integration:
-
-```sh
-ail-cli unintegrate "/actual/integrated/old.AppImage"
-ail-cli integrate "/path/to/new.AppImage"
-```
-
-Use the old entry's actual `Exec` path; AppImageLauncher may move the image to
-a hash-suffixed filename. Pin the replacement entry. Beside a native package,
-AppImageLauncher may suffix the display name with `(1)`; native DEB pins remain
-separate. Do not delete unrelated entries or reset the dock. Old pins, duplicate
-manual launchers and caches can reference older files; an invisible icon alone
-does not identify the failed layer. Without registration, a direct GNOME Wayland
-launch may show a technical ID and generic icon. Beside a DEB, prefer the distinct
-AppImageLauncher entry: a manual native-ID entry can override the DEB launcher.
+For the controlled upgrade procedure, use the
+[installation guide](https://among-terminal.github.io/install/).
+Integration regressions must preserve unrelated desktop entries and native
+package pins. Check the desktop entry's executable association separately
+from icon decoding and Shell activation.
 
 ## Cargo installation (binary only)
 

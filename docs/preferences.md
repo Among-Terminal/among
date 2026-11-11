@@ -14,12 +14,11 @@ opening Preferences never writes the document:
 {"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"desktop":{"enabled":true,"eligibility":"application-background"},"command":{"enabled":false,"eligibility":"application-background"}}}
 ```
 
-The stored `originating-terminal-unfocused` condition requires a terminal and
-also applies while Among is in the background. Preferences and native menus count
-as foreground Among without viewing a terminal. Workspace hue and terminal
-allocation are independent of notification state. Unread state has an accessible
-name. Under Always, a bell in the already focused terminal pulses for one second
-without an unread name or thicker line, including when animations are off.
+Keep serialized eligibility values compatible with `Policy::permits` in
+[notifications.rs](../src/notifications.rs): `originating-terminal-unfocused`
+requires a source terminal, even when the application is in the background.
+Indicator presentation belongs to the
+[terminal bell backend](terminal-bell-backend.md).
 
 Command edits preserve literal argument strings. Arguments that cannot fit the
 one-argument-per-line editor, such as an empty string or a line break, remain a
@@ -104,19 +103,18 @@ Terminal appearance uses `terminal.json`, version 1:
 {"version": 1, "text_background": "gnome-terminal-default", "ansi_palette": "tango"}
 ```
 
-The independent dimensions use stable kebab-case identifiers, such as
-`gray-on-black`, `solarized-dark`, `linux-console` and `xterm`. Missing fields use
-`gnome-terminal-default`. Read only GNOME Terminal's default profile at startup;
-do not follow live changes or write GNOME settings. A valid inherited palette
-requires explicit text/background colours. If inherited text/background colours
-are unavailable, retain the source row and apply Gray on black with a diagnostic,
-while still applying a valid palette. If the palette is unavailable, reset every
-pane to VTE's compiled-in palette instead of retaining an earlier explicit one.
-Unmatched values remain custom. Unknown IDs and unsafe, invalid or future
-documents produce storage diagnostics without replacement.
+Preserve the serialized identifiers and missing-field defaults validated by
+[settings/terminal.rs](../src/settings/terminal.rs). The startup reader in
+[terminal_appearance_source.rs](../src/terminal_appearance_source.rs) must remain
+read-only. Keep source selection separate from effective colours in
+[terminal_appearance.rs](../src/terminal_appearance.rs), so fallback never rewrites
+the saved choice and failure in one dimension does not discard the other.
+When applying `VteCompiledDefaults`, [pane.rs](../src/pane.rs) must pass an empty
+palette to VTE to clear any previously applied explicit palette.
 
-Unknown fields and entries survive unrelated saves. Writes use a private
-same-directory temporary file and atomic replacement. Failure before replacement
+The [settings writer](../src/settings.rs) must retain unknown fields and entries
+on unrelated saves. Writes use a private same-directory temporary file and atomic
+replacement. Failure before replacement
 preserves the old document; failure confirming directory durability reports
 uncertainty. Symlink destinations are refused. Detected external edits are merged;
 simultaneous external writers are not fully serialized.

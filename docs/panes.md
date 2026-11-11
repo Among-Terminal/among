@@ -4,22 +4,19 @@ User controls are documented in [panes and workspaces](https://among-terminal.gi
 
 ## Layout and process ownership
 
-A pane move preserves the terminal object, process, scrollback, directory,
-plugin content and title-change marker. Reparenting must preserve independently
-managed header content. Moving to another workspace changes the header colour
-and inserts the terminal after its last pane in layout order. The last pane's
-shape determines the split orientation. An empty source workspace is removed.
+Keep terminal instances in the pane map when `rebuild_panes` in
+[app.rs](../src/app.rs) reparents widgets. Rebuilding a container must not respawn
+the shell or discard independently managed header content in
+[pane.rs](../src/pane.rs).
 
-A pane drag cannot reorder workspaces or activate one on hover. Invalid payloads,
-or a source or destination that disappears during the gesture, leave the layout
-unchanged. Only the header handles pane movement; the terminal body retains text
-selection.
+`WorkspaceSet::move_pane_between` in [workspace.rs](../src/workspace.rs) prepares
+the destination and surviving source on copies before committing either.
+Preserve this refusal boundary for stale drag targets, and resolve the destination
+by its stable reference after removing an empty source workspace.
 
-Splitting uses the source pane's known directory without changing its process or
-directory. Initial directories and later OSC 7 reports are separate inputs.
-An inaccessible inherited directory falls back to an accessible home or startup
-directory and is reported. A workspace's first pane keeps the startup directory.
-See [session storage](sessions.md) for recording the actual spawn directory.
+Directory inheritance during splitting must use the source pane's known cwd;
+spawn confirmation and later OSC 7 updates follow the
+[session storage contract](sessions.md#saving-and-restoring).
 
 ## Header and expansion invariants
 
@@ -42,19 +39,17 @@ or previous process instance only raises the window.
 
 ## Menu and link ownership
 
-The context menu captures its originating pane and link target. Copy Link uses
-that captured URI even after the pointer moves. Keyboard invocation has no link
-target. Copy, Paste and Select All delegate to VTE; Select All includes blank
-terminal rows, and Copy preserves the resulting text. Symbolic icons accompany
-text labels. Availability changes while the menu is open.
+Keep the pane and URI captured by [context_menu.rs](../src/context_menu.rs)
+bound to one invocation. Invalidate that invocation before layout changes in
+[app.rs](../src/app.rs), so stale callbacks cannot act on a replacement pane.
+Menu actions must call shared pane operations independently of accelerator
+bindings and delegate clipboard and selection operations to VTE.
 
-Explicit hyperlinks take precedence over displayed URLs. Only absolute http,
-https and mailto targets can launch. Other valid explicit schemes are copy-only;
-malformed, control-containing or oversized targets are refused. Desktop handlers
-are requested asynchronously without shell execution. A refused menu launch
-reports an error while the terminal remains usable; a refused Ctrl+click launch
-reports on stderr without a dialog. The menu and shortcut paths share pane
-operations, but unbinding a shortcut must leave the menu operation available.
+[links.rs](../src/links.rs) owns URI parsing and launch eligibility for both the
+menu and Ctrl+click. Preserve explicit-hyperlink precedence and the scheme,
+length and control-character checks in `Link::parse`. Keep desktop dispatch
+asynchronous through `GtkUriLauncher`; never pass a terminal-supplied URI to a
+shell.
 
 ## Scroll calibration
 

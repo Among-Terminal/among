@@ -31,9 +31,6 @@ Link to those guides when a contributor needs usage or protocol instructions.
 - [Licensing obligations](docs/licensing.md), [native payload audit](docs/native-payload-audit.md)
   and [source delivery](docs/source-delivery.md).
 
-Details still missing from the site or template remain in the relevant local
-document until their destination covers them.
-
 Read the relevant document before changing behaviour, and change it in the same
 commit as the code: a document that no longer matches the code is a bug in the
 document.

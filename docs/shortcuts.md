@@ -6,10 +6,27 @@ bindings, reassignment, startup overrides and action names.
 Bindings live in the single registry in `src/shortcuts.rs`. Keep that registry
 inspectable and editable independently of action implementations.
 
+## Default binding rationale
+
+`Bindings::defaults` in [shortcuts.rs](../src/shortcuts.rs) separates `Alt+Arrow`
+pane focus from `Ctrl+Shift+Arrow` divider resizing. Keep those operations on
+distinct modifier combinations. The desktop-conflict policy in
+`is_reserved_by_desktop` rejects `Super` and `Ctrl+Alt` combinations to avoid
+GNOME workspace and overview shortcuts consuming them before Among receives
+them. `Alt+Arrow` stays outside that reserved set. This is the application's
+conflict policy, not a probe of the user's desktop bindings.
+
 ## How shortcuts are wired
 
 Actions are registered as `gio::SimpleAction`s on the window. Keys are attached
 with `GtkApplication::set_accels_for_action`, under the `win.` prefix.
+
+Keep this wiring in `install_bindings_into` in [app.rs](../src/app.rs).
+A `GtkShortcutController` with its default `LOCAL` scope handles events at its
+own widget; a window controller on the bubbling path can lose them to the focused
+terminal. `GLOBAL` scope moves handling to the root widget. Window actions with
+application accelerators provide the required routing without a separate
+controller whose scope must be maintained.
 
 GTK handles a registered window action's accelerator before the focused widget.
 A claimed sequence must not also reach the terminal and insert text into a

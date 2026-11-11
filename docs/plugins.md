@@ -24,56 +24,25 @@ in [request authorization](../src/plugin/install/source.rs).
 
 ## Confinement
 
-Among applies Linux Landlock and seccomp before the plugin executable starts.
-The child must report that it applied the required protection. A missing or
-insufficient result refuses startup.
+Confinement is implemented in [src/plugin/sandbox/](../src/plugin/sandbox/).
+Keep enforcement in the pre-exec hook in [launch.rs](../src/plugin/sandbox/launch.rs).
+Admission requires a complete report from the spawned PID proving the required
+protection. [level.rs](../src/plugin/sandbox/level.rs) must refuse startup without
+seccomp regardless of consent; saved consent is a minimum protection floor.
+Preserve descriptor-based ownership and mode checks in
+[data_dir.rs](../src/plugin/sandbox/data_dir.rs) and the explicit child environment
+in [host/environment.rs](../src/plugin/host/environment.rs).
 
-With full protection, the plugin can read its installed package and the system
-paths `/usr`, `/lib`, `/lib64`, `/etc/ld.so.cache` and `/etc/localtime` where present.
-Execution is allowed in the package and system directories. It can read and
-write its own data directory, supplied through `AMONG_PLUGIN_DATA_DIR`, but cannot
-execute files from that directory. The `system.metrics` grant adds read-only
-access to `/proc/stat`, `/proc/meminfo` and `/proc/loadavg`. Its installed package
-is read-only.
-
-Repository plugins keep data in
-`$XDG_DATA_HOME/among/plugin-data/<repo-id>/<plugin-id>/`, where `<repo-id>` is
-the numeric repository ID. If `XDG_DATA_HOME` is unset, empty or relative,
-Among uses `$HOME/.local/share` instead. The plugin directory is created with
-mode `0700`; startup is refused if an existing leaf directory is not exactly
-`0700`.
-
-Seccomp blocks network and local sockets, access to other processes through
-debugging and memory APIs, signal sending, shared IPC facilities and selected
-kernel operations. It also denies file-metadata changes, including permission
-and ownership changes (`chmod` and `chown` families), timestamps (`utimensat`)
-and extended-attribute changes. Children inherit the sandbox. The environment
-is cleared and rebuilt with `PATH`, `LANG`, optional `TZ`, and the private data
-directory; `HOME` and the parent's `XDG_*` variables are not inherited.
-If `TZ` exceeds 1024 bytes or contains an ASCII control byte, the plugin is
-marked unavailable before its process is spawned.
-
-| Protection available | Startup and file access |
-| --- | --- |
-| Landlock ABI 3 or newer (kernel 6.2 or newer) plus seccomp | Full protection; no reduced-protection consent needed |
-| Landlock ABI 1 or 2 plus seccomp | Explicit consent required; this kernel cannot prevent truncation of writable files outside the allowed paths |
-| Seccomp without usable Landlock | Explicit consent required; file access is unrestricted within the user's normal permissions |
-| No usable seccomp | Plugin cannot start, even with consent |
-
-If a later kernel provides less protection than the user accepted, Among asks
-again. The sandbox does not impose CPU or memory quotas and does not protect
-against kernel vulnerabilities. Its process supervisor is a separate mechanism:
-a descendant that deliberately leaves the owned process group remains sandboxed
-but is no longer stopped with that group.
+The [user confinement guide](https://among-terminal.github.io/plugins/#confinement)
+owns the protection levels and limitations. The template's
+[author guide](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/guide.md#settings-and-persistent-data)
+owns filesystem access and environment requirements.
 
 ## Status rendering
 
-[Slot rendering](../src/slots.rs) controls colours, font and layout, shortens
-long text, and drops unavailable theme icons. Meters have a minimum width of
-50 px and change colour continuously from green through yellow to red as the
-value rises from 0 to 1. [Application CSS](../data/among.css) gives shared header
-and footer labels bold monospace text, footer labels opacity `0.7`, and the
-`dim` style opacity `0.55`.
+Keep rendering policy in [slots.rs](../src/slots.rs) and shared styling in
+[application CSS](../data/among.css). Restrict fragment styles to the host's
+`Style` enum and preserve text bounds and icon validation in the renderer.
 
 For ordinary slots, polling timing starts from the response; backpressure can
 delay the next request. The host applies responses and schedules collection in
@@ -90,6 +59,9 @@ unavailable. Keep the hook valid for both consumers:
 [live status setup](../tools/among-tools/src/live_status.rs) and
 [OSC 7 regression test](../tools/among-tools/tests/live.rs).
 The Snap workflow copies this file into its checker input.
+This is the tested copy of the hook on the site's
+[sessions page](https://among-terminal.github.io/sessions/#directory-reporting);
+both copies must change together.
 
 ```sh
 among_osc7() {
@@ -120,6 +92,88 @@ Catalogue age, publisher review and source-check failures are documented under
 Implementation entry points are the [source registry](../src/plugin/install/registry.rs),
 [plugin manager](../src/prefs/plugin_manager.rs) and
 [source controller](../src/prefs/sources.rs).
+
+The metadata client in [source.rs](../src/plugin/install/source.rs) uses a
+5-second connect timeout, a 10-second read timeout and a 60-second operation
+deadline. Preserve cancellation and deadline checks across requests, downloads
+and extraction.
+
+The [registry](../src/plugin/install/registry.rs) stores custom registrations and
+catalogue snapshots in `among/plugin-sources/sources.json` beneath the resolved
+data directory, with the official cache in adjacent `official.json`.
+Each document is bounded to 8 MiB. Both retained documents plus a proposed atomic
+replacement must fit within 16 MiB, with at most four snapshots per source.
+Evict old snapshots from the proposed document to make replacement room without
+discarding registrations; refuse an operation that still cannot fit.
+
+## Installation transactions
+
+The [store](../src/plugin/install/store.rs) measures staging and generation trees
+together, with a traversal limit of 1,048,576 entries. Existing bytes plus the
+incoming archive, expanded payload and 256 KiB receipt reservation must fit within
+2 GiB overall and 512 MiB in staging. Keep the reservation in admission checks
+before downloading a package.
+
+`installed.json` selects installed generations. The
+[inventory loader](../src/plugin/inventory.rs) validates selected and previous
+receipts before inspecting packages; discovering a directory cannot establish
+installation. An unreadable selected payload remains an unavailable inventory
+entry rather than silently losing its installation record.
+
+Publication in [store.rs](../src/plugin/install/store.rs) flushes the payload,
+`.among-receipt.json` and `.among-lease`, then publishes the fresh generation with
+a no-replace rename. Only the subsequent atomic replacement of `installed.json`
+selects it. Recheck the store root, previous selection bytes and published inode
+before committing. A final directory-sync failure reports uncertain durability.
+
+The generation receipt seal must match the selection receipt. Inventory and the
+[process supervisor](../src/plugin/process.rs) retain shared advisory leases;
+recovery needs an exclusive lease and skips selected or previous generations.
+Remove only sealed, owned, unreferenced generations. Keep the lease alive through
+process shutdown, not just while a package is inspected.
+
+New installation and replacement receipts receive fresh `installation` tokens.
+Updates preserve the token and require the expected selected receipt. The
+[host](../src/plugin/host.rs) binds saved enablement to the current token, so a
+replacement cannot inherit an older installation's enabled state. Preserve the
+explicit compatibility path for historical receipts without tokens.
+
+## Release revalidation
+
+The [registry](../src/plugin/install/registry.rs) caches the canonical full
+release snapshot and tag chain with the catalogue and validates cached
+observations before use. [Tag resolution](../src/plugin/install/source/release.rs)
+uses the numeric repository and exact `refs/tags/<tag>`, peels at most eight
+annotation objects, and fetches the resulting commit by SHA.
+
+The [install worker](../src/plugin/install/source.rs) reobserves the selected
+release and complete tag chain with no-cache requests before package transfer
+and again after extraction, also rechecking numeric repository and publisher
+identity. Reject changes to asset IDs, names, sizes or digests, including
+unselected assets. The canonical snapshot ignores asset array order. These
+observations establish content consistency; they provide neither independent
+publisher authentication nor an atomic transaction with GitHub.
+
+Source receipts retain `release_snapshot` and `release_binding`. Offline
+[receipt validation](../src/plugin/inventory.rs) checks release ID, tag,
+catalogue digest, selected asset digest and resolved revision against the receipt.
+Refuse inconsistent observations without repairing the record. The cached
+resolved release holds the complete peel chain; the committed binding holds the
+tag, reference object and resolved commit.
+
+## Polling and process retirement
+
+The [host poller](../src/plugin/host.rs) rotates its starting plugin each time.
+Preserve the [transport bounds](../src/plugin/transport.rs): at most 16 frames per
+plugin and 256 globally. Before each frame, stop draining if elapsed polling time
+has reached 5 ms. This check does not bound the total duration of `poll()`.
+
+In [process.rs](../src/plugin/process.rs), keep the leader unreaped while sending
+group termination signals and checking group quiescence through `/proc`. After
+reaping, issue only signal-zero existence queries: `kill(-pgid, 0)` returning
+`ESRCH` is the absence proof. Every other result retains the stopping identity,
+admission slot and package lease. A descendant that leaves the owned process
+group falls outside this supervision.
 
 ## Implementation references
 
