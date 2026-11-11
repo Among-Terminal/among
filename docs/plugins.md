@@ -100,6 +100,20 @@ grant access or enable code. Enable separately through the manager's access revi
 An installed script still requires its declared interpreter; the installer neither
 compiles code nor runs arbitrary installation commands.
 
+A release need not ship a plugin that did not change. Its catalogue may list
+such a version with `"release": {"id": <release id>, "tag": "<tag>"}`, naming
+the earlier release of the same repository that holds the package. Among then
+reads that release from the release API and applies to it the checks it applies
+to the catalogue's own release: published, immutable, the tag resolving to the
+version's `revision`, the package among its assets with the stated size and
+SHA-256, and the same re-observation before the installation commits. The
+reference is refused when it names the catalogue's own release, a draft, a
+mutable release, another tag than the release has, or, in a stable release's
+catalogue, a prerelease; when the package is also an asset of the new release;
+and when the catalogue ships no version of its own. A catalogue may refer to at
+most eight earlier releases. The installed record names the earlier release, so
+the plugin is the same installation whichever of the two catalogues offered it.
+
 Only committed managed installation records supply inventory. Copying a file into
 `among/plugins`, retaining a filename in `plugins.json`, or placing an arbitrary
 manifest on disk does not install or authorize it. Missing/changed manifests refuse
@@ -199,6 +213,8 @@ writable by others, not writable by a group other than your own primary group,
 and not symbolic links; a package with another
 size or digest is refused before it is unpacked. If the catalogue changes
 between review and commit, nothing is installed and you review it again.
+A local catalogue whose version carries a `release` reference is refused: a
+file has no repository in which to find that release.
 
 A local package has none of the provenance a release has: no repository or
 publisher identity, no release, no immutability and no tag-to-commit
@@ -880,6 +896,14 @@ without committing a registration/cache change. There are at most four snapshots
 per source. A duplicate revision/digest/full release-and-tag snapshot replaces
 its retrieval observation rather than consuming another slot. A changed release
 ID or inventory is a different snapshot even when the catalogue bytes match.
+A snapshot of a catalogue that refers to earlier releases also holds those
+releases as they were observed, under `carried`. This key is written only when
+the catalogue refers to earlier releases. A build without support for this key
+rejects the whole source registry document that contains it. If `sources.json`
+contains it, custom sources are not shown; if `official.json` contains it, the
+official source reports a problem. Reading these files does not rewrite them.
+Reading them again requires a build with this support; there is no automatic
+conversion for older builds.
 Publisher reapproval drops the previous publisher's cached snapshots.
 
 Source edits use no-follow owned storage, a bounded worker/shared two-credit
@@ -909,13 +933,18 @@ envelope normalizes to one plugin/version; a multi-plugin root has
 `schema_version: 2` and a `plugins` list of independent `id`/`versions` entries,
 with exactly one version per plugin. Schema1 is refused, not migrated.
 Each version embeds the existing shared plugin `manifest`, a 40-lowercase-hex
-version commit `revision`, `manifest_sha256` and `artifacts`. Numeric `release_id`
-and `asset_id` are forbidden in the catalogue; IDs are API observations retained
-in local receipts, not publisher-supplied authority.
+version commit `revision`, `manifest_sha256` and `artifacts`. A version may also
+name an earlier release through `release: {id, tag}`. This reference is an
+address within the same repository; the host verifies its ID and tag through
+the release API. The fields `release_id` and `asset_id` remain forbidden in the
+catalogue; release and asset identities retained in local receipts come from
+API observations.
 Unknown fields, duplicate keys/IDs/version labels and executable hooks are refused.
 The catalogue-declared version `revision` must equal the exact commit obtained by
-resolving the selected GitHub release's actual `tag_name`. Every plugin in the
-catalogue describes that same release commit. The exact catalogue bytes are bound
+resolving the actual `tag_name` of the release that holds that version's packages.
+For a version without `release`, this is the catalogue's own release; for a
+carried version, it is the referenced release. Versions in one catalogue may
+therefore describe different release commits. The exact catalogue bytes are bound
 to the API-observed `among-plugins.json` asset's size and SHA256 before parsing;
 no default-branch catalogue or raw-content fallback is read.
 
@@ -926,9 +955,11 @@ must contain at most 64 assets, unique positive IDs and exact names, exactly one
 `among-plugins.json`, and an uploaded state, numeric size and a mandatory
 `sha256:<64 lowercase hex>` digest for every asset, including unselected files.
 It downloads the catalogue through the observed numeric asset API with
-`Accept: application/octet-stream` and verifies every catalogue package's exact
-name, size and digest against that inventory. It requests the exact fully qualified
-`refs/tags/<tag_name>` through the numeric repository's Git-reference endpoint.
+`Accept: application/octet-stream` and verifies each package's exact name, size
+and digest against the inventory of the release that holds that version. For
+a carried version, this is the referenced release's inventory. For each release,
+it requests the exact fully qualified `refs/tags/<tag_name>` through the numeric
+repository's Git-reference endpoint.
 There is no branch, prefix-match or `target_commitish` fallback for this tag. A
 lightweight tag points directly to a commit; annotated tags are peeled through at
 most eight exact Git tag object IDs to a commit, which is fetched by SHA from the
@@ -936,6 +967,8 @@ same numeric repository. Missing, ambiguous, cyclic, unsupported or inconsistent
 references/objects/commits refuse installation. Git-object responses are limited
 to 64 KiB each; release metadata retains its 256-KiB limit. The existing operation
 deadline, cancellation, worker credits and constrained HTTPS rules still apply.
+Each annotation adds a request whenever its tag is resolved, so request totals
+depend on the tag chains.
 
 Supported tag names are bounded ASCII Git-style paths: at most 256 bytes / 16
 nonempty components containing letters, digits, `.`, `_` or `-`; no `..`, leading
@@ -965,7 +998,13 @@ release ID, selected asset ID/digest, catalogue digest and tag must agree with
 the committed receipt. Missing or inconsistent source observations refuse the
 read without repairing the receipt or changing user data. In development mode,
 Technical details retains the selected package's API-observed release/asset IDs
-and exact catalogue digest. Matching
+and exact catalogue digest.
+
+For a carried version, the receipt records the referenced release, including
+the SHA-256 of that release's own `among-plugins.json` asset as stated by the
+release API. Accepted limit: the host does not download that earlier catalogue
+or check whether it lists the carried entry. The receipt does not retain the
+digest of the newer catalogue that offered the version. Matching
 tag commits and asset hashes establish content consistency,
 not build reproducibility or independent publisher authentication. Run-time
 confinement is separate (see Confinement).

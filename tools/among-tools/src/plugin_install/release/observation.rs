@@ -190,6 +190,16 @@ pub fn select<'a>(catalogue: &'a Value, architecture: &str) -> Result<Vec<(&'a V
         let [version] = versions.as_slice() else {
             return Err("release catalogue must declare exactly one version per plugin".into());
         };
+        // The application follows a `release` reference to the earlier
+        // release that holds a carried version's package. These inputs are
+        // prepared from the one observed release only, so the package is not
+        // here; name that instead of failing later on a revision mismatch.
+        if version.get("release").is_some() {
+            return Err(
+                "the catalogue carries a version over from an earlier release; these inputs are prepared from one release and do not follow the reference"
+                    .into(),
+            );
+        }
         if version.get("release_id").is_some()
             || version["manifest"]["id"] != id
             || !hex(text(version, "revision")?, 40)
