@@ -90,8 +90,8 @@ When a title changes on a pane that is **not** focused, the header is marked and
 stays marked until that pane is focused. A title change on the focused pane leaves
 no mark, because the user is already looking at it.
 
-A pane whose terminal has no nonempty title falls back to showing the pane's
-number.
+A pane whose terminal has no nonempty title falls back to `Terminal N`, where
+`N` is the pane's numeric ID.
 
 Plugin content for the pane's header appears beside the title; neither replaces
 the other. See [plugins](plugins.md).

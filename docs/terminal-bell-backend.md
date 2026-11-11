@@ -10,7 +10,7 @@ line and accessible names do not depend on colour or animation. System
 reduced-motion changes are read on the shared tick without discarding unread
 state or changing workspace hue/terminal size.
 
-[General Preferences](preferences.md#general-notifications) controls accepted
+[Notification preferences](preferences.md#notifications) control accepted
 visual/audio/optional-command policies and persistence. One shared application
 [audio owner](audio.md) consumes admitted events and explicit preview separately.
 The normal bell backend registers/polls the optional [command executor](notification-commands.md)

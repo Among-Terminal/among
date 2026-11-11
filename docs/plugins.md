@@ -86,7 +86,8 @@ installation records enter the plugin inventory.
 
 The built-in **Official plugins for Among Terminal** source points to
 `Among-Terminal/among-plugins`. It cannot be removed. Official status depends on
-pinned numeric repository and publisher identities, not a matching display name.
+pinned numeric identities: repository `1431055733` and publisher `339567100`,
+not a matching display name.
 The official plugins are installed separately through the manager:
 
 | Plugin | Display | Required access |
@@ -112,17 +113,24 @@ The **Sources** page shows saved repositories, catalogue ages and check results.
 A failed check keeps the previous saved list. A publisher change needs explicit
 review before its metadata replaces the saved list. That review grants no access
 to installed code. A publisher mismatch for the official source is refused.
+Saved lists at least a day old, or whose recorded check time is in the future,
+are marked. Publisher changes observed on Pre-release must be checked and
+approved on Stable, because prerelease catalogues are not saved.
 
 Repository identity uses GitHub's numeric ID. A rename keeps that identity;
 another repository reusing the old name does not inherit it. Removing a source
 does not uninstall or stop its plugins, but their updates are no longer offered.
 
-Source checks stop when they observe a GitHub rate limit. The optional
+Source checks stop when they observe a GitHub rate limit and show the reported
+remaining count, or **unknown** if no valid count was supplied. No retry is
+scheduled. A permission refusal without a rate-limit indication does not stop
+checks of the remaining sources. The optional
 `AMONG_GITHUB_TOKEN` environment variable supplies a token for requests to
 `https://api.github.com`; it is not sent to release download hosts. Among removes
-it from the environment before starting child processes. The original startup
-value can still be visible to the same user through Among's own `/proc` entry,
-so use a token with no access beyond reading public data.
+it from the environment before starting child processes. Empty or whitespace-only
+values are ignored. The token is not logged or included in error messages.
+The original startup value can still be visible to the same user through
+Among's own `/proc` entry, so use a token with no access beyond reading public data.
 
 ### Updates and removal
 
@@ -136,7 +144,8 @@ Among retains the previous verified package generation. In development mode,
 and compatibility; retaining old bytes is not permission to run them.
 
 **Uninstall** asks for confirmation, stops the plugin and removes its installation.
-Local settings are retained and can be removed separately from Preferences.
+Local settings and the plugin's private data directory are retained. Settings
+can be removed separately from Preferences.
 If stopping or removal fails, the manager reports the failure and keeps the
 remaining installation state visible.
 
@@ -190,15 +199,26 @@ execute files from that directory. The
 `system.metrics` grant adds only the three read-only `/proc` files listed above.
 Its installed package is read-only.
 
+Repository plugins keep data in
+`$XDG_DATA_HOME/among/plugin-data/<repo-id>/<plugin-id>/`, where `<repo-id>` is
+the numeric repository ID. If `XDG_DATA_HOME` is unset, empty or relative,
+Among uses `$HOME/.local/share` instead. The plugin directory is created with
+mode `0700`; startup is refused if an existing leaf directory is not exactly
+`0700`.
+
 Seccomp blocks network and local sockets, access to other processes through
 debugging and memory APIs, signal sending, shared IPC facilities and selected
-kernel operations. Children inherit the sandbox. The environment is cleared and
-rebuilt with `PATH`, `LANG`, optional `TZ`, and the private data directory;
-`HOME` and the parent's `XDG_*` variables are not inherited.
+kernel operations. It also denies file-metadata changes, including permission
+and ownership changes (`chmod` and `chown` families), timestamps (`utimensat`)
+and extended-attribute changes. Children inherit the sandbox. The environment
+is cleared and rebuilt with `PATH`, `LANG`, optional `TZ`, and the private data
+directory; `HOME` and the parent's `XDG_*` variables are not inherited.
+If `TZ` exceeds 1024 bytes or contains an ASCII control byte, the plugin is
+marked unavailable before its process is spawned.
 
 | Protection available | Startup and file access |
 | --- | --- |
-| Landlock ABI 3 or newer plus seccomp | Full protection; no reduced-protection consent needed |
+| Landlock ABI 3 or newer (kernel 6.2 or newer) plus seccomp | Full protection; no reduced-protection consent needed |
 | Landlock ABI 1 or 2 plus seccomp | Explicit consent required; this kernel cannot prevent truncation of writable files outside the allowed paths |
 | Seccomp without usable Landlock | Explicit consent required; file access is unrestricted within the user's normal permissions |
 | No usable seccomp | Plugin cannot start, even with consent |
@@ -248,6 +268,11 @@ between 0 and 1. Include readable text alongside a meter. Styles are `success`,
 appearance. Unknown status styles fall back to normal. Among controls colours,
 font and layout, shortens long text, and drops unavailable theme icons.
 
+Meters have a minimum width of 50 px and change colour continuously from green
+through yellow to red as the value rises from 0 to 1. Shared application header
+and footer labels use bold monospace text; footer labels have opacity `0.7`.
+The `dim` style applies opacity `0.55`.
+
 Lower numeric priorities appear first, with plugin identity breaking ties.
 Each plugin replaces only its own contribution. The sidebar takes the first
 fragment from each plugin's workspace summary. Status fragments have no click
@@ -281,9 +306,10 @@ Delivery access does not grant network access or permission to contact desktop
 services directly; the sandbox still applies.
 
 See [notification protocol](plugin-api.md) for event targets, delivery responses
-and actions, and [Preferences](preferences.md) for bell, sound and desktop
-notification controls. The old `notify` message is not a supported way to
-produce notifications.
+and actions, the [managed notification backend](plugin-notification-backend.md)
+for host integration and role review, and [Preferences](preferences.md) for bell,
+sound and desktop notification controls. The old `notify` message is not a
+supported way to produce notifications.
 
 ## Live status examples
 
@@ -368,6 +394,10 @@ request, so repeatedly sending invalid replies can still lead to its timeout.
 Oversized frames or overflowing transport queues fault the plugin. A frame is
 limited to 64 KiB including its newline, and each pipe queue holds at most 16
 frames. Old-generation, duplicate and unmatched replies cannot restore content.
+Writes to the plugin's stdin must complete within two seconds of being queued;
+expiry faults the plugin. The host allows at most 15 pending status,
+configuration and delivery replies per plugin, reserving one queue slot for a
+terminal-enumeration request.
 
 Stopping sends TERM to the supervised process group, then KILL after 500 ms if
 needed. The host waits for the supervised leader and confirmation that its group
@@ -385,7 +415,9 @@ failure. Keep ordinary logging off stdout: it is the protocol channel.
 1. Choose an executable and declare only the features it needs. A simple
    application-footer plugin needs `status`, without terminal context.
 2. Add `among-plugin.json` using manifest schema 1. See the minimal manifest and
-   full request/reply exchange in the [API reference](plugin-api.md).
+   full request/reply exchange in the [API reference](plugin-api.md), and the
+   [complete manifest example](../examples/managed-manifest.json), including a
+   settings schema.
 3. Read one JSON message per line from stdin. Complete `managed_hello`, preserve
    the host-issued bindings, answer status requests and flush every reply.
 4. Write persistent data only under `AMONG_PLUGIN_DATA_DIR`. Treat the package
@@ -467,7 +499,9 @@ entrypoint. `manifest_sha256` hashes the exact packaged manifest bytes, not a
 reformatted JSON object. Include every regular file in `members`, with its exact
 size, hash and executable flag. Symlinks, hard links, special files, undeclared
 members and unsafe paths are refused. Relative paths cannot contain empty, `.`
-or `..` components. No extraction or install hooks are supported.
+or `..` components, or any component starting with `.among-`. The packaged
+`among-plugin.json` must be non-executable. No extraction or install hooks are
+supported.
 
 The catalogue is limited to 1 MiB, 32 plugins and 8 artifacts per version.
 A package is limited to 64 MiB compressed and 256 MiB expanded, with at most
