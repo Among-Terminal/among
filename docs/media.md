@@ -47,7 +47,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   --env XDG_CACHE_HOME=/run/cache --env XDG_STATE_HOME=/run/state \
   --env XDG_RUNTIME_DIR=/run --env AMONG_CHECK_ROOT=/run \
   --workdir /source among-display:media \
-  /tools/among-tools media all <test-executable> /run/out
+  /tools/among-tools media all /target/debug/deps/among-<hash> /run/out
 
 # 4. Check the published contract.
 tools/among-tools/target/release/among-tools media verify \
