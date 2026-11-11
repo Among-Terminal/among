@@ -98,7 +98,7 @@ pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
     if !status.success() {
         return Err("ffmpeg poster extraction failed".into());
     }
-    metadata(&poster)?;
+    clean_png(&poster)?;
     let banner = output.join("desktop-notification.png");
     let status = Command::new("/usr/bin/ffmpeg")
         .env_clear()
@@ -119,7 +119,7 @@ pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
     if !status.success() {
         return Err("ffmpeg banner crop failed".into());
     }
-    metadata(&banner)?;
+    clean_png(&banner)?;
     manifest(output)?;
     Ok(output.to_path_buf())
 }
@@ -269,6 +269,23 @@ fn metadata(path: &Path) -> Result<()> {
         return Err(format!("{} has no image area", path.display()).into());
     }
     Ok(())
+}
+
+fn clean_png(path: &Path) -> Result<()> {
+    let temp = path.with_extension("clean.png");
+    run_convert(
+        &[
+            path.to_str().ok_or("source path is not UTF-8")?,
+            "-strip",
+            "-define",
+            "png:exclude-chunk=all",
+            "-define",
+            "png:compression-level=9",
+        ],
+        &temp,
+    )?;
+    fs::rename(&temp, path)?;
+    metadata(path)
 }
 
 fn hash(path: &Path) -> Result<String> {
