@@ -6,8 +6,9 @@
 # script caps each connection, repeats the whole update/install pair, and moves
 # the image to the public archive for its architecture only when an update
 # fails and the mirror does not answer a probe (or curl is unavailable, so no
-# probe can be made). A failed install alone never changes the mirror. The last
-# attempt still fails the step: packages are never skipped.
+# probe can be made, or the mirror list has no parsable entry to probe). A
+# failed install alone never changes the mirror. The last attempt still fails
+# the step: packages are never skipped.
 #
 # Usage: bash scripts/ci/apt-install.sh [apt-get install arguments]
 #
@@ -98,7 +99,7 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
         if [ -n "$mirror" ]; then
           if ! command -v curl >/dev/null 2>&1; then
             probe=missing
-          elif curl --head --silent --show-error --location --max-time 15 "$mirror/" >/dev/null 2>&1; then
+          elif curl --fail --head --silent --show-error --location --max-time 15 "$mirror/" >/dev/null 2>&1; then
             probe=answers
           else
             probe=silent
