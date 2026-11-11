@@ -18,6 +18,7 @@ use std::time::Duration;
 pub const STILLS_TEST: &str = "app::plugin_tests::installation::doc_media::capture_stills";
 pub const NOTIFICATION_TEST: &str =
     "app::plugin_tests::installation::doc_media::capture_notification";
+pub const PANES_TEST: &str = "app::plugin_tests::installation::doc_media::capture_panes";
 
 const WIDE: u32 = 1600;
 const WIDE_HEIGHT: u32 = 1000;
@@ -25,7 +26,13 @@ const NARROW: u32 = 1040;
 const FRAME: u32 = 5;
 const MARGIN: u32 = 80;
 
-const WIDE_STILLS: [&str; 3] = ["main-window", "expanded-pane", "workspaces"];
+const WIDE_STILLS: [&str; 5] = [
+    "main-window",
+    "expanded-pane",
+    "workspaces",
+    "plugin-off",
+    "plugin-on",
+];
 const NARROW_STILLS: [&str; 6] = [
     "plugins",
     "plugin-info",
@@ -37,7 +44,9 @@ const NARROW_STILLS: [&str; 6] = [
 
 pub fn all(app_test: &Path, output: &Path) -> Result<PathBuf> {
     let stills = capture_stills(app_test, output)?;
+    let panes = capture_panes(app_test, output)?;
     let notification = capture_notification(app_test, output)?;
+    debug_assert_eq!(stills, panes);
     debug_assert_eq!(stills, notification);
     Ok(stills)
 }
@@ -65,40 +74,35 @@ pub fn capture_stills(app_test: &Path, output: &Path) -> Result<PathBuf> {
     Ok(output.to_path_buf())
 }
 
+pub fn capture_panes(app_test: &Path, output: &Path) -> Result<PathBuf> {
+    let raw = prepare_output(output, "raw/panes")?;
+    run_test(app_test, PANES_TEST, display::Mode::Media, &raw)?;
+    publish_video(
+        &raw.join("panes.mp4"),
+        output,
+        "panes.mp4",
+        "panes-poster.png",
+        "6.0",
+    )?;
+    manifest(output)?;
+    Ok(output.to_path_buf())
+}
+
 pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
     let raw = prepare_output(output, "raw/notification")?;
     run_test(app_test, NOTIFICATION_TEST, display::Mode::MediaGnome, &raw)?;
-    let video = raw.join("notification-return.mp4");
-    if !video.is_file() {
-        return Err(format!("missing recording {}", video.display()).into());
-    }
-    storage::atomic_write(
+    // The test records while the scene settles, so the bell lands late. Publish
+    // only the ring, banner and click; the idle prefix would look like a still.
+    let recorded = raw.join("notification-return.mp4");
+    let video = raw.join("notification-return-short.mp4");
+    trim_recording(&recorded, &video, "16.3", "4.1")?;
+    publish_video(
+        &video,
         output,
-        Path::new("notification-return.mp4"),
-        &fs::read(&video)?,
-        0o644,
+        "notification-return.mp4",
+        "notification-return-poster.png",
+        "0.3",
     )?;
-    let poster = output.join("notification-return-poster.png");
-    let status = Command::new("/usr/bin/ffmpeg")
-        .env_clear()
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            "1.2",
-            "-i",
-        ])
-        .arg(&video)
-        .args(["-frames:v", "1"])
-        .arg(&poster)
-        .stdin(Stdio::null())
-        .status()?;
-    if !status.success() {
-        return Err("ffmpeg poster extraction failed".into());
-    }
-    clean_png(&poster)?;
     let banner = output.join("desktop-notification.png");
     let status = Command::new("/usr/bin/ffmpeg")
         .env_clear()
@@ -108,11 +112,11 @@ pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
             "error",
             "-y",
             "-ss",
-            "1.2",
+            "0.3",
             "-i",
         ])
         .arg(&video)
-        .args(["-frames:v", "1", "-vf", "crop=640:130:480:30"])
+        .args(["-frames:v", "1", "-vf", "crop=640:130:480:10"])
         .arg(&banner)
         .stdin(Stdio::null())
         .status()?;
@@ -122,6 +126,79 @@ pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
     clean_png(&banner)?;
     manifest(output)?;
     Ok(output.to_path_buf())
+}
+
+/// Re-encode a time range so the published clip starts on a frame, not on the
+/// encoder's previous keyframe.
+fn trim_recording(raw: &Path, output: &Path, start: &str, duration: &str) -> Result<()> {
+    let status = Command::new("/usr/bin/ffmpeg")
+        .env_clear()
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            start,
+            "-i",
+        ])
+        .arg(raw)
+        .args([
+            "-t",
+            duration,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(output)
+        .stdin(Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err("ffmpeg trim failed".into());
+    }
+    Ok(())
+}
+
+fn publish_video(
+    raw_video: &Path,
+    output: &Path,
+    name: &str,
+    poster_name: &str,
+    poster_time: &str,
+) -> Result<()> {
+    if !raw_video.is_file() {
+        return Err(format!("missing recording {}", raw_video.display()).into());
+    }
+    storage::atomic_write(output, Path::new(name), &fs::read(raw_video)?, 0o644)?;
+    let poster = output.join(poster_name);
+    let status = Command::new("/usr/bin/ffmpeg")
+        .env_clear()
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            poster_time,
+            "-i",
+        ])
+        .arg(raw_video)
+        .args(["-frames:v", "1"])
+        .arg(&poster)
+        .stdin(Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(format!("ffmpeg poster extraction failed for {name}").into());
+    }
+    clean_png(&poster)
 }
 
 fn prepare_output(output: &Path, raw_name: &str) -> Result<PathBuf> {
@@ -370,8 +447,11 @@ pub fn verify(output: &Path) -> Result<()> {
             }
         }
     }
-    let video = output.join("notification-return.mp4");
-    if video.is_file() {
+    for name in ["notification-return.mp4", "panes.mp4"] {
+        let video = output.join(name);
+        if !video.is_file() {
+            continue;
+        }
         let probe = Command::new("/usr/bin/ffprobe")
             .args([
                 "-v",
@@ -386,13 +466,13 @@ pub fn verify(output: &Path) -> Result<()> {
             .arg(&video)
             .output()?;
         if !probe.status.success() {
-            return Err("ffprobe failed".into());
+            return Err(format!("ffprobe failed for {name}").into());
         }
         let text = String::from_utf8_lossy(&probe.stdout);
         if !text.trim().eq_ignore_ascii_case("1600,1000,30/1")
             && !text.trim().eq_ignore_ascii_case("1600,1000,30")
         {
-            return Err(format!("unexpected video stream: {}", text.trim()).into());
+            return Err(format!("unexpected {name} stream: {}", text.trim()).into());
         }
     }
     println!("PASS {} media assets in {}", assets.len(), output.display());

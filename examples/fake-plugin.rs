@@ -451,6 +451,18 @@ fn serve_managed_transport(mode: &str) -> std::io::Result<()> {
                     _ => "ok",
                 };
                 let mut response = json!({"type":"status","session":message["session"],"generation":message["generation"],"request_id":message["request_id"],"fragments":[{"text":text,"style":"success","priority":10}]});
+                if mode == "demo-status" {
+                    let slot = message["scope"]["slot"].as_str().unwrap_or_default();
+                    response["fragments"] = if slot == "app_header" {
+                        json!([
+                            {"text": "CPU 18%", "style": "accent", "priority": 10},
+                            {"text": "MEM 6.2 GB", "style": "default", "priority": 11},
+                            {"text": "DISK 41%", "style": "warning", "priority": 12}
+                        ])
+                    } else {
+                        json!([])
+                    };
+                }
                 if mode == "rapid" {
                     response["refresh_ms"] = json!(0);
                 }

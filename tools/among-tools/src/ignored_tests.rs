@@ -64,6 +64,10 @@ pub fn names(listing: &str) -> Result<Vec<String>> {
                 eprintln!("{name} is excluded from standalone graphics; this is not an acceptance pass; its owning parent regression supplies coverage");
                 continue;
             }
+            if name.starts_with("app::plugin_tests::installation::doc_media::") {
+                eprintln!("{name} requires among-tools media and its own media display; exclusion from standalone graphics is not an acceptance pass");
+                continue;
+            }
             if name == GENERAL_AUDIO_UI_TEST {
                 // The test refuses to run unless it is inside a device-free
                 // Docker container with its own private PulseAudio null sink,
@@ -189,6 +193,18 @@ mod tests {
     // A CI runner has real audio devices and no private null sink, so the
     // audio acceptance test can only fail its own precondition there; the
     // standalone graphics run must leave it to its container.
+    #[test]
+    fn media_scenarios_are_not_standalone_graphics() -> Result<()> {
+        let listing = "app::plugin_tests::installation::doc_media::capture_stills: test\n\
+                       app::plugin_tests::installation::doc_media::capture_notification: test\n\
+                       app::notification_ui_tests::general_unread_marks_survive_rebuild: test\n";
+        assert_eq!(
+            names(listing)?,
+            ["app::notification_ui_tests::general_unread_marks_survive_rebuild"]
+        );
+        Ok(())
+    }
+
     #[test]
     fn container_only_audio_acceptance_is_not_run_as_standalone_graphics() -> Result<()> {
         let listing = format!(

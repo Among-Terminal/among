@@ -373,13 +373,13 @@ scope and prerequisites; no command here establishes legal sign-off or publicati
 
 ## Documentation media
 
-`media all APP_TEST NEW_OUTPUT` runs the two documentation scenarios in their
+`media all APP_TEST NEW_OUTPUT` runs the three documentation scenarios in their
 own owned displays, prepares the published PNG/MP4 files and writes
-`media.json`. `media stills` and `media notification` run one scenario each;
-`media verify OUTPUT` checks the manifest, hashes, image dimensions and the
-video stream. The application scene lives in the test binary as
-`app::plugin_tests::installation::doc_media`; the tool starts the display, so
-the command is not run under `ci-x11` or `isolated-x11`.
+`media.json`. `media stills`, `media panes` and `media notification` run one
+scenario each; `media verify OUTPUT` checks the manifest, hashes, image
+dimensions and the video streams. The application scene lives in the test
+binary as `app::plugin_tests::installation::doc_media`; the tool starts the
+display, so the command is not run under `ci-x11` or `isolated-x11`.
 
 The tool needs the pinned display image from
 `containers/Dockerfile.display`, which carries Xvfb, Xephyr, GNOME Shell,

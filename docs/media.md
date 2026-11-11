@@ -21,7 +21,7 @@ Build the application test binary in the pinned Ubuntu image, build
 `among-tools`, then run the capture inside the display image:
 
 ```sh
-# 1. Build the application test binary.
+# 1. Build the application test binary and the plugin fixture.
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   --mount type=bind,src="$PWD",dst=/source,readonly \
   --mount type=bind,src="$HOME/.cache/among/media/cargo",dst=/cargo \
@@ -30,7 +30,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   --env HOME=/tmp --env CARGO_HOME=/cargo --env CARGO_TARGET_DIR=/target \
   --env CARGO_NET_OFFLINE=true --workdir /source \
   among-managed-resource-gui:1.98.1-ubuntu24-20261025-01 \
-  bash -c 'cargo test --locked --offline --bin among --no-run --message-format=json > /target/test.jsonl'
+  bash -c 'cargo test --locked --offline --bin among --no-run --message-format=json > /target/test.jsonl && cargo build --locked --offline --example fake-plugin'
 # Take the last compiler-artifact executable from target/test.jsonl; it is
 # usually target/debug/deps/among-<hash>.
 
@@ -59,7 +59,7 @@ tools/among-tools/target/release/among-tools media verify \
 and GNOME stack, ImageMagick, ffmpeg and `xsetroot`; the image also owns
 `/work`, the synthetic project path that may appear in a notification.
 
-The stills and the recording write only below the output directory.
+The captures write only below the output directory.
 `raw/` contains the untouched captures and stays as evidence. `media.json`
 records every published file, its size, dimensions and SHA-256.
 
@@ -67,23 +67,26 @@ records every published file, its size, dimensions and SHA-256.
 
 | Command | What it captures |
 | --- | --- |
-| `media stills` | The restore prompt, the three-pane Workbench, an expanded pane, the Review workspace, all six Preferences pages |
+| `media stills` | The restore prompt, the three-pane Workbench, an expanded pane, the Review workspace, the plugin status comparison, all six Preferences pages |
+| `media panes` | One pane split to five, divider resizes, a pane dragged to a new position, then the Review and Notes workspaces |
 | `media notification` | The Review workspace with a status terminal, a real GNOME notification, a pointer click and the focused terminal after it |
-| `media all` | Both, in one output directory |
+| `media all` | All three, in one output directory |
 
-The stills run under an owned 1600x1000 Xvfb/Openbox display. The notification
-run uses an owned Xephyr/GNOME Shell display with a private session bus, a
-private desktop identity and dark system settings. Both use the same project,
-terminal colours, font fixture and application build.
+The stills and panes runs use an owned 1600x1000 Xvfb/Openbox display. The
+notification run uses an owned Xephyr/GNOME Shell display with a private session
+bus, a private desktop identity and dark system settings. All use the same
+project, terminal colours, font fixture and application build.
 
 ## The published contract
 
 | Asset | Size |
 | --- | --- |
 | `main-window.png`, `expanded-pane.png`, `workspaces.png` | 1600x1000 |
+| `plugin-off.png`, `plugin-on.png` | 1600x1000 |
+| `panes.mp4`, `panes-poster.png` | 1600x1000, H.264, 30 fps, no audio |
 | `session-restore.png` | 800x480 |
 | Preferences stills | 1040 wide, 160 px taller than the window |
-| `notification-return.mp4` | 1600x1000, H.264, 30 fps, no audio |
+| `notification-return.mp4` | 1600x1000, H.264, 30 fps, no audio, 4.1 s |
 | `notification-return-poster.png` | 1600x1000 |
 | `desktop-notification.png` | 640x130 |
 
@@ -107,6 +110,25 @@ demonstration, not the notification acceptance test.
 The shell's own startup notifications are suppressed by keeping banners off
 until the scene is ready. They are not part of the product story.
 
+The test records while the scene settles, so the published clip is trimmed to
+the ring, banner and click. The poster and the `desktop-notification.png` crop
+are taken from that range, not from the idle prefix.
+
+## The panes recording
+
+The scene starts from a saved single-pane layout, splits to five with
+`Ctrl+Shift+N`, drags the root divider twice, drags pane five onto pane two,
+then switches to Review, Notes and back to Workbench with `Alt+2`, `Alt+3` and
+`Alt+1`. The project is synthetic; every terminal is real.
+
+## The plugin comparison
+
+`plugin-off.png` and `plugin-on.png` come from one stills run. The second image
+registers the `github:12/demo-status` managed fixture, which answers the status
+request with fixed `CPU 18%`, `MEM 6.2 GB` and `DISK 41%` fragments in the
+application header. The fixture is a test executable, not a shipped plugin; the
+values are synthetic and the page says so.
+
 ## Publishing
 
 Copy the verified files into the site repository:
@@ -114,6 +136,8 @@ Copy the verified files into the site repository:
 | Output | Site path |
 | --- | --- |
 | `main-window.png`, `expanded-pane.png`, `workspaces.png`, `session-restore.png` | `docs/public/media/app/` |
+| `plugin-off.png`, `plugin-on.png` | `docs/public/media/app/` |
+| `panes.mp4`, `panes-poster.png` | `docs/public/media/app/` |
 | `notification-return.mp4`, `notification-return-poster.png`, `desktop-notification.png` | `docs/public/media/app/` |
 | `plugins.png`, `plugin-access-review.png`, `notifications.png`, `keyboard.png`, `terminal.png` | `docs/public/media/preferences/` |
 
@@ -128,5 +152,6 @@ Use the dimensions above in page markup. Run the site's `npm run build` and
   the site captions say.
 - The raw captures are kept below the output directory; delete old output
   directories yourself when they are no longer needed.
-- This pipeline covers documentation stills and the notification clip. The
-  promo, action and overview films keep their separate production tooling.
+- This pipeline covers documentation stills and the panes and notification
+  clips. The promo, action and overview films keep their separate production
+  tooling.

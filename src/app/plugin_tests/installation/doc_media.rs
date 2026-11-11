@@ -161,6 +161,11 @@ fn script(project: &Path, name: &str, body: &str) {
 }
 
 fn write_scripts(project: &Path) {
+    fs::write(
+        project.join(".demo/env.sh"),
+        b"stty -echo 2>/dev/null\nPS1='$ '\n",
+    )
+    .expect("shell environment");
     script(
         project,
         "diff.sh",
@@ -210,6 +215,15 @@ fn write_scripts(project: &Path) {
         "printf '\\033]0;notes\\007'\n\
          cd \"/work/among\"\n\
          cat notes.md",
+    );
+    script(
+        project,
+        "pane.sh",
+        "printf '\\033]0;terminal %s\\007' \"$1\"\n\
+         cd \"/work/among\"\n\
+         printf 'pane %s\\n' \"$1\"\n\
+         printf '%s\\n' \"$PWD\"\n\
+         git --no-pager status --short",
     );
     script(
         project,
@@ -312,6 +326,20 @@ fn write_snapshot(cwd: &Path) {
         serde_json::to_vec(&snapshot(cwd)).expect("session json"),
     )
     .expect("session file");
+}
+
+fn write_panes_snapshot(cwd: &Path) {
+    let mut scene = snapshot(cwd);
+    scene.workspaces[0].layout = SavedNode::Pane { id: 1 };
+    scene.workspaces[0].focused = 1;
+    scene.workspaces[0].directories = vec![pane(cwd, 1)];
+    let path = crate::session::path().expect("session path");
+    fs::create_dir_all(path.parent().expect("session parent")).expect("session directory");
+    fs::write(&path, serde_json::to_vec(&scene).expect("session json")).expect("session file");
+}
+
+fn set_shell_environment() {
+    std::env::set_var("ENV", "/work/among/.demo/env.sh");
 }
 
 fn write_appearance() {
@@ -730,11 +758,116 @@ fn fill_other_workspaces(ctx: &Window) {
     feed(ctx, 6, "bash .demo/notes.sh");
 }
 
+fn active_panes(ctx: &Window) -> Vec<PaneId> {
+    ctx.state.borrow().workspaces.active().panes()
+}
+
+fn wait_for_panes(ctx: &Window, count: usize) {
+    wait_for(|| active_panes(ctx).len() == count, Duration::from_secs(5));
+}
+
+fn label_pane(ctx: &Window, id: u64) {
+    quiet(ctx, id);
+    feed(ctx, id, &format!("bash .demo/pane.sh {id}"));
+    wait_for_text(ctx, id, &format!("pane {id}"));
+}
+
+fn split_pane(ctx: &Window) -> u64 {
+    let before = active_panes(ctx).len();
+    xdo(&["key", "--clearmodifiers", "ctrl+shift+n"]);
+    wait_for_panes(ctx, before + 1);
+    let id = ctx.state.borrow().workspaces.active().focused.0;
+    label_pane(ctx, id);
+    id
+}
+
+fn drag_divider(ctx: &Window) {
+    let id = focus_main(&ctx.window);
+    let (ox, oy) = ctx.window.surface_transform();
+    let paned = ctx
+        .paneds
+        .borrow()
+        .iter()
+        .find(|split| split.path.is_empty())
+        .map(|split| split.widget.clone())
+        .expect("root divider");
+    let bounds = paned.compute_bounds(&ctx.window).expect("divider bounds");
+    let (x, y, x2, y2) = match paned.orientation() {
+        gtk::Orientation::Horizontal => {
+            let x = f64::from(bounds.x()) + f64::from(paned.position());
+            let y = f64::from(bounds.y() + bounds.height() / 2.0);
+            (x, y, x + 120.0, y)
+        }
+        _ => {
+            let x = f64::from(bounds.x() + bounds.width() / 2.0);
+            let y = f64::from(bounds.y()) + f64::from(paned.position());
+            (x, y, x, y + 100.0)
+        }
+    };
+    let point = |x: f64, y: f64| (format!("{:.0}", x + ox), format!("{:.0}", y + oy));
+    let (x, y) = point(x, y);
+    let (x2, y2) = point(x2, y2);
+    xdo(&["mousemove", "--window", &id, &x, &y]);
+    pump_for(Duration::from_millis(80));
+    xdo(&["mousedown", "1"]);
+    pump_for(Duration::from_millis(80));
+    xdo(&["mousemove", "--sync", "--window", &id, &x2, &y2]);
+    pump_for(Duration::from_millis(200));
+    xdo(&["mouseup", "1"]);
+    pump_for(Duration::from_millis(250));
+}
+
+fn pane_header(ctx: &Window, id: u64) -> (f32, f32, f32, f32) {
+    let widget = ctx
+        .state
+        .borrow()
+        .pane(PaneId(id))
+        .expect("scene pane")
+        .widget()
+        .expect("pane widget");
+    let header = widgets(widget.upcast_ref())
+        .into_iter()
+        .find(|widget| widget.has_css_class("pane-header"))
+        .expect("pane header");
+    let bounds = header.compute_bounds(&ctx.window).expect("header bounds");
+    (bounds.x(), bounds.y(), bounds.width(), bounds.height())
+}
+
+fn drag_pane_over(ctx: &Window, source: u64, target: u64) {
+    let id = focus_main(&ctx.window);
+    let (ox, oy) = ctx.window.surface_transform();
+    let (sx, sy, sw, sh) = pane_header(ctx, source);
+    let (tx, ty, _tw, th) = pane_header(ctx, target);
+    let start = (f64::from(sx + sw / 2.0) + ox, f64::from(sy + sh / 2.0) + oy);
+    let target = (f64::from(tx + 8.0) + ox, f64::from(ty + th / 2.0) + oy);
+    let point = |x: f64, y: f64| (format!("{x:.0}"), format!("{y:.0}"));
+    let (x, y) = point(start.0, start.1);
+    xdo(&["mousemove", "--window", &id, &x, &y]);
+    pump_for(Duration::from_millis(80));
+    xdo(&["mousedown", "1"]);
+    pump_for(Duration::from_millis(80));
+    for offset in [5.0, 12.0, 30.0] {
+        let (x, y) = point(start.0 + offset, start.1);
+        xdo(&["mousemove", "--sync", "--window", &id, &x, &y]);
+        pump_for(Duration::from_millis(60));
+    }
+    wait_for(
+        || ctx.state.borrow().pane_drag.is_some(),
+        Duration::from_secs(2),
+    );
+    let (x, y) = point(target.0, target.1);
+    xdo(&["mousemove", "--sync", "--window", &id, &x, &y]);
+    pump_for(Duration::from_millis(250));
+    xdo(&["mouseup", "1"]);
+    pump_for(Duration::from_millis(500));
+}
+
 #[test]
 #[ignore = "requires the owned media display, xdotool and ImageMagick"]
 fn capture_stills() {
     let home = PathBuf::from(std::env::var_os("HOME").expect("owned display HOME"));
     let work = project(&home);
+    set_shell_environment();
     write_snapshot(&work);
     write_appearance();
     prepare_plugin_fixtures();
@@ -761,6 +894,29 @@ fn capture_stills() {
     fill_other_workspaces(&ctx);
     settle();
     capture_root("main-window");
+    capture_root("plugin-off");
+    ctx.state
+        .borrow_mut()
+        .plugins
+        .register_fixture(crate::plugin::host::PluginSpec {
+            name: "github:12/demo-status".into(),
+            command: fixture("demo-status"),
+            enabled: true,
+        });
+    pump_for(Duration::from_secs(1));
+    wait_for(
+        || has_label(ctx.app_header.upcast_ref(), "CPU 18%"),
+        Duration::from_secs(10),
+    );
+    capture_root("plugin-on");
+    ctx.state
+        .borrow_mut()
+        .plugins
+        .disable("github:12/demo-status");
+    wait_for(
+        || !has_label(ctx.app_header.upcast_ref(), "CPU 18%"),
+        Duration::from_secs(5),
+    );
 
     xdo(&["key", "--clearmodifiers", "ctrl+shift+x"]);
     settle();
@@ -919,10 +1075,75 @@ fn stop_recording(mut child: std::process::Child) {
 }
 
 #[test]
+#[ignore = "requires the owned media display, xdotool and ffmpeg"]
+fn capture_panes() {
+    let home = PathBuf::from(std::env::var_os("HOME").expect("owned display HOME"));
+    let work = project(&home);
+    set_shell_environment();
+    write_panes_snapshot(&work);
+    write_appearance();
+    let _shell = shell();
+    std::env::set_var("AMONG_COLOR_SCHEME", "dark");
+
+    let app = application("com.github.among-terminal.doc-media-panes");
+    let ctx = build_with_writer(&app, None, crate::session::Writer::new).expect("application");
+    set_backdrop();
+    wait_for(
+        || ctx.window.visible_dialog().is_some(),
+        Duration::from_secs(5),
+    );
+    let dialog = ctx.window.visible_dialog().expect("restore prompt");
+    press(&button(&dialog, "Restore"));
+    wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
+    place(&ctx.window, 1440, 900, 80, 50);
+    quiet(&ctx, 1);
+    feed(&ctx, 1, "bash .demo/pane.sh 1");
+    wait_for_text(&ctx, 1, "pane 1");
+
+    for id in 4..=6 {
+        feed(&ctx, id, &format!("bash .demo/pane.sh {id}"));
+    }
+    pump_for(Duration::from_millis(500));
+
+    let recording = output().join("panes.mp4");
+    let recorder = start_recording(&recording);
+    pump_for(Duration::from_millis(900));
+
+    let _two = split_pane(&ctx);
+    pump_for(Duration::from_millis(500));
+    drag_divider(&ctx);
+    pump_for(Duration::from_millis(500));
+    let _three = split_pane(&ctx);
+    pump_for(Duration::from_millis(500));
+    drag_divider(&ctx);
+    pump_for(Duration::from_millis(500));
+    let _four = split_pane(&ctx);
+    pump_for(Duration::from_millis(500));
+    let _five = split_pane(&ctx);
+    pump_for(Duration::from_millis(500));
+    let before = active_panes(&ctx);
+    drag_pane_over(&ctx, before[1].0, before[0].0);
+    wait_for(|| active_panes(&ctx) != before, Duration::from_secs(5));
+    pump_for(Duration::from_millis(900));
+
+    xdo(&["key", "--clearmodifiers", "alt+2"]);
+    pump_for(Duration::from_millis(1800));
+    xdo(&["key", "--clearmodifiers", "alt+3"]);
+    pump_for(Duration::from_millis(1800));
+    xdo(&["key", "--clearmodifiers", "alt+1"]);
+    pump_for(Duration::from_millis(1200));
+
+    assert_eq!(active_panes(&ctx).len(), 5);
+    stop_recording(recorder);
+    ctx.window.destroy();
+}
+
+#[test]
 #[ignore = "requires the owned GNOME media display, xdotool, ffmpeg and ImageMagick"]
 fn capture_notification() {
     let home = PathBuf::from(std::env::var_os("HOME").expect("owned display HOME"));
     let work = project(&home);
+    set_shell_environment();
     write_snapshot(&work);
     write_appearance();
     install_application_identity("com.github.among-terminal");

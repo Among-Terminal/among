@@ -19,6 +19,7 @@ Usage:
   among-tools media all <prebuilt-app-test> <new-output-directory>
   among-tools media stills <prebuilt-app-test> <new-output-directory>
   among-tools media notification <prebuilt-app-test> <new-output-directory>
+  among-tools media panes <prebuilt-app-test> <new-output-directory>
   among-tools media verify <output-directory>
   among-tools run-ignored-tests <cargo-test-executables.jsonl>
   among-tools check-installer-enospc-from-cargo <cargo-test-executables.jsonl>
@@ -399,10 +400,13 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 "notification" => {
                     among_tools::media::capture_notification(app_test, output)?;
                 }
+                "panes" => {
+                    among_tools::media::capture_panes(app_test, output)?;
+                }
                 "all" => {
                     among_tools::media::all(app_test, output)?;
                 }
-                _ => return Err("media action must be stills, notification or all".into()),
+                _ => return Err("media action must be stills, notification, panes or all".into()),
             }
         }
         [command, output] if command == "media" => {
