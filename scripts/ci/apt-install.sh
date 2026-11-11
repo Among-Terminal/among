@@ -24,6 +24,8 @@ case "$attempts" in
     exit 2
     ;;
 esac
+# Arithmetic below is decimal: a leading zero would otherwise be read as octal.
+attempts=$((10#$attempts))
 if [ "$attempts" -lt 1 ]; then
   echo "apt-install: AMONG_APT_ATTEMPTS must be a positive integer" >&2
   exit 2
@@ -34,6 +36,7 @@ case "$pause" in
     exit 2
     ;;
 esac
+pause=$((10#$pause))
 if [ "$#" -eq 0 ]; then
   echo "usage: $0 <apt-get install arguments>" >&2
   exit 2

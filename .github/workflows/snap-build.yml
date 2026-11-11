@@ -1,11 +1,13 @@
 name: Snap build and installed checks
 
+# The Snap is published later from an already released tag, so this workflow
+# runs on demand, when called by another workflow, and once a day on main. It
+# depends on the Snap Store and must not block unrelated pull requests.
 on:
   workflow_dispatch:
   workflow_call:
-  pull_request:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
