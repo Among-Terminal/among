@@ -2,7 +2,8 @@
 //! re-observation rejects visible drift, not hypothetical later movement or builds.
 
 use super::{github_url, Operation, Selection};
-use crate::plugin::inventory::release::ReleaseSnapshot;
+use crate::plugin::install::metadata::{ReleaseReference, MAX_CATALOGUE_BYTES};
+use crate::plugin::inventory::release::{ReleaseAsset, ReleaseSnapshot};
 use crate::plugin::{
     data::{self, Problem},
     inventory::ReleaseBinding,
@@ -31,6 +32,44 @@ pub(super) const NO_STABLE_RELEASE: Problem =
     Problem("no installable latest release is available; refresh and review when one is published");
 pub(super) const DEVELOPMENT_ONLY: &str =
     "prerelease sources are available only in plugin development mode";
+pub(super) const PRERELEASE_BEHIND_ORDINARY: &str =
+    "an ordinary release catalogue refers to a prerelease; only a development prerelease may carry a prerelease's versions";
+
+/// The host parses every catalogue and a receipt names its asset, so a release
+/// is admitted only with a non-empty catalogue that fits the parser's budget.
+/// A carried release's catalogue is never downloaded: this declared size is
+/// the only evidence that its receipt can be validated before a version of it
+/// is offered.
+pub(super) fn admissible_catalogue(asset: &ReleaseAsset) -> bool {
+    asset.size != 0 && asset.size <= MAX_CATALOGUE_BYTES as u64
+}
+
+/// A carried version names an earlier release. The release of its own
+/// catalogue is not one, by id or by tag: a version that release holds is
+/// written without a reference.
+pub(super) fn refuse_own_release(own: &ReleaseSnapshot, id: u64, tag: &str) -> Result<(), Problem> {
+    if own.id == id || own.tag == tag {
+        return Err(Problem(
+            "a carried version refers to the release of its own catalogue",
+        ));
+    }
+    Ok(())
+}
+
+/// What an installation observes again before it commits: the release whose
+/// catalogue offered the version and, for a carried version, the earlier
+/// release that holds the package.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Observed {
+    pub release: ResolvedRelease,
+    pub carried: Option<ResolvedRelease>,
+}
+
+impl Observed {
+    pub(super) fn holder(&self) -> &ResolvedRelease {
+        self.carried.as_ref().unwrap_or(&self.release)
+    }
+}
 
 /// Which release of a registered source is observed. The choice made at
 /// inspection is repeated by the pre-commit re-observation.
@@ -305,10 +344,64 @@ impl Operation {
         ReleaseSnapshot::from_prerelease_value(&release)
     }
 
-    pub(super) async fn resolve_release(
+    /// Observes one earlier release a catalogue refers to, under the rules of
+    /// the catalogue's own channel. The id is only an address inside the
+    /// selected repository: the document found there must state that id and
+    /// the tag the catalogue gave, and every recorded fact, the assets and
+    /// the tag chain included, comes from the API, never from the catalogue.
+    pub(super) async fn referenced_release(
         &self,
-        selected: &Selection,
+        repository: u64,
+        reference: &ReleaseReference,
+        channel: Channel,
     ) -> Result<ResolvedRelease, Problem> {
+        let release = self
+            .release_json(
+                repository,
+                &["releases", &reference.id.to_string()],
+                data::MAX_STATIC_BYTES,
+            )
+            .await
+            .map_err(|problem| {
+                if problem.0 == "selected release tag or immutable Git object is unavailable; installation refused" {
+                    Problem("a release the catalogue refers to is unavailable in this repository")
+                } else {
+                    problem
+                }
+            })?;
+        if release["id"].as_u64() != Some(reference.id)
+            || release["tag_name"].as_str() != Some(reference.tag.as_str())
+        {
+            return Err(Problem(
+                "a release the catalogue refers to has another identity or tag than the catalogue states",
+            ));
+        }
+        if release["draft"].as_bool() != Some(false) {
+            return Err(Problem(
+                "a release the catalogue refers to is not published",
+            ));
+        }
+        if release["immutable"].as_bool() != Some(true) {
+            return Err(Problem(
+                "a release the catalogue refers to is not immutable",
+            ));
+        }
+        // The admission below repeats the three state checks; they are made
+        // first only to name the reference in the refusal.
+        let snapshot = match (release["prerelease"].as_bool(), channel) {
+            (Some(false), _) => ReleaseSnapshot::from_value(&release)?,
+            (Some(true), Channel::Prerelease) => ReleaseSnapshot::from_prerelease_value(&release)?,
+            (Some(true), Channel::Latest) => return Err(Problem(PRERELEASE_BEHIND_ORDINARY)),
+            (None, _) => {
+                return Err(Problem(
+                    "a release the catalogue refers to lacks its prerelease state",
+                ))
+            }
+        };
+        self.resolve_tag(repository, snapshot).await
+    }
+
+    pub(super) async fn resolve_release(&self, selected: &Selection) -> Result<Observed, Problem> {
         let channel = if selected.release.snapshot.is_prerelease() {
             Channel::Prerelease
         } else {
@@ -324,7 +417,25 @@ impl Operation {
                 }
             }));
         }
-        Ok(release)
+        let carried = match &selected.carried {
+            None => None,
+            Some(reviewed) => {
+                let reference = ReleaseReference {
+                    id: reviewed.snapshot.id,
+                    tag: reviewed.snapshot.tag.clone(),
+                };
+                let observed = self
+                    .referenced_release(selected.repository_id, &reference, channel)
+                    .await?;
+                if &observed != reviewed {
+                    return Err(Problem(
+                        "a release the catalogue refers to changed since review; refresh and review again",
+                    ));
+                }
+                Some(observed)
+            }
+        };
+        Ok(Observed { release, carried })
     }
 
     pub(super) async fn resolve_tag(

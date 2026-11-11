@@ -44,8 +44,7 @@ jobs:
           path: ${{ runner.temp }}/published-plugin-assets
       - name: Native build prerequisites
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          bash scripts/ci/apt-install.sh -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
           test "$(uname -m)" = "$EXPECTED_KERNEL"
       - name: Pinned native Rust
         run: |
@@ -273,7 +272,7 @@ jobs:
           sha256sum -c "$root/pane-pwd-managed-sha256.txt" "$root/managed-pages-sha256.txt"
       - name: Native resource-widget test prerequisites
         run: |
-          sudo apt-get install -y xvfb openbox xdotool dbus-x11 imagemagick x11-utils xauth fonts-dejavu-core
+          bash scripts/ci/apt-install.sh -y xvfb openbox xdotool dbus-x11 imagemagick x11-utils xauth fonts-dejavu-core
           CARGO_TARGET_DIR="$PWD/target" cargo +1.98.1 build --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Install the published native packages through the real UI
         run: |

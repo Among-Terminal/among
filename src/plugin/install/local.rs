@@ -82,6 +82,15 @@ impl LocalCatalogue {
         let mut compatibility = BTreeMap::new();
         for plugin in &catalogue.plugins {
             for version in &plugin.versions {
+                // A reference names a release of the repository that
+                // published the catalogue. A local file has no repository,
+                // so there is nothing to resolve the release in and nothing
+                // to check the package against.
+                if version.release.is_some() {
+                    return Err(Problem(
+                        "a local catalogue cannot carry a version over from a published release; it has no repository to resolve the release in",
+                    ));
+                }
                 for artifact in &version.artifacts {
                     if !inventory::release::asset_name(&artifact.asset)
                         || artifact.asset == file_name

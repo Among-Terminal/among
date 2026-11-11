@@ -92,6 +92,22 @@ fn catalogue_refuses_schema1_embedded_ids_and_missing_other_architecture_binding
 }
 
 #[test]
+fn a_version_carried_from_an_earlier_release_is_refused_with_its_own_reason() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let architecture = text(&fixture.inputs, "architecture")?;
+    let mut catalogue = fixture.catalogue.clone();
+    catalogue["plugins"][0]["versions"][0]["release"] = json!({"id":899,"tag":"v0.1.0"});
+    let Err(error) = validate(&fixture.inputs, &catalogue, architecture) else {
+        return Err("a carried entry passed the release-input check".into());
+    };
+    assert!(
+        error.to_string().contains("carries a version over"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn complete_api_inventory_refuses_missing_flags_duplicate_names_and_invalid_asset_digests(
 ) -> Result<()> {
     let fixture = Fixture::new()?;

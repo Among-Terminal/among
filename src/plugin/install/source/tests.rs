@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 
+pub(crate) mod carried_releases;
 mod installation_authority;
 mod latest_discovery;
 mod newest_prerelease;
@@ -744,6 +745,7 @@ impl Inspection {
         Self::from_release(
             origin,
             release::ResolvedRelease::fixture(snapshot, revision),
+            Vec::new(),
             bytes,
         )
     }
