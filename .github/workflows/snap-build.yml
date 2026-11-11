@@ -47,8 +47,8 @@ jobs:
           bash scripts/ci/apt-install.sh -y --no-install-recommends snapd squashfs-tools xvfb openbox dbus-x11 xdotool x11-utils imagemagick
           sudo systemctl start snapd.socket
           timeout 180 sudo snap wait system seed.loaded
-          sudo snap install core24
-          sudo snap install snapcraft --classic --channel=8.x/stable
+          bash scripts/ci/snap-store-install.sh core24
+          bash scripts/ci/snap-store-install.sh snapcraft --classic --channel=8.x/stable
           # Job-level env cannot read the runner context; later steps and the
           # failure-evidence upload below take the root from here.
           echo "AMONG_CHECK_ROOT=$RUNNER_TEMP/among-checks" >> "$GITHUB_ENV"
@@ -288,7 +288,7 @@ jobs:
           docker exec among-clean-runtime systemctl restart apparmor snapd.apparmor
           timeout 180 sh -c 'until docker exec among-clean-runtime snap version; do sleep 2; done'
           docker exec among-clean-runtime timeout 180 snap wait system seed.loaded
-          docker exec among-clean-runtime snap install core24
+          bash scripts/ci/snap-store-install.sh --in-container among-clean-runtime core24
           docker exec among-clean-runtime sh -eu -c 'cd /input; sha256sum -c SHA256SUMS'
           docker exec among-clean-runtime snap install --dangerous --classic /input/among.snap
       - name: Execute bound native checkers without build tools or source checkout
