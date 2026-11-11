@@ -29,8 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           rustup toolchain install 1.98.1 --profile minimal
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          bash scripts/ci/apt-install.sh -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
           cargo +1.98.1 build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Observe and download the pinned immutable publication
         run: |
