@@ -155,6 +155,11 @@ impl Inspection {
         }
         for held in &carried {
             held.validate()?;
+            if !release::admissible_catalogue(held.snapshot.asset("among-plugins.json")?) {
+                return Err(Problem(
+                    "a release the catalogue refers to has an empty or oversized among-plugins.json asset",
+                ));
+            }
             release::refuse_own_release(&release.snapshot, held.snapshot.id, &held.snapshot.tag)?;
             if held.snapshot.is_prerelease() && !release.snapshot.is_prerelease() {
                 return Err(Problem(release::PRERELEASE_BEHIND_ORDINARY));
@@ -1516,9 +1521,7 @@ impl Operation {
         official::validate(&origin)?;
         let snapshot = self.observe(id, channel).await?;
         let catalogue_asset = snapshot.asset("among-plugins.json")?;
-        if catalogue_asset.size == 0
-            || catalogue_asset.size > super::metadata::MAX_CATALOGUE_BYTES as u64
-        {
+        if !release::admissible_catalogue(catalogue_asset) {
             return Err(Problem("release catalogue exceeds its byte budget"));
         }
         let mut bytes = Vec::new();

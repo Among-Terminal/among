@@ -476,6 +476,18 @@ fn a_reference_must_name_another_published_immutable_release_of_the_same_reposit
 }
 
 #[test]
+fn a_referenced_release_without_a_usable_catalogue_cannot_carry_a_version() {
+    // A carried version's receipt names its release's catalogue, so a release
+    // whose catalogue asset declares no bytes is refused at admission rather
+    // than offered and then failing the receipt check.
+    let problem = refusal(|world| world.earlier["assets"][0]["size"] = json!(0));
+    assert!(
+        problem.contains("empty or oversized among-plugins.json asset"),
+        "{problem}"
+    );
+}
+
+#[test]
 fn a_carried_version_is_bound_to_the_tag_commit_and_assets_of_the_release_it_names() {
     for (label, expected, alter) in [
         (

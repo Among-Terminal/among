@@ -2,8 +2,8 @@
 //! re-observation rejects visible drift, not hypothetical later movement or builds.
 
 use super::{github_url, Operation, Selection};
-use crate::plugin::install::metadata::ReleaseReference;
-use crate::plugin::inventory::release::ReleaseSnapshot;
+use crate::plugin::install::metadata::{ReleaseReference, MAX_CATALOGUE_BYTES};
+use crate::plugin::inventory::release::{ReleaseAsset, ReleaseSnapshot};
 use crate::plugin::{
     data::{self, Problem},
     inventory::ReleaseBinding,
@@ -34,6 +34,15 @@ pub(super) const DEVELOPMENT_ONLY: &str =
     "prerelease sources are available only in plugin development mode";
 pub(super) const PRERELEASE_BEHIND_ORDINARY: &str =
     "an ordinary release catalogue refers to a prerelease; only a development prerelease may carry a prerelease's versions";
+
+/// The host parses every catalogue and a receipt names its asset, so a release
+/// is admitted only with a non-empty catalogue that fits the parser's budget.
+/// A carried release's catalogue is never downloaded: this declared size is
+/// the only evidence that its receipt can be validated before a version of it
+/// is offered.
+pub(super) fn admissible_catalogue(asset: &ReleaseAsset) -> bool {
+    asset.size != 0 && asset.size <= MAX_CATALOGUE_BYTES as u64
+}
 
 /// A carried version names an earlier release. The release of its own
 /// catalogue is not one, by id or by tag: a version that release holds is
