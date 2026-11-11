@@ -29,6 +29,8 @@ case "$attempts" in
     exit 2
     ;;
 esac
+# Arithmetic below is decimal: a leading zero would otherwise be read as octal.
+attempts=$((10#$attempts))
 if [ "$attempts" -lt 1 ]; then
   echo "snap-store-install: AMONG_SNAP_ATTEMPTS must be a positive integer" >&2
   exit 2
@@ -39,6 +41,7 @@ case "$pause" in
     exit 2
     ;;
 esac
+pause=$((10#$pause))
 
 usage() {
   echo "usage: $0 [--in-container NAME] <snap install arguments>" >&2
@@ -46,7 +49,8 @@ usage() {
 
 container=
 if [ "$#" -gt 0 ] && [ "$1" = "--in-container" ]; then
-  if [ "$#" -lt 2 ]; then
+  if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+    echo "snap-store-install: --in-container needs a non-empty container name" >&2
     usage
     exit 2
   fi
