@@ -1,63 +1,73 @@
-# Plugins
+# Plugin host development
 
-A plugin is an executable run directly by Among Terminal as a separate process.
-The host supplies no interpreter. Any language works if its installed executable
-can run on the system; scripts may use a shebang and must provide their runtime.
-Plugin code is never loaded into the application, and
-that is the whole point: a plugin that segfaults, hangs, or misbehaves takes only
-itself down, while the live terminals — which hold whatever the user is running —
-stay up.
+User instructions live in the [plugin guide](https://among-terminal.github.io/plugins/).
+Plugin authors should use the template's
+[author guide](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/guide.md),
+[API reference](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/api.md)
+and [packaging guide](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/releasing.md).
 
-The cost is a process spawn and messaging round trips. Repository installation
-downloads ready-built packages; it does not compile plugins on the user's machine.
+## Installation authority
 
-The exchange is newline-delimited JSON on the plugin's stdin and stdout. Nothing
-else is shared. There is no GTK type, no widget handle, and no function pointer
-crossing the boundary, so there is no ABI for either side to break.
+Only committed managed installation records enter the plugin inventory. Source
+catalogues, repository previews and loose executables do not authorize execution.
+The official source pins repository `1431055733` and publisher `339567100`;
+matching display names do not establish official identity. Keep these checks in
+[official source validation](../src/plugin/install/official.rs) separate from
+runtime access grants.
+
+The optional `AMONG_GITHUB_TOKEN` is sent only to `https://api.github.com`, never
+to release download hosts. Empty or whitespace-only values are ignored. The
+token is not logged or included in error messages. Among removes it from the
+environment before starting children, but its original startup value can remain
+visible to the same user through Among's `/proc` entry. Preserve that boundary
+in [request authorization](../src/plugin/install/source.rs).
+
+## Confinement
+
+Confinement is implemented in [src/plugin/sandbox/](../src/plugin/sandbox/).
+Keep enforcement in the pre-exec hook in [launch.rs](../src/plugin/sandbox/launch.rs).
+Admission requires a complete report from the spawned PID proving the required
+protection. [level.rs](../src/plugin/sandbox/level.rs) must refuse startup without
+seccomp regardless of consent; saved consent is a minimum protection floor.
+Preserve descriptor-based ownership and mode checks in
+[data_dir.rs](../src/plugin/sandbox/data_dir.rs) and the explicit child environment
+in [host/environment.rs](../src/plugin/host/environment.rs).
+
+The [user confinement guide](https://among-terminal.github.io/plugins/#confinement)
+owns the protection levels and limitations. The template's
+[author guide](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/guide.md#settings-and-persistent-data)
+owns filesystem access and environment requirements.
+
+## Status rendering
+
+Keep rendering policy in [slots.rs](../src/slots.rs) and shared styling in
+[application CSS](../data/among.css). Restrict fragment styles to the host's
+`Style` enum and preserve text bounds and icon validation in the renderer.
+
+For ordinary slots, polling timing starts from the response; backpressure can
+delay the next request. The host applies responses and schedules collection in
+[the application](../src/app.rs). The API's refresh field and sidebar exception
+are documented in the
+[status reference](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/api.md#status-and-fragments).
 
 ## Live status examples
 
-Managed API 1.2 supports optional `meter` on a fragment: a finite fraction from 0
-to 1 rendered as a compact GTK bar. Keep a readable percentage in `text`.
-Bars are 50 pixels wide. Their whole track and fill share a continuously changing
-hue: green at 0%, yellow at 50%, red at 100%; the track is translucent so the
-filled fraction stays distinguishable. Numeric percentages remain a non-color cue.
-The host's shared application header and footer use bold monospace by default,
-including the clock and N/A labels. Footer text has opacity 0.7; the upper panel
-and individual pane footers are not dimmed. Plugins do not select this typography.
-Omit or set `meter` to null for N/A. Values outside this range are rejected.
-Text-only fragments remain valid. Pre-0.2 executables and legacy wire handshakes
-are not a supported execution profile.
-
-`clock` shows local 24-hour HH:MM:SS once at the right of the shared application
-footer every second, demonstrating a different slot than the resource header.
-It uses the process's local timezone configuration (including `TZ`), not UTC.
-
-`system-status` shows labelled graphical CPU, MEM and DISK bars with percentages. CPU samples
-the first eight aggregate `/proc/stat` counters: busy is the interval total minus
-idle and iowait; guest counters are not counted twice. Startup, reset and zero
-intervals show N/A. MEM is `(MemTotal - MemAvailable) / MemTotal`, not a sum that
-treats all caches as unavailable. Both are rounded to the nearest percent and
-sampled at most once a second. DISK targets `/` using `statvfs`: used is blocks
-minus free, divided by used plus available (excluding reserved availability),
-rounded upward like `df`. It is sampled at most once every five seconds.
-Failed sources show N/A independently. These describe the process's proc/mount
-namespace; sandbox figures need not describe the whole host.
-
-`pane-pwd` polls each pane's last terminal-reported directory every second,
-including unfocused panes. The full path is in the tooltip; the plugin bounds
-label text to 480 characters and GTK visually ellipsizes it to fit the pane.
-Labels contain only the path, without a `PWD:` prefix. Unknown
-directories produce no content; the plugin never substitutes
-the host or focused pane's directory. A known initial shell directory is available
-at launch; subsequent directory changes require the shell to opt in to OSC 7.
-
-For Bash, test this in a terminal (no shell files are modified):
+The live status checker reads and executes this OSC 7 hook from this file.
+The regression test also executes it with spaces, reserved URI bytes, Unicode,
+a newline and a symbolic link in the working directory, with external commands
+unavailable. Keep the hook valid for both consumers:
+[live status setup](../tools/among-tools/src/live_status.rs) and
+[OSC 7 regression test](../tools/among-tools/tests/live.rs).
+The Snap workflow copies this file into its checker input.
+This is the tested copy of the hook on the site's
+[sessions page](https://among-terminal.github.io/sessions/#directory-reporting);
+both copies must change together. The hook returns the status of the command
+that ran before it, so later `PROMPT_COMMAND` entries still see that status.
 
 ```sh
 among_osc7() {
-    local LC_ALL=C directory uri='file://' byte encoded i
-    directory=$(pwd -P && printf '.') || return
+    local status=$? LC_ALL=C directory uri='file://' byte encoded i
+    directory=$(pwd -P && printf '.') || return "$status"
     directory=${directory%.}
     directory=${directory%$'\n'}
     for ((i=0; i<${#directory}; i++)); do
@@ -68,1086 +78,142 @@ among_osc7() {
         esac
     done
     printf '\033]7;%s\007' "$uri"
+    return "$status"
 }
 PROMPT_COMMAND="among_osc7${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 among_osc7
 ```
 
-This optional helper uses Bash builtins, encoding physical-directory bytes rather
-than interpreting spaces, non-ASCII names or control characters as URI syntax.
-Add it to your own Bash configuration only if wanted.
-Try `cd /tmp` and wait up to two seconds for the footer. Other shells require
-their own prompt hook; no untested zsh/fish integration is claimed here.
+User setup instructions live under
+[directory reporting](https://among-terminal.github.io/sessions/#directory-reporting).
 
-## Installing
+## Source management
 
-Preferences saves explicit enable/disable choices to `managed-plugins.json`
-and restores them on startup. A Faulted process remains desired-enabled until
-you disable it. Save failures are reported as session-only changes; see
-[Preferences storage](preferences.md).
+Catalogue age, publisher review and source-check failures are documented under
+[plugin sources](https://among-terminal.github.io/plugins/#plugin-sources).
+Implementation entry points are the [source registry](../src/plugin/install/registry.rs),
+[plugin manager](../src/prefs/plugin_manager.rs) and
+[source controller](../src/prefs/sources.rs).
 
-Open Preferences → Plugins. **Available** lists compatible packages from saved
-sources; use **Install** on the desired plugin. A new installation stays disabled.
-To use another publisher, add its repository through **Add source**, then install
-from Available. Selection uses
-the actual host architecture and declared runtime/libc requirements, not filenames.
-Native amd64 and arm64 packages are separate downloads; the source archive is not
-an installation payload. Packages also contain manifests and licensing material.
+The metadata client in [source.rs](../src/plugin/install/source.rs) uses a
+5-second connect timeout, a 10-second read timeout and a 60-second operation
+deadline. Preserve cancellation and deadline checks across requests, downloads
+and extraction.
 
-Installation checks the numeric Release/asset membership, size, SHA-256 and exact
-release-tag/source binding before committing an immutable generation. It does not
-grant access or enable code. Enable separately through the manager's access review.
-An installed script still requires its declared interpreter; the installer neither
-compiles code nor runs arbitrary installation commands.
+The [registry](../src/plugin/install/registry.rs) stores custom registrations and
+catalogue snapshots in `among/plugin-sources/sources.json` beneath the resolved
+data directory, with the official cache in adjacent `official.json`.
+Each document is bounded to 8 MiB. Both retained documents plus a proposed atomic
+replacement must fit within 16 MiB, with at most four snapshots per source.
+Evict old snapshots from the proposed document to make replacement room without
+discarding registrations; refuse an operation that still cannot fit.
+
+## Installation transactions
+
+The [store](../src/plugin/install/store.rs) measures staging and generation trees
+together, with a traversal limit of 1,048,576 entries. Existing bytes plus the
+incoming archive, expanded payload and 256 KiB receipt reservation must fit within
+2 GiB overall and 512 MiB in staging. Keep the reservation in admission checks
+before downloading a package.
+
+`installed.json` selects installed generations. The
+[inventory loader](../src/plugin/inventory.rs) validates selected and previous
+receipts before inspecting packages; discovering a directory cannot establish
+installation. An unreadable selected payload remains an unavailable inventory
+entry rather than silently losing its installation record.
+
+Publication in [store.rs](../src/plugin/install/store.rs) flushes the payload,
+`.among-receipt.json` and `.among-lease`, then publishes the fresh generation with
+a no-replace rename. Only the subsequent atomic replacement of `installed.json`
+selects it. Recheck the store root, previous selection bytes and published inode
+before committing. A final directory-sync failure reports uncertain durability.
+
+The generation receipt seal must match the selection receipt. Inventory and the
+[process supervisor](../src/plugin/process.rs) retain shared advisory leases;
+recovery needs an exclusive lease and skips selected or previous generations.
+Remove only sealed, owned, unreferenced generations. Keep the lease alive through
+process shutdown, not just while a package is inspected.
+
+New installation and replacement receipts receive fresh `installation` tokens.
+Updates preserve the token and require the expected selected receipt. The
+[host](../src/plugin/host.rs) binds saved enablement to the current token, so a
+replacement cannot inherit an older installation's enabled state. Preserve the
+explicit compatibility path for historical receipts without tokens.
+
+## Release revalidation
+
+The [registry](../src/plugin/install/registry.rs) caches the canonical full
+release snapshot and tag chain with the catalogue and validates cached
+observations before use. [Tag resolution](../src/plugin/install/source/release.rs)
+uses the numeric repository and exact `refs/tags/<tag>`, peels at most eight
+annotation objects, and fetches the resulting commit by SHA.
+
+The [install worker](../src/plugin/install/source.rs) reobserves the selected
+release and complete tag chain with no-cache requests before package transfer
+and again after extraction, also rechecking numeric repository and publisher
+identity. Reject changes to asset IDs, names, sizes or digests, including
+unselected assets. The canonical snapshot ignores asset array order. These
+observations establish content consistency; they provide neither independent
+publisher authentication nor an atomic transaction with GitHub.
+
+Source receipts retain `release_snapshot` and `release_binding`. Offline
+[receipt validation](../src/plugin/inventory.rs) checks release ID, tag,
+catalogue digest, selected asset digest and resolved revision against the receipt.
+Refuse inconsistent observations without repairing the record. The cached
+resolved release holds the complete peel chain; the committed binding holds the
+tag, reference object and resolved commit.
+
+### Versions carried over from an earlier release
 
 A release need not ship a plugin that did not change. Its catalogue may list
 such a version with `"release": {"id": <release id>, "tag": "<tag>"}`, naming
-the earlier release of the same repository that holds the package. Among then
+the earlier release of the same repository that holds the package. The host
 reads that release from the release API and applies to it the checks it applies
 to the catalogue's own release: published, immutable, the tag resolving to the
 version's `revision`, the package among its assets with the stated size and
-SHA-256, and the same re-observation before the installation commits. The
-reference is refused when it names the catalogue's own release, a draft, a
+SHA-256, and the same re-observation before the installation commits. Versions
+in one catalogue may therefore describe different release commits.
+
+The reference is refused when it names the catalogue's own release, a draft, a
 mutable release, another tag than the release has, or, in a stable release's
 catalogue, a prerelease; when the package is also an asset of the new release;
 and when the catalogue ships no version of its own. A catalogue may refer to at
-most eight earlier releases. The installed record names the earlier release, so
-the plugin is the same installation whichever of the two catalogues offered it.
+most eight earlier releases. A local catalogue whose version carries a `release`
+reference is refused: a file has no repository in which to find that release.
+
+The receipt records the referenced release, including the SHA-256 of that
+release's own `among-plugins.json` asset as stated by the release API, so the
+plugin is the same installation whichever of the two catalogues offered it.
+Accepted limit: the host does not download that earlier catalogue or check
+whether it lists the carried entry, and the receipt does not retain the digest
+of the newer catalogue that offered the version.
 
-Only committed managed installation records supply inventory. Copying a file into
-`among/plugins`, retaining a filename in `plugins.json`, or placing an arbitrary
-manifest on disk does not install or authorize it. Missing/changed manifests refuse
-execution without a fallback. Refusal does not delete unrelated files or settings.
-
-### Installing official plugins
-
-Among packages (DEB, RPM, Snap, AppImage and the binary archive) carry no
-plugins. The official ones (clock, system-status, pane-pwd) come from the
-repository `Among-Terminal/among-plugins` through the always-present registered
-source in Preferences → Plugins → Sources. It is marked **Official** and has no
-removal control. The saved catalogue appears directly in Available, without a
-network request. The first time Plugins opens with no saved catalogue, Among
-fetches the official list once by itself; a failure leaves a status page with the
-reason, and **Load** tries again. When another saved source already offers plugins,
-the failure is shown above the list instead and the refresh button retries. The
-automatic fetch depends only on the official catalogue: when Plugins opens and it
-is not saved, it is fetched once, even if a catalogue of another source is saved.
-A failed fetch is not repeated while the page stays open; the refresh button or
-**Load** retries. Once the official catalogue is saved, opening the page never
-fetches.
-
-Choose **Install**, then review access and enable the installed plugin separately.
-Opening pages and checking catalogues never installs, enables or grants access.
-
-### Plugin sources
-
-Open **Sources** from the Plugins page to see each registered repository, its
-plugin count, the age of its saved list and the result of the last requested
-check. **Check source** checks one repository; **Check all** checks them in order.
-Both use the selected Stable or Pre-release channel. They stop at an observed
-GitHub rate limit and show the reported remaining count, or **unknown** when the
-response did not provide a valid count. No automatic retry or periodic check is
-scheduled. A permission refusal without a rate-limit indication does not stop
-the remaining sources.
-
-GitHub counts unauthenticated API requests per network address (60 an hour),
-which busy shared addresses use up. Set the optional environment variable
-`AMONG_GITHUB_TOKEN` to a GitHub token to raise that allowance. The token needs
-no scopes; read access to public data is enough. It is sent only to
-`https://api.github.com`, never to the asset delivery host that package
-downloads redirect to, and an empty value is ignored. It is removed from the
-environment at start-up, so terminals, the shell commands typed in them,
-plugins and the other helper processes do not inherit it. A program run by the
-same user can still read it from the application's own
-`/proc/<pid>/environ`, so use a token without scopes. It is not stored, logged
-or shown in error text.
-
-A successful stable check saves its catalogue for offline use. A failed check
-keeps the saved list, including its real age. Lists older than a day are marked.
-A publisher change keeps serving the old list until **Review…** and explicit
-approval replace its metadata. That approval does not grant installed code any
-new access. Publisher changes observed on Pre-release must be checked and
-approved on Stable, because prerelease catalogues are not persisted.
-
-**Add source** opens a read-only look-up. Enter `owner/repository` or a public
-GitHub repository URL and choose **Look up** to preview its catalogue. There is
-no installation action in the preview. **Add source** saves the registration and
-snapshot; **Cancel** saves neither. Up to 32 user sources can be registered
-besides the built-in official source.
-
-Removing a user source asks for confirmation and updates Available immediately.
-Its installed plugins keep running, their enabled choices and settings stay
-unchanged, and their rows show **source removed**. Adding the source again makes
-its saved offers available without reopening Preferences.
-
-### Plugin development mode
-
-Start Among with `among --plugin-development` to test plugins before an
-ordinary release. The flag applies only to the process that starts the first
-Among instance, and it is never saved: the next start without the flag is
-ordinary again. While the mode is on, Preferences → Plugins begins with a
-**Plugin development mode** row.
-
-If Among is already running, a second `among --plugin-development` does not
-switch the running instance. It prints
-
-    among: --plugin-development applies only when it starts the first Among instance; quit the running instance and start it again with the flag
-
-and exits with status 2. A second start without the flag opens a window in the
-running instance and keeps its mode. When two starts race, the process that
-becomes the first instance decides the mode.
-
-#### Install from a local catalogue
-
-In development mode the Plugins page has **Install from a local
-catalogue**. Choose an `among-plugins.json` (schema 2, the same format as a
-release catalogue) with the package files it names in the same directory.
-Opening it reads metadata only. Each compatible version has its own
-**Review…** action; installation starts only from the review.
-
-The catalogue supplies the expected manifest digest, package size and SHA-256,
-and the complete member list, and the package then goes through the same
-archive, ELF, member, digest and grant checks as a release package.
-The directory, the catalogue and the package must be owned by you, not
-writable by others, not writable by a group other than your own primary group,
-and not symbolic links; a package with another
-size or digest is refused before it is unpacked. If the catalogue changes
-between review and commit, nothing is installed and you review it again.
-A local catalogue whose version carries a `release` reference is refused: a
-file has no repository in which to find that release.
-
-A local package has none of the provenance a release has: no repository or
-publisher identity, no release, no immutability and no tag-to-commit
-binding. The review and the plugin details say so; nothing is filled in for
-them. A local install has the identity `development/<plugin-id>`, separate
-from any `github:<repository>/<plugin-id>` install of the same plugin, so its
-settings and switch never mix with a release install.
-
-The host offers that identity, `development/<plugin-id>`, in the handshake
-and does not present a published one. A plugin installed from a local
-catalogue must therefore be built to accept `development/<plugin-id>`. The
-published plugins compile their own `github:<repository-id>/<plugin-id>`
-identity into that check: their bytes install and the process starts, but the
-plugin closes the channel and the host marks it faulted ("plugin stdout
-closed"). Install published plugins from their release or prerelease instead.
-
-Installing again under an ID that already has a development install is a
-replacement. It needs a separate **Replace** confirmation, starts disabled
-and receives no access granted to the replaced install; the replaced
-generation stays available as the previous one.
-
-Development installs are listed in every run, but outside development mode
-they do not start, even if their switch was left on: an enabled row then says
-that the install starts only with `--plugin-development`, and the details
-always do.
-
-#### Checking prerelease catalogues
-
-In development mode the Plugins page has a **Stable / Pre-release** switch,
-initially on Pre-release. An explicit catalogue refresh or source check uses
-that channel; there is no separate prerelease action. Among reads up to three
-pages of 100 releases and picks the
-non-draft prerelease with the greatest creation time, the greater numeric ID
-deciding a tie. A list that ends without a prerelease, and three full pages
-without one, are refused with their own reasons; the second says only that the
-300 releases read hold none and the list may hold more. GitHub documents no
-order for the list, so a repository with 300 or more releases is judged by the
-releases read: the result is the newest prerelease among those, which need not
-be the newest in the repository. The chosen prerelease passes
-the same identity, immutability, digest, schema 2 and tag checks as a latest
-release, and installation repeats the selection before it commits. The result
-is shown for review and is not saved as source metadata.
-
-A prerelease install keeps the identity `github:<repository>/<plugin-id>` and
-its local settings. Over an existing install the action is **Replace with
-prerelease…**: it needs the confirmation, starts disabled and receives no access
-granted to the replaced install, which stays available as the previous
-generation. A generation from a prerelease starts only with
-`--plugin-development`.
-
-Going back to an ordinary install, by **Recover previous…** or by removing the
-prerelease and installing again, asks for access consent anew: a review that
-names an installation is accepted only by the installation whose token it
-carries, so the prerelease's grants never reach the ordinary install.
-
-A newer stable release is an ordinary update of it. "Newer" means Semantic
-Versioning 2.0.0 precedence. A lower version is shown with the reason and is
-not offered. A version that is not written as Semantic Versioning (`1.0`,
-`2026.10`, a `v` prefix) has no order, so neither it nor an installed version of
-that form is ever offered as an update, and the install review says so before
-consent. The very same non-SemVer text still names the same version: with the
-same bytes it is "already installed", with other bytes or another commit it is
-a publisher inconsistency. A stable release of the
-same version is offered as an update only with the same manifest digest,
-package digest and tag commit; applying it rebinds the install to the stable
-release, and it then starts without the flag. The same version with other
-bytes or another commit is refused as publisher inconsistency, and no update
-is offered. This holds for every installed version: a release never updates
-an install to the same version with different content.
-
-### Native inventory
-
-Preferences → Plugins shows Installed and Available from committed receipts,
-runtime observations and saved source snapshots. Opening it uses no network,
-except the single first-open fetch of the official list when none is saved.
-The row shows its version, description, trust shield, info icon and one package
-action. The shield is a mark, not a button: its tooltip says whose plugin it is
-and what it can read. A stable Running state needs no extra line; an unavailable or faulted
-state replaces the description with its reason. Faults keep the desired enable
-switch on. Equal display names retain separate identities and settings.
-
-The info icon, or a click on the row's title and description, opens a subpage with
-source, protection and access cards. Available
-plugins can be inspected before installation, without an enable switch or settings.
-**Technical details** shows identity and API compatibility in an ordinary run;
-development mode adds release provenance, digests, generation and recovery of a
-retained previous package. Values can be selected and copied. Protection is
-checked at start; an origin shield does not establish that sandboxing succeeded.
-
-Search matches name, description, identity and origin. Clearing search restores
-the same rows rather than redirecting an action to a sorted position. Background
-state changes update existing controls; they do not replace an open editor or
-discard unfinished settings text. Callbacks reject removed or replaced package
-generations. Plugin settings open as a further subpage; Back without Save discards
-edits. Notification roles are reviewed on the plugin page, without enabling or
-restarting code. Removing a registered source does not uninstall its plugins.
-Uninstall asks for confirmation and shows progress in the row. It cannot be
-cancelled once begun. A committed removal closes the page and retains settings;
-a failure leaves a persistent banner and the current installed state.
-
-### Updating an installed package
-
-Refresh the source explicitly, then choose **Update** when its saved catalogue
-offers a newer compatible version. Showing that action uses no network.
-The confirmation includes the selected version/target and access requirements.
-Only the selected plugin may restart. Publisher/access changes still require
-renewed review; changing an on-disk filename cannot inherit another identity.
-The installer retains the previous verified generation for explicit recovery.
-
-## Protocol
-
-Every message has a `type` field. The managed handshake, scoped status/context and
-configuration messages are specified under [Managed admission](#managed-admission-context-and-settings-api-12).
-Legacy `hello`, unbound status replies and `notify` cannot establish admission,
-expose context or route notifications, regardless of a claimed major/minor number.
-
-`refresh_ms` is how often the data changes:
-
-- A number is the requested refresh interval; polling and transport backpressure
-  can delay the next request.
-- `null` means event-driven: the host asks when a terminal changes rather than on
-  a timer.
-
-That matters for expensive plugins. `git status` on a large repository should
-declare a few seconds, or `null` and let terminal events drive it; either way the
-host will not poll it faster than asked.
-
-The refresh clock restarts when an answer arrives, not when the question is sent.
-Without that distinction one slow plugin gets asked on every tick — for `git
-state` that means forking a subprocess tens of times a second, which starves the
-other plugins of response time.
-Clocks are separate for each source and scope: collecting one plugin does not
-mark a deferred sibling as collected. Scope scheduling rotates so continuously
-due content cannot always take capacity ahead of later panes and summaries.
-
-## Scopes
-
-Where content is shown. A plugin is told which scope it is answering.
-
-| Scope                  | Appears                                    |
-|------------------------|--------------------------------------------|
-| `app_header`           | the window's top strip                     |
-| `app_footer`           | the window's bottom strip                  |
-| `workspace_header`     | above the active workspace's panes         |
-| `pane_header:<id>`     | above that pane's terminal                 |
-| `pane_footer:<id>`     | below that pane's terminal                 |
-| `workspace_summary:<n>`| beside workspace `n`'s name in the sidebar |
-
-The sidebar summary takes the first fragment of the response. Several plugins may
-each contribute one, and all of them are shown — one plugin never replaces
-another's content, and a plugin supplying more content never causes another's to
-be dropped.
-
-A pane header belongs to that pane alone: content supplied for one pane does not
-appear in another pane, nor in the workspace as a whole.
-
-## Fragments
-
-A fragment is pure data. The host decides how to draw it, which is why a plugin
-cannot break the layout by producing something oversized.
-
-```jsonc
-{
-  "text": "main",          // optional; may be omitted if an icon is given
-  "icon": "folder-symbolic", // optional GTK icon name
-  "style": "success",      // success | warning | error | accent | dim
-  "tooltip": "Clean tree", // optional
-  "priority": 20           // lower sorts first within a slot
-}
-```
-
-`style` is a closed set, and these are all of its names:
-
-| Name | Conveys |
-| --- | --- |
-| `success` | the thing reported is in good order |
-| `warning` | it needs attention but nothing is broken |
-| `error` | it is broken |
-| `accent` | it is worth looking at, with no judgement |
-| `dim` | it is present but unimportant |
-
-The first four are coloured from the platform's own semantic colours and are kept
-distinct from one another. `dim` is not a sixth colour: it is the ordinary text
-at reduced opacity, so quietness is shown by weight rather than by another hue.
-
-Omit `style` entirely for ordinary text — that is the default appearance.
-
-A name outside this set, or no name at all, draws the fragment in the default
-appearance rather than failing the message. A plugin is never disconnected over a
-style it guessed wrong. An icon the theme
-does not have is dropped rather than drawn as a broken placeholder, and long text
-is elided.
-
-Order within a slot is by `priority`, then by plugin name, so re-sending the same
-data never reshuffles a slot.
-
-## Versioning
-
-The protocol version is negotiated at start-up and is independent of the
-application's version.
-
-- Declared minimum API and required features must be supported before execution.
-- Managed runtime admission must match the authoritative identity, session,
-  generation and offered grants. Major equality alone is not admission.
-
-### Static managed metadata and settings
-
-Managed packages use a separate static `among-plugin.json`, schema version 1.
-The [complete vocabulary example](../examples/managed-manifest.json) is parsed
-by the production parser in tests. It is data, not a ready-built plugin package.
-Static metadata and local settings can be inspected without executing code.
-API 1.2 is the supported managed profile below. There is no manifestless/legacy
-execution path, and a managed package never falls back to one. The application
-attaches the [notification backend](plugin-notification-backend.md) to its terminal
-core at startup and advertises the notification roles; a plugin holds one only
-through the explicit role review described there. A host built without that
-backend, as the plain constructors are, offers no notification roles.
-
-Manifest `id` is lowercase ASCII letters/digits/hyphens, at most 64 bytes.
-`version`, `name` and `description` are bounded display metadata, not authority.
-`entrypoint` is a relative executable file, never a shell command. Entrypoints
-and resources cannot use absolute paths, `..`, symlinks, hardlinks or special
-files. The per-user package directory/files, the managed store and the
-configuration directory that holds `managed-plugins.json` and `general.json`
-must be owned by you and not writable by others. Group write is accepted only
-when the group is your own primary group: a `002` umask, the default where each
-user has a private group (Debian, Ubuntu, Fedora), creates every directory as
-`775`, and refusing that would make settings and installation fail. Group write
-through any other group, setuid, setgid on entries inside a package, and the
-sticky bit on the store are refused. Inspection runs no `--version` probe, hook or downloaded validator.
-JSON is limited to 256 KiB and depth 32; duplicate keys, feature IDs and channel
-IDs are rejected. There are at most 32 declared features/channels each.
-
-Icons are optional `theme:<icon-name>` or contained static PNG files. PNGs have
-a 1-MiB encoded and 2048-by-2048 decoded limit; animated/compressed ancillary
-metadata is refused. Invalid optional artwork uses a host fallback. An escaping
-resource path is a package refusal, not a fallback to an outside file.
-
-Settings declare their own positive `version`, `apply` (`live` or `restart`) and
-up to 64 fields with stable `key`, `label`, `kind`, optional typed `default` and
-applicable bounds. Supported kinds are boolean, integer, finite number, string
-and enum. Enum choices have distinct `value` and `label`. Fields are required
-unless `required` is false. Required unsupported kinds make the schema
-incompatible; optional unsupported kinds remain unavailable. A secret field
-never becomes an ordinary or masked string control. No secret storage is
-supported. Defaults are displayed in memory, not written merely by inspection.
-
-The native Settings action validates an explicit Save, even while the plugin is
-disabled. Effective declared values fit 32 KiB; the complete local envelope fits
-256 KiB. Unknown local values survive edits but are not delivered as declared
-settings. A different stored settings version requires an explicit migration
-decision; inspection never rewrites it. Local saving and runtime application
-are distinct: the editor does not report a saved value as applied to a process.
-Diagnostics use host-owned reason text, not submitted settings values.
-
-Optional fields without a stored value or default stay absent until edited;
-an untouched blank optional numeric field does not block saving another field.
-Invalid explicit edits are refused as a whole, with the declared key/type/bounds
-reason but no submitted value in the diagnostic. Unsupported secret fields never
-acquire ordinary editors or materialized defaults.
-
-Validated Save outcomes distinguish durable local saving, session-only acceptance
-after a storage failure, and a written replacement whose durability could not be
-confirmed. Session-only accepted values remain available in the current host and
-can be delivered to the current process when their apply mode permits it. A later
-managed preference edit retries pending identity-scoped settings/switch/review
-changes together, merging current unknown data rather than erasing it. Restarting
-the application before successful persistence can lose session-only changes.
-
-The record parser is strict: an older build refuses an `installed.json` that
-holds a prerelease or a local-catalogue receipt, because those records carry
-fields it does not know. Records of ordinary releases keep their earlier shape.
-
-Managed installation selection is authoritative. The
-application reads only its committed `among/managed/installed.json` record in
-the XDG data directory, not arbitrary discovered manifests or staging files.
-It retains invalid/missing selected packages as unavailable entries. A receipt
-binds GitHub's repository ID, owner/name, repository-local ID, exact revision,
-manifest/package SHA-256, release/asset IDs and immutable generation. A matching
-hash establishes content consistency, not an independently verified publisher.
-Identity is `github:<repository-id>/<local-id>`; a bare filename/display name
-cannot inherit another origin's settings or switch. Installer receipts also carry
-a fresh `installation` token. Explicit managed enable/review saves that token with
-consent; retained enabled settings for a different/missing token cannot start a new
-installation. Pre-installer receipts without tokens keep their previous startup
-semantics. New installs do not rewrite settings merely to force their switch off.
-New receipts also bind the numeric GitHub publisher ID, exact catalogue revision
-and catalogue SHA-256. Access review for these receipts binds numeric repository
-and publisher IDs: renaming keeps authority, but transfer or deleting/recreating a
-name cannot inherit consent. Old label-only receipts keep startup compatibility;
-upgrading their unconfirmed publisher boundary requires renewed review.
-Local state lives separately in `managed-plugins.json` in the XDG config directory.
-Retained preferences alone are not evidence of installation. Repository browsing,
-download, update and uninstall are separate installer operations, not implemented
-by static inspection. Historical filenames/settings do not supply execution
-identity, enablement or inherited access.
-
-### Managed admission, context and settings (API 1.2)
-
-The first enable opens an access review identifying the authoritative repository
-and required/optional API features. Optional access starts off. Cancel does not
-write grants or start code. Required access must be accepted; unsupported required
-features refuse startup before execution. Retained review is scoped to publisher,
-repository and declared grants. A publisher change or newly required access needs
-renewed review. Changing grants requires stopping/reaping the current generation.
-These controls limit what the host sends over the protocol; the operating-system
-limits on the process itself are described under [Confinement](#confinement).
-
-The host rechecks the selected manifest digest and contained executable and pins
-open package/executable descriptors through spawn. It clears the child environment
-and sets `PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C.UTF-8` and
-`AMONG_PLUGIN_DATA_DIR` (the plugin's private data directory, see below). `HOME`,
-`XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `XDG_RUNTIME_DIR` are not
-passed: the plugin could not use the directories they name, and passing them would
-suggest it can. It also snapshots `TZ` once per managed-child construction. An absent value stays
-absent; an empty value stays explicitly empty. Accepted bytes are copied unchanged,
-without UTF-8 replacement, trimming, path lookup or timezone parsing. The raw value
-may contain at most 1024 bytes and no NUL or ASCII control byte (`0x01`–`0x1f`,
-`0x7f`); other bytes, including non-UTF-8 bytes, are preserved. An invalid envelope
-makes that plugin Unavailable before spawn, rather than silently substituting a
-timezone or failing terminal startup. This ordinary managed-child rule is not an
-official-plugin privilege or an additional context grant.
-
-`TZDIR`, tokens, loader variables, display/session-bus values and other environment
-entries are not implicitly inherited. Passing `TZ` does not promise identical
-interpretation by every plugin runtime, or bound the size/read latency of a
-timezone file a plugin may choose to open. In particular, clock uses its existing
-`chrono::Local` renderer rather than a host timezone parser.
-
-### Confinement
-
-Every managed plugin starts inside a kernel-enforced sandbox. Landlock limits the
-filesystem and a seccomp filter denies sockets, process control and file-metadata
-changes. Both are built by the host before the plugin process exists and applied
-inside that process before its entrypoint runs; the plugin cannot lift them, and
-processes it starts inherit them. The host does not accept the start until the
-child reports, through a pipe that closes on `exec`, which protections it applied.
-
-What a confined plugin can do:
-
-- Read and execute its installed generation and the system runtime: `/usr`,
-  `/lib`, `/lib64`, `/etc/ld.so.cache` and `/etc/localtime`. A script plugin
-  therefore needs an interpreter below `/usr`.
-- Read and write its own data directory, and (at full protection) nothing else
-  outside the system runtime. The host creates
-  `$XDG_DATA_HOME/among/plugin-data/<repository-id>/<plugin-id>/` (development
-  installs: `development/<plugin-id>`) with mode `0700`. The data home
-  (`XDG_DATA_HOME`, or `~/.local/share`) may be a symbolic link or lie behind
-  one (a dotfile manager, or `/home` linked to `/var/home`): it is resolved once,
-  and the resolved directory must be owned by the user, checked on the opened
-  directory; its mode may be group-writable, as a `002` umask makes it. Below it
-  every component is created and opened without following links, and the start is
-  refused when a component is a link, is owned by another user or the plugin's
-  own directory is not exactly mode `0700`; the reason names the component. The
-  path in `AMONG_PLUGIN_DATA_DIR` is the resolved one. Uninstalling a plugin keeps
-  this directory and its contents; removing the data is a separate action that
-  does not exist yet.
-- Use the protocol on stdin and stdout. Besides standard error and its own
-  executable file (kept open so `exec` can run it), nothing is open: every other
-  descriptor of the host is closed on `exec`.
-- With Landlock, not read `/proc`, including `/proc/self`, unless it holds
-  `system.metrics` and then only the three files that grant names. A language
-  runtime that insists on reading `/proc/self/...` at startup must tolerate the
-  refusal; the Rust standard library does.
-
-The filesystem limits above are Landlock's. At full protection (ABI 3 or newer)
-nothing outside the data directory is writable. With Landlock ABI 1 or 2 (reduced,
-only after consent) `truncate` is not mediated, so a plugin could empty a file
-outside its data directory that the user can write. With the seccomp filter alone
-(reduced, only after consent) no filesystem rule applies at all: the plugin keeps
-the file access of the user's account, and only the filter's limits hold.
-
-What it cannot do, each answered with `EPERM` or `EACCES`:
-
-- Create any socket (`socket`, `socketpair`), so no TCP, UDP, session bus or other
-  local service, and no `io_uring`, which could open sockets around the filter.
-- Inspect or control other processes: `ptrace`, `process_vm_*`, `pidfd_*`,
-  `process_madvise`, `kcmp` and every way to send a signal are denied. Changing
-  limits, scheduling, priority or CPU affinity is allowed only for the plugin
-  itself (`prlimit64`, `sched_set*`, `setpriority`, `ioprio_set`, `migrate_pages`
-  and `move_pages` with the calling process as target). `abort()` still ends the
-  process.
-- Use named inter-process objects of the user: SysV shared memory, message queues
-  and semaphores (`shm*`, `msg*`, `sem*`) and POSIX message queues (`mq_*`). They
-  have no per-user namespace and can be listed without `/proc`, so a plugin could
-  otherwise reach another process of the same user through them.
-- Change the mode, owner, attributes or times of a file (`chmod`, `chown`,
-  `setxattr`, `utimensat` and their variants), because Landlock does not mediate
-  these; truncate a file it may only read (mediated by Landlock ABI 3).
-- Mount, load BPF programs, create user-fault or performance-event descriptors,
-  or use the kernel key ring.
-- Use another system call ABI: the filter kills the process for any architecture
-  other than the native one and, on x86-64, for the x32 call numbers.
-
-The plugin sees only the data the host sent over the protocol. The sandbox does not
-limit CPU or memory use, and does not protect against a vulnerability in the kernel
-or in the allowed system libraries. A confined plugin can still fill its data
-directory or use CPU until the host stops it.
-
-**System metrics.** The manifest feature `system.metrics`, shown in the access
-review, adds read access to exactly `/proc/stat`, `/proc/meminfo` and
-`/proc/loadavg`. Broad `/proc` access is never granted, because the environment of
-another process of the same user can hold tokens. `statvfs` needs no grant. Changing
-a grant requires stopping the current generation first and applies to the next
-process. The released `system-status` 0.1.0-rc.1 does not declare `system.metrics`,
-so under the sandbox its CPU and MEM bars show N/A; DISK is unaffected. The 0.2.0
-manifest requires the feature, so that version needs the grant at its access review.
-
-**Kernel requirements.** Full protection needs Landlock ABI 3 or newer (Linux 6.2
-or newer) and the seccomp filter. The level actually applied is what the child
-reports, not the distribution or one probe:
-
-| Observed | Level | Start |
-|---|---|---|
-| Landlock ABI 3 or newer, seccomp loaded | full | starts |
-| Landlock ABI 1 or 2, seccomp loaded | reduced | only after you allow it for that plugin |
-| no usable Landlock, seccomp loaded | reduced (seccomp only) | only after you allow it for that plugin |
-| seccomp cannot be loaded | none | never starts, with or without consent |
-
-Without consent a plugin on an older kernel is shown as Unavailable in Preferences
-with the observed level, the required level and an "Allow reduced protection…"
-action. Consent is stored per plugin identity with the level it was given for. A
-later start that reaches a lower level asks again; a higher level starts without
-asking. A plugin the user allowed to run with reduced protection carries a mark on
-its card for as long as that permission is stored, whether the plugin is running or
-stopped.
-
-For every start the host records the plugin identity, generation, granted
-features, a digest of the policy that was applied, the Landlock ABI and enforcement
-the child reported, whether the seccomp filter loaded, and the reason of any
-refusal. Preferences shows these in the plugin's details.
-
-The host starts with:
-
-```json
-{"type":"managed_hello","major":1,"minor":2,"identity":"github:12/sample","session":"session-id","generation":"process-id","features":["context.terminals","settings","status"]}
-```
-
-Reply with `managed_hello`, matching identity, session, generation and API 1.2,
-and a feature subset of the offered grants that still includes every manifest
-requirement. Only then does Starting become Running. The deadline is five seconds;
-pre-admission output has no authority. Optional features can be omitted by the
-plugin. Each new process gets a fresh generation; each host session gets a fresh
-session ID. Old replies cannot establish admission or acknowledge new settings.
-
-| Feature | Actual host-mediated exposure |
-| --- | --- |
-| `status` | Answer managed status requests with validated text/meter fragments |
-| `settings` | Receive declared, validated configuration snapshots |
-| `context.terminals` | Scoped terminal/workspace references and enumeration |
-| `context.cwd` | Known working directory, or null |
-| `context.title` | Known terminal title, or null |
-| `context.process` | Running state and process-exit events |
-| `events.terminal` | Subscribe to terminal/workspace lifecycle events |
-| `system.metrics` | Declares that the plugin reads system load figures. Shown in the access review and recorded; adds read access to `/proc/stat`, `/proc/meminfo` and `/proc/loadavg` under the sandbox (other `/proc` reads fail with `EACCES` at full protection) |
-
-The context fields and terminal events require `context.terminals`. Missing grants omit fields rather than
-fill them with fake values. Without terminal context, status is application-only
-and its context contains only the session. Events require both terminal context
-and `events.terminal`; process-exit events additionally require `context.process`.
-Working-directory events carry a path only with `context.cwd`. Lifecycle events
-carry canonical string pane/workspace references, not mutable list positions.
-
-Managed status uses an explicit target rather than a legacy index scope:
-
-```json
-{"type":"status","session":"session-id","generation":"process-id","request_id":7,"scope":{"slot":"workspace_summary","target":{"kind":"workspace","reference":"10"}},"context":{"session":"session-id","terminals":[{"pane":"1","workspace":"10"}],"next_cursor":null}}
-```
-
-Reply with `type`, `session`, `generation`, `request_id`, `fragments` and optional
-`refresh_ms`. Application targets use `{"kind":"application"}`; pane targets use
-`{"kind":"pane","reference":"1"}`. Slot names otherwise match the existing scope
-table without colon suffixes. References are canonical decimal strings, never JSON
-numbers, leading-zero aliases or display names. Workspace references survive the
-birth pane closing and workspace reorder; closed targets expire. They are not
-saved as replay authority in session files. Responses are resolved against the
-current target, so a delayed sidebar reply cannot attach to a reused list index.
-
-Context pages contain at most 32 terminals and roughly 28 KiB of terminal data.
-When `next_cursor` is non-null, send `enumerate` with session, generation, your
-request ID, the same scoped target and that string cursor. The host replies with
-`context_page`, echoing those identifiers and carrying `context`. Only one
-enumeration request may await host enqueue at a time; page requests need terminal
-context and valid live targets. Pages reflect current state, not a frozen snapshot;
-terminal creation/removal between pages can change the enumeration. Authorized
-text over 4096 UTF-8 bytes or 8192 JSON bytes is null with its field name in
-`unavailable`; paths are never silently truncated. Unauthorized fields are absent.
-
-Settings use `configure`/`configured`:
-
-```json
-{"type":"configure","session":"session-id","generation":"process-id","revision":3,"version":1,"values":{"label":"current"}}
-```
-
-Reply with matching session, generation, revision and `outcome`: `applied`,
-`rejected` or `restart_required`. Optional `reason` is one of
-`invalid_configuration`, `unsupported_version`, `unavailable`, `internal_error`.
-Free-form acknowledgement text is not displayed or logged. Unknown stored keys
-are preserved locally but never included in declared `values`.
-
-The editor distinguishes Saved locally, awaiting acknowledgement, Applied,
-Rejected and Restart required. A configuration unanswered for five seconds is
-reported unavailable, not applied; its eventual late reply cannot change that
-state. A manifest's `apply: restart` saves without sending live changes, and the
-next process receives them. Superseded revisions and stopped generations cannot
-mark a newer revision applied. Unsupported `notify` is refused with a bounded,
-value-free unknown-type diagnostic. It creates no fabricated event, attention,
-notification UI or delivery job.
-
-When a running plugin needs restart, its form offers **Restart plugin…** with
-explicit confirmation. Cancel keeps the current process and accepted settings.
-Confirmation restarts only that plugin, preserving the desired switch and live
-terminals; it cannot implicitly enable a disabled plugin. The callback checks the
-current receipt and process generation, so a dialog from before replacement or a
-process restart cannot restart a different generation.
-
-A current `applied` acknowledgement invalidates that plugin's cached status and
-workspace summaries, including event-driven content. Pre-configuration status
-replies keep their transport credit until consumed or stopped, but cannot restore
-the old content after application; collection then requests the current values.
-
-## Failure handling
-
-Plugins are untrusted input. Everything below is discarded and the application
-continues:
-
-- A line that is not valid JSON, or does not match the schema.
-- A message of a type the host does not know.
-- A value out of range: `priority` outside −1000…1000, `text` longer than 512
-  characters, or `refresh_ms` above an hour.
-- More than 64 fragments in one response.
-- A fragment with neither text nor an icon.
-
-Stdout frames are limited to 64 KiB including the newline, with at most 32 JSON
-nesting levels. The reader never allocates an unlimited unterminated line. Each
-plugin's stdout queue holds at most 16 frames (at most 1 MiB); exceeding either
-the frame or queue limit faults that plugin instead of blocking the interface.
-Polling rotates its starting plugin and drains at most 16 frames per plugin,
-256 globally and five milliseconds of frame work per tick. A noisy source does
-not always run before every other source. Pending result/notification batches
-are also capped at 256 entries each.
-
-Stdin uses a separate bounded 16-frame/1-MiB budget, including a partially written
-frame, with a two-second enqueue-to-write deadline. Serialization stops at the
-64-KiB frame limit too. Spawn, pipe reads/writes, termination and reaping run in
-one cancellable worker per supervised process, not on the GUI thread. The host
-admits at most 32 plugin generations across live and retiring windows, including
-generations still stopping. A generation keeps its identity reservation and budget
-slot until both its process object and its actual supervisor have retired. A
-replacement of that identity cannot overlap it, including across windows or after
-a host handle is dropped. Unrelated identities may use other free slots; one
-unresolved retirement does not close an application-wide startup gate.
-When all 32 slots are occupied, other enabled identities wait and are retried as
-capacity becomes free, including after a replacement window loads a different
-plugin set. Capacity contention is not a crash and consumes no crash-restart
-allowance. Disabling a waiting plugin cancels its pending startup.
-
-Starting is separate from Running: managed admission is required within
-five seconds. Statuses and configuration revisions share 15 reply credits, including
-superseded/expired revisions and revoked targets whose replies have not arrived;
-one output slot is reserved for the single enumeration request. Reply consumption
-or generation shutdown releases credit. A full input
-queue defers status collection without faulting the plugin or advancing its
-collection clock; accepted frames still have the write deadline. Other traffic
-that exceeds the input budget faults the plugin rather than growing a queue.
-Unmatched, duplicate and
-previous-generation replies cannot update slots. Both faults and disablement
-withdraw the last contribution even when there are no new results.
-
-A plugin that crashes, exits, or does not answer within the timeout loses its
-content immediately. Stopping sends TERM to its supervised process group,
-escalates to KILL after 500 ms and reaps off-loop. Completion additionally requires
-the kernel to report that the original process group is absent. A successful
-signal, leader reap or pipe EOF alone is not that proof. After leader reap the
-supervisor sends no further signals: its signal-zero queries deliver no signal,
-so a recycled numeric group cannot be killed accidentally. Only ESRCH establishes
-absence; an existing group, permission denial or other inspection error keeps
-that identity Stopping with a visible reason, its budget slot and package lease
-held. Unreaped zombies or reuse of the numeric group ID can conservatively delay
-this proof even after the owned tasks are dead. No readable descendant procfs,
-pidfd, new kernel feature, helper process or global reaper is required. Other
-identities and the replacement window's terminals stay usable within the shared
-budget. Uninstall retains its existing five-second partial-failure deadline; no
-uncertain stop is acknowledged or converted to successful cleanup.
-At most three automatic restarts follow a fault, after 2, 4 and 8
-seconds; an explicit off/on cycle resets that allowance. Incompatible or missing
-executables are not automatically retried. The application and every terminal
-stay usable throughout. Supervision is separate from confinement: descendants that
-deliberately escape the owned group are no longer stopped by the supervisor, though
-they remain inside the sandbox they inherited.
-
-Standard error is discarded by the host. Use a protocol `error` response for a
-diagnostic, or exit nonzero for an unrecoverable failure so the host notices it;
-printing to stderr alone does not reach the user.
-
-Because the pipe to a plugin is separate from the interface, a plugin stuck in a
-long computation cannot freeze the window: the host reads its output off the main
-loop and applies a timeout instead of waiting inline.
-
-## Writing one
-
-### Third-party plugin quick start
-
-Plugins run as your user inside the kernel-enforced sandbox described under
-[Confinement](#confinement): no network, no files except the plugin's own data
-directory and its installed package, no control over other processes. The sandbox
-does not defend against kernel vulnerabilities or resource exhaustion, so install
-only code you trust. Write state to `AMONG_PLUGIN_DATA_DIR`, not to the working
-directory (the installed package is read-only) and not to a home directory. A plugin
-that needs more, such as network access, needs a new reviewed grant that does not
-exist yet.
-They can use any language; the host launches the file directly, so scripts need
-a shebang, executable permissions and an installed interpreter. Only protocol
-JSON lines belong on stdout, and every reply must be flushed.
-
-Supply a schema-1 manifest and implement the managed API 1.2 exchange above.
-Keep the host-issued identity/session/generation bindings on every reply; return
-only declared and granted features. An application-only status provider needs no
-terminal-context grant. Package the manifest, contained executable and licensing
-material, then publish separate compatible ready-built artifacts in a public
-GitHub Release with schema-2 catalogue metadata. See the independent
-[official plugin repository](https://github.com/Among-Terminal/among-plugins) for
-managed implementations and shared protocol support.
-
-The pre-0.2 filename installer and legacy protocol tutorial are withdrawn. Their
-historical source is not an alternative installation/admission path. Developer
-builds may still test old transport fixtures, but that is not supported legacy
-execution or an old-reader compatibility gate.
-
-### Retired compatibility tests
-
-The seven filename-configuration parser tests and five legacy-notification/
-major-only compatibility tests were withdrawn with that profile, not reported as
-passing replacements. Relevant safety/behavior assertions now use managed package
-fixtures: startup does not discover/execute manifestless files, changed manifests
-refuse start, legacy hello cannot unlock context, and unsupported notify cannot
-route attention. Shared fragment bounds and low-level hostile pipe/supervision
-tests remain; raw low-level transport fixtures do not imply managed admission.
-Native Preferences persistence uses clearly synthetic managed receipts and real
-published executable bytes. Its ten phases are distinct from the public Release
-installation/review/enable/output/disable/uninstall acceptance test.
-The live-status renderer runner accepts only a bounded runtime profile captured
-after that native test's actual installation and explicit review. It rechecks the
-native architecture, pinned catalogue, receipt/tag/asset bindings, saved grants,
-installed/settings SHA-256 and executable/resource digests before replay. This
-ephemeral executable/manifest/lease snapshot is excluded from uploaded artifacts;
-it is not a second installer or a new package/source archive.
-
-## Repository identity and cached metadata
-
-See [Plugin sources](#plugin-sources) for the Sources page and the read-only Add
-source flow. Registration saves the inspected numeric repository/publisher
-identity and validated snapshot; looking up an address never grants access or
-changes an installed package.
-
-Checking a saved source requests its numeric GitHub repository ID, never its old
-owner/name alias. A rename retains identity. Reusing an owner/repository spelling
-with a different numeric repository ID requires a separate explicit addition.
-The saved list's age comes from its actual retrieval timestamp. A future timestamp
-or clock rollback is stale/uncertain, not fresh; a cache is no promise of network
-availability. Failure, a rate limit or cancellation preserves the committed cache
-and the installed selection, enabled choice and settings.
-
-The application-owned **Official plugins for Among Terminal** row is always present,
-in addition to at most 32 custom sources. Its numeric repository `1431055733` and
-publisher `339567100` are pinned; equal owner/name labels confer no official status.
-It cannot be removed or reassigned to a different publisher. A publisher mismatch
-is unavailable, not an approval prompt. Displaying this row neither fetches metadata
-nor installs, enables or grants access to a plugin.
-
-Custom registrations and exact raw catalogue bytes live in the owned data directory
-`among/plugin-sources/sources.json`; the official cache uses `official.json` beside it.
-Neither is managed selection or configuration storage. Each retained document is
-bounded to 8 MiB. Both retained documents plus any flushed atomic replacement must
-fit the shared 16-MiB budget, including removal while offline. The proposed document
-can evict old snapshots to make room without deleting unrelated registrations,
-settings or installed generations. If even that cannot fit, the operation refuses
-without committing a registration/cache change. There are at most four snapshots
-per source. A duplicate revision/digest/full release-and-tag snapshot replaces
-its retrieval observation rather than consuming another slot. A changed release
-ID or inventory is a different snapshot even when the catalogue bytes match.
 A snapshot of a catalogue that refers to earlier releases also holds those
 releases as they were observed, under `carried`. This key is written only when
 the catalogue refers to earlier releases. A build without support for this key
-rejects the whole source registry document that contains it. If `sources.json`
-contains it, custom sources are not shown; if `official.json` contains it, the
-official source reports a problem. Reading these files does not rewrite them.
-Reading them again requires a build with this support; there is no automatic
-conversion for older builds.
-Publisher reapproval drops the previous publisher's cached snapshots.
+rejects the whole source registry document that contains it: with the key in
+`sources.json` custom sources are not shown, and with it in `official.json` the
+official source reports a problem. Reading these files does not rewrite them,
+and there is no automatic conversion for older builds.
 
-Source edits use no-follow owned storage, a bounded worker/shared two-credit
-budget, advisory serialization, flushed atomic replacement and an exact previous
-document/root-inode check. Written-but-unconfirmed durability is reported separately.
-Only safe files in the reserved `sources-<64-hex>` and `official-<64-hex>` temporary namespaces are recovered;
-links/unsafe entries refuse cleanup, unrelated files remain untouched. Directory
-enumeration is capped at 256 entries; one active atomic temporary is bounded by
-the same 8-MiB document cap. Each registration has a fresh token and edit revision;
-late refresh/remove callbacks cannot resurrect a removed/re-added source or target
-another source with the same label. Cached metadata is revalidated before display
-and compatibility checks run off the GUI thread without probes.
+## Polling and process retirement
 
-The metadata client uses real HTTPS, resolves repository identity, pins catalogue
-content to a revision and accepts only constrained public-GitHub redirects.
-It has 5-second connect, 10-second idle-read and 60-second operation limits,
-bounded streamed responses, cancellation and at most two retained network workers.
-It neither builds nor executes downloaded code.
+The [host poller](../src/plugin/host.rs) rotates its starting plugin each time.
+Preserve the [transport bounds](../src/plugin/transport.rs): at most 16 frames per
+plugin and 256 globally. Before each frame, stop draining if elapsed polling time
+has reached 5 ms. This check does not bound the total duration of `poll()`.
 
-The 0.2 release transition is not yet accepted end to end. The backend below
-uses ordinary `releases/latest` and schema2; development mode, mandatory kernel
-confinement, update-version policy and new official/template/package acceptance
-are still pending. Historical prerelease lifecycle results do not accept them.
+In [process.rs](../src/plugin/process.rs), keep the leader unreaped while sending
+group termination signals and checking group quiescence through `/proc`. After
+reaping, issue only signal-zero existence queries: `kill(-pgid, 0)` returning
+`ESRCH` is the absence proof. Every other result retains the stopping identity,
+admission slot and package lease. A descendant that leaves the owned process
+group falls outside this supervision.
 
-The preflight parser defines `among-plugins.json` schema 2. A root version
-envelope normalizes to one plugin/version; a multi-plugin root has
-`schema_version: 2` and a `plugins` list of independent `id`/`versions` entries,
-with exactly one version per plugin. Schema1 is refused, not migrated.
-Each version embeds the existing shared plugin `manifest`, a 40-lowercase-hex
-version commit `revision`, `manifest_sha256` and `artifacts`. A version may also
-name an earlier release through `release: {id, tag}`. This reference is an
-address within the same repository; the host verifies its ID and tag through
-the release API. The fields `release_id` and `asset_id` remain forbidden in the
-catalogue; release and asset identities retained in local receipts come from
-API observations.
-Unknown fields, duplicate keys/IDs/version labels and executable hooks are refused.
-The catalogue-declared version `revision` must equal the exact commit obtained by
-resolving the actual `tag_name` of the release that holds that version's packages.
-For a version without `release`, this is the catalogue's own release; for a
-carried version, it is the referenced release. Versions in one catalogue may
-therefore describe different release commits. The exact catalogue bytes are bound
-to the API-observed `among-plugins.json` asset's size and SHA256 before parsing;
-no default-branch catalogue or raw-content fallback is read.
+## Implementation references
 
-Source inspection resolves the public numeric repository/publisher identity,
-then reads `/repositories/{id}/releases/latest` and requires
-`draft: false`, `prerelease: false` and `immutable: true`. Its complete inventory
-must contain at most 64 assets, unique positive IDs and exact names, exactly one
-`among-plugins.json`, and an uploaded state, numeric size and a mandatory
-`sha256:<64 lowercase hex>` digest for every asset, including unselected files.
-It downloads the catalogue through the observed numeric asset API with
-`Accept: application/octet-stream` and verifies each package's exact name, size
-and digest against the inventory of the release that holds that version. For
-a carried version, this is the referenced release's inventory. For each release,
-it requests the exact fully qualified `refs/tags/<tag_name>` through the numeric
-repository's Git-reference endpoint.
-There is no branch, prefix-match or `target_commitish` fallback for this tag. A
-lightweight tag points directly to a commit; annotated tags are peeled through at
-most eight exact Git tag object IDs to a commit, which is fetched by SHA from the
-same numeric repository. Missing, ambiguous, cyclic, unsupported or inconsistent
-references/objects/commits refuse installation. Git-object responses are limited
-to 64 KiB each; release metadata retains its 256-KiB limit. The existing operation
-deadline, cancellation, worker credits and constrained HTTPS rules still apply.
-Each annotation adds a request whenever its tag is resolved, so request totals
-depend on the tag chains.
+The [protocol implementation map](plugin-protocol.md) lists host modules for
+transport, admission, configuration, installation and rendering.
 
-Supported tag names are bounded ASCII Git-style paths: at most 256 bytes / 16
-nonempty components containing letters, digits, `.`, `_` or `-`; no `..`, leading
-or trailing component dots or `.lock` suffix. Other tag forms fail closed rather
-than being guessed or passed to a shell. All API paths are locally constructed;
-response-provided object URLs are never followed.
-
-The cache retains the canonical full release inventory and complete tag-object
-chain alongside the catalogue bytes/digest. Offline reopen revalidates all of
-them; a missing/malformed observation cannot become install authority. Installation
-checks numeric repository/publisher identity, latest and the complete tag chain
-again before package transfer, without redownloading the catalogue. This extra
-pre-transfer walk is retained in this foundation; request optimisation is separate.
-After package extraction and before selection commitment, identity, latest, the full release
-snapshot and complete tag-object/commit chain are re-observed with no-cache
-requests. A change to any asset's ID, exact name, size or digest, including an
-unselected asset or the catalogue, refuses publication. Inventory array order
-alone is ignored. A new annotation object with the same peeled commit still
-refuses publication; the immutable flag does not replace either tag-chain walk.
-These are observed consistency checks and the Release API's immutability claim,
-not independent publisher authentication or an atomic transaction with GitHub.
-
-Source receipts retain the canonical complete `release_snapshot` and
-`release_binding` (`tag`, observed reference `object`, resolved `commit` equal to
-the version revision). Offline inventory reads require both. The snapshot's
-release ID, selected asset ID/digest, catalogue digest and tag must agree with
-the committed receipt. Missing or inconsistent source observations refuse the
-read without repairing the receipt or changing user data. In development mode,
-Technical details retains the selected package's API-observed release/asset IDs
-and exact catalogue digest.
-
-For a carried version, the receipt records the referenced release, including
-the SHA-256 of that release's own `among-plugins.json` asset as stated by the
-release API. Accepted limit: the host does not download that earlier catalogue
-or check whether it lists the carried entry. The receipt does not retain the
-digest of the newer catalogue that offered the version. Matching
-tag commits and asset hashes establish content consistency,
-not build reproducibility or independent publisher authentication. Run-time
-confinement is separate (see Confinement).
-
-Artifacts declare `os: linux`, `architecture: amd64` or `arm64`, a `runtime`
-(`native` with `libc` and numeric `minimum`, or `script` with an explicit installed
-`/usr/bin/<name>` executable), `dependencies`, `format: tar.gz`, exact asset filename `asset`,
-exact `size`/`sha256` and `members`. Each regular-file member declares `path`,
-`size`, `sha256` and `executable`; the shared manifest and executable entrypoint
-must be present. This metadata selects ready-built packages, not DEB/RPM installers
-or a build command. Digest consistency is not independent publisher authentication.
-
-Preflight bounds catalogue bytes to 1 MiB, 32 plugins, one version per plugin,
-8 artifacts per version and 16 dependencies per artifact. Shared manifests retain
-their 256-KiB limit. Package declarations are bounded to 64 MiB downloaded,
-256 MiB expanded, 2,048 regular files and 64 MiB per file. Paths use the shared
-256-byte/16-component relative-path rules; duplicate or conflicting file paths,
-absolute paths, empty/dot/parent components and inconsistent manifest digests fail.
-Platform selection never guesses from filenames or falls back to another CPU.
-An installed runtime file does not prove its minimum version: an unmeasured
-minimum is reported unavailable instead of executing a probe.
-
-Install/update uses only the reviewed release snapshot; changed latest, identity,
-inventory or tag chain refuses and requires refresh and review, never a silent
-substitution. The package request uses its observed numeric asset ID. Signed CDN redirects must
-use GitHub's release-asset hosts and the selected numeric repository path. Tokens
-are not logged or stored in receipts. Size and SHA-256 must match selected metadata.
-The same connect/idle/operation deadlines and two worker credits cover inspection
-and package mutations/recovery; overflow is refused, not put in an unbounded queue.
-
-Extraction uses fresh owned descriptor-relative staging. Regular files must match
-the declared size, executable mode and digest. Links, special/extended headers,
-duplicate/unsafe paths, unexpected members, trailing compressed streams and invalid
-gzip trailers are refused. The packaged manifest must match both its exact digest
-and the shared parsed preview. Shared icon inspection stays inert. Extraction has
-a ten-second read deadline, checks cancellation per member/128 KiB and bounds tar
-headers/padding in addition to declared expanded bytes.
-
-After extraction and digest verification, the contained entrypoint is checked as
-data against the selected runtime. Scripts require an LF-terminated first line
-within 256 bytes, exactly `#!` followed by the declared installed absolute
-`/usr/bin/<name>` interpreter. Whitespace/arguments, CRLF and `env` wrappers are
-not modeled and are refused. This binds the kernel's interpreter choice; it does
-not execute a probe or establish the interpreter's/plugin's behavior.
-
-Native entrypoints require little-endian Linux/System-V ELF64, the selected amd64
-or arm64 machine, executable/PIE type, valid bounded program/section table ranges
-and an entry address in an executable load segment. At most 128 program headers
-are read. A dynamic interpreter must be a matching installed standard glibc/musl
-loader for that architecture; duplicate/oversized interpreter records fail. This
-is format/runtime consistency, not complete dynamic-symbol/ISA validation. An incompatible entrypoint never reaches selection, including updates;
-previous selected files, consent and settings remain unchanged.
-
-The store bounds selection to 128 identities/256 KiB, package/staging bytes to
-2 GiB total/512 MiB staging, directory depth to 24, per-directory entries to 131,072
-and a measured traversal to 1,048,576 entries. Normal staging cleanup is bounded
-to 65,536 entries/five seconds; unsafe entries leave a diagnostic/deferred staging
-directory, never a followed link. Advisory serialization has cancellable off-loop
-waiting bounded to five seconds. It serializes cooperating package writers,
-including updates/removal and recovery. It does not protect against arbitrary same-user
-filesystem modification of the store.
-
-Full snapshots count against the existing receipt/selection byte budgets.
-A large inventory can reach the byte limit before the identity-count limit;
-the operation refuses instead of omitting assets or increasing the quota.
-
-Complete flushed payloads move to fresh generations with no-replace rename before
-an atomic `installed.json` selection rename. Pre-selection failure leaves at most
-an inert unselected generation; it does not report Installed. A changed selection
-snapshot/root or published-generation inode is refused rather than overwriting an
-observed external edit or selecting a hidden generation. Final
-directory-confirmation failure reports written-but-uncertain, not durable success.
-Cancellation is accepted only before commitment starts; a committed operation is
-not reported rolled back. Its completion reconciles disabled live inventory even
-if the repository view has closed. Selected files/settings/legacy executables are
-never replaced in place by package installation/update.
-
-Install jobs have identity/operation-generation-bound coalesced progress and retain
-their per-identity slot until the worker actually stops, including cancellation.
-Application-wide completion dispatch targets the current live window's host, not
-a retiring host captured by an old view. It cannot implicitly start the new plugin.
-An update preserves the installation token, rereads the exact expected receipt
-under store authority and retains the previous verified receipt/generation in the
-same selection document. Live reconciliation uses the host's current desired
-choice, never the download's earlier snapshot: a later accepted disable wins.
-That preservation applies only to the **same installation token**. An existing
-observer can miss a complete removal/reinstall transition; a changed token revokes
-its old runtime/process and queued authority even if version/digests are identical.
-The fresh entry stays off unless current explicit enablement names its actual new
-token. Old enabled preferences, scheduled restarts and a missing token cannot supply
-that consent. Retained settings/reviews and unrelated preferences are not deleted;
-fresh activation still passes ordinary publisher/access/settings admission. Old
-generation leases stay supervised through reaping before deferred cleanup.
-Selected and actually running package versions are observed separately while the
-old supervisor stops. Numeric publisher/access changes and incompatible local
-settings can refuse activation; no downloaded migration code runs. In development
-mode, the plugin page's **Recover previous…** action explicitly reselects the retained verified generation with
-normal access/settings/API admission, without claiming rollback of external effects.
-
-The plugin page's **Uninstall** action is separate from source deregistration. Confirmation
-invalidates the identity's pending package worker, blocks stale enable/restart
-controls, withdraws contributions and stops its supervised process. Removal waits
-up to five seconds for actual stop acknowledgement, then commits absence and a new
-store revision. Only that committed result removes the Installed entry. Failed
-stop/commit remains partial, and uncertain directory durability is not ordinary
-success. A reinstall uses a new token and stays disabled despite retained enabled
-preferences. Unknown/local values and grants remain stored.
-
-Preferences → Plugins → **Retained settings…** lists identity-scoped saved or
-pending settings only when that plugin is uninstalled. **Delete settings…** opens
-a separate destructive confirmation; closing it or pressing Escape deletes nothing.
-Deletion removes only the selected identity's `settings` payload and matching
-pending settings edits, including unknown values within that explicitly selected
-payload. Grants, enablement/installation tokens, unknown fields outside `settings`,
-other origins, repository registrations and legacy/external files remain intact.
-An installed identity must be uninstalled first; this is not a live-runtime reset.
-
-The confirmed saved/pending snapshot is rechecked before replacement. The same
-per-identity operation slot and a nonblocking store commit lock exclude conflicting
-package operations while authoritative absence is checked and settings are edited.
-A busy worker, currently reinstalled identity or changed settings refuses deletion; reopen
-the current list. Failure before replacement accepts no deletion. Post-rename
-directory-confirmation failure is shown as written-but-uncertain. Pending settings
-are discarded only after replacement, even if its durability is uncertain, and a
-later save never retries an old destructive request. Other pending preference edits
-are neither flushed nor forgotten. This is local logical deletion, not secure
-erasure, hook execution or reversal of external effects. Reinstall still requires
-explicit installation and starts disabled with a fresh token.
-
-New generations contain reserved `.among-receipt.json` and `.among-lease` files;
-packages cannot declare `.among-*` members. The receipt seal must agree with the
-selected record. Inventory snapshots/resources hold shared advisory leases, and
-the actual supervisor command retains its lease through kill/reap even after host
-teardown. Cleanup needs an exclusive lease and never removes selected/previous
-generations. Only owned sealed unreferenced generations and the reserved owned
-staging/selection-temporary namespaces are recovered. Unsealed legacy directories,
-unrelated files, external executables and local settings are not garbage-collected.
-Unsafe entries defer cleanup rather than following links.
-
-Startup schedules bounded recovery off the GUI thread, and later package operations
-retry it under the same store lock. Recovery reads complete selection records; an
-orphan is never inferred installed. It caps generation enumeration at 4,096 and
-uses the existing bounded tree cleanup. A per-operation 256-KiB reservation covers
-the added receipt/lease overhead in admission quotas. Limits are engineering
-constants, not user-facing options. The full update/uninstall/lease task marks still
-require their adversarial and combined-application coverage, not just these paths.
+See the [managed notification backend](plugin-notification-backend.md) for host
+integration and the [sandbox checks](testing.md#plugin-sandbox-hostile-tests) for testing.

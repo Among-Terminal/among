@@ -3,14 +3,12 @@
 The host receives VTE's semantic bell signal, retains session-local attention and
 acknowledges actual terminal viewing. Pane headers and workspace rows consume
 that state in place, including collapsed rows and rename, without rebuilding on
-every bell. While a terminal is unread its stripe (the thin line at the left edge
-of the pane header and of the workspace row) is thicker and its opacity pulses
-without end until the terminal is actually focused; there is no `!`. The thicker
-line and accessible names do not depend on colour or animation. System
-reduced-motion changes are read on the shared tick without discarding unread
-state or changing workspace hue/terminal size.
+every bell. The renderer uses stripe thickness and accessible names independently
+of colour or animation; it adds no `!` marker. System reduced-motion changes are
+read on the shared tick without discarding unread state or changing workspace
+hue/terminal size.
 
-[General Preferences](preferences.md#general-notifications) controls accepted
+[Notification preferences](https://among-terminal.github.io/preferences/#notifications) control accepted
 visual/audio/optional-command policies and persistence. One shared application
 [audio owner](audio.md) consumes admitted events and explicit preview separately.
 The normal bell backend registers/polls the optional [command executor](notification-commands.md)
@@ -39,7 +37,7 @@ Viewing means the terminal itself has keyboard focus, is mapped, and belongs to
 the active main window. A mapped native popover blocks acknowledgement. Header
 focus, remembered selection, model workspace switching and container rebuilding
 alone do not acknowledge anything. Rebuilding or switching may subsequently
-return **real** terminal focus; that acknowledges only the focused source, never
+return real terminal focus; that acknowledges only the focused source, never
 its hidden siblings. Focus signals and the existing shared tick observe this
 without moving focus themselves.
 
@@ -82,7 +80,7 @@ excess jobs give way to a less represented origin. Diagnostics retain at most
 32 fixed-size records, coalescing adjacent
 identical reasons, with no arbitrary payload text or diagnostic re-ingress.
 
-`take_ready` consumes a job: it is permission to **attempt** an effect, not a
+`take_ready` consumes a job: it is permission to attempt an effect, not a
 delivery receipt. An adapter must check `is_current` before acting and cancel its
 owned active operations when the source, channel or policy is revoked. Policy
 changes clear queued jobs and invalidate already dequeued tokens. Re-enabling a
@@ -109,7 +107,7 @@ application, packaging or release approval.
   and normal cancellation do not establish this repair's stalled boundary.
 - Packaged command self-exec and the full audio platform/release matrix remain
   separate from native General/UI observations.
-- Installer fresh-token authority has a separately assigned L1 remove/reinstall
+- Installer fresh-token authority has a separately assigned remove/reinstall
   finding. Current-host/nonmodal approval does not establish that boundary. Await
   the exact reviewed installer repair and actual combined regression; no mutable
   installer checkpoint is incorporated here.
