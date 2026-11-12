@@ -22,9 +22,9 @@ pub const PANES_TEST: &str = "app::plugin_tests::installation::doc_media::captur
 
 const WIDE: u32 = 1600;
 const WIDE_HEIGHT: u32 = 1000;
-const NARROW: u32 = 1040;
+const NARROW: u32 = 880;
 const FRAME: u32 = 5;
-const MARGIN: u32 = 80;
+const MARGIN: u32 = 1;
 
 const WIDE_STILLS: [&str; 5] = [
     "main-window",
@@ -33,13 +33,14 @@ const WIDE_STILLS: [&str; 5] = [
     "plugin-off",
     "plugin-on",
 ];
-const NARROW_STILLS: [&str; 6] = [
+const NARROW_STILLS: [&str; 7] = [
     "plugins",
     "plugin-info",
     "plugin-access-review",
     "notifications",
     "keyboard",
     "terminal",
+    "about",
 ];
 
 pub fn all(app_test: &Path, output: &Path) -> Result<PathBuf> {
@@ -94,21 +95,37 @@ pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
         output,
         "notification-return.mp4",
         "notification-return-poster.png",
-        "2.0",
+        "2.5",
     )?;
+    // The scene captures the frame where it confirmed the banner is visible.
+    // Prefer that still over a guessed video timestamp, which depends on how
+    // long the shell took to draw the banner.
+    let scene_poster = raw.join("notification-return-poster.png");
+    let poster_source = if scene_poster.is_file() {
+        let poster = output.join("notification-return-poster.png");
+        run_convert(
+            &[
+                scene_poster.to_str().ok_or("poster path is not UTF-8")?,
+                "-crop",
+                "1600x1000+0+0",
+                "+repage",
+            ],
+            &poster,
+        )?;
+        poster
+    } else {
+        video.clone()
+    };
     let banner = output.join("desktop-notification.png");
-    let status = Command::new("/usr/bin/ffmpeg")
-        .env_clear()
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            "2.0",
-            "-i",
-        ])
-        .arg(&video)
+    let mut crop = Command::new("/usr/bin/ffmpeg");
+    crop.env_clear()
+        .args(["-hide_banner", "-loglevel", "error", "-y"]);
+    if poster_source == video {
+        crop.args(["-ss", "2.5"]);
+    }
+    let status = crop
+        .arg("-i")
+        .arg(&poster_source)
         .args(["-frames:v", "1", "-vf", "crop=640:130:480:10"])
         .arg(&banner)
         .stdin(Stdio::null())
@@ -289,16 +306,13 @@ fn narrow(source: &Path, output: &Path) -> Result<()> {
         return Err(format!("{} is too small", source.display()).into());
     }
     let content_width = width - FRAME * 2;
-    let content_height = height - FRAME * 2;
-    if content_width != NARROW - MARGIN * 2 {
+    if content_width != NARROW {
         return Err(format!(
-            "{} content is {content_width} wide, expected {}",
-            source.display(),
-            NARROW - MARGIN * 2
+            "{} content is {content_width} wide, expected {NARROW}",
+            source.display()
         )
         .into());
     }
-    let canvas = content_height + MARGIN * 2;
     run_convert(
         &[
             source.to_str().ok_or("source path is not UTF-8")?,
@@ -309,12 +323,6 @@ fn narrow(source: &Path, output: &Path) -> Result<()> {
             "#3a414d",
             "-border",
             "1",
-            "-background",
-            "#20262f",
-            "-gravity",
-            "center",
-            "-extent",
-            &format!("{NARROW}x{canvas}"),
             "-strip",
             "-define",
             "png:exclude-chunk=all",
@@ -394,7 +402,7 @@ fn manifest(output: &Path) -> Result<()> {
         "version": 1,
         "canvas": {
             "wide": [WIDE, WIDE_HEIGHT],
-            "narrow_width": NARROW,
+            "narrow_width": NARROW + MARGIN * 2,
             "narrow_margin": MARGIN,
             "frame": FRAME,
             "backdrop": "#20262f",

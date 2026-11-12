@@ -379,7 +379,11 @@ jobs:
         if: matrix.runner == 'ubuntu-24.04'
         run: |
           set -euo pipefail
-          cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/media-tests.jsonl"
+          touch src/build_info.rs
+          AMONG_BUILD_VERSION=0.2.0 \
+            AMONG_BUILD_COMMIT="$(git rev-parse --short HEAD)" \
+            AMONG_BUILD_DATE="$(date -u +%F)" \
+            cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/media-tests.jsonl"
           app_test="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .target.kind == ["bin"] and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one application test executable") end' "$RUNNER_TEMP/media-tests.jsonl")"
           case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
           test -x "$PWD/target/debug/examples/fake-plugin"

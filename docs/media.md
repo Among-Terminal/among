@@ -28,6 +28,9 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   --mount type=bind,src="$HOME/.cargo/registry",dst=/cargo/registry,readonly \
   --mount type=bind,src="$HOME/.cache/among/media/build/target",dst=/target \
   --env HOME=/tmp --env CARGO_HOME=/cargo --env CARGO_TARGET_DIR=/target \
+  --env AMONG_BUILD_VERSION=0.2.0 \
+  --env AMONG_BUILD_COMMIT="$(git rev-parse --short HEAD)" \
+  --env AMONG_BUILD_DATE="$(date -u +%F)" \
   --env CARGO_NET_OFFLINE=true --workdir /source \
   among-managed-resource-gui:1.98.1-ubuntu24-20261025-01 \
   bash -c 'cargo test --locked --offline --bin among --no-run --message-format=json > /target/test.jsonl && cargo build --locked --offline --example fake-plugin'
@@ -77,15 +80,16 @@ and prints a warning.
 
 | Command | What it captures |
 | --- | --- |
-| `media stills` | The restore prompt, the three-pane Workbench, an expanded pane, the Review workspace, the plugin status comparison, all six Preferences pages |
-| `media panes` | One pane split to five, divider resizes, a pane dragged to a new position, then the Review and Notes workspaces |
+| `media stills` | The restore prompt, the three-pane Workbench, an expanded pane, the Review workspace, the plugin status comparison and the seven Preferences pages including About |
+| `media panes` | One pane split to five, divider resizes, a pane dragged to a new position, workspace switching, then a new workspace created and renamed |
 | `media notification` | The Review workspace with a status terminal, a real GNOME notification, a pointer click and the focused terminal after it |
 | `media all` | All three, in one output directory |
 
-The stills and panes runs use an owned 1600x1000 Xvfb/Openbox display. The
-notification run uses an owned Xephyr/GNOME Shell display with a private session
-bus, a private desktop identity and dark system settings. All use the same
-project, terminal colours, font fixture and application build.
+The stills and panes runs use an owned 1600x1000 Xvfb/Openbox display with the
+application maximized, so the product fills the frame. The notification run
+uses an owned Xephyr/GNOME Shell display with a private session bus, a private
+desktop identity and dark system settings. All use the same project, terminal
+colours, font fixture and application build.
 
 ## The published contract
 
@@ -95,14 +99,16 @@ project, terminal colours, font fixture and application build.
 | `plugin-off.png`, `plugin-on.png` | 1600x1000 |
 | `panes.mp4`, `panes-poster.png` | 1600x1000, H.264, 30 fps, no audio |
 | `session-restore.png` | 800x480 |
-| Preferences stills | 1040 wide, 160 px taller than the window |
+| Preferences stills | 882 wide, 2 px taller than the window |
 | `notification-return.mp4` | 1600x1000, H.264, 30 fps, no audio |
 | `notification-return-poster.png` | 1600x1000 |
 | `desktop-notification.png` | 640x130 |
 
-The backdrop is `#20262f`, the window border `#3a414d`, the application is
-Adwaita dark, the terminal is Gray on black with the Tango palette, and every
-PNG has its metadata stripped. `media verify` checks the names, hashes, sizes,
+The application fills the 1600x1000 display. Preferences stills are cropped to
+the window with a 1 px `#3a414d` border, so no desktop margin remains. The
+application is Adwaita dark, the terminal is Gray on black with the Tango
+palette, and every PNG has its metadata stripped. `media verify` checks the
+exact 18-name set, hashes, sizes,
 and the video stream geometry and rate.
 
 ## The notification recording
@@ -122,7 +128,8 @@ until the scene is ready. They are not part of the product story.
 
 The scene leaves Review for Workbench before recording, so the bell belongs to
 the unseen status terminal and the banner click has a visible result. Recording
-starts just before the bell, so the clip contains the ring, the banner and the
+starts just before the bell, waits until the banner is visible, and captures the
+poster from that confirmed frame. The clip contains the ring, the banner and the
 return to Review without a hard-coded trim.
 
 ## The panes recording
@@ -130,7 +137,8 @@ return to Review without a hard-coded trim.
 The scene starts from a saved single-pane layout, splits to five with
 `Ctrl+Shift+N`, drags the root divider twice, drags pane five onto pane two,
 then switches to Review, Notes and back to Workbench with `Alt+2`, `Alt+3` and
-`Alt+1`. The project is synthetic; every terminal is real.
+`Alt+1`, creates a fourth workspace with `Ctrl+Shift+T` and renames it in
+place. The project is synthetic; every terminal is real.
 
 ## The plugin comparison
 
@@ -150,7 +158,7 @@ Copy the verified files into the site repository:
 | `plugin-off.png`, `plugin-on.png` | `docs/public/media/app/` |
 | `panes.mp4`, `panes-poster.png` | `docs/public/media/app/` |
 | `notification-return.mp4`, `notification-return-poster.png`, `desktop-notification.png` | `docs/public/media/app/` |
-| `plugins.png`, `plugin-access-review.png`, `notifications.png`, `keyboard.png`, `terminal.png` | `docs/public/media/preferences/` |
+| `plugins.png`, `plugin-access-review.png`, `notifications.png`, `keyboard.png`, `terminal.png`, `about.png` | `docs/public/media/preferences/` |
 
 Use the dimensions above in page markup. Run the site's `npm run build` and
 `npm run check` after replacing the files.

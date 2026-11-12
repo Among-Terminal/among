@@ -481,43 +481,11 @@ fn focus_main(window: &impl IsA<gtk::Window>) -> String {
     id
 }
 
-fn place(window: &impl IsA<gtk::Window>, width: u32, height: u32, x: i32, y: i32) -> String {
-    window.as_ref().unmaximize();
-    wait_for(|| !window.as_ref().is_maximized(), Duration::from_secs(3));
-    let id = focus_main(window);
-    window
-        .as_ref()
-        .set_size_request(width as i32, height as i32);
-    window
-        .as_ref()
-        .set_default_size(width as i32, height as i32);
-    let end = std::time::Instant::now() + Duration::from_millis(300);
-    while std::time::Instant::now() < end {
-        glib::MainContext::default().iteration(false);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    xdo(&[
-        "windowsize",
-        "--sync",
-        &id,
-        &width.to_string(),
-        &height.to_string(),
-    ]);
-    xdo(&["windowmove", "--sync", &id, &x.to_string(), &y.to_string()]);
-    eprintln!(
-        "media window requested {width}x{height} at {x},{y}; actual {}x{}; {}",
-        window.as_ref().width(),
-        window.as_ref().height(),
-        xdo(&["getwindowgeometry", &id]).trim()
-    );
-    wait_for(
-        || {
-            (window.as_ref().width() - width as i32).abs() <= 10
-                && (window.as_ref().height() - height as i32).abs() <= 10
-        },
-        Duration::from_secs(3),
-    );
-    id
+/// Fill the owned display with the application, so a still or recording shows
+/// the product rather than a desktop margin.
+fn maximize(window: &impl IsA<gtk::Window>) {
+    window.as_ref().maximize();
+    wait_for(|| window.as_ref().is_maximized(), Duration::from_secs(3));
 }
 
 /// Runs the application's main context while time passes. A plain thread
@@ -543,6 +511,52 @@ fn capture_root(name: &str) {
         .expect("ImageMagick import");
     assert!(status.success(), "capture {name} failed");
     eprintln!("media still: {}", path.display());
+}
+
+/// The GNOME banner is drawn by the shell, not by a window we can address.
+/// Check the known banner region before calling the bell successful, so a
+/// suppressed banner cannot silently produce a clip without the notification.
+fn banner_visible() -> bool {
+    let path = output().join("banner-check.png");
+    let captured = Command::new("import")
+        .args(["-window", "root"])
+        .arg(&path)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !captured {
+        let _ = fs::remove_file(&path);
+        return false;
+    }
+    let mean = Command::new("convert")
+        .arg(&path)
+        .args([
+            "-crop",
+            "400x80+600+50",
+            "+repage",
+            "-format",
+            "%[fx:mean]",
+            "info:",
+        ])
+        .output();
+    let _ = fs::remove_file(&path);
+    mean.is_ok_and(|output| {
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<f64>()
+                .is_ok_and(|value| value > 0.2)
+    })
+}
+
+fn wait_for_banner() {
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while std::time::Instant::now() < deadline {
+        if banner_visible() {
+            return;
+        }
+        pump_for(Duration::from_millis(200));
+    }
+    panic!("desktop notification banner did not appear");
 }
 
 fn set_backdrop() {
@@ -704,6 +718,10 @@ fn capture_preferences(ctx: &Window) {
     choose(&preferences, "terminal-text-background", "Gray on black");
     choose(&preferences, "terminal-ansi-palette", "Tango");
     capture_window("terminal", &preferences);
+
+    resize_preferences(&preferences, 880, 640);
+    show_tab(&preferences, "About");
+    capture_window("about", &preferences);
 
     preferences.destroy();
 }
@@ -873,6 +891,64 @@ fn drag_pane_over(ctx: &Window, source: u64, target: u64) {
     pump_for(Duration::from_millis(500));
 }
 
+fn workspace_row_point(ctx: &Window, index: i32) -> (String, String) {
+    let row = ctx
+        .workspace_list
+        .row_at_index(index)
+        .expect("workspace row");
+    let bounds = row.compute_bounds(&ctx.window).expect("row bounds");
+    let (x, y) = ctx.window.surface_transform();
+    (
+        format!(
+            "{:.0}",
+            x + f64::from(bounds.x()) + f64::from(bounds.width()) * 0.4
+        ),
+        format!(
+            "{:.0}",
+            y + f64::from(bounds.y()) + f64::from(bounds.height()) * 0.5
+        ),
+    )
+}
+
+fn create_named_workspace(ctx: &Window, name: &str) {
+    let before = ctx.state.borrow().workspaces.len();
+    xdo(&["key", "--clearmodifiers", "ctrl+shift+t"]);
+    wait_for(
+        || ctx.state.borrow().workspaces.len() == before + 1,
+        Duration::from_secs(5),
+    );
+    let index = ctx.state.borrow().workspaces.active_index() as i32;
+    let id = focus_main(&ctx.window);
+    let (x, y) = workspace_row_point(ctx, index);
+    xdo(&["mousemove", "--window", &id, &x, &y]);
+    pump_for(Duration::from_millis(80));
+    xdo(&["click", "--repeat", "2", "--delay", "80", "1"]);
+    wait_for(
+        || {
+            ctx.workspace_list
+                .row_at_index(index)
+                .and_then(|row| row.child())
+                .and_then(|child| find_name_widget(&child))
+                .is_some_and(|widget| widget.is::<gtk::Entry>() && widget.width() > 0)
+        },
+        Duration::from_secs(3),
+    );
+    xdo(&["type", "--clearmodifiers", "--delay", "80", name]);
+    xdo(&["key", "--clearmodifiers", "Return"]);
+    wait_for(
+        || {
+            ctx.state
+                .borrow()
+                .workspaces
+                .workspaces()
+                .get(index as usize)
+                .is_some_and(|workspace| workspace.name == name)
+        },
+        Duration::from_secs(3),
+    );
+    xdo(&["mousemove", "--sync", "800", "500"]);
+}
+
 #[test]
 #[ignore = "requires the owned media display, xdotool and ImageMagick"]
 fn capture_stills() {
@@ -882,6 +958,7 @@ fn capture_stills() {
     write_snapshot(&work);
     write_appearance();
     prepare_plugin_fixtures();
+    install_application_identity("com.github.among-terminal");
     let _shell = shell();
     let _service = crate::app::desktop_notification_tests::Server::new();
     std::env::set_var("AMONG_COLOR_SCHEME", "dark");
@@ -893,13 +970,13 @@ fn capture_stills() {
         || ctx.window.visible_dialog().is_some(),
         Duration::from_secs(5),
     );
-    place(&ctx.window, 1440, 900, 80, 50);
+    maximize(&ctx.window);
     settle();
     capture_root("session-restore");
     let dialog = ctx.window.visible_dialog().expect("restore prompt");
     press(&button(&dialog, "Restore"));
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
-    place(&ctx.window, 1440, 900, 80, 50);
+    maximize(&ctx.window);
     quiet_all(&ctx);
     fill_workbench(&ctx);
     fill_other_workspaces(&ctx);
@@ -1000,7 +1077,7 @@ fn focus_neutral_window() -> std::process::Child {
             "-name",
             "among-media-neutral",
             "-geometry",
-            "10x10+1590+1190",
+            "10x10+1590+990",
             "-borderwidth",
             "0",
             "-bg",
@@ -1105,7 +1182,7 @@ fn capture_panes() {
     let dialog = ctx.window.visible_dialog().expect("restore prompt");
     press(&button(&dialog, "Restore"));
     wait_for(|| ctx.state.borrow().session_ready, Duration::from_secs(5));
-    place(&ctx.window, 1440, 900, 80, 50);
+    maximize(&ctx.window);
     quiet(&ctx, 1);
     feed(&ctx, 1, "bash .demo/pane.sh 1");
     wait_for_text(&ctx, 1, "pane 1");
@@ -1144,6 +1221,8 @@ fn capture_panes() {
     pump_for(Duration::from_millis(1200));
 
     assert_eq!(active_panes(&ctx).len(), 5);
+    create_named_workspace(&ctx, "Scratch");
+    pump_for(Duration::from_millis(1800));
     stop_recording(recorder);
     ctx.window.destroy();
 }
@@ -1209,6 +1288,8 @@ fn capture_notification() {
         },
         Duration::from_secs(3),
     );
+    wait_for_banner();
+    capture_root("notification-return-poster");
 
     pump_for(Duration::from_millis(2200));
     // The pointer gesture is visible in the recording. GNOME's X11 stage does
