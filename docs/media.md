@@ -59,9 +59,12 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   --workdir /source among-display:media \
   /tools/among-tools media all /target/debug/deps/among-<hash> /run/out
 
-# 4. Check the published contract.
-tools/among-tools/target/release/among-tools media verify \
-  "$HOME/.cache/among/media/run/out"
+# 4. Check the published contract inside the image that carries ffprobe.
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  --mount type=bind,src="$PWD/tools/among-tools/target/release/among-tools",dst=/tools/among-tools,readonly \
+  --mount type=bind,src="$HOME/.cache/among/media/run",dst=/run \
+  among-display:media \
+  /tools/among-tools media verify /run/out
 ```
 
 CI runs the same `media all` and `media verify` in the x86_64 native job and

@@ -402,7 +402,11 @@ jobs:
             --workdir /source among-installer-enospc:ci \
             /tools/among-tools media all "$container_test" /run-root/out \
             > "$root/media.log" 2>&1
-          tools/among-tools/target/release/among-tools media verify "$root/out"
+          docker run --rm --network none --user "$(id -u):$(id -g)" \
+            --mount type=bind,src="$PWD/tools/among-tools/target/release/among-tools",dst=/tools/among-tools,readonly \
+            --mount type=bind,src="$root",dst=/run-root \
+            among-installer-enospc:ci \
+            /tools/among-tools media verify /run-root/out
           cat "$root/media.log"
       - name: Keep documentation media evidence
         if: ${{ always() && matrix.runner == 'ubuntu-24.04' }}
