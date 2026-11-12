@@ -11,6 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends git squashfs-tools jq \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub-hosted runners use uid 1001 for the job user. The media scene starts
+# its own session bus, and dbus-daemon refuses to start for a uid without a
+# passwd entry, so give that uid a name inside the disposable image.
+RUN groupadd --gid 1001 runner \
+    && useradd --uid 1001 --gid 1001 --no-create-home --shell /usr/sbin/nologin runner
+
 # The documentation media scene lives at a path that can appear in a
 # notification without exposing the private owned HOME. Any runtime uid may
 # create its own project below /work; the sticky bit keeps the directory

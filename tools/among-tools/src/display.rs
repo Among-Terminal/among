@@ -383,7 +383,7 @@ pub fn run(
         system_bus = Some(bus);
     }
     let mut media_session_bus = None;
-    if matches!(mode, Mode::MediaGnome) {
+    if matches!(mode, Mode::Media | Mode::MediaGnome) {
         let bus_log = File::create(base.join("session-bus.log"))?;
         let address = format!("unix:path={}", base.join("session-bus").display());
         let mut bus = OwnedProcess::spawn_capture(
@@ -407,26 +407,28 @@ pub fn run(
             return Err("owned session bus failed readiness".into());
         }
         env.insert("DBUS_SESSION_BUS_ADDRESS".into(), ready.into());
-        env.insert("GSETTINGS_BACKEND".into(), "dconf".into());
-        let share = std::env::current_dir()?.join("data");
-        let paths = std::env::var_os("XDG_DATA_DIRS")
-            .and_then(|value| value.into_string().ok())
-            .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-        env.insert(
-            "XDG_DATA_DIRS".into(),
-            format!("{}:{paths}", share.display()).into(),
-        );
-        for (schema, key, value) in [
-            ("org.gnome.desktop.notifications", "show-banners", "false"),
-            ("org.gnome.desktop.interface", "color-scheme", "prefer-dark"),
-        ] {
-            let status = std::process::Command::new("/usr/bin/gsettings")
-                .env_clear()
-                .envs(&env)
-                .args(["set", schema, key, value])
-                .status()?;
-            if !status.success() {
-                return Err(format!("gsettings {schema} {key} {value} failed").into());
+        if matches!(mode, Mode::MediaGnome) {
+            env.insert("GSETTINGS_BACKEND".into(), "dconf".into());
+            let share = std::env::current_dir()?.join("data");
+            let paths = std::env::var_os("XDG_DATA_DIRS")
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+            env.insert(
+                "XDG_DATA_DIRS".into(),
+                format!("{}:{paths}", share.display()).into(),
+            );
+            for (schema, key, value) in [
+                ("org.gnome.desktop.notifications", "show-banners", "false"),
+                ("org.gnome.desktop.interface", "color-scheme", "prefer-dark"),
+            ] {
+                let status = std::process::Command::new("/usr/bin/gsettings")
+                    .env_clear()
+                    .envs(&env)
+                    .args(["set", schema, key, value])
+                    .status()?;
+                if !status.success() {
+                    return Err(format!("gsettings {schema} {key} {value} failed").into());
+                }
             }
         }
         media_session_bus = Some(bus);
@@ -489,7 +491,7 @@ pub fn run(
         return Err("GNOME overview dismissal failed".into());
     }
     let command_log = File::create(base.join("command.log"))?;
-    let mut command = if matches!(mode, Mode::MediaGnome) {
+    let mut command = if matches!(mode, Mode::Media | Mode::MediaGnome) {
         OwnedProcess::spawn(
             Path::new(&args[0]),
             &args[1..].iter().map(String::as_str).collect::<Vec<_>>(),
