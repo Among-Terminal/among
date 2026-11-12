@@ -1,8 +1,11 @@
 # Audio adapter
 
+Sound selection and playback controls are documented in the site's
+[Sound preferences](https://among-terminal.github.io/preferences/#sound).
+
 The independently testable `among::audio` adapter provides sound admission and
 playback. General controls, preference persistence and bell-router integration
-are separate work: this module alone does **not** add an audio settings page or
+are separate work: this module alone does not add an audio settings page or
 make terminal bells play a sound.
 
 ## Inputs and ownership
@@ -51,7 +54,7 @@ once, not replay clones as new operations. The older `event()` remains the legac
 admission-only route for unmigrated consumers; it is not upgraded by this API.
 General's actual ingress migration and producer-to-output acceptance are separate.
 
-There is one process-wide decoder slot and **zero queued playback requests**.
+There is one process-wide decoder slot and zero queued playback requests.
 Busy requests are not retained. Preview cancels the old operation, but returns
 `Busy` if its helper has not yet retired; the caller must explicitly request a
 new preview after capacity returns. No accepted policy/selection change replays
@@ -66,7 +69,7 @@ after requesting it; unconfirmed cleanup emits `Failed` instead.
 GTK 4.14's `MediaFile::clear` can join a GStreamer thread without a timeout, and
 construction can block before a GUI watchdog exists. MediaFile construction,
 playback, clear and drop therefore live on the main thread of an owned decoder
-**process**, not on a worker thread holding a GTK object. The same host executable
+process, not on a worker thread holding a GTK object. The same host executable
 has a narrow early decoder dispatch; it does not initialize the application UI,
 notifications, commands or plugins. An inherited sealed memfd is revalidated in
 the helper; the original pathname is never reopened. This supervision boundary
@@ -122,7 +125,7 @@ for a possibly blocked GTK clear. The unreaped leader pins the group identity;
 descendant observation uses kernel getpgid/pidfds, not a `/proc/stat` PID parser.
 
 Cleanup confirmation has a separate 500 ms bound. Failure to confirm is reported
-as uncertainty, **not** successful cancellation or extra capacity: the single
+as uncertainty, not successful cancellation or extra capacity: the single
 slot/supervisor remains quarantined, every otherwise admissible request returns
 `Busy`, and no additional worker/reaper is created. The supervisor also owns the helper's
 temporary subtree, including any registry left behind by SIGKILL, and retains
@@ -249,20 +252,20 @@ Probe copies alone receive discovery RUNPATH/interpreter changes; their before/
 after digests are retained. Kernel, compiled and expected architectures must agree.
 Hosted runner identity remains necessary to distinguish native arm64 from emulation.
 
-`snap-core24` checks an extracted **actual Snap**, using its real interpreter
+`snap-core24` checks an extracted actual Snap, using its real interpreter
 under an available `/snap/core24/` base. This establishes loader/discovery/output,
 not snap-confine or installed launch. `snap-installed` additionally requires the
 installed executable and full native-library/module/helper inventory to match
 the artifact, and invokes the external probe through `snap run --shell among`.
 It retains the actual SNAP revision, process security context, mount information
-and core24 loader maps. Among currently declares **classic** confinement: this
+and core24 loader maps. Among currently declares classic confinement: this
 must not be described as a strict sandbox. Missing-member negatives run in
 separate extracted fixtures, not by altering the installed read-only Snap.
 
 Existing AppImage and Snap workflows transfer these bound checkers for both
 native runner architectures and retain failure captures. A workflow edit does
 not establish output until that exact commit's hosted run has executed it.
-These remain library-adapter checks, **not real General/VTE output**. The later
+These remain library-adapter checks, not real General/VTE output. The later
 General-control driver can reuse `audio_capture::Invocation`: its executable
 receives `(scenario, new-consumer-evidence, fixture-wav, payload-root)` inside the
 owned sink environment. It must drive the installed application's real controls

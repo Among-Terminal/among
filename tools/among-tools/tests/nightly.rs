@@ -1,8 +1,10 @@
 use among_tools::{nightly, storage, Result};
 use serde_json::{json, Value};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+
+#[path = "support/executable.rs"]
+mod executable;
 
 struct Fixture(PathBuf);
 impl Drop for Fixture {
@@ -122,8 +124,8 @@ fn actual_cli_resolves_git_once_reads_only_and_preserves_existing_output() -> Re
     git(&["update-ref", "refs/remotes/origin/main", &source])?;
     fs::create_dir(f.0.join("bin"))?;
     let gh = f.0.join("bin/gh");
-    fs::write(&gh,format!("#!/bin/sh\n[ \"$1\" = api ] || exit 8\nprintf '%s\\n' \"$2\" >> '{}'\nprintf 'HTTP 404 fixture\\n' >&2\nexit 1\n",f.0.join("reads").display()))?;
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755))?;
+    let script = format!("#!/bin/sh\n[ \"$1\" = api ] || exit 8\nprintf '%s\\n' \"$2\" >> '{}'\nprintf 'HTTP 404 fixture\\n' >&2\nexit 1\n",f.0.join("reads").display());
+    executable::write(&gh, script.as_bytes())?;
     let output = f.0.join("selection.json");
     let run = || {
         std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
@@ -160,9 +162,9 @@ fn actual_cli_resolves_git_once_reads_only_and_preserves_existing_output() -> Re
     );
     assert!(!run()?.status.success());
     assert_eq!(fs::read(&output)?, bytes);
-    fs::write(
+    executable::write(
         &gh,
-        "#!/bin/sh\nprintf 'HTTP 403 synthetic-secret\\n' >&2\nexit 1\n",
+        b"#!/bin/sh\nprintf 'HTTP 403 synthetic-secret\\n' >&2\nexit 1\n",
     )?;
     let failed = run()?;
     assert!(!failed.status.success());

@@ -9,10 +9,12 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::Write,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
+
+#[path = "support/executable.rs"]
+mod executable;
 
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -335,8 +337,7 @@ impl Draft {
         fs::create_dir_all(state.join("assets"))?;
         fs::create_dir_all(&bin)?;
         fs::create_dir_all(&assets)?;
-        fs::write(bin.join("gh"), FAKE_GH)?;
-        fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755))?;
+        executable::write(&bin.join("gh"), FAKE_GH.as_bytes())?;
         fs::write(state.join("releases.json"), serde_json::to_vec(&releases)?)?;
         fs::write(state.join("next"), "100")?;
         fs::write(state.join("calls.log"), "")?;

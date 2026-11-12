@@ -14,7 +14,7 @@ ten-second lifetime. Obtain `Host::authorization(delivery.job())`, then call
 Managed work requires its exact retained origin lease/identity; origin absence is
 valid only for an explicitly issued host bell/application snapshot.
 
-**Missing metadata means missing at original trusted issuance.** An already
+Missing metadata means missing at original trusted issuance. An already
 privately issued immutable snapshot survives eviction from the bounded backend
 event cache. Conversion does not require a Backend borrow or add cache-based
 cancellation. Source, channel/configuration, registration, session and origin
@@ -61,7 +61,7 @@ not omit a failed scope, default true, or queue a retry.
 
 `export_process()` returns a `ProcessEffectAuthorization: Send + Sync` owning a
 read-only sealed manifest and three to five read-only scope FDs. The bounds are
-**six FDs total, 512 binding bytes**, not five total FDs. `binding()` is the expected
+six FDs total and 512 binding bytes. `binding()` is the expected
 immutable descriptor; `duplicate_fds()` returns a non-cloneable
 `EffectDescriptors`. Retain that wrapper through spawn and borrow `as_slice()`
 for deliberate inheritance. Its Drop closes parent copies and releases their
@@ -69,7 +69,7 @@ budget together. All FDs default to CLOEXEC; clear only in the owned helper's
 fork/exec path. `import_for_helper(expected_binding, Vec<OwnedFd>)` restores
 CLOEXEC before native scanner children can be started.
 
-The **trusted owned-operation route** must supply `expected_binding`; accepting an
+The trusted owned-operation route must supply `expected_binding`; accepting an
 arbitrary self-consistent binding from received FDs does not authenticate an
 issuer. Import checks canonical role/count/order, exact job/deadline, stat
 device/inode, scope/capability nonces, sizes, access modes, seals, reserved bytes
@@ -84,12 +84,12 @@ descriptor wrappers and conservative temporary export reservations. Scope clones
 share one handle/reservation. This is not a limit on arbitrary caller-made FD
 duplicates; consumers must retain the bounded wrappers rather than build a cache
 of unaccounted duplicates. Memfd backing per scope is two checked system pages
-(4–64 KiB per page), plus one 512-byte manifest per process export.
+(4 to 64 KiB per page), plus one 512-byte manifest per process export.
 
 ## Final start ordering
 
 Finish import/mapping, validation, native construction, and blocking protocol/I/O
-**before** the final sequence:
+before the final sequence:
 
 1. Successfully claim the separate owned audio/command operation with its SeqCst
    CAS and nonce checks.
@@ -98,7 +98,7 @@ Finish import/mapping, validation, native construction, and blocking protocol/I/
    regrant or retry that operation.
 
 The method performs a SeqCst fence, ordered SeqCst atomic scope reads, then a
-**fresh local CLOCK_MONOTONIC** read. On success every scope was live after claim;
+fresh local CLOCK_MONOTONIC read. On success every scope was live after claim;
 because each only changes live→revoked, each was also live at claim. The later
 unexpired time proves claim preceded expiry. This preserves the successful
 operation CAS as the start point, unlike independent pre-CAS live reads.
@@ -114,7 +114,7 @@ between that sequence and the effect. Revocation after start requests retirement
 it does not undo output, eliminate OS descheduling, or guarantee immediate silence.
 
 Expiry is original `received_at + 10s`, using checked arithmetic. Issuance samples
-CLOCK_MONOTONIC **before** `Instant::now()` and adds the remaining original lifetime
+CLOCK_MONOTONIC before `Instant::now()` and adds the remaining original lifetime
 to the earlier sample, so a pause shortens rather than extends permission. Export
 retains that absolute deadline. Issuance/export/import require the same Linux
 time-namespace device/inode; the helper must not change namespace afterward.
@@ -145,7 +145,7 @@ The trusted owner must not undo page protections; this is not protection against
 arbitrary native code in the owner process.
 
 The manifest memfd is exactly 512 bytes, with WRITE/GROW/SHRINK/SEAL seals. Its
-binding has a 128-byte header followed by 40 bytes per scope (248–328 bytes total),
+binding has a 128-byte header followed by 40 bytes per scope (248 to 328 bytes total),
 then zero padding to 512:
 
 | Offset | Header field |

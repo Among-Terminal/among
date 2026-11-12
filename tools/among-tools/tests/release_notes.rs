@@ -61,6 +61,9 @@ fn a_release_candidate_without_highlights_links_every_file_once_at_its_tag() -> 
     assert!(body.contains(&format!("commit/{}", commit())));
     assert!(body.contains(RUN));
     assert!(body.contains("sha256sum --check --ignore-missing SHA256SUMS"));
+    assert!(body.contains(
+        "[installation guide](https://among-terminal.github.io/install/#binary-archive)"
+    ));
     assert!(body.contains("under X11 (Xvfb with Openbox)"));
     // Packages carry no plugins; the notes must point at the built-in source
     // instead of claiming bundled, disabled-by-default plugins.

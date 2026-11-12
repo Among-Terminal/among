@@ -121,7 +121,7 @@ pub fn render(
             release_assets::package_asset(target, architecture, "tar.gz")
         }));
     }
-    let guide = format!("{site}/blob/{tag}/docs/install.md");
+    let guide = "https://among-terminal.github.io/install/";
     body.push_str(&format!(
         "\n`uname -m` prints `x86_64` for amd64 and `aarch64` for arm64.
 

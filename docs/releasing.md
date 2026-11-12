@@ -69,7 +69,7 @@ requested during review; no approval has been obtained here.
 ## 2. Prepare the listing and artifact
 
 Use the original `data/com.github.among-terminal.svg`, accurate screenshots and the
-approved silent README promo or [feature demonstrations](features.md). Describe classic host access,
+approved silent README promo or [feature demonstrations](https://among-terminal.github.io/features/). Describe classic host access,
 supported architecture and verified behavior honestly. Do not show private paths,
 account names, shell history or credentials. Fill contact/source/issue URLs only
 after the repository is available.
