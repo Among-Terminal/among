@@ -50,18 +50,17 @@ fn shell() -> PathBuf {
 /// a stale path means the caller did not start from the expected image.
 fn project(_home: &Path) -> PathBuf {
     let project = PathBuf::from("/work/among");
-    let marker = PathBuf::from("/work/.among-media-project");
+    let marker = project.join(".git/among-media-project");
     if project.exists() {
         assert!(
             marker.is_file(),
-            "refusing to remove {} without the media marker",
+            "refusing to remove {} without the in-project media marker",
             project.display()
         );
         fs::remove_dir_all(&project).expect("clean media project");
     }
     fs::create_dir_all(project.join("src")).expect("project source");
     fs::create_dir_all(project.join(".demo")).expect("demo scripts");
-    fs::write(&marker, b"among-tools media\n").expect("media project marker");
     fs::write(
         project.join("src/review.rs"),
         r#"pub fn review(changes: &[Change]) -> Report {
@@ -119,6 +118,11 @@ integration suite, not another refactor.
             .expect("git fixture");
         assert!(status.success(), "git fixture command failed");
     }
+    fs::write(
+        project.join(".git/among-media-project"),
+        b"among-tools media\n",
+    )
+    .expect("media project marker");
     fs::write(
         project.join("src/review.rs"),
         r#"pub fn review(changes: &[Change]) -> Report {

@@ -112,6 +112,7 @@ pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
             ],
             &poster,
         )?;
+        clean_png(&poster)?;
         poster
     } else {
         video.clone()
@@ -212,7 +213,7 @@ fn prepare_output(output: &Path, raw_name: &str) -> Result<PathBuf> {
     let parent = output.parent().ok_or("output has no parent")?;
     fs::create_dir_all(parent)?;
     fs::create_dir_all(&raw)?;
-    Ok(raw)
+    Ok(raw.canonicalize()?)
 }
 
 fn run_test(app_test: &Path, test: &str, mode: display::Mode, raw: &Path) -> Result<()> {
@@ -488,7 +489,7 @@ pub fn verify(output: &Path) -> Result<()> {
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height,r_frame_rate",
+                "stream=codec_name,width,height,r_frame_rate",
                 "-of",
                 "csv=p=0",
             ])
@@ -498,8 +499,8 @@ pub fn verify(output: &Path) -> Result<()> {
             return Err(format!("ffprobe failed for {name}").into());
         }
         let text = String::from_utf8_lossy(&probe.stdout);
-        if !text.trim().eq_ignore_ascii_case("1600,1000,30/1")
-            && !text.trim().eq_ignore_ascii_case("1600,1000,30")
+        if !text.trim().eq_ignore_ascii_case("h264,1600,1000,30/1")
+            && !text.trim().eq_ignore_ascii_case("h264,1600,1000,30")
         {
             return Err(format!("unexpected {name} stream: {}", text.trim()).into());
         }

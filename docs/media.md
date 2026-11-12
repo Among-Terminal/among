@@ -21,6 +21,12 @@ Build the application test binary in the pinned Ubuntu image, build
 `among-tools`, then run the capture inside the display image:
 
 ```sh
+# 0. Prepare the bind mounts and the offline registry cache.
+mkdir -p "$HOME/.cache/among/media/cargo" \
+  "$HOME/.cache/among/media/build/target" \
+  "$HOME/.cache/among/media/run"
+cargo fetch --locked
+
 # 1. Build the application test binary and the plugin fixture.
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   --mount type=bind,src="$PWD",dst=/source,readonly \
@@ -68,8 +74,8 @@ and GNOME stack, ImageMagick, ffmpeg and `xsetroot`; the image also owns
 
 The captures write below the output directory and create the synthetic
 `/work/among` project inside the disposable display image. The scene removes
-that project only when its own `/work/.among-media-project` marker is present;
-a host path without the marker is refused. `/work` is sticky and writable by
+that project only when its own `.git/among-media-project` marker is present;
+a project without the marker is refused. `/work` is sticky and writable by
 any runtime uid, so `--user "$(id -u):$(id -g)"` works without uid 1000.
 `raw/` contains the untouched captures and stays as evidence. `media.json`
 records every published file, its size, dimensions and SHA-256; set
