@@ -5,6 +5,7 @@ use nix::unistd::Pid;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
@@ -136,6 +137,47 @@ impl OwnedProcess {
             .process_group(0)
             .spawn()?;
         let group = Pid::from_raw(i32::try_from(child.id())?);
+        Ok(Self {
+            child,
+            group,
+            cleaned: false,
+        })
+    }
+
+    /// Like `spawn_split`, with one bounded input supplied on stdin instead of
+    /// the null device. A credential reaches a child this way because argv is
+    /// visible to `ps` and is quoted in failures, while a pipe leaves nothing
+    /// on disk. The caller must keep `input` well below a pipe buffer; the
+    /// token path enforces that with a named limit, so writing before waiting
+    /// cannot block on a child that has not read yet. A child that exits
+    /// without reading simply fails on its own and is still reaped through the
+    /// usual wait path.
+    pub fn spawn_split_stdin(
+        program: &Path,
+        args: &[&str],
+        env: &BTreeMap<OsString, OsString>,
+        cwd: &Path,
+        input: &[u8],
+        stdout: &File,
+        stderr: &File,
+    ) -> Result<Self> {
+        let mut child = Command::new(program)
+            .args(args)
+            .env_clear()
+            .envs(env)
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(stdout.try_clone()?)
+            .stderr(stderr.try_clone()?)
+            .process_group(0)
+            .spawn()?;
+        let group = Pid::from_raw(i32::try_from(child.id())?);
+        if let Some(mut stdin) = child.stdin.take() {
+            // A failed write means the child refused its input; its own exit
+            // status is the diagnostic, and the credential never had to be
+            // repeated in an error message.
+            let _ = stdin.write_all(input);
+        }
         Ok(Self {
             child,
             group,

@@ -37,15 +37,81 @@ fn number(value: &Value, field: &str) -> Result<u64> {
         .ok_or_else(|| format!("release input lacks unsigned {field}").into())
 }
 
+/// Environment variable holding an optional GitHub token, with the same name
+/// and meaning as the application's `src/plugin/install/source.rs`: anonymous
+/// requests share a small per-address hourly allowance that hosted CI runners
+/// exhaust, while a token raises it.
+const TOKEN_VARIABLE: &str = "AMONG_GITHUB_TOKEN";
+
+/// Upper bound on a token, in bytes. GitHub tokens are far shorter, and the
+/// bound stays well below Linux's 64 KiB pipe buffer, so the caller of
+/// `spawn_split_stdin` may write the configuration before waiting without
+/// depending on the child having read first.
+const TOKEN_MAXIMUM: usize = 1024;
+
+/// One byte this tool accepts in a token: visible ASCII or a tab. The
+/// application's `HeaderValue` also passes bytes at 0x80 and above, so this is
+/// deliberately stricter. GitHub tokens are ASCII, so no valid token is lost,
+/// and a value carrying anything else is not sent at all.
+fn header_byte(byte: u8) -> bool {
+    byte == b'\t' || (0x20..=0x7e).contains(&byte)
+}
+
+/// The token this tool is willing to send, or `None` when the value is empty,
+/// longer than the bound, or not visible ASCII. Being stricter than the
+/// application is safe: GitHub tokens are short ASCII strings, so no valid
+/// token is refused, and an unusable value is treated as absent rather than
+/// sent in some other form.
+fn usable_token(value: Option<&str>) -> Option<&str> {
+    let token = value?.trim();
+    if token.is_empty() || token.len() > TOKEN_MAXIMUM || !token.bytes().all(header_byte) {
+        return None;
+    }
+    Some(token)
+}
+
+/// Reads the token from the environment. It is the one place that consults the
+/// process environment, so tests can pass a value to `fetch_with` directly and
+/// never mutate state shared with parallel tests.
+fn token_from_environment() -> Option<String> {
+    let value = std::env::var(TOKEN_VARIABLE).ok();
+    usable_token(value.as_deref()).map(str::to_owned)
+}
+
+/// One curl configuration line carrying the token. curl parses a double-quoted
+/// value with backslash escapes, so only `"` and `\` need escaping; the token
+/// was already checked to contain no control characters.
+fn token_configuration(token: &str) -> String {
+    format!(
+        "header = \"Authorization: Bearer {}\"\n",
+        token.replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
+/// One public release transfer: the API URL, its retained file name, the exact
+/// byte bound, whether curl follows the asset redirect, and the optional token.
+/// The parts travel together because every caller forms all of them at once.
+struct Transfer<'a> {
+    url: &'a str,
+    name: &'a str,
+    limit: u64,
+    asset: bool,
+    token: Option<&'a str>,
+}
+
 fn fetch(root: &Path, url: &str, name: &str, limit: u64, asset: bool) -> Result<PathBuf> {
+    let token = token_from_environment();
     fetch_with(
         Path::new("/usr/bin/curl"),
         FETCH_WAIT,
         root,
-        url,
-        name,
-        limit,
-        asset,
+        Transfer {
+            url,
+            name,
+            limit,
+            asset,
+            token: token.as_deref(),
+        },
     )
 }
 
@@ -53,11 +119,15 @@ fn fetch_with(
     program: &Path,
     wait: Duration,
     root: &Path,
-    url: &str,
-    name: &str,
-    limit: u64,
-    asset: bool,
+    transfer: Transfer<'_>,
 ) -> Result<PathBuf> {
+    let Transfer {
+        url,
+        name,
+        limit,
+        asset,
+        token,
+    } = transfer;
     let destination = storage::safe_path(root, Path::new(name))?;
     let output = OpenOptions::new()
         .write(true)
@@ -104,9 +174,30 @@ fn fetch_with(
             "Accept: application/octet-stream",
         ]);
     }
+    // The token is never an argument: argv is visible to `ps` and in every
+    // quoted form of the invocation, while a pipe leaves no file behind and no
+    // line in the retained curl log. A configuration header is the same header
+    // `--header` would set, so it follows curl's redirect rule (enforced since
+    // curl 7.58): `--location` drops `Authorization` when the redirect changes
+    // host, and the asset CDN therefore never receives it. `--location-trusted`,
+    // which would forward it, is deliberately absent.
+    let configuration = usable_token(token).map(token_configuration);
+    if configuration.is_some() {
+        arguments.extend(["--config", "-"]);
+    }
     arguments.push(url);
-    let mut child =
-        OwnedProcess::spawn_split(program, &arguments, &environment, root, &output, &log)?;
+    let mut child = match &configuration {
+        Some(configuration) => OwnedProcess::spawn_split_stdin(
+            program,
+            &arguments,
+            &environment,
+            root,
+            configuration.as_bytes(),
+            &output,
+            &log,
+        )?,
+        None => OwnedProcess::spawn_split(program, &arguments, &environment, root, &output, &log)?,
+    };
     let outcome = match child.wait(wait) {
         Err(error) => DownloadOutcome::WaitFailed {
             error: error.to_string(),
@@ -912,14 +1003,28 @@ mod tests {
     }
 
     fn run(root: &Path, program: &Path, name: &str, limit: u64, asset: bool) -> Result<PathBuf> {
+        run_with_token(root, program, name, limit, asset, None)
+    }
+
+    fn run_with_token(
+        root: &Path,
+        program: &Path,
+        name: &str,
+        limit: u64,
+        asset: bool,
+        token: Option<&str>,
+    ) -> Result<PathBuf> {
         fetch_with(
             program,
             Duration::from_secs(2),
             root,
-            "https://api.github.com/repositories/1/releases/latest",
-            name,
-            limit,
-            asset,
+            Transfer {
+                url: "https://api.github.com/repositories/1/releases/latest",
+                name,
+                limit,
+                asset,
+                token,
+            },
         )
     }
 
@@ -982,6 +1087,120 @@ mod tests {
     }
 
     #[test]
+    fn a_token_reaches_curl_on_stdin_and_never_in_argv() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(
+            &root,
+            "for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> argv.log; done\ncat > config.log\nprintf 'ok'",
+        )?;
+        let secret = "synthetic-token-0123456789";
+        let metadata = run_with_token(
+            &root,
+            &program,
+            "repository.json",
+            1024,
+            false,
+            Some(secret),
+        )?;
+        assert_eq!(fs::read(&metadata)?, b"ok");
+        assert_eq!(
+            fs::read_to_string(root.join("config.log"))?,
+            format!("header = \"Authorization: Bearer {secret}\"\n")
+        );
+        let argv = fs::read_to_string(root.join("argv.log"))?;
+        assert!(!argv.contains(secret));
+        assert!(argv.lines().any(|line| line == "--config"));
+        assert!(argv.lines().any(|line| line == "-"));
+        Ok(())
+    }
+
+    #[test]
+    fn authenticated_asset_download_keeps_location_and_config_token() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(
+            &root,
+            "for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> argv.log; done\ncat > config.log\nprintf 'ok'",
+        )?;
+        let secret = "synthetic-asset-token";
+        let asset = run_with_token(&root, &program, "asset.bin", 2048, true, Some(secret))?;
+        assert_eq!(fs::read(&asset)?, b"ok");
+        let argv = fs::read_to_string(root.join("argv.log"))?;
+        assert!(!argv.contains(secret));
+        assert!(argv.lines().any(|line| line == "--location"));
+        assert!(!argv.contains("--location-trusted"));
+        assert!(argv.lines().any(|line| line == "--config"));
+        assert_eq!(
+            argv.lines().last(),
+            Some("https://api.github.com/repositories/1/releases/latest")
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("config.log"))?,
+            format!("header = \"Authorization: Bearer {secret}\"\n")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_or_unusable_token_is_treated_as_absent() -> Result<()> {
+        let too_long = "a".repeat(TOKEN_MAXIMUM + 1);
+        for value in [
+            "",
+            "   ",
+            "line\nbreak",
+            "header\u{7f}value",
+            too_long.as_str(),
+        ] {
+            let root = fixture()?;
+            let program = fake_curl(
+                &root,
+                "for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> argv.log; done\nwc -c > config.log\nprintf 'ok'",
+            )?;
+            run_with_token(&root, &program, "repository.json", 1024, false, Some(value))?;
+            let argv = fs::read_to_string(root.join("argv.log"))?;
+            assert!(!argv.contains("--config"), "{value:?}");
+            assert_eq!(fs::read_to_string(root.join("config.log"))?, "0\n");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_token_with_configuration_metacharacters_stays_one_header() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(&root, "cat > config.log\nprintf 'ok'")?;
+        run_with_token(
+            &root,
+            &program,
+            "repository.json",
+            1024,
+            false,
+            Some("quote\"and\\backslash"),
+        )?;
+        assert_eq!(
+            fs::read_to_string(root.join("config.log"))?,
+            "header = \"Authorization: Bearer quote\\\"and\\\\backslash\"\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_download_failure_never_names_the_token() -> Result<()> {
+        let root = fixture()?;
+        let program = fake_curl(&root, "cat > /dev/null\necho 'curl failed' >&2\nexit 22")?;
+        let secret = "synthetic-secret-token";
+        let message = failure(run_with_token(
+            &root,
+            &program,
+            "repository.json",
+            1024,
+            false,
+            Some(secret),
+        ));
+        assert!(!message.contains(secret));
+        assert!(message.contains("curl exited with exit status: 22"));
+        Ok(())
+    }
+
+    #[test]
     fn nonzero_exit_keeps_the_status_and_a_bounded_utf8_tail() -> Result<()> {
         let root = fixture()?;
         let mut payload = vec![b'a'; 5000];
@@ -1008,10 +1227,13 @@ mod tests {
             &program,
             Duration::from_millis(200),
             &root,
-            "https://api.github.com/repositories/1/releases/latest",
-            "repository.json",
-            1024,
-            false,
+            Transfer {
+                url: "https://api.github.com/repositories/1/releases/latest",
+                name: "repository.json",
+                limit: 1024,
+                asset: false,
+                token: None,
+            },
         ));
         assert!(message.contains("process wait failed with wait limit 200ms:"));
         assert!(message.contains("owned process timed out; its process group was stopped"));

@@ -384,6 +384,10 @@ checks the tag's complete binding against the pinned source, and verifies the
 catalogue digest and all downloaded assets. It repeats the repository, release,
 inventory and tag observation before uploading the bytes and original API bodies.
 This live final observation occurs in the producer, before native consumers run.
+The caller passes the run's own `github.token` as `AMONG_GITHUB_TOKEN`; the tool
+sends it only to `api.github.com`, which lifts the anonymous request allowance
+that shared runner addresses exhaust. Without the variable the request stays
+anonymous and unchanged.
 
 `among-tools prepare-published-plugin-inputs <pin> <assets> <new-directory>` checks
 both stored API observations and the producer receipt, then reconstructs native

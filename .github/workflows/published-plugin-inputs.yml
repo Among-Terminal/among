@@ -32,6 +32,15 @@ jobs:
           bash scripts/ci/apt-install.sh -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
           cargo +1.98.1 build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Observe and download the pinned immutable publication
+        env:
+          # Anonymous API calls share the runner address with every other job
+          # and are refused when its hourly allowance is spent. This is the
+          # first step that hands a token to a binary built from the pull
+          # request's sources; the token reads only public repository data,
+          # lives until the job ends, and is read-only for fork pull requests
+          # too. The worst a compromised build can do is spend the request
+          # allowance. No permission is widened.
+          AMONG_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tools/among-tools/target/release/among-tools fetch-published-plugin-assets \
