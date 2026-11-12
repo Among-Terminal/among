@@ -148,6 +148,35 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    // The snapshot is written by snapshot_executable in this process. A fork
+    // made by a concurrent test can inherit that write descriptor until it
+    // reaches its own exec, so the next start can be refused with ETXTBSY.
+    // The refusal is transient; every other error is returned at once.
+    const EXECUTABLE_BUSY_ATTEMPTS: u32 = 50;
+
+    fn spawn_ready(
+        program: &Path,
+        args: &[&str],
+        env: &BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+        cwd: &Path,
+        log: &File,
+    ) -> Result<OwnedProcess> {
+        let mut attempt = 1;
+        loop {
+            match OwnedProcess::spawn(program, args, env, cwd, log) {
+                Err(error)
+                    if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                        error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    }) && attempt < EXECUTABLE_BUSY_ATTEMPTS =>
+                {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
+    }
+
     #[test]
     fn replacing_the_original_path_cannot_change_the_enumerated_and_executed_snapshot() -> Result<()>
     {
@@ -175,15 +204,14 @@ mod tests {
         let (snapshot, reported_hash) = snapshot_executable(&original, &base)?;
         let log = File::create(base.join("listing.log"))?;
         let env = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
-        let mut listing =
-            OwnedProcess::spawn(&snapshot, &["--list", "--ignored"], &env, &base, &log)?;
+        let mut listing = spawn_ready(&snapshot, &["--list", "--ignored"], &env, &base, &log)?;
         assert!(listing.wait(Duration::from_secs(5))?.success());
         fs::rename(&replacement, &original)?;
         let actual_log = File::create(base.join("actual.log"))?;
-        let mut actual = OwnedProcess::spawn(&snapshot, &[], &env, &base, &actual_log)?;
+        let mut actual = spawn_ready(&snapshot, &[], &env, &base, &actual_log)?;
         assert!(actual.wait(Duration::from_secs(5))?.success());
         let control_log = File::create(base.join("control.log"))?;
-        let mut control = OwnedProcess::spawn(&original, &[], &env, &base, &control_log)?;
+        let mut control = spawn_ready(&original, &[], &env, &base, &control_log)?;
         assert!(control.wait(Duration::from_secs(5))?.success());
         assert_eq!(
             fs::read_to_string(base.join("listing.log"))?.trim(),

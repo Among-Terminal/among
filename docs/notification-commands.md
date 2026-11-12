@@ -1,7 +1,7 @@
 # Optional command backend
 
 `among::notifications::commands` executes real, optional local command attempts.
-Its core API is GTK-free. [Notifications](preferences.md#notifications) accepts
+Its core API is GTK-free. [Notifications](https://among-terminal.github.io/preferences/#notifications) accepts
 and stores explicit configuration; the normal VTE adapter owns registration,
 shared-tick polling and retirement. No command is configured or enabled by default.
 
@@ -12,18 +12,9 @@ path, combined UI acceptance or release readiness.
 
 ## Desktop bell notifications
 
-The built-in desktop channel sends a system notification for a terminal bell.
-It is enabled with Among in background by default, including when an upgraded
-profile has no `notifications.desktop` entry. The Desktop group on the
-Notifications page controls this independently from sound and commands.
-
-The title is the workspace name. The body is `Bell in '<title>'` followed by its
-directory, omitting unknown title/directory parts. A missing workspace name uses
-`Among Terminal`; a missing terminal title uses `Bell`. Terminal metadata can
-include a title set by a program through an OSC escape; the body does not use
-an OSC notification message. Program-controlled text can appear
-in the notification centre and on a lock screen; disable the channel if that is
-unsuitable for the session.
+The [desktop notification controls](https://among-terminal.github.io/preferences/#notifications)
+document user-facing defaults and behavior. When an upgraded profile has no
+`notifications.desktop` entry, the backend uses the default background policy.
 
 Title and body are capped at 128 and 512 Unicode scalar values respectively
 (at most 512 and 2048 UTF-8 bytes). These are payload budgets, not measured display
@@ -60,15 +51,14 @@ never notifies, even with Always selected. Desktop delivery does not request sou
 the audio channel retains its own policy, and a daemon may have its own sound
 preferences.
 
-Clicking selects the exact originating terminal and workspace. If an expanded
-sibling hides it, the layout is restored. The action binds the backend's random
-incarnation token and the core's session, generation and pane identifiers. Closed
+The click action binds the backend's random incarnation token and the core's
+session, generation and pane identifiers. Closed
 or stale targets only raise the current window; they do not select a replacement
 terminal. The sidebar's collapsed state is preserved.
 
 Among can report that no session notification service is available, but a
 successful D-Bus call cannot confirm display or
-report every shell refusal. See [desktop-entry requirements](install.md#desktop-notification-integration)
+report every shell refusal. See [desktop-entry requirements](https://among-terminal.github.io/install/#desktop-notification-integration)
 for binary archives and AppImages. Notification clicks are handled by the running
 application; restarting it through a notification is not enabled.
 
@@ -94,7 +84,7 @@ documents the `ActivateAction` call that click handling uses.
   cwd into a terminal directory. It does not create or migrate preferences.
 - `Runtime::new` takes that directory and the trusted host executable (Among's
   own executable, not the user-configured command). `register` creates a core
-  channel **off** with application-background eligibility. Registration and
+  channel off with application-background eligibility. Registration and
   configuration inspection never start a process.
 - `Runtime::unprepared` supports inert stable registration before directory I/O;
   `prepare` accepts an already validated descriptor. The app requests preparation
@@ -120,7 +110,7 @@ null source rather than a substituted selected terminal.
 
 ## Command input and environment
 
-Stdin receives one JSON document, a newline, then **actual EOF**. The 16-KiB bound
+Stdin receives one JSON document, a newline, then EOF. The 16-KiB bound
 includes the newline. Its schema is fixed; there is no arbitrary metadata field:
 
 ```json
@@ -155,7 +145,7 @@ display, the command acts with the user's session rights, for example it can ask
 the keyring or a user service over D-Bus, or talk to the display server. "Does not
 inherit credentials" means no token variable or agent socket is copied, not that
 the command is cut off from what the session can reach.
-**Process supervision and environment minimization are not an OS sandbox.**
+Process supervision and environment minimization are not an OS sandbox.
 
 ## Process ownership and budgets
 
@@ -202,7 +192,7 @@ signalling a guessed PID prefix.
 `Host::command_completions` reads results from the shared bounded diagnostic ring:
 
 - `Exited(code)` / `Signaled(signal)` describes only known local process exit.
-  Exit zero is **not** delivery to a remote service, and nonzero exit is not proof
+  Exit zero is not delivery to a remote service, and nonzero exit is not proof
   that no external effect occurred.
 - `NotStarted(reason)` describes an attempt denied or failed before execution
   permission/launch.

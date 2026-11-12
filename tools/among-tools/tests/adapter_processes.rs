@@ -22,10 +22,13 @@ use serde_json::{json, Value};
 use std::{
     ffi::OsString,
     fs,
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
+
+#[path = "support/executable.rs"]
+mod executable;
 
 static CREDENTIAL_ENVIRONMENT: Mutex<()> = Mutex::new(());
 const FIXTURE_ENVIRONMENT: [&str; 5] = [
@@ -156,8 +159,7 @@ fn exported_login() -> String {
 
 fn install(root: &Path, name: &str, body: &str) -> Result<()> {
     let path = root.join("bin").join(name);
-    fs::write(&path, body)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+    executable::write(&path, body.as_bytes())?;
     Ok(())
 }
 
@@ -273,8 +275,9 @@ fn a_store_read_carries_the_store_credential_and_not_a_github_token() -> Result<
     install(&fixture.0, "snapcraft", SNAPCRAFT)?;
     // The curl fake logs whether an Authorization header was supplied and
     // whether a GitHub token leaked into the same call.
-    fs::write(
-        fixture.0.join("bin/curl"),
+    install(
+        &fixture.0,
+        "curl",
         r#"#!/bin/sh
 log="$(dirname "$0")/../gh.out"
 for arg in "$@"; do
@@ -287,10 +290,6 @@ header="$(dirname "$0")/../store-authorization.header"
 [ -f "$header" ] && printf 'curl HEADER_FILE_PRESENT\n' >> "$log" && cp "$header" "$(dirname "$0")/../header.seen"
 cat "$(dirname "$0")/../channel-map.json"
 "#,
-    )?;
-    fs::set_permissions(
-        fixture.0.join("bin/curl"),
-        fs::Permissions::from_mode(0o755),
     )?;
     let credentials = exported_login();
     fs::write(
@@ -361,14 +360,14 @@ fn a_transport_or_auth_failure_is_never_reported_as_an_absent_release() -> Resul
     fs::write(fixture.0.join("source"), "f".repeat(40))?;
     // The fake fails without mentioning a 404, as an expired credential or a
     // network fault would.
-    fs::write(
-        fixture.0.join("bin/gh"),
+    install(
+        &fixture.0,
+        "gh",
         r#"#!/bin/sh
 printf 'gh API error: could not authenticate (token ghp_EXAMPLE)\n' >&2
 exit 1
 "#,
     )?;
-    fs::set_permissions(fixture.0.join("bin/gh"), fs::Permissions::from_mode(0o755))?;
 
     unsafe { std::env::set_var("GH_TOKEN", "test-token") };
     let gh = fixture.0.join("bin/gh");
@@ -397,8 +396,9 @@ fn the_previous_stable_release_is_read_from_the_latest_release_path() -> Result<
     let fixture = fixture()?;
     let source = "a".repeat(40);
     fs::write(fixture.0.join("source"), &source)?;
-    fs::write(
-        fixture.0.join("bin/gh"),
+    install(
+        &fixture.0,
+        "gh",
         r#"#!/bin/sh
 log="$(dirname "$0")/../gh.out"
 for arg in "$@"; do printf 'gh %s\n' "$arg" >> "$log"; done
@@ -408,7 +408,6 @@ case "$*" in
 esac
 "#,
     )?;
-    fs::set_permissions(fixture.0.join("bin/gh"), fs::Permissions::from_mode(0o755))?;
 
     unsafe { std::env::set_var("GH_TOKEN", "test-token") };
     let gh = fixture.0.join("bin/gh");

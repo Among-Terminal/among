@@ -1,134 +1,81 @@
-# Preferences storage
+# Preference storage and integration
 
-The storage module uses `$XDG_CONFIG_HOME/among`, falling back to
-`$HOME/.config/among` when XDG_CONFIG_HOME is absent or empty.
+User controls are documented in [preferences](https://among-terminal.github.io/preferences/)
+and [plugins](https://among-terminal.github.io/plugins/). Settings use
+`$XDG_CONFIG_HOME/among`, falling back to `$HOME/.config/among` when
+`XDG_CONFIG_HOME` is absent or empty.
 
 ## Notifications
 
-The pages are, in order, Plugins, Notifications, Keyboard, Terminal and About.
-Plugins is the visible page when the window opens. The tabs have equal widths.
-The Notifications page was called General before. Page/control automation uses
-identities (`plugins`, `notifications`, `keyboard`, `terminal`, `about` and
-`notification-…` widget names), not the first tab or first switch. The settings
-document is still `general.json`.
-
-Notification choices use `general.json`, version 1. Missing fields inherit these
-in-memory defaults; opening Preferences never writes this document:
+`general.json` uses version 1. Missing fields inherit these in-memory defaults;
+opening Preferences never writes the document:
 
 ```json
 {"version":1,"notifications":{"visual":{"enabled":true,"eligibility":"originating-terminal-unfocused"},"audio":{"enabled":false,"eligibility":"application-background","source":"builtin"},"desktop":{"enabled":true,"eligibility":"application-background"},"command":{"enabled":false,"eligibility":"application-background"}}}
 ```
 
-The page has four groups: Visual (**Highlight the terminal**), Sound (**Play a
-sound**), Desktop (**Desktop notification**) and Command (**Run a command**), plus a Plugin channels group only while
-an installed plugin declares a delivery channel. It carries no status rows or
-explanatory plates. The result of a save shows as a banner at the top only when it
-was not saved or its durability is uncertain; a durable save shows nothing. A value
-that cannot be used is reported on the row that holds it.
+Keep serialized eligibility values compatible with `Policy::permits` in
+[notifications.rs](../src/notifications.rs): `originating-terminal-unfocused`
+requires a source terminal, even when the application is in the background.
+Indicator presentation belongs to the
+[terminal bell backend](terminal-bell-backend.md).
 
-Each channel has a **When** row with independent Always, Terminal not in view and
-Among in background conditions. Terminal not in view is the stored
-`originating-terminal-unfocused` value, which also applies while Among is in the
-background (a tooltip on the row says so), and never to an event without a
-terminal. Preferences and native menus count as foreground Among,
-but not as viewing a terminal. A visual alert makes the thin line at the left edge
-of the originating pane header and of its workspace row pulse without end until that
-terminal is actually focused; the unread state then clears and the pulse stops. The
-line is also thicker while unread, and the unread state has an accessible name.
-When system animations are off the line does not move and stays thicker, and
-turning them off does not acknowledge unread terminals. With Always selected, a bell
-in the terminal that is already focused only pulses the line for one second: that
-terminal never becomes unread, so it gets no thicker line and no unread name, also
-when animations are off. Workspace hue and terminal allocation are not notification
-state.
+Command edits preserve literal argument strings. Arguments that cannot fit the
+one-argument-per-line editor, such as an empty string or a line break, remain a
+JSON list. Saving or enabling performs neither execution nor cwd preparation;
+an eligible event triggers bounded preparation off the GTK loop. The environment
+is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`,
+`DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` only when set in Among's environment.
+See [command execution](notification-commands.md).
 
-Policy edits apply immediately. The command's absolute program (a text field with a
-file chooser) and literal arguments require **Save**, in the Command group's
-header. The arguments are a multi-line field with one argument per line: spaces,
-quotes and shell characters in a line belong to that argument, nothing is split
-or unquoted, the command runs without a shell, and empty lines are not arguments
-(a line of spaces is). The saved settings keep the same list of strings, so
-settings saved with the earlier JSON-list field load unchanged. Arguments that a
-line cannot hold exactly, such as an empty one or one with a line break, are shown
-and edited as the JSON list they were saved as. An empty program clears
-configuration and disables the channel. Saving or enabling does not run a command
-or prepare its cwd; an eligible new event triggers bounded off-loop preparation.
+An absent Desktop field enables the default for existing profiles. An unreadable
+or invalid document disables Desktop for the session and retains the diagnostic
+and original file. Program-controlled notification text is cleaned and bounded.
+During the final session write, activation only raises the window, preserving the
+captured workspace, terminal and layout; cancelling close restores navigation.
+A failed Desktop policy update withdraws notifications without saving the change.
+Only a Desktop edit retries it; other channels and idle ticks do not.
+See [desktop registration](install.md#desktop-notification-integration).
 
-Desktop notifications are enabled for existing profiles too when
-`notifications.desktop` is absent. The default sends only while Among is in the
-background; a terminal currently viewed never sends a desktop notification,
-including with Always selected. If General cannot be read or validated, Desktop
-delivery stays off for that session; a missing file still uses the enabled
-default. The diagnostic and original file are retained. A bell names its
-workspace and includes the terminal title and directory when available.
-Program-controlled text is cleaned and bounded before delivery.
-Clicking a notification selects its originating terminal, switching workspace and
-restoring an expanded sibling when needed. During the final session write,
-activation only raises the window, preserving the captured workspace, terminal
-and layout; cancelling close restores navigation.
-Closing or focusing the source,
-turning the channel off, and normal exit withdraw its notifications. A missing
-session notification service is reported on the desktop row. GIO cannot confirm
-that a shell displayed a send; see [installation requirements](install.md#desktop-notification-integration).
-A failed Desktop policy update withdraws its notifications and reports a problem
-on the Desktop row without saving the requested change. Change a Desktop setting
-to retry; other channels and idle ticks do not retry that failed update.
-The command's environment is `PATH`, `LANG` and `HOME`, plus `XDG_RUNTIME_DIR`,
-`DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`, `WAYLAND_DISPLAY` and `XAUTHORITY` when
-Among's own environment sets them, and nothing else.
-See [the command contract](notification-commands.md) for authority and cleanup limits.
-
-The **Sound** row shows the sound's name (`Among alert (built-in)` or the file name,
-with the full path as a tooltip) and three icon buttons. The folder button opens a
-system file dialog filtered to WAV; the path cannot be typed. The chosen file is
-read and validated asynchronously, with a spinner and "Checking the file…" on the
-row, and only an accepted immutable snapshot changes the selected sound and saves
-its source. A file that cannot be used replaces the name with one problem line
-(with a warning mark); the previous valid sound stays selected, nothing is played
-as a fallback and nothing is saved. A missing or invalid saved local source
-disables playback until a source is accepted. The undo button, shown only for a
-custom file, selects the original bundled sound again. Success shows no status
-text. The third button is one slot: **Play** while idle, **Stop** while a sound
-plays or a chosen file is being checked (Stop cancels the check), and disabled with
-the reason as its tooltip when playback is unavailable or the previous decoder could
-not be confirmed stopped. Play explicitly plays the accepted snapshot even with
-event audio off, without entering notification ingress or changing
-policy/unread/command/provider state. Playback requests and decoder end are not
-proof of output. See [audio limits and packaging](audio.md).
+Audio selection reads and validates asynchronously, accepting only an immutable
+snapshot. Preview bypasses notification ingress and does not change policies,
+unread state, commands or providers. Replacing a sound cancels and retires the old
+decoder first. A Busy result retains no replacement; an unconfirmed retirement
+disables playback. A newer diagnostic must not be overwritten by an older result.
+Stop requests cancellation without persisting playback success. Decoder end and
+accepted requests do not prove output. Audio is cancelled when permission is
+revoked, its pane is removed or its provider stops. See [audio](audio.md).
 
 Provider choices are keyed by full provider identity and channel ID under
-`notifications.providers[identity].channels[channel]`. Retained unavailable choices
-remain editable and are labelled unavailable, not delivered. A generic registry
-supplies typed policy/admission ownership. The ordinary application now connects
-the managed backend to the same live core and displays declared channel metadata,
-plugin enablement and admitted-owner state without starting code on inspection.
-New channels default off. Managed-origin command consumers retain owned backend
-authority; the audio owner retains and rechecks it on the shared tick and cancels
-a sound whose authority was revoked, whether by disabling the channel, removing
-the source pane or a stopped provider.
+`notifications.providers[identity].channels[channel]`. The page distinguishes
+desired enablement from process admission. Inspection cannot start a plugin.
+Edits re-read and merge their own fields, preserving unknown keys and other
+providers. JSON must have bounded size and unique keys; paths must be safely
+owner-controlled. Fresh files are private; existing safe directory permissions
+are preserved. Future versions, invalid known fields, symlinks and malformed
+documents are reported without repair. Settings remain outside packaged trees.
+Transient attention, operation IDs and pending jobs are never persisted.
 
-Review a plugin's notification role on its [plugin page](#plugin-inventory-navigation).
+## Stored settings
 
-Replacing a sound first cancels and retires the old decoder. A real Busy response
-(Play pressed while the old decoder is still retiring) retains no replacement: the
-row says the previous sound is still stopping, and Play must be pressed again after
-the retirement is confirmed. Stop requests cancellation without persisting playback
-success. The owner accepts this explicit-retry UX detail, not decoder
-safety/platform acceptance. A newer Play diagnostic is not overwritten by older
-playback IDs.
+Managed choices, reviews, reduced-protection consent and plugin settings use
+`managed-plugins.json`, version 1. Its `plugins` object is keyed by full identity,
+such as `github:123/clock`, keeping repositories' preferences separate.
 
-Notification edits re-read and merge the relevant fields, preserving unknown keys and
-other provider identities. Bounded unique-key JSON and safe owner-controlled paths
-are required; fresh files are private, and safe existing directory permissions
-are not silently changed. Future versions, invalid known fields, symlinks and malformed documents are reported,
-not repaired. Settings are outside packaged application trees. No transient
-attention, operation IDs or pending delivery jobs are persisted.
-
-Plugin choices keep the existing `plugins.json` format:
+The old `plugins.json` is untouched and is not used for managed enablement.
+Its legacy fixture remains part of the storage compatibility tests:
 
 ```json
 {"plugins": [{"name": "clock", "enabled": false}]}
 ```
+
+Reduced-protection consent uses `reduced:1`, `reduced:2` and `seccomp-only`
+in `protection_consent`; each token covers that level and stronger ones.
+Notification access review stores identity/publisher-scoped `review.features`
+without enabling code or channels. See the site's
+[access review](https://among-terminal.github.io/plugins/#access-review)
+and [reduced protection](https://among-terminal.github.io/plugins/#reduced-protection)
+controls.
 
 Shortcut overrides use `shortcuts.json`, version 1:
 
@@ -136,22 +83,19 @@ Shortcut overrides use `shortcuts.json`, version 1:
 {"version": 1, "overrides": {"split-pane": "<Control><Shift>b", "toggle-zoom": null}}
 ```
 
-An absent override inherits the current default; null explicitly removes a
-binding.
+An absent override inherits the current default; null explicitly unbinds it.
+Reassigning an occupied binding persists the displaced action as unbound.
+Cancelled capture and rejected or unchanged edits do not write overrides.
 
-The expanded sidebar's width uses `window.json`, version 1:
+Expanded sidebar width uses `window.json`, version 1, in logical pixels:
 
 ```json
 {"version": 1, "sidebar_width": 420}
 ```
 
-Drag the expanded sidebar's right edge to resize it. The width is measured in
-logical pixels and saved when the drag finishes, without a Save button. It returns
-after collapse/expand and after restarting, even when you start a new terminal
-session. The collapsed strip stays fixed-width. A smaller window temporarily
-constrains the displayed width without replacing the saved preference. Without a
-saved width, the existing adaptive default is used; zero, negative and non-numeric
-widths are rejected.
+The collapsed strip stays fixed-width. A constrained window must not replace the
+saved preference. With no saved width, use the adaptive default. Zero, negative
+and non-numeric values are rejected.
 
 Terminal appearance uses `terminal.json`, version 1:
 
@@ -159,229 +103,90 @@ Terminal appearance uses `terminal.json`, version 1:
 {"version": 1, "text_background": "gnome-terminal-default", "ansi_palette": "tango"}
 ```
 
-The two fields are independent. `gnome-terminal-default` is the inherited source
-row; missing fields mean that source for their dimension. Named values use stable
-kebab-case identifiers such as `gray-on-black`, `solarized-dark`, `linux-console`
-and `xterm`. Among reads only the default GNOME Terminal profile at startup,
-without following live changes or writing GNOME settings. A valid inherited
-palette is applied with explicit text/background colours. If the inherited
-text/background pair is unavailable, Among uses its built-in Gray on black
-scheme, explains why, keeps the source row for the next start and still applies
-a valid palette. If the inherited palette is unavailable, existing and new panes
-return to VTE's compiled-in palette rather than keeping a previous explicit
-palette. Values that do not match a built-in are shown as custom, never relabelled
-as the nearest preset.
+Preserve the serialized identifiers and missing-field defaults validated by
+[settings/terminal.rs](../src/settings/terminal.rs). The startup reader in
+[terminal_appearance_source.rs](../src/terminal_appearance_source.rs) must remain
+read-only. Keep source selection separate from effective colours in
+[terminal_appearance.rs](../src/terminal_appearance.rs), so fallback never rewrites
+the saved choice and failure in one dimension does not discard the other.
+When applying `VteCompiledDefaults`, [pane.rs](../src/pane.rs) must pass an empty
+palette to VTE to clear any previously applied explicit palette.
 
-Unknown fields and entries are retained when saving other preferences.
-Malformed files and unsupported versions are not automatically overwritten.
+The [settings writer](../src/settings.rs) must retain unknown fields and entries
+on unrelated saves. Writes use a private same-directory temporary file and atomic
+replacement. Failure before replacement
+preserves the old document; failure confirming directory durability reports
+uncertainty. Symlink destinations are refused. Detected external edits are merged;
+simultaneous external writers are not fully serialized.
 
-Writes use a private temporary file in the destination directory and atomic
-replacement. Failures before replacement preserve the prior document; failures
-confirming directory durability after replacement report uncertainty. Symlink
-destinations are refused. Independent external edits are merged when detected;
-simultaneous writes by external editors are not fully serialized.
+Plugin forms distinguish `Saved locally`, `Accepted for this session; not saved
+locally` and `Written locally; durability not confirmed`. These results remain
+independent of pending, applied, rejected and restart-required process state.
+Saving a restart-mode edit or opening a form cannot restart a plugin without
+separate confirmation. Plugin faults do not alter saved desired enablement.
+Later edits retry only their settings category and clear its warning on success.
 
-## Changing preferences
+## View integration
 
-Preferences and the repository inspector are nonmodal: switch back to a terminal
-without closing them while a repository request is running. Their parented native
-window layout is unchanged. Other forms and confirmation dialogs retain their own
-interaction rules.
+Pages are ordered Plugins, Notifications, Keyboard, Terminal and About, with
+Plugins initially visible and equally wide tabs. Preferences and the repository
+inspector are nonmodal parented native windows; other forms retain their own
+interaction rules. Background registration and process changes update inventory
+rows by identity without rebuilding focused controls each tick.
 
-Plugin switches and shortcut edits apply immediately and are saved without a Save
-button. Plugin-specific forms instead require an explicit Save after validation;
-closing without Save discards unfinished edits. Fresh launches restore plugin
-choices and shortcut overrides.
-Reassigning an occupied shortcut also saves the displaced action as unbound.
-Cancelled capture and rejected/no-op edits do not write new overrides.
+Terminal dropdown widget names are `terminal-text-background` and
+`terminal-ansi-palette`. The embedded catalogue follows GNOME Terminal 3.56.2.
+Preferences requests 820 logical pixels of width. Initial height fits About
+within desktop space when possible, with a minimum of 576 logical pixels.
+Pages scroll when necessary.
 
-A failed write leaves the edit active for this session and shows a warning in
-Preferences and stderr, without a pop-up. A later edit in the same settings
-category retries pending changes; successful saving clears that category's warning.
-Repair malformed files or directory permissions before retrying. Startup errors
-are visible too.
-Plugin faults do not change the saved desired enabled state.
+Development mode adds provenance, digests, generation, granted features, policy
+digest, Landlock ABI/enforcement, seccomp result and refusal reason to Technical
+details. Recovery controls are described in the template's
+[development guide](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/guide.md#development-mode).
 
-Plugin forms show their own persistence result: **Saved locally**, **Accepted for
-this session; not saved locally**, or **Written locally; durability not confirmed**.
-That result is independent of pending/applied/rejected/restart-required process
-configuration. A plugin restart requires its own confirmation; opening a form or
-saving a restart-mode edit never restarts code automatically.
-
-Clock, resources and pane PWD remain optional and disabled by default. Only explicit
-user changes enable them. No terminal contents or workspace layouts are saved here.
-
-Developer checks are described in [the contributing guide](../CONTRIBUTING.md#checking-changes).
-
-## Plugin inventory navigation
-
-The Plugins page shows Installed and Available, assembled from installed records
-and saved catalogues without a network request. Search matches name, description,
-identity or origin in both groups. Equal names remain separate identities. A row
-from a user source names its repository when several sources are registered; a
-removed source is labelled **source removed** and does not stop its installed
-plugins. Without a saved catalogue, the first open fetches the official one once
-by itself; if that fails, a status page names the reason and **Load** tries again.
-Once a catalogue is saved, opening the page never fetches.
-
-Each row has one action slot: progress and an install cancellation control,
-**Update**, **Install**, or **Uninstall**. A new installation starts disabled.
-An update needs explicit consent and may restart only the selected plugin.
-Uninstall confirms first, then shows progress in place without a progress dialog
-or cancellation. Settings are retained. A failure keeps the plugin page open
-with a banner; a committed removal closes it and returns focus to the list.
-
-The info icon opens a subpage with source, protection and access cards. A
-never-started plugin says its protection will be checked at start. The shield
-distinguishes official, other-publisher, development and weaker-protection states
-by icon and accessible name. The desired enable switch stays on after a fault.
-An available plugin has an info page too, without an enable switch or settings.
-
-**Settings** appears only for a declared schema and opens another subpage; Back
-without Save discards edits. **Notification role** opens the existing access
-review only for installed plugins that declare a notification role. Roles no
-longer appear on Notifications. **Technical details** is collapsed: ordinary runs
-show identity, repository and API compatibility; development runs add provenance,
-digests, generation and **Recover previous…** when a previous package exists.
-Use Tab/Shift+Tab for actions, Space for switches and Back or Escape to return.
-Saving settings remains separate from runtime application or restart consent.
-
-Notification access review remains reachable with valid existing consent. A
-process may have producer, delivery or neither authority; both required roles
-refuse without execution. Optional roles require an explicit selection, while
-declarative UI remains independent. The plugin page shows reviewed and actually
-admitted roles separately. **Save reviewed access** stores the existing
-identity/publisher-scoped `review.features` without enabling code or channels.
-A running plugin must first be explicitly stopped and disabled; after retirement,
-open the review again. Changing a stopped role never restarts it. The manager
-retains its separate **Accept and enable** path for initial enablement.
-
-Background registration or process-state changes update rows by identity rather
-than rebuilding focused controls every tick. Opening/searching these views does
-not enable code or save defaults. Repository/install operations are separate from
-this inventory; no download or uninstall is implied by a static card.
-
-## Plugin protection level
-
-Every managed plugin runs in a kernel-enforced sandbox ([Confinement](plugins.md#confinement)).
-The plugin page's Protection card shows the observed or allowed level. The list
-uses a warning shield for weaker protection, including a refused start awaiting
-consent:
-
-| Card | Meaning |
-|---|---|
-| `Protection: full (Landlock ABI N and seccomp)` | The child applied Landlock ABI 3 or newer and the seccomp filter. |
-| `Protection: reduced (…) · running with reduced protection` | The kernel offers less than ABI 3 (or no Landlock) and you allowed it; this is the level the running process reached. |
-| `Reduced protection was allowed · reduced (…)` | Stored permission on a plugin that is stopped, disabled or not yet started in this session. The mark stays while the permission is stored; it does not predict the protection of the next launch. |
-| `Unavailable` with `the kernel supports only Landlock ABI N (required: ABI 3, kernel 6.2 or newer); the plugin was not started. Allow starting with reduced protection to run it with …` | The start was refused for lack of your consent. The card shows **Allow reduced protection…**. |
-| `Unavailable` with `the kernel cannot load a seccomp filter; the plugin is not started` | Never starts, with or without consent. |
-| `Unavailable` naming a link, owner or permission | The plugin's data directory could not be created safely. |
-
-Each start checks the current kernel again. A later full-protection result
-replaces the card's consent text while that process is live; the warning shield
-still marks the stored permission.
-
-The **Review plugin access** dialog opens with a sentence that follows the level
-this kernel offers. At full protection it says the plugin gets no network and no
-files except its data directory and the system runtime. With Landlock below ABI 3
-it adds that the plugin can still empty (truncate) a file you can write. With the
-seccomp filter alone it says plainly that file access is not restricted and the
-plugin can read and write every file your account can. Where the filter cannot be
-loaded it says the plugin cannot be started.
-
-**Allow reduced protection…** opens a confirmation that names the level. The choice
-is saved per plugin in `managed-plugins.json` as `protection_consent`
-(`reduced:1`, `reduced:2` or `seccomp-only`). It covers that level and any stronger
-one; if a later start reaches a lower level, the plugin is refused again until you
-allow that one. The card's details list, for the latest start, the identity,
-generation, granted features, the digest of the policy applied, the Landlock ABI and
-enforcement the child reported, whether the seccomp filter loaded and the reason of
-any refusal.
-
-## Terminal
-
-The Terminal page is before About and has two independent native dropdowns,
-named `terminal-text-background` and `terminal-ansi-palette`. The first lists
-`GNOME Terminal default` followed by the eleven built-in text/background schemes;
-the second lists `GNOME Terminal default` followed by the six built-in palettes.
-The catalogue matches GNOME Terminal 3.56.2 and is embedded in Among, available
-without GNOME Terminal installed.
-Changing one dropdown leaves the other dimension selected as it was and applies
-the new effective appearance to every existing and new pane without restarting a
-terminal. An unavailable inherited text/background pair shows the built-in Gray
-on black fallback and its reason; the source row stays `GNOME Terminal default`
-for the next start. An unavailable inherited palette restores VTE's compiled-in
-palette in every pane. Invalid or future `terminal.json` documents, unknown IDs
-and unsafe paths are reported in the page's settings-storage group and are not
-silently replaced.
-
-## About
-
-Preferences opens 820 px wide and as tall as the About page needs (measured when
-the window is built), so that page shows whole without scrolling; the height is
-capped at the monitor height less room for the desktop's bars, and on a screen
-too small for that About scrolls instead. The other pages scroll as needed.
-
-The last page, named `about`, identifies the build. It shows the logo, the name,
-the version and the build (`Build <short commit> · <date>`; a part the build did
-not record is left out, and `Build unknown` shows when it recorded neither), then links to the
-website (`https://among-terminal.github.io/`), the source repository
-(`https://github.com/Among-Terminal/among`) and its issue tracker, and the
-license (Apache-2.0). Opening the page reads only compiled-in values and the
-`os-release` file; the network is used only when you follow a link, and the link
-opens in the desktop's default handler.
-
-The version, commit and date come from the build environment, not from git at
-run time; a build that was not given them shows the version from `Cargo.toml` and
-`unknown`. See [build identity](build.md#build-identity).
-
-**Copy build details** puts four lines on the clipboard for a bug report:
+The `about` page reads compiled-in identity and `os-release`, never git or the
+network. Build text is `Build <short commit> · <date>`, omitting unavailable parts
+or showing `Build unknown` when both are missing. The fallback version comes from
+`Cargo.toml`. See [build identity](build.md#build-identity). Operating-system text
+uses `PRETTY_NAME` from `/etc/os-release`, then `/usr/lib/os-release` if the first
+cannot be read, otherwise `unknown`. Copy build details emits four lines:
 
 ```text
-Among Terminal 0.2.0-rc.2
-Commit: 723e04b
-Built: 2026-11-05
+Among Terminal 0.2.0
+Commit: unknown
+Built: unknown
 System: Debian GNU/Linux 13 (trixie)
 ```
 
-The system line is `PRETTY_NAME` from `/etc/os-release` (`/usr/lib/os-release`
-when the first cannot be read), or `unknown` when the file has no such line. The row's icon
-turns into a check mark for two seconds to confirm the copy; there is no toast.
-
 ## Screenshots
 
-Every Preferences tab, in the dark scheme unless the name says light. They are
-generated by one graphical test and prepared by `among-tools`
-(see [Preferences screenshots](testing.md#preferences-screenshots)); the sample
-plugins and the second source are synthetic.
+The graphical test and `among-tools` generate these images; see
+[Preferences screenshots](testing.md#preferences-screenshots). Sample plugins and
+the second source are synthetic. Dark styling is used unless marked light.
 
-| Tab | Image |
+| View | Image |
 |---|---|
-| Plugins: installed and available plugins, and the Sources row | ![Plugins](media/preferences/plugins.png) |
-| Plugins, light scheme | ![Plugins, light scheme](media/preferences/plugins-light.png) |
-| Plugin info page | ![Plugin info page](media/preferences/plugin-info.png) |
-| "Review plugin access" dialog | ![Review plugin access](media/preferences/plugin-access-review.png) |
-| Sources page | ![Sources](media/preferences/sources.png) |
-| Notifications, including the Command group | ![Notifications](media/preferences/notifications.png) |
+| Plugins | ![Plugins](media/preferences/plugins.png) |
+| Plugins, light | ![Plugins, light](media/preferences/plugins-light.png) |
+| Plugin info | ![Plugin info](media/preferences/plugin-info.png) |
+| Access review | ![Access review](media/preferences/plugin-access-review.png) |
+| Sources | ![Sources](media/preferences/sources.png) |
+| Notifications | ![Notifications](media/preferences/notifications.png) |
 | Keyboard | ![Keyboard](media/preferences/keyboard.png) |
-| Terminal colours | ![Terminal](media/preferences/terminal.png) |
-| Terminal colours, light scheme | ![Terminal, light scheme](media/preferences/terminal-light.png) |
+| Terminal | ![Terminal](media/preferences/terminal.png) |
+| Terminal, light | ![Terminal, light](media/preferences/terminal-light.png) |
 | About | ![About](media/preferences/about.png) |
+| First load, no saved sources | ![Loading](media/preferences/plugins-loading.png) |
+| Offline failure | ![Offline](media/preferences/plugins-offline.png) |
+| Search | ![Search](media/preferences/plugins-search.png) |
+| Add source | ![Add source](media/preferences/sources-add.png) |
+| Command arguments | ![Command arguments](media/preferences/notifications-command.png) |
+| Main window | ![Main window](media/app/main-window.png) |
+| Bell indicator | ![Bell indicator](media/app/main-window-bell.png) |
+| GNOME Shell desktop notification | ![Desktop notification](media/app/desktop-notification.png) |
 
-More states, same scene:
-
-| State | Image |
-|---|---|
-| Plugin list before the first load (no saved sources) | ![Loading](media/preferences/plugins-loading.png) |
-| The same list after the load failed offline | ![Offline](media/preferences/plugins-offline.png) |
-| Plugin search | ![Search](media/preferences/plugins-search.png) |
-| Add-source dialog | ![Add source](media/preferences/sources-add.png) |
-| Command group with one argument per line | ![Command arguments](media/preferences/notifications-command.png) |
-| Main window, two panes and the sidebar | ![Main window](media/app/main-window.png) |
-| Main window right after a bell in a pane | ![Main window after a bell](media/app/main-window-bell.png) |
-| Desktop notification for a bell (real GNOME Shell capture) | ![Desktop notification](media/app/desktop-notification.png) |
-
-Not covered: the open terminal dropdown (the display has no compositor, so the
-popup surface renders black), the high-contrast scheme (chosen by the environment
-before the process starts) and the sound row while playing (no audio device in
-the display).
+The open terminal dropdown is not covered: without a compositor its popup renders
+black. High-contrast styling is selected by the environment before startup and is
+not covered. The capture display has no audio device, so the playing sound row is
+not covered either.

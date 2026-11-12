@@ -6,16 +6,30 @@ A GNOME terminal multiplexer in Rust. Terminal emulation is VTE's job; this
 project owns the pane tree, workspace lifecycle, key routing, and the
 out-of-process plugin pipeline.
 
-That division matters when contributing: a change that reaches into
-`libvte` is fighting the design, not extending it.
+Keep terminal emulation in VTE when changing the host application.
 
 ## Where the design lives
 
-The behaviour each subsystem promises is documented next to the code it
-describes: `docs/panes.md` for the pane tree, `docs/sessions.md` for workspace
-state, `docs/plugins.md` for the plugin protocol, and `docs/shortcuts.md` for
-the key bindings and how they are wired. `docs/features.md` summarises what the
-application does from a user's point of view.
+This repository documents development, builds and packaging. User guides live on
+the [site](https://among-terminal.github.io/overview/). Plugin author documentation
+lives in the [plugin template](https://github.com/Among-Terminal/among-plugin-template).
+Link to those guides when a contributor needs usage or protocol instructions.
+
+- [Build requirements](docs/build.md), [installer internals](docs/install.md),
+  [Debian packaging](docs/debian-packaging.md), [RPM packaging](docs/rpm-packaging.md)
+  and [Snap packaging](docs/snap.md).
+- [Pane integration](docs/panes.md), [session storage](docs/sessions.md),
+  [preference storage](docs/preferences.md) and [shortcut wiring](docs/shortcuts.md).
+- [Plugin host and confinement](docs/plugins.md),
+  [protocol implementation](docs/plugin-protocol.md),
+  [managed notification backend](docs/plugin-notification-backend.md),
+  [terminal bells](docs/terminal-bell-backend.md),
+  [command execution](docs/notification-commands.md),
+  [effect authority](docs/notification-effect-authority.md) and [audio](docs/audio.md).
+- [Testing](docs/testing.md), [recording provenance](docs/media-recordings.md)
+  and [releasing](docs/releasing.md).
+- [Licensing obligations](docs/licensing.md), [native payload audit](docs/native-payload-audit.md)
+  and [source delivery](docs/source-delivery.md).
 
 Read the relevant document before changing behaviour, and change it in the same
 commit as the code: a document that no longer matches the code is a bug in the
@@ -38,22 +52,22 @@ contribution, you offer it under Apache-2.0 unless separately agreed otherwise.
 Keep third-party attribution and license terms intact; identify copied/adapted
 code explicitly. See [licensing and distribution obligations](docs/licensing.md).
 
-- **Comments explain why, not what.** If a line of code needs a comment to say
+- Comments explain why the code has its particular constraints. If a line needs a comment to say
   what it does, it needs a better name or a simpler body. Keep a comment when the
   reason is not visible from the code: a constraint, a trade-off, a behaviour
   that would otherwise look like a mistake.
-- **The model holds no widget types.** `src/tree.rs` and `src/workspace.rs` are
+- The model holds no widget types. `src/tree.rs` and `src/workspace.rs` are
   data. Anything that needs a `gtk::Widget` belongs in `src/app.rs`. This is what
   lets the layout be tested without a display.
-- **Comments and documentation are in English.**
-- **No panics on a user's input.** The runtime code contains no `unwrap`,
+- Comments and documentation are in English.
+- No panics on a user's input. The runtime code contains no `unwrap`,
   `expect`, or `panic!`; a failure in a plugin or a terminal must not take the
   application down.
 
 ## Tests
 
-`cargo test` runs the unit tests. They cover the model — the pane tree, the
-workspace set, size reconciliation, the plugin protocol — and need no display.
+`cargo test` runs the unit tests. Model tests cover the pane tree, workspace set,
+size reconciliation and plugin protocol without a display.
 
 Behaviour that only exists in a running window is verified differently: the
 application is driven with scripted actions (`AMONG_SCRIPT`) and real key events
@@ -178,7 +192,7 @@ How the title drives the version (while the major version is `0`):
 
 Plugins run as separate processes on purpose: a plugin that crashes takes only
 itself down. If a plugin can take the application down, that is a bug in the
-host, not the plugin — please report it with the plugin's source and the
+host. Please report it with the plugin's source and the
 application's stderr.
 
 ## Releases

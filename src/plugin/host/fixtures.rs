@@ -14,19 +14,43 @@ const FEATURES: [&str; 6] = [
     "events.terminal",
 ];
 
-fn fixture_entry(spec: &PluginSpec) -> inventory::Entry {
+/// Removes a fixture package directory at the end of its owner's life.
+///
+/// CI keeps its checks below `AMONG_CHECK_ROOT` as evidence, so that mode is
+/// never cleaned. The default temporary root is disposable and must not leak.
+pub(super) struct FixtureRoot {
+    path: std::path::PathBuf,
+    temporary: bool,
+}
+
+impl Drop for FixtureRoot {
+    fn drop(&mut self) {
+        if self.temporary {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn fixture_entry(spec: &PluginSpec) -> (inventory::Entry, FixtureRoot) {
     let local_id = spec
         .name
         .strip_prefix("github:12/")
         .expect("explicit managed fixture key");
     assert!(super::super::manifest::local_id(local_id));
-    let root = std::env::var_os("AMONG_CHECK_ROOT")
+    let evidence = std::env::var_os("AMONG_CHECK_ROOT");
+    let temporary = evidence.is_none();
+    let root = evidence
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("opencode"))
         .join(format!(
             "managed-host-fixture-{}",
             glib::uuid_string_random()
         ));
+    // Own the directory before populating it so a panic still removes it.
+    let cleanup = FixtureRoot {
+        path: root.clone(),
+        temporary,
+    };
     let mut receipt = inventory::tests::fixture(&root);
     let original = receipt.package_path(&root);
     receipt.plugin_id = local_id.into();
@@ -66,7 +90,7 @@ fn fixture_entry(spec: &PluginSpec) -> inventory::Entry {
         json!({"version":1,"installations":[receipt]}).to_string(),
     )
     .unwrap();
-    inventory::read(&root).unwrap().remove(0)
+    (inventory::read(&root).unwrap().remove(0), cleanup)
 }
 
 impl PluginHost {
@@ -80,7 +104,7 @@ impl PluginHost {
         let mut receipts = Vec::new();
         let mut local = serde_json::Map::new();
         for spec in specs {
-            let entry = fixture_entry(spec);
+            let (entry, _fixture) = fixture_entry(spec);
             let package = entry
                 .inspected
                 .as_ref()
@@ -123,7 +147,7 @@ impl PluginHost {
 
     pub(crate) fn register_fixture(&mut self, spec: PluginSpec) {
         self.test_registered.insert(spec.name.clone());
-        let entry = fixture_entry(&spec);
+        let (entry, fixture) = fixture_entry(&spec);
         let local = json!({"enabled":spec.enabled,"review":{"owner":"example","repository":"sample","features":FEATURES}});
         if self.world.workspaces.is_empty() {
             self.update_context(
@@ -145,5 +169,8 @@ impl PluginHost {
             );
         }
         self.register_managed(entry, Some(&local));
+        // The registered entry keeps naming its executable, so the package
+        // directory must outlive this registration and the host itself.
+        self.fixture_roots.push(fixture);
     }
 }

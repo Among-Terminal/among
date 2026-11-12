@@ -43,7 +43,7 @@ let bridge = Rc::new(RefCell::new(Backend::new(core.clone(), actual_focus)));
 let plugins = PluginHost::with_notification_backend(start_gate, Some(bridge.clone()));
 ```
 
-`core` is the **same** `Rc<RefCell<among::notifications::Host>>` used by semantic
+`core` is the same `Rc<RefCell<among::notifications::Host>>` used by semantic
 bell ingress and other delivery adapters, not another event queue. Supply actual
 application-owned-window/terminal focus and update it with `Backend::set_focus`.
 Register/detach real source lifetimes on that core and update the plugin host's
@@ -67,7 +67,7 @@ expansion is introduced here.
 
 ### Explicit production/delivery role choice
 
-A process may hold **either** `notifications.produce` **or**
+A process may hold either `notifications.produce` or
 `notifications.deliver`, never both. `notifications.ui` remains independent and may
 coexist with either. A manifest requiring both conflicting roles is refused before
 executing its entrypoint. When both are optional, the existing identity/publisher-
@@ -110,30 +110,17 @@ action routing check that lease, rather than waiting for mutable UI bookkeeping.
 
 ## Negotiated producer operation
 
-After `notifications.produce` admission, a plugin may send:
-
-```json
-{"type":"notification_event","session":"host-session","generation":"current-process-generation","event":{"sequence":1,"target":{"kind":"application"},"message":"Synthetic application event"}}
-```
+The [producer wire contract](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/api.md#producing-an-event)
+defines message fields, text limits, source-generation requirements and the
+per-producer cooldown.
 
 Targetless application events never invent a pane/workspace. Always policy can
 match, background requires no active application-owned window, and originating-
 terminal-unfocused never matches. Existing core acknowledgement rules are unchanged.
-Legacy `notify` is still a generic payload-omitted diagnostic, not this ingress.
-
-Pane events additionally require `context.terminals`, a live canonical string pane
-reference, and `source_generation` matching the current core source. Authorized
-status/context pages include each attached terminal's `notification_generation`
-when production or UI is negotiated. Closed/reused sources and stale plugin
-session/generation cannot redirect events. A workspace alone is not a terminal
-source and is refused for event production. The host resolves workspace membership;
-plugins cannot supply origin, causal/event IDs or source ownership.
-
-`sequence` is a positive, increasing per-process `u64`. Authenticated fresh
-attempts have a two-second producer cooldown, independently of per-source core
-coalescing. Text is nonempty, at most 240 characters/1024 UTF-8 bytes, with no
-control characters or bidi overrides/isolates. Diagnostics contain fixed reasons,
-not event text, configuration payloads or plugin free-form result text.
+The host resolves workspace membership and source ownership. Closed/reused
+sources and stale plugin session/generation cannot redirect events. Producer
+cooldown is independent of per-source core coalescing. Diagnostics contain fixed
+reasons, not event text, configuration payloads or plugin free-form result text.
 
 The bridge stamps an envelope with event/root causal ID, core session, authoritative
 plugin identity/process generation, optional source-generation/workspace identity,
@@ -159,37 +146,21 @@ Results never become notification events. No automatic retry or reconnect replay
 
 ## Contribution and action state
 
-With `notifications.ui`, send `notification_contribution` with session/generation
-and a `contribution` object containing:
+The [contribution wire contract](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/api.md#visible-content-and-actions)
+defines fields, scopes, styles, icon selectors, actions and withdrawal.
+The renderer must preserve titles, Restore controls and workspace hues. It treats
+text as plain data and never routes content to arbitrary host actions or markup.
+Package artwork uses the statically inspected snapshot; malformed optional
+artwork falls back to no icon. The bridge does not decode arbitrary images from
+a wire message or open a wire-selected filesystem path or URL.
 
-- `id`, increasing positive `revision`, `scope` in existing plugin areas;
-- nonempty `text`, optional `tooltip`, `icon`, closed `style` and up to four actions;
-- for pane scopes, the current `source_generation` from authorized context.
-
-Scopes use the same `slot`/`target` shape as managed status. Application scopes are
-`app_header`/`app_footer`; workspace scopes are `workspace_header` and
-`workspace_summary`; pane scopes are `pane_header`/`pane_footer`. Non-application
-scopes require terminal context and current host resolution. There is no title,
-Restore-control, workspace-hue, arbitrary host-action, HTML/widget/script/CSS scope.
-Text is plain data, not markup. Each text/tooltip fits 512 characters/2048 UTF-8
-bytes. Tooltip alone permits newline/tab. Styles are `default`, `success`,
-`warning`, `error`, `accent`, `dim` and affect contribution data only.
-
-Icons are `theme:<bounded ASCII theme name>` or `package`, which selects the
-statically inspected package artwork snapshot. No wire-selected filesystem path,
-URL, SVG or executable image loader is accepted. Package PNGs reuse the existing
-1-MiB/2048x2048 static/chunk/decode validation; malformed optional artwork falls
-back to no icon. The bridge does not decode arbitrary images from a wire message.
-
-Action IDs are bounded local IDs and labels fit 64 characters. Snapshot
-`Contribution::actions` supplies **opaque** `ActionHandle`s. Explicit host activation
-calls `Backend::activate(handle, now)`; the next plugin-host poll sends
+Snapshot `Contribution::actions` supplies opaque `ActionHandle`s. Explicit host
+activation calls `Backend::activate(handle, now)`; the next plugin-host poll sends
 `notification_action` with contribution ID/revision/action only to that current
 owning process. No shell, terminal-input or host-command routing exists.
 Replaced/withdrawn/expired/disabled/restarted actions are inert, including already
-queued activations. Activation has a 250-ms per-contribution cooldown.
+queued activations.
 
-`withdraw_notification` with session/generation/`id` withdraws one contribution.
 Current applied settings acknowledgements also invalidate old contribution/action
 state without releasing old status/configuration/delivery reply credits.
 `contributions(now)` is a renderer snapshot, not a widget renderer. The application's
@@ -198,22 +169,16 @@ existing title, Restore and stripes, and gives each action a native accessible n
 
 ## Actual provider jobs and outcomes
 
-An admitted `notifications.deliver` process receives only declared, explicitly
-enabled eligible channels. A job is:
-
-```json
-{"type":"deliver","session":"host-session","generation":"provider-generation","delivery":{"job_id":7,"channel":"first","event":{"event_id":"12","causal_id":"12","core_session":"1","kind":"managed_notification","origin":{"identity":"github:12/sample","generation":"producer-generation"},"source":null,"message":"Synthetic application event"}}}
-```
-
-`source` stays null without provider terminal-context consent; it never contains
-PTY output, input, cwd, title, process command line, inherited environment or TTY
+The [delivery wire contract](https://github.com/Among-Terminal/among-plugin-template/blob/main/docs/api.md#delivery-providers)
+defines jobs, results and cancellation. Admission must enforce declared,
+explicitly enabled eligible channels and terminal-context consent. Source data
+never contains PTY output, input, cwd, title, process command line, inherited environment or TTY
 metadata. A permitted source contains pane, source generation and workspace string
 references. Provider identity is determined by the real process receiving the job,
 not by a reply claim.
 
-Reply with `delivery_result`, matching session/generation and `job_id`, and outcome
-`accepted`, `refused`, `failed` or `uncertain`. Accepted is the provider's local
-claim, not proof of remote receipt or exactly-once delivery. Wrong, duplicate, late
+Accepted is the provider's local claim, not proof of remote receipt or
+exactly-once delivery. Wrong, duplicate, late
 and revoked results cannot replace recorded outcomes. Policy/source/provider
 revocation cancels active authority and sends bounded `cancel_delivery` messages
 where the same process remains running; external side effects are not reversible.
@@ -230,7 +195,7 @@ cancelled job whose credit is still retained.
 | Delivery request payload | 16 KiB including host envelope |
 | Provider response deadline | Five seconds; existing off-loop two-second write deadline |
 | Process wire/output | Existing 64-KiB frames, depth 32, 16 queued frames/1 MiB, rotating bounded drains |
-| Replies | Status + configurations + deliveries share **15 retained credits**; enumeration retains its reserved slot |
+| Replies | Status + configurations + deliveries share 15 retained credits; enumeration retains its reserved slot |
 | Event metadata | 64 envelopes / ten seconds, coalesced by source/origin/ingress eligibility while retaining active IDs; evicted/unobserved jobs are dropped, never reattributed |
 | Core producer registrations | 128 live origins; identity <=256 UTF-8 bytes, generation <=128; revoked metadata is reclaimed, not retained as history |
 | Contributions | 128 globally / eight distinct IDs per process, including revision tombstones; ten-second lifetime |
@@ -238,7 +203,7 @@ cancelled job whose credit is still retained.
 | Provider inventory | At most 128 installed identities / 4096 retained channel rows |
 | Backend diagnostic records | 16 completions + 16 fixed rejections; existing core diagnostics remain separate |
 
-At most two active event IDs are pinned **inside** the same 64-envelope budget.
+At most two active event IDs are pinned inside the same 64-envelope budget.
 Cap eviction selects only non-active records (or refuses new metadata if none is
 available); fresh source traffic alone cannot revoke a valid active attempt.
 Expiry, origin/source/channel revocation and deadlines still invalidate authority.
@@ -252,11 +217,11 @@ a new origin, and a managed event cannot re-enter via `observe_host_event` as a 
 bell after its envelope disappears. `envelope(event, now)` also checks exact core
 kind/origin/source attribution and expiry before returning data.
 
-**All asynchronous adapters** must consume
+All asynchronous adapters must consume
 `Backend::authorize_delivery(job, now) -> Option<DeliveryAuthorization>` after
 dequeue. This joined snapshot supplies `envelope() -> &Envelope`, `job() -> Job`,
 `origin_lease() -> Option<OriginLease>` and
-`is_current(&notifications::Host, now) -> bool`. Recheck it before **and during**
+`is_current(&notifications::Host, now) -> bool`. Recheck it before and during
 an attempt; it combines core source/channel/origin authority with the ten-second
 metadata lifetime. A managed snapshot always retains its lease; a host snapshot
 has none. Off-thread work must retain/check the cloneable thread-safe lease as
@@ -274,7 +239,7 @@ Timers, envelopes/jobs and action handles are session-only, never saved sessions
 
 The core's channel-full policy drops an incoming distinct scheduling key once that
 channel already has sixteen pending keys. Single-source/origin floods coalesce and a
-quiet sibling progresses; this is **not** a guarantee that every new distinct
+quiet sibling progresses; this is not a guarantee that every new distinct
 key survives an already saturated channel. Core suppression diagnostics expose
 that overload. Changing the core's admission fairness is a separate review point.
 Targetless managed events coalesce and cool down by their exact registered origin

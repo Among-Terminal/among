@@ -120,6 +120,21 @@ fn documented_osc7_hook_encodes_physical_directory_without_external_commands(
         );
         assert_eq!(output.stdout, expected.as_bytes());
         assert!(output.stderr.is_empty());
+        // Prompt tools that run after the hook read the previous command's
+        // status, so the hook must hand that status on instead of its own.
+        let after_failure = Command::new("/bin/bash")
+            .env_clear()
+            .env("PATH", "/no-external-commands")
+            .current_dir(&alias)
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                &format!("among_osc7() {{{hook}\n(exit 7)\namong_osc7\nexit $?"),
+            ])
+            .output()?;
+        assert_eq!(after_failure.status.code(), Some(7));
+        assert!(after_failure.stderr.is_empty());
         Ok(())
     })();
     fs::remove_dir_all(base)?;

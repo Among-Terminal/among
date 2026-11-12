@@ -29,7 +29,7 @@
     </screenshot>
   </screenshots>
   <releases>
-    <release version="0.2.0" date="2026-11-10" type="stable">
+    <release version="0.2.0" date="2026-11-12" type="stable">
       <description>
         <p>Features</p>
         <ul>
@@ -55,6 +55,9 @@
         </ul>
         <p>Bug fixes</p>
         <ul>
+          <li>plugins: read a file that is being replaced instead of refusing it (#98)</li>
+          <li>ci: stop a test race on executable fixtures and keep a working apt mirror (#97)</li>
+          <li>plugins: install plugins carried over from an earlier release (#93)</li>
           <li>sandbox: review the fchroot kernel call in the policy header test (#90)</li>
           <li>plugins: authenticate GitHub API requests when a token is provided (#89)</li>
           <li>preferences: open tall enough for the About page to show whole (#88)</li>

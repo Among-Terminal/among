@@ -1,55 +1,32 @@
-# Sessions
+# Session storage
 
-Session snapshots live at `${XDG_DATA_HOME:-$HOME/.local/share}/among/session.json`.
-This is independent of `plugins.json` and `shortcuts.json`: saving a session does
-not rewrite preferences, install plugins or modify shell configuration.
+The [session guide](https://among-terminal.github.io/sessions/) owns restoration
+controls and shell directory reporting. [session.rs](../src/session.rs) owns the
+snapshot format.
+
+`session::path` uses `XDG_DATA_HOME` whenever it is set, including empty or
+relative values. Only an unset value falls back to `$HOME/.local/share`.
+The resulting base is joined with `among/session.json`; if both variables are
+unset, no path is available. Preserve this path-resolution contract independently
+of the stricter XDG path handling used by plugin installation.
 
 ## Saving and restoring
 
-A new application process with a valid snapshot asks **Restore** or **Start new**.
-Restore recreates each terminal as a fresh shell in its saved directory, including
-inactive workspaces, and restores the active workspace and its focused pane.
-The saved sidebar sequence includes manual drag-and-drop ordering. Restore brings
-back that order, with the same workspace active at its new position; Alt+1 through
-Alt+9 then use those restored positions. Ordering is part of the session, not a
-separate preference, and does not bypass the Restore/Start new decision.
-A pane moved to another workspace by dragging its header is saved as part of the
-destination workspace, with its own directory; a workspace that lost its last
-pane this way is not restored. The format is unchanged.
-It does not resume old processes, repeat commands, restore scrollback or retain
-temporary pane zoom. The window opens maximized as usual.
+`install_session_checkpoints` in [app.rs](../src/app.rs) submits changed snapshots
+to `session::Writer` on a two-second timer. Preserve the saved/submitted snapshot
+comparison to avoid redundant writes and the ordered worker to keep disk I/O off
+the GTK loop. Final-save completion must precede terminal teardown; cancelling
+close must resume checkpoints.
 
-Start new (also Escape) opens the usual single-terminal workspace. Its next
-checkpoint replaces the previous session. Closing the window while the prompt is
-still open exits without launching terminals or altering the old snapshot.
-Activating an already running application does not ask again.
+Keep directory selection in `session::initial_directory` separate from spawn
+confirmation in [pane.rs](../src/pane.rs): VTE may fall back during spawning, so
+record the actual `/proc/<pid>/cwd`, not the requested path. The cwd callback in
+[app.rs](../src/app.rs) must update inactive workspaces too and remain independent
+of plugin enablement.
 
-Changed session state is checkpointed every two seconds by a separate ordered
-writer, normally reaching disk within three seconds. Unchanged state does not
-cause disk writes. Confirmed application exit saves the latest model before
-terminal teardown; canceling exit keeps the live session running. A crash can
-lose changes newer than the last completed checkpoint. Power loss or a storage
-error can lose more: there is no unconditional durability guarantee.
-
-If a saved directory is deleted or inaccessible, the shell uses an accessible
-home or startup directory. Settings shows affected panes. VTE can silently fall
-back during spawning; the host reads the new process's actual `/proc/<pid>/cwd`
-rather than assuming the requested path was used. Only the actual known location
-is recorded. A workspace's first terminal keeps the normal startup directory; a
-terminal created by [splitting a pane](panes.md#splitting-a-pane) starts in that
-pane's directory instead, and records it because it really started there.
-
-For directory changes after launch, the shell must publish OSC 7. See the tested
-[Bash integration](plugins.md#live-status-examples). This does not require enabling
-pane-pwd or any other plugin, and Among Terminal never edits your shell files.
-For example, after enabling the optional Bash hook, `cd /tmp` is recorded on the
-next checkpoint even when the workspace is inactive.
-
-Storage failures are reported in Settings without blocking terminal input. Later
-checkpoints retry after the problem is fixed. Invalid or future-version documents
-are preserved until externally corrected or removed. A failed final save asks
-whether to keep working or exit without saving; keeping the window open resumes
-checkpoint retries. Routine checkpoints do not show success notifications.
+Keep write failures retryable through the checkpoint controller. A failed or
+unsupported load must not authorize replacement of the stored document. Recovery
+controls belong in the [session guide](https://among-terminal.github.io/sessions/#storage-and-recovery).
 
 ## Snapshot format
 
@@ -80,21 +57,16 @@ numbers without reserving an array up to that number; exhausted IDs prevent new
 pane creation instead of wrapping. Each focused ID must belong to that workspace.
 Directory entries must exactly match its leaves. Paths are absolute or `null`
 when unknown; they come from terminal-reported cwd or the directory the shell
-actually started in. A pane with no directory of its own records `null` rather
-than borrowing another pane's location; a pane created by splitting records the
-directory it was started in, which is the pane it was split from. Changes after
-launch need shell OSC 7 reporting to be known reliably. No plugin is required to
-collect these reports.
+actually started in. Snapshot capture must preserve `null` for a pane whose
+directory is unknown, without borrowing another pane's location.
 
-The file contains no commands, process IDs, shell environment or scrollback.
-Input is bounded to 8 MiB, 64 nested splits, 4096 panes and 256 workspaces;
-unreadable, malformed, unsupported or unsafe files are not silently overwritten.
-The loader also retains the JSON parser's recursion safety limit.
+Keep `Snapshot::validate` and the bounded reader in [session.rs](../src/session.rs)
+within 8 MiB, 64 nested splits, 4096 panes and 256 workspaces. Retain the JSON
+parser's recursion safety limit and validate existing bytes before replacement.
 
-New snapshot files are private (mode 0600). Existing stricter permissions are
-preserved. Saving writes and syncs a same-directory temporary file, then renames
-it atomically and syncs its directory. A failed replacement retains the previous
-complete file; a directory-sync error after replacement means the new file was
-written but its power-loss durability is uncertain. Symlink and non-regular
-destinations are refused. Manually editing a snapshot while it is being saved
-can produce a retryable concurrent-change warning.
+`save_with_hooks` must create a same-directory temporary file with mode 0600 or
+the existing stricter mode, sync its contents, compare the destination with the
+original bytes, rename, then sync the parent directory. Keep pre-replacement
+failure distinct from post-rename durability uncertainty. Refuse symlink and
+non-regular destinations and return a retryable error for a detected concurrent
+change.
