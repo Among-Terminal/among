@@ -186,6 +186,89 @@ pub fn contained_directory(root: &File, relative: &str) -> Result<File, Problem>
     contained(root, relative, true)
 }
 
+/// How long a reader keeps reopening the final component while a concurrent
+/// `rename` finishes publishing its replacement. While that rename runs, the
+/// replaced inode can already have lost its last link while the name still
+/// resolves to it, and a lookup does not wait for the rename to finish. On a
+/// loaded machine or in a second instance the writer can stay descheduled
+/// inside the rename long enough that immediate retries keep seeing the same
+/// dead inode, so retries give up the CPU and then pause briefly. The total
+/// wait is bounded because a file removed without a replacement is already
+/// reported by the failing open, which needs no waiting.
+const REPLACED_FILE_WAIT: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The pause between retries starts here and doubles up to the cap.
+const REPLACED_FILE_PAUSE: std::time::Duration = std::time::Duration::from_micros(50);
+const REPLACED_FILE_PAUSE_CAP: std::time::Duration = std::time::Duration::from_micros(800);
+
+fn open_checked(
+    directory: &File,
+    name: &std::ffi::CString,
+    expect_directory: bool,
+) -> Result<(File, std::fs::Metadata), Problem> {
+    let flags = libc::O_RDONLY
+        | libc::O_CLOEXEC
+        | libc::O_NOFOLLOW
+        | libc::O_NONBLOCK
+        | if expect_directory {
+            libc::O_DIRECTORY
+        } else {
+            0
+        };
+    // directory owns the parent descriptor, and every component is opened
+    // relative to it with no-follow; downloaded links cannot redirect a read.
+    let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(Problem("package resource is unavailable or a link"));
+    }
+    let file = unsafe { File::from_raw_fd(fd) };
+    let metadata = file
+        .metadata()
+        .map_err(|_| Problem("cannot inspect package resource"))?;
+    if !private_to_user(&metadata, 0o6000) {
+        return Err(Problem(
+            "package resource has unsafe ownership or permissions",
+        ));
+    }
+    Ok((file, metadata))
+}
+
+/// A writer publishes `installed.json` and settings with `rename`, so a reader
+/// that reached the previous inode just before that rename sees no remaining
+/// links. That means the file was replaced or removed after the open, not that
+/// someone substituted a hard link, so the final component is opened again
+/// relative to the unchanged parent directory and checked the same way. A real
+/// extra link stays refused, and a file that is now gone reports the open
+/// failure of the next attempt.
+fn open_final_file(directory: &File, name: &std::ffi::CString) -> Result<File, Problem> {
+    let deadline = std::time::Instant::now() + REPLACED_FILE_WAIT;
+    let mut pause = REPLACED_FILE_PAUSE;
+    let mut attempts = 0u32;
+    loop {
+        let (file, metadata) = open_checked(directory, name, false)?;
+        if metadata.is_file() && metadata.nlink() == 1 {
+            return Ok(file);
+        }
+        if !metadata.is_file() || metadata.nlink() > 1 {
+            return Err(Problem(
+                "package resource must be a single-link regular file",
+            ));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Problem(
+                "package resource must be a single-link regular file",
+            ));
+        }
+        if attempts < 2 {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(REPLACED_FILE_PAUSE_CAP);
+        }
+        attempts += 1;
+    }
+}
+
 fn contained(root: &File, relative: &str, directory_only: bool) -> Result<File, Problem> {
     if !relative_path(relative) {
         return Err(Problem("unsafe package resource path"));
@@ -198,40 +281,17 @@ fn contained(root: &File, relative: &str, directory_only: bool) -> Result<File, 
         let name =
             std::ffi::CString::new(*part).map_err(|_| Problem("unsafe package resource path"))?;
         let final_part = index + 1 == parts.len();
-        let flags = libc::O_RDONLY
-            | libc::O_CLOEXEC
-            | libc::O_NOFOLLOW
-            | libc::O_NONBLOCK
-            | if final_part && !directory_only {
-                0
-            } else {
-                libc::O_DIRECTORY
-            };
-        // directory owns the parent descriptor, and every component is opened
-        // relative to it with no-follow; downloaded links cannot redirect a read.
-        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-        if fd < 0 {
-            return Err(Problem("package resource is unavailable or a link"));
+        if final_part && !directory_only {
+            return open_final_file(&directory, &name);
         }
-        let file = unsafe { File::from_raw_fd(fd) };
-        let metadata = file
-            .metadata()
-            .map_err(|_| Problem("cannot inspect package resource"))?;
-        if !private_to_user(&metadata, 0o6000) {
-            return Err(Problem(
-                "package resource has unsafe ownership or permissions",
-            ));
-        }
+        let (file, metadata) = open_checked(&directory, &name, !final_part || directory_only)?;
         if final_part {
             if directory_only && metadata.is_dir() {
                 return Ok(file);
             }
-            if directory_only || !metadata.is_file() || metadata.nlink() != 1 {
-                return Err(Problem(
-                    "package resource must be a single-link regular file",
-                ));
-            }
-            return Ok(file);
+            return Err(Problem(
+                "package resource must be a single-link regular file",
+            ));
         }
         directory = file;
     }
@@ -397,5 +457,71 @@ mod tests {
         ] {
             assert!(!relative_path(path), "{path:?}");
         }
+    }
+
+    #[test]
+    fn a_file_replaced_after_open_is_reopened_instead_of_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::time::{Duration, Instant};
+
+        let path = directory_with("replaced-read", 0o700);
+        let target = path.join("installed.json");
+        std::fs::write(&target, b"initial generation").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let root = owned_directory(&path).unwrap();
+        let requested = Arc::new(AtomicU64::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        // both threads start together; every reader iteration asks for exactly
+        // one replacement, so the writer cannot outrun the reader and starve it
+        // of readable files under load.
+        let start = Arc::new(Barrier::new(2));
+        let writer = {
+            let requested = Arc::clone(&requested);
+            let finished = Arc::clone(&finished);
+            let start = Arc::clone(&start);
+            let directory = path.clone();
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                start.wait();
+                let mut served = 0u64;
+                let mut generation = 0u64;
+                while !finished.load(Ordering::Acquire) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "replacement writer made no progress before its deadline"
+                    );
+                    // preparing the next file first leaves the replacement as
+                    // one atomic rename that races with the read.
+                    generation += 1;
+                    let temporary = directory.join(format!("replacement-{generation}"));
+                    std::fs::write(&temporary, format!("generation {generation}")).unwrap();
+                    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                    while requested.load(Ordering::Acquire) <= served {
+                        if finished.load(Ordering::Acquire) {
+                            return;
+                        }
+                        assert!(
+                            Instant::now() < deadline,
+                            "replacement writer made no progress before its deadline"
+                        );
+                        std::hint::spin_loop();
+                    }
+                    served += 1;
+                    std::fs::rename(&temporary, directory.join("installed.json")).unwrap();
+                }
+            })
+        };
+        start.wait();
+        for _ in 0..100_000 {
+            requested.fetch_add(1, Ordering::AcqRel);
+            let file = contained_file(&root, "installed.json").unwrap();
+            assert!(!read_bounded(&file, MAX_STATIC_BYTES).unwrap().is_empty());
+        }
+        finished.store(true, Ordering::Release);
+        writer.join().unwrap();
+        std::fs::remove_dir_all(&path).unwrap();
     }
 }
