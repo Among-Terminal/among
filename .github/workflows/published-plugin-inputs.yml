@@ -32,6 +32,11 @@ jobs:
           bash scripts/ci/apt-install.sh -y libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
           cargo +1.98.1 build --release --locked --manifest-path tools/among-tools/Cargo.toml
       - name: Observe and download the pinned immutable publication
+        env:
+          # Anonymous API calls share the runner address with every other job
+          # and are refused when its hourly allowance is spent. The workflow's
+          # own token reads public data only, so no permission is widened.
+          AMONG_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tools/among-tools/target/release/among-tools fetch-published-plugin-assets \
