@@ -14,6 +14,13 @@ Usage:
   among-tools isolated-x11-video <command> [args...]
   among-tools isolated-x11 <command> [args...]
   among-tools vm-x11 <command> [args...]
+  among-tools media-x11 <command> [args...]
+  among-tools media-gnome <command> [args...]
+  among-tools media all <prebuilt-app-test> <new-output-directory>
+  among-tools media stills <prebuilt-app-test> <new-output-directory>
+  among-tools media notification <prebuilt-app-test> <new-output-directory>
+  among-tools media panes <prebuilt-app-test> <new-output-directory>
+  among-tools media verify <output-directory>
   among-tools run-ignored-tests <cargo-test-executables.jsonl>
   among-tools check-installer-enospc-from-cargo <cargo-test-executables.jsonl>
   among-tools check-resource-measurements <official-plugin-profile>
@@ -380,10 +387,41 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 )?
             );
         }
+        [command, action, directory] if command == "media" && action == "verify" => {
+            among_tools::media::verify(Path::new(directory))?;
+        }
+        [command, action, app_test, output] if command == "media" => {
+            let app_test = Path::new(app_test);
+            let output = Path::new(output);
+            match action.as_str() {
+                "stills" => {
+                    among_tools::media::capture_stills(app_test, output)?;
+                }
+                "notification" => {
+                    among_tools::media::capture_notification(app_test, output)?;
+                }
+                "panes" => {
+                    among_tools::media::capture_panes(app_test, output)?;
+                }
+                "all" => {
+                    among_tools::media::all(app_test, output)?;
+                }
+                _ => return Err("media action must be stills, notification, panes or all".into()),
+            }
+        }
+        [command, _] if command == "media" => {
+            return Err("media needs an action: stills, panes, notification, all or verify".into());
+        }
         [command, rest @ ..]
             if matches!(
                 command.as_str(),
-                "ci-x11" | "ci-x11-video" | "isolated-x11" | "isolated-x11-video" | "vm-x11"
+                "ci-x11"
+                    | "ci-x11-video"
+                    | "isolated-x11"
+                    | "isolated-x11-video"
+                    | "vm-x11"
+                    | "media-x11"
+                    | "media-gnome"
             ) =>
         {
             let mode = match command.as_str() {
@@ -391,6 +429,8 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 "ci-x11-video" => display::Mode::Video,
                 "isolated-x11-video" => display::Mode::VideoGnome,
                 "vm-x11" => display::Mode::Guest,
+                "media-x11" => display::Mode::Media,
+                "media-gnome" => display::Mode::MediaGnome,
                 _ => display::Mode::NestedGnome,
             };
             let status = display::run(

@@ -15,6 +15,8 @@ pub enum Mode {
     VideoGnome,
     Guest,
     NestedGnome,
+    Media,
+    MediaGnome,
 }
 
 pub fn launch_environment(caller: &BTreeMap<OsString, OsString>) -> BTreeMap<OsString, OsString> {
@@ -28,6 +30,7 @@ pub fn launch_environment(caller: &BTreeMap<OsString, OsString>) -> BTreeMap<OsS
             "GITHUB_ACTIONS",
             "RUNNER_ENVIRONMENT",
             "AMONG_GITHUB_TOKEN",
+            "AMONG_MEDIA_OUTPUT",
         ],
     )
 }
@@ -161,7 +164,7 @@ fn start_server(
     base: &Path,
     label: &str,
 ) -> Result<(OwnedProcess, String)> {
-    start_server_profile(program, nested, env, base, label, false)
+    start_server_profile(program, nested, env, base, label, "1920x1200")
 }
 
 fn start_server_profile(
@@ -170,15 +173,16 @@ fn start_server_profile(
     env: &BTreeMap<OsString, OsString>,
     base: &Path,
     label: &str,
-    video: bool,
+    screen: &str,
 ) -> Result<(OwnedProcess, String)> {
     let log = File::create(base.join(format!("{label}.log")))?;
+    let root_screen = format!("{screen}x24");
     let args = if nested {
         vec![
             "-displayfd",
             "1",
             "-screen",
-            if video { "1600x1200" } else { "1920x1200" },
+            screen,
             "-ac",
             "-nolisten",
             "tcp",
@@ -190,11 +194,7 @@ fn start_server_profile(
             "1",
             "-screen",
             "0",
-            if video {
-                "1600x1200x24"
-            } else {
-                "1920x1200x24"
-            },
+            &root_screen,
             "-nolisten",
             "tcp",
             "-ac",
@@ -286,8 +286,27 @@ pub fn run(
     }
     let base = private_directory(scratch)?;
     eprintln!("Owned display evidence: {}", base.display());
-    let mut env = environment(scratch, &base, matches!(mode, Mode::Ci | Mode::Video))?;
-    let nested = matches!(mode, Mode::NestedGnome | Mode::VideoGnome);
+    let media = matches!(mode, Mode::Media | Mode::MediaGnome);
+    let video = matches!(mode, Mode::Video | Mode::VideoGnome);
+    let mut env = environment(
+        scratch,
+        &base,
+        matches!(
+            mode,
+            Mode::Ci | Mode::Video | Mode::Media | Mode::MediaGnome
+        ),
+    )?;
+    let nested = matches!(
+        mode,
+        Mode::NestedGnome | Mode::VideoGnome | Mode::MediaGnome
+    );
+    let screen = if media {
+        "1600x1000"
+    } else if video {
+        "1600x1200"
+    } else {
+        "1920x1200"
+    };
     let mut parent = None;
     let (mut server, display) = if nested {
         // create a second owned server as Xephyr's parent, not the personal screen.
@@ -301,7 +320,7 @@ pub fn run(
             &env,
             &base,
             "xephyr",
-            matches!(mode, Mode::VideoGnome),
+            screen,
         )?
     } else {
         start_server_profile(
@@ -310,7 +329,7 @@ pub fn run(
             &env,
             &base,
             "xvfb",
-            matches!(mode, Mode::Video),
+            screen,
         )?
     };
     env.insert("DISPLAY".into(), display.into());
@@ -363,14 +382,75 @@ pub fn run(
         env.insert("DBUS_SYSTEM_BUS_ADDRESS".into(), ready.into());
         system_bus = Some(bus);
     }
-    let mut manager = if nested {
-        OwnedProcess::spawn(
-            Path::new("/usr/bin/dbus-run-session"),
-            &["--", "gnome-shell", "--x11", "--sm-disable"],
+    let mut media_session_bus = None;
+    if matches!(mode, Mode::Media | Mode::MediaGnome) {
+        let bus_log = File::create(base.join("session-bus.log"))?;
+        let address = format!("unix:path={}", base.join("session-bus").display());
+        let mut bus = OwnedProcess::spawn_capture(
+            Path::new("/usr/bin/dbus-daemon"),
+            &[
+                "--session",
+                "--nofork",
+                "--print-address=1",
+                "--address",
+                &address,
+            ],
             &env,
             &base,
-            &manager_log,
-        )?
+            &bus_log,
+        )?;
+        let mut pipe = bus.take_stdout()?;
+        let flags = OFlag::from_bits_truncate(fcntl(&pipe, FcntlArg::F_GETFL)?);
+        fcntl(&pipe, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+        let ready = read_line(&mut pipe, Duration::from_secs(10), 4096)?;
+        if !ready.starts_with(&address) || !bus.is_running()? {
+            return Err("owned session bus failed readiness".into());
+        }
+        env.insert("DBUS_SESSION_BUS_ADDRESS".into(), ready.into());
+        if matches!(mode, Mode::MediaGnome) {
+            env.insert("GSETTINGS_BACKEND".into(), "dconf".into());
+            let share = std::env::current_dir()?.join("data");
+            let paths = std::env::var_os("XDG_DATA_DIRS")
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+            env.insert(
+                "XDG_DATA_DIRS".into(),
+                format!("{}:{paths}", share.display()).into(),
+            );
+            for (schema, key, value) in [
+                ("org.gnome.desktop.notifications", "show-banners", "false"),
+                ("org.gnome.desktop.interface", "color-scheme", "prefer-dark"),
+            ] {
+                let status = std::process::Command::new("/usr/bin/gsettings")
+                    .env_clear()
+                    .envs(&env)
+                    .args(["set", schema, key, value])
+                    .status()?;
+                if !status.success() {
+                    return Err(format!("gsettings {schema} {key} {value} failed").into());
+                }
+            }
+        }
+        media_session_bus = Some(bus);
+    }
+    let mut manager = if nested {
+        if matches!(mode, Mode::MediaGnome) {
+            OwnedProcess::spawn(
+                Path::new("/usr/bin/gnome-shell"),
+                &["--x11", "--sm-disable"],
+                &env,
+                &base,
+                &manager_log,
+            )?
+        } else {
+            OwnedProcess::spawn(
+                Path::new("/usr/bin/dbus-run-session"),
+                &["--", "gnome-shell", "--x11", "--sm-disable"],
+                &env,
+                &base,
+                &manager_log,
+            )?
+        }
     } else {
         let configuration = base.join("openbox.xml");
         fs::write(
@@ -411,18 +491,31 @@ pub fn run(
         return Err("GNOME overview dismissal failed".into());
     }
     let command_log = File::create(base.join("command.log"))?;
-    let mut argv = vec!["--"];
-    argv.extend(args.iter().map(String::as_str));
-    let mut command = OwnedProcess::spawn(
-        Path::new("/usr/bin/dbus-run-session"),
-        &argv,
-        &env,
-        &std::env::current_dir()?,
-        &command_log,
-    )?;
+    let mut command = if matches!(mode, Mode::Media | Mode::MediaGnome) {
+        OwnedProcess::spawn(
+            Path::new(&args[0]),
+            &args[1..].iter().map(String::as_str).collect::<Vec<_>>(),
+            &env,
+            &std::env::current_dir()?,
+            &command_log,
+        )?
+    } else {
+        let mut argv = vec!["--"];
+        argv.extend(args.iter().map(String::as_str));
+        OwnedProcess::spawn(
+            Path::new("/usr/bin/dbus-run-session"),
+            &argv,
+            &env,
+            &std::env::current_dir()?,
+            &command_log,
+        )?
+    };
     let status = command.wait(timeout)?;
     std::io::stdout().write_all(&fs::read(base.join("command.log"))?)?;
     manager.cleanup()?;
+    if let Some(mut bus) = media_session_bus {
+        bus.cleanup()?;
+    }
     if let Some(mut bus) = system_bus {
         bus.cleanup()?;
     }

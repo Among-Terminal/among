@@ -645,6 +645,15 @@ paths and desktop never appear because the test runs in the owned display with
 its own `HOME`. The tool runs `/usr/bin/convert` with a cleared environment, the
 same fixed path the other graphical checks use.
 
+### Site and README media
+
+The differently framed stills and the notification recording used by the
+public site and README come from `among-tools media`; see
+[documentation media](media.md). That pipeline starts its own owned X11 and
+GNOME displays, writes a manifest and checks the published dimensions. The
+Preferences captures above remain the in-repository table until its remaining
+states are ported to the same scene.
+
 ## Installer ENOSPC context
 
 `among-tools check-installer-enospc-from-cargo CARGO_TEST_RECORDS` selects the

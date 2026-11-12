@@ -73,6 +73,9 @@ Behaviour that only exists in a running window is verified differently: the
 application is driven with scripted actions (`AMONG_SCRIPT`) and real key events
 (`xdotool`), and its state is read back from `AMONG_SELFCHECK`. See
 [Verification aids](docs/testing.md) for the full list of switches.
+Documentation stills and the notification recording come from
+[documentation media](docs/media.md); use `among-tools media` instead of a
+temporary capture script.
 
 A change to layout, focus, or the plugin pipeline is not finished until it has
 been observed at that boundary. A test that only proves a function returns a
