@@ -466,18 +466,54 @@ mod tests {
         use std::sync::{Arc, Barrier};
         use std::time::{Duration, Instant};
 
+        /// Stops the writer and removes the directory when the test panics, so
+        /// a failed run leaves neither a spinning thread nor temp files.
+        struct Writer {
+            finished: Arc<std::sync::atomic::AtomicBool>,
+            handle: Option<std::thread::JoinHandle<()>>,
+            directory: std::path::PathBuf,
+        }
+
+        impl Writer {
+            fn finish(mut self) {
+                self.finished
+                    .store(true, std::sync::atomic::Ordering::Release);
+                if let Some(handle) = self.handle.take() {
+                    handle.join().unwrap();
+                }
+                std::fs::remove_dir_all(&self.directory).unwrap();
+            }
+        }
+
+        impl Drop for Writer {
+            fn drop(&mut self) {
+                self.finished
+                    .store(true, std::sync::atomic::Ordering::Release);
+                if let Some(handle) = self.handle.take() {
+                    let _ = handle.join();
+                }
+                let _ = std::fs::remove_dir_all(&self.directory);
+            }
+        }
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let requested = Arc::new(AtomicU64::new(0));
+        let start = Arc::new(Barrier::new(2));
         let path = directory_with("replaced-read", 0o700);
+        // installed before any other setup, so even a panic above removes it.
+        let mut writer = Writer {
+            finished: Arc::clone(&finished),
+            handle: None,
+            directory: path.clone(),
+        };
         let target = path.join("installed.json");
         std::fs::write(&target, b"initial generation").unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
         let root = owned_directory(&path).unwrap();
-        let requested = Arc::new(AtomicU64::new(0));
-        let finished = Arc::new(AtomicBool::new(false));
         // both threads start together; every reader iteration asks for exactly
         // one replacement, so the writer cannot outrun the reader and starve it
         // of readable files under load.
-        let start = Arc::new(Barrier::new(2));
-        let writer = {
+        writer.handle = Some({
             let requested = Arc::clone(&requested);
             let finished = Arc::clone(&finished);
             let start = Arc::clone(&start);
@@ -490,7 +526,7 @@ mod tests {
                 while !finished.load(Ordering::Acquire) {
                     assert!(
                         Instant::now() < deadline,
-                        "replacement writer made no progress before its deadline"
+                        "replacement writer exceeded the test deadline"
                     );
                     // preparing the next file first leaves the replacement as
                     // one atomic rename that races with the read.
@@ -505,7 +541,7 @@ mod tests {
                         }
                         assert!(
                             Instant::now() < deadline,
-                            "replacement writer made no progress before its deadline"
+                            "replacement writer exceeded the test deadline"
                         );
                         std::hint::spin_loop();
                     }
@@ -513,15 +549,13 @@ mod tests {
                     std::fs::rename(&temporary, directory.join("installed.json")).unwrap();
                 }
             })
-        };
+        });
         start.wait();
         for _ in 0..100_000 {
             requested.fetch_add(1, Ordering::AcqRel);
             let file = contained_file(&root, "installed.json").unwrap();
             assert!(!read_bounded(&file, MAX_STATIC_BYTES).unwrap().is_empty());
         }
-        finished.store(true, Ordering::Release);
-        writer.join().unwrap();
-        std::fs::remove_dir_all(&path).unwrap();
+        writer.finish();
     }
 }
