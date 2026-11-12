@@ -43,18 +43,28 @@ fn number(value: &Value, field: &str) -> Result<u64> {
 /// exhaust, while a token raises it.
 const TOKEN_VARIABLE: &str = "AMONG_GITHUB_TOKEN";
 
-/// One byte HTTP can carry in a header value: visible ASCII or a tab. The
-/// application's `HeaderValue` check refuses everything else, including DEL.
+/// Upper bound on a token, in bytes. GitHub tokens are far shorter, and the
+/// bound stays well below Linux's 64 KiB pipe buffer, so the caller of
+/// `spawn_split_stdin` may write the configuration before waiting without
+/// depending on the child having read first.
+const TOKEN_MAXIMUM: usize = 1024;
+
+/// One byte this tool accepts in a token: visible ASCII or a tab. The
+/// application's `HeaderValue` also passes bytes at 0x80 and above, so this is
+/// deliberately stricter. GitHub tokens are ASCII, so no valid token is lost,
+/// and a value carrying anything else is not sent at all.
 fn header_byte(byte: u8) -> bool {
     byte == b'\t' || (0x20..=0x7e).contains(&byte)
 }
 
-/// The token as the application would accept it. Surrounding whitespace is not
-/// part of a token, and a value that HTTP cannot carry as a header is treated
-/// as absent instead of being sent in some other form.
+/// The token this tool is willing to send, or `None` when the value is empty,
+/// longer than the bound, or not visible ASCII. Being stricter than the
+/// application is safe: GitHub tokens are short ASCII strings, so no valid
+/// token is refused, and an unusable value is treated as absent rather than
+/// sent in some other form.
 fn usable_token(value: Option<&str>) -> Option<&str> {
     let token = value?.trim();
-    if token.is_empty() || !token.bytes().all(header_byte) {
+    if token.is_empty() || token.len() > TOKEN_MAXIMUM || !token.bytes().all(header_byte) {
         return None;
     }
     Some(token)
@@ -1105,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn an_authenticated_asset_download_keeps_its_redirect_policy_out_of_argv() -> Result<()> {
+    fn authenticated_asset_download_keeps_location_and_config_token() -> Result<()> {
         let root = fixture()?;
         let program = fake_curl(
             &root,
@@ -1117,6 +1127,7 @@ mod tests {
         let argv = fs::read_to_string(root.join("argv.log"))?;
         assert!(!argv.contains(secret));
         assert!(argv.lines().any(|line| line == "--location"));
+        assert!(!argv.contains("--location-trusted"));
         assert!(argv.lines().any(|line| line == "--config"));
         assert_eq!(
             argv.lines().last(),
@@ -1131,7 +1142,14 @@ mod tests {
 
     #[test]
     fn an_empty_or_unusable_token_is_treated_as_absent() -> Result<()> {
-        for value in ["", "   ", "line\nbreak", "header\u{7f}value"] {
+        let too_long = "a".repeat(TOKEN_MAXIMUM + 1);
+        for value in [
+            "",
+            "   ",
+            "line\nbreak",
+            "header\u{7f}value",
+            too_long.as_str(),
+        ] {
             let root = fixture()?;
             let program = fake_curl(
                 &root,

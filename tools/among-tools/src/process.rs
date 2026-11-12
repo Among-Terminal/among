@@ -147,9 +147,11 @@ impl OwnedProcess {
     /// Like `spawn_split`, with one bounded input supplied on stdin instead of
     /// the null device. A credential reaches a child this way because argv is
     /// visible to `ps` and is quoted in failures, while a pipe leaves nothing
-    /// on disk. The input fits a pipe buffer, so writing it before waiting
-    /// cannot block; a child that exits without reading it simply fails on its
-    /// own and is still reaped through the usual wait path.
+    /// on disk. The caller must keep `input` well below a pipe buffer; the
+    /// token path enforces that with a named limit, so writing before waiting
+    /// cannot block on a child that has not read yet. A child that exits
+    /// without reading simply fails on its own and is still reaped through the
+    /// usual wait path.
     pub fn spawn_split_stdin(
         program: &Path,
         args: &[&str],
