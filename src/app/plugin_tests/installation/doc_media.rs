@@ -946,7 +946,19 @@ fn create_named_workspace(ctx: &Window, name: &str) {
         },
         Duration::from_secs(3),
     );
-    xdo(&["mousemove", "--sync", "800", "500"]);
+    // Commit the in-place editor and leave a clean row for the close-up.
+    xdo(&["mousemove", "--window", &id, "800", "500"]);
+    xdo(&["click", "1"]);
+    wait_for(
+        || {
+            ctx.workspace_list
+                .row_at_index(index)
+                .and_then(|row| row.child())
+                .and_then(|child| find_name_widget(&child))
+                .is_some_and(|widget| !widget.is::<gtk::Entry>())
+        },
+        Duration::from_secs(3),
+    );
 }
 
 #[test]
