@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+#[path = "support/executable.rs"]
+mod executable;
+
 struct Fixture(PathBuf);
 
 fn native_payload() -> among_tools::Result<BTreeMap<String, among_tools::installation::Payload>> {
@@ -84,7 +87,6 @@ fn missing_owned_file_does_not_block_removal_and_empty_removal_is_idempotent(
 #[test]
 fn dependency_install_is_explicit_and_build_failure_never_replaces_owned_files(
 ) -> among_tools::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new()?;
     let manifest = prepare(&fixture)?;
     let before = fs::read(fixture.layout()?.state.join("install.json"))?;
@@ -96,8 +98,7 @@ fn dependency_install_is_explicit_and_build_failure_never_replaces_owned_files(
         ("pkg-config","#!/bin/sh\nexit 0\n"),
         ("cargo","#!/bin/sh\n/usr/bin/id -u > \"$HOME/build-uid\"\nprintf '%s\\n' \"$*\" > \"$HOME/build-args\"\nexit 19\n")
     ] {
-        fs::write(commands.join(name),body)?;
-        fs::set_permissions(commands.join(name),fs::Permissions::from_mode(0o755))?;
+        executable::write(&commands.join(name),body.as_bytes())?;
     }
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_among-tools"))
         .env_clear()
@@ -272,7 +273,7 @@ fn actual_gio_launch_decodes_special_character_home_without_shell_expansion(
     let fixture = Fixture::new()?;
     let binary = fixture.0.join("home space % \" $ ` \\").join("among");
     fs::create_dir_all(binary.parent().ok_or("missing binary parent")?)?;
-    fs::copy("/bin/true", &binary)?;
+    executable::copy(std::path::Path::new("/bin/true"), &binary)?;
     let desktop = fixture.0.join("among.desktop");
     fs::write(
         &desktop,
@@ -322,7 +323,14 @@ fn prepare(fixture: &Fixture) -> among_tools::Result<Manifest> {
         } else {
             format!("owned-{key}").into_bytes()
         };
-        fs::write(&path, &bytes)?;
+        // A test later makes the uninstaller executable and starts it, so its
+        // fixture must not hold a write descriptor that a concurrent fork
+        // could inherit. The mode stays as it was until that test changes it.
+        if key == "uninstaller" {
+            executable::write_file(&path, &bytes)?;
+        } else {
+            fs::write(&path, &bytes)?;
+        }
         files.insert(
             key.into(),
             Record {

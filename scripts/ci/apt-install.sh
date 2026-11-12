@@ -4,8 +4,11 @@
 # in /etc/apt/apt-mirrors.txt; when that host stops resolving, one attempt
 # waits on every index and package until the job timeout cancels it. This
 # script caps each connection, repeats the whole update/install pair, and moves
-# the image to the public archive for its architecture when the mirror keeps
-# failing. The last attempt still fails the step: packages are never skipped.
+# the image to the public archive for its architecture only when an update
+# fails and the mirror does not answer a probe (or curl is unavailable, so no
+# probe can be made, or the mirror list has no parsable entry to probe). A
+# failed install alone never changes the mirror. The last attempt still fails
+# the step: packages are never skipped.
 #
 # Usage: bash scripts/ci/apt-install.sh [apt-get install arguments]
 #
@@ -62,17 +65,23 @@ options=(
 
 for ((attempt = 1; attempt <= attempts; attempt++)); do
   echo "apt-install: attempt $attempt of $attempts: apt-get update" >&2
+  update_failed=0
   if "${apt_get[@]}" "${options[@]}" update; then
     echo "apt-install: attempt $attempt of $attempts: apt-get install $*" >&2
     if "${apt_get[@]}" "${options[@]}" install "$@"; then
       echo "apt-install: packages installed on attempt $attempt" >&2
       exit 0
     fi
+  else
+    update_failed=1
   fi
   if [ "$attempt" -lt "$attempts" ]; then
+    if [ "$update_failed" -eq 0 ]; then
+      echo "apt-install: apt-get install failed; keeping the configured mirror for the next attempt" >&2
     # The Ubuntu 24.04 image points its sources at mirror+file; only that
-    # indirection may be rewritten here, and only while it is actually used.
-    if [ -r "$mirror_list" ] &&
+    # indirection may be rewritten here, and only after a failed update whose
+    # mirror did not answer a probe.
+    elif [ -r "$mirror_list" ] &&
       grep -rqsF -- "mirror+file:$mirror_list" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
       mirror=$(sed -n '/^[[:space:]]*[^#[:space:]]/{s/^[[:space:]]*//;s/[[:space:]].*//;p;q;}' "$mirror_list" || true)
       case "$(uname -m)" in
@@ -81,22 +90,33 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
         aarch64 | arm64) fallback=http://ports.ubuntu.com/ubuntu-ports/ ;;
         *) fallback= ;;
       esac
-      if [ -n "$mirror" ]; then
-        if ! command -v curl >/dev/null 2>&1; then
-          echo "apt-install: cannot probe $mirror (curl is missing)" >&2
-        elif curl --head --silent --show-error --location --max-time 15 "$mirror/" >/dev/null 2>&1; then
-          echo "apt-install: $mirror answers, so the failed fetch came from elsewhere" >&2
-        else
-          echo "apt-install: $mirror does not answer" >&2
-        fi
-      fi
       if [ -z "$fallback" ]; then
         echo "apt-install: no public archive is known for $(uname -m)" >&2
       elif [ "$mirror" = "$fallback" ]; then
         echo "apt-install: mirror list already names $fallback" >&2
       else
-        echo "apt-install: replacing the mirror ${mirror:-list} with $fallback" >&2
-        printf '%s\n' "$fallback" | "${tee_mirror[@]}" "$mirror_list" >/dev/null
+        probe=unavailable
+        if [ -n "$mirror" ]; then
+          if ! command -v curl >/dev/null 2>&1; then
+            probe=missing
+          elif curl --fail --head --silent --show-error --location --max-time 15 "$mirror/" >/dev/null 2>&1; then
+            probe=answers
+          else
+            probe=silent
+          fi
+        fi
+        if [ "$probe" = answers ]; then
+          echo "apt-install: apt-get update failed but $mirror answers, so the failed fetch came from elsewhere; keeping the mirror" >&2
+        else
+          if [ "$probe" = missing ]; then
+            echo "apt-install: apt-get update failed; cannot probe $mirror because curl is missing, so the mirror may be unreachable; replacing it with $fallback" >&2
+          elif [ -n "$mirror" ]; then
+            echo "apt-install: apt-get update failed and $mirror does not answer; replacing it with $fallback" >&2
+          else
+            echo "apt-install: apt-get update failed and $mirror_list names no mirror; replacing it with $fallback" >&2
+          fi
+          printf '%s\n' "$fallback" | "${tee_mirror[@]}" "$mirror_list" >/dev/null
+        fi
       fi
     fi
     echo "apt-install: attempt $attempt failed; retrying in ${pause}s" >&2

@@ -249,7 +249,7 @@ mod tests {
         fs::write(&records, record(&executable))?;
         assert_eq!(select(&records, &base, &env)?, executable);
         let other = base.join("second-artifact");
-        fs::copy(&executable, &other)?;
+        crate::test_executable::copy(&executable, &other)?;
         fs::write(
             &records,
             format!("{}\n{}", record(&executable), record(&other)),
