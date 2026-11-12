@@ -455,10 +455,13 @@ fn serve_managed_transport(mode: &str) -> std::io::Result<()> {
                     let slot = message["scope"]["slot"].as_str().unwrap_or_default();
                     response["fragments"] = if slot == "app_header" {
                         json!([
+                            {"text": "09:41", "style": "default", "priority": 4},
                             {"text": "CPU 18%", "style": "accent", "priority": 10},
                             {"text": "MEM 6.2 GB", "style": "default", "priority": 11},
                             {"text": "DISK 41%", "style": "warning", "priority": 12}
                         ])
+                    } else if slot.starts_with("pane_footer") {
+                        json!([{"text": "/work/among", "style": "dim", "priority": 10}])
                     } else {
                         json!([])
                     };
