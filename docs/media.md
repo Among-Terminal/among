@@ -46,6 +46,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   --env HOME=/run --env XDG_DATA_HOME=/run/data --env XDG_CONFIG_HOME=/run/config \
   --env XDG_CACHE_HOME=/run/cache --env XDG_STATE_HOME=/run/state \
   --env XDG_RUNTIME_DIR=/run --env AMONG_CHECK_ROOT=/run \
+  --env AMONG_MEDIA_SOURCE="$(git rev-parse HEAD)" \
   --workdir /source among-display:media \
   /tools/among-tools media all /target/debug/deps/among-<hash> /run/out
 
@@ -54,14 +55,23 @@ tools/among-tools/target/release/among-tools media verify \
   "$HOME/.cache/among/media/run/out"
 ```
 
+CI runs the same `media all` and `media verify` in the x86_64 native job and
+keeps the output as the `documentation-media` artifact.
+
 `among-display:media` is built from
 `tools/among-tools/containers/Dockerfile.display`. It contains the owned X11
 and GNOME stack, ImageMagick, ffmpeg and `xsetroot`; the image also owns
 `/work`, the synthetic project path that may appear in a notification.
 
-The captures write only below the output directory.
+The captures write below the output directory and create the synthetic
+`/work/among` project inside the disposable display image. The scene removes
+that project only when its own `/work/.among-media-project` marker is present;
+a host path without the marker is refused. `/work` is sticky and writable by
+any runtime uid, so `--user "$(id -u):$(id -g)"` works without uid 1000.
 `raw/` contains the untouched captures and stays as evidence. `media.json`
-records every published file, its size, dimensions and SHA-256.
+records every published file, its size, dimensions and SHA-256; set
+`AMONG_MEDIA_SOURCE` to the source commit or the manifest keeps `source: null`
+and prints a warning.
 
 ## Scenarios
 
@@ -86,7 +96,7 @@ project, terminal colours, font fixture and application build.
 | `panes.mp4`, `panes-poster.png` | 1600x1000, H.264, 30 fps, no audio |
 | `session-restore.png` | 800x480 |
 | Preferences stills | 1040 wide, 160 px taller than the window |
-| `notification-return.mp4` | 1600x1000, H.264, 30 fps, no audio, 4.1 s |
+| `notification-return.mp4` | 1600x1000, H.264, 30 fps, no audio |
 | `notification-return-poster.png` | 1600x1000 |
 | `desktop-notification.png` | 640x130 |
 
@@ -110,9 +120,10 @@ demonstration, not the notification acceptance test.
 The shell's own startup notifications are suppressed by keeping banners off
 until the scene is ready. They are not part of the product story.
 
-The test records while the scene settles, so the published clip is trimmed to
-the ring, banner and click. The poster and the `desktop-notification.png` crop
-are taken from that range, not from the idle prefix.
+The scene leaves Review for Workbench before recording, so the bell belongs to
+the unseen status terminal and the banner click has a visible result. Recording
+starts just before the bell, so the clip contains the ring, the banner and the
+return to Review without a hard-coded trim.
 
 ## The panes recording
 

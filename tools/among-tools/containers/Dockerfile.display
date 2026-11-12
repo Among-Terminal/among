@@ -12,5 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git squashfs-to
     && rm -rf /var/lib/apt/lists/*
 
 # The documentation media scene lives at a path that can appear in a
-# notification without exposing the private owned HOME.
-RUN install -d -o 1000 -g 1000 /work
+# notification without exposing the private owned HOME. Any runtime uid may
+# create its own project below /work; the sticky bit keeps the directory
+# shared without letting one run remove another run's entries.
+RUN install -d -m 1777 /work

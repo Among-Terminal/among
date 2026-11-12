@@ -375,6 +375,39 @@ jobs:
           tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/tool-tests.jsonl"
           cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/test-executables.jsonl"
           tools/among-tools/target/release/among-tools run-ignored-tests "$RUNNER_TEMP/test-executables.jsonl"
+      - name: Documentation media on the owned display image
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          set -euo pipefail
+          cargo test --locked --no-run --message-format=json > "$RUNNER_TEMP/media-tests.jsonl"
+          app_test="$(jq -sre '[.[] | select(.reason == "compiler-artifact" and .profile.test == true and .target.name == "among" and .target.kind == ["bin"] and .executable != null) | .executable] | unique | if length == 1 then .[0] else error("expected one application test executable") end' "$RUNNER_TEMP/media-tests.jsonl")"
+          case "$app_test" in "$PWD"/target/debug/deps/*) ;; *) exit 1 ;; esac
+          test -x "$PWD/target/debug/examples/fake-plugin"
+          root="$AMONG_CHECK_ROOT/media"
+          mkdir -p "$root"/{home,config,data,cache,state,out}
+          chmod 700 "$root"
+          container_test="/target/${app_test#"$PWD/target/"}"
+          docker run --rm --network none --user "$(id -u):$(id -g)" \
+            --mount type=bind,src="$PWD/target",dst=/target,readonly \
+            --mount type=bind,src="$PWD/tools/among-tools/target/release/among-tools",dst=/tools/among-tools,readonly \
+            --mount type=bind,src="$PWD",dst=/source,readonly \
+            --mount type=bind,src="$root",dst=/run-root \
+            --env HOME=/run-root --env XDG_DATA_HOME=/run-root/data --env XDG_CONFIG_HOME=/run-root/config \
+            --env XDG_CACHE_HOME=/run-root/cache --env XDG_STATE_HOME=/run-root/state --env XDG_RUNTIME_DIR=/run-root \
+            --env AMONG_CHECK_ROOT=/run-root --env AMONG_MEDIA_SOURCE="$(git rev-parse HEAD)" \
+            --workdir /source among-installer-enospc:ci \
+            /tools/among-tools media all "$container_test" /run-root/out \
+            > "$root/media.log" 2>&1
+          tools/among-tools/target/release/among-tools media verify "$root/out"
+          cat "$root/media.log"
+      - name: Keep documentation media evidence
+        if: ${{ always() && matrix.runner == 'ubuntu-24.04' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: documentation-media
+          path: ${{ runner.temp }}/among-checks/media
+          if-no-files-found: warn
+          retention-days: 7
       - name: Real audio through each distribution's declared packages
         run: |
           cargo build --locked --example audio-probe --bin among

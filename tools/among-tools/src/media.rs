@@ -9,7 +9,7 @@
 use crate::{display, preferences_screenshots::png_size, scratch, storage, Result};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -77,13 +77,10 @@ pub fn capture_stills(app_test: &Path, output: &Path) -> Result<PathBuf> {
 pub fn capture_panes(app_test: &Path, output: &Path) -> Result<PathBuf> {
     let raw = prepare_output(output, "raw/panes")?;
     run_test(app_test, PANES_TEST, display::Mode::Media, &raw)?;
-    publish_video(
-        &raw.join("panes.mp4"),
-        output,
-        "panes.mp4",
-        "panes-poster.png",
-        "6.0",
-    )?;
+    let recorded = raw.join("panes.mp4");
+    let video = raw.join("panes-normalized.mp4");
+    normalize_recording(&recorded, &video)?;
+    publish_video(&video, output, "panes.mp4", "panes-poster.png", "6.0")?;
     manifest(output)?;
     Ok(output.to_path_buf())
 }
@@ -91,17 +88,13 @@ pub fn capture_panes(app_test: &Path, output: &Path) -> Result<PathBuf> {
 pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
     let raw = prepare_output(output, "raw/notification")?;
     run_test(app_test, NOTIFICATION_TEST, display::Mode::MediaGnome, &raw)?;
-    // The test records while the scene settles, so the bell lands late. Publish
-    // only the ring, banner and click; the idle prefix would look like a still.
-    let recorded = raw.join("notification-return.mp4");
-    let video = raw.join("notification-return-short.mp4");
-    trim_recording(&recorded, &video, "16.3", "4.1")?;
+    let video = raw.join("notification-return.mp4");
     publish_video(
         &video,
         output,
         "notification-return.mp4",
         "notification-return-poster.png",
-        "0.3",
+        "2.0",
     )?;
     let banner = output.join("desktop-notification.png");
     let status = Command::new("/usr/bin/ffmpeg")
@@ -112,7 +105,7 @@ pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
             "error",
             "-y",
             "-ss",
-            "0.3",
+            "2.0",
             "-i",
         ])
         .arg(&video)
@@ -128,24 +121,17 @@ pub fn capture_notification(app_test: &Path, output: &Path) -> Result<PathBuf> {
     Ok(output.to_path_buf())
 }
 
-/// Re-encode a time range so the published clip starts on a frame, not on the
-/// encoder's previous keyframe.
-fn trim_recording(raw: &Path, output: &Path, start: &str, duration: &str) -> Result<()> {
+/// Re-encode a recording once, so every published clip is H.264, without
+/// source metadata and ready to start at the first frame.
+fn normalize_recording(raw: &Path, output: &Path) -> Result<()> {
+    if !raw.is_file() {
+        return Err(format!("missing recording {}", raw.display()).into());
+    }
     let status = Command::new("/usr/bin/ffmpeg")
         .env_clear()
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            start,
-            "-i",
-        ])
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(raw)
         .args([
-            "-t",
-            duration,
             "-an",
             "-c:v",
             "libx264",
@@ -162,7 +148,7 @@ fn trim_recording(raw: &Path, output: &Path, start: &str, duration: &str) -> Res
         .stdin(Stdio::null())
         .status()?;
     if !status.success() {
-        return Err("ffmpeg trim failed".into());
+        return Err("ffmpeg normalize failed".into());
     }
     Ok(())
 }
@@ -393,12 +379,17 @@ fn manifest(output: &Path) -> Result<()> {
         };
         assets.insert(name, entry);
     }
-    let source = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    let source = match std::env::var("AMONG_MEDIA_SOURCE") {
+        Ok(value) if !value.trim().is_empty() => Some(value.trim().to_string()),
+        Ok(_) => return Err("AMONG_MEDIA_SOURCE is set but empty".into()),
+        Err(std::env::VarError::NotPresent) => {
+            eprintln!("warning: AMONG_MEDIA_SOURCE is not set; media.json source stays null");
+            None
+        }
+        Err(error) => {
+            return Err(format!("AMONG_MEDIA_SOURCE is not valid Unicode: {error}").into())
+        }
+    };
     let document = json!({
         "version": 1,
         "canvas": {
@@ -426,6 +417,35 @@ pub fn verify(output: &Path) -> Result<()> {
     let assets = document["assets"]
         .as_object()
         .ok_or("media.json has no assets")?;
+    if assets.is_empty() {
+        return Err("media.json lists no assets".into());
+    }
+    let mut expected = BTreeSet::new();
+    for name in WIDE_STILLS {
+        expected.insert(format!("{name}.png"));
+    }
+    for name in NARROW_STILLS {
+        expected.insert(format!("{name}.png"));
+    }
+    for name in [
+        "session-restore.png",
+        "panes.mp4",
+        "panes-poster.png",
+        "notification-return.mp4",
+        "notification-return-poster.png",
+        "desktop-notification.png",
+    ] {
+        expected.insert(name.into());
+    }
+    let actual = assets.keys().cloned().collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(format!(
+            "media.json assets differ from the published set: missing {:?}, unexpected {:?}",
+            expected.difference(&actual).collect::<Vec<_>>(),
+            actual.difference(&expected).collect::<Vec<_>>()
+        )
+        .into());
+    }
     for (name, entry) in assets {
         let path = output.join(name);
         if !path.is_file() {
@@ -450,9 +470,10 @@ pub fn verify(output: &Path) -> Result<()> {
     for name in ["notification-return.mp4", "panes.mp4"] {
         let video = output.join(name);
         if !video.is_file() {
-            continue;
+            return Err(format!("missing video {name}").into());
         }
         let probe = Command::new("/usr/bin/ffprobe")
+            .env_clear()
             .args([
                 "-v",
                 "error",

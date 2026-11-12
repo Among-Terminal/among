@@ -44,13 +44,24 @@ fn shell() -> PathBuf {
 }
 
 /// A deterministic project whose working tree has a reviewable diff.
+///
+/// The scene runs in the disposable display image, where `/work` is a fixture
+/// directory. It refuses to reuse an existing project instead of deleting one:
+/// a stale path means the caller did not start from the expected image.
 fn project(_home: &Path) -> PathBuf {
     let project = PathBuf::from("/work/among");
+    let marker = PathBuf::from("/work/.among-media-project");
     if project.exists() {
+        assert!(
+            marker.is_file(),
+            "refusing to remove {} without the media marker",
+            project.display()
+        );
         fs::remove_dir_all(&project).expect("clean media project");
     }
     fs::create_dir_all(project.join("src")).expect("project source");
     fs::create_dir_all(project.join(".demo")).expect("demo scripts");
+    fs::write(&marker, b"among-tools media\n").expect("media project marker");
     fs::write(
         project.join("src/review.rs"),
         r#"pub fn review(changes: &[Change]) -> Report {
@@ -895,6 +906,7 @@ fn capture_stills() {
     settle();
     capture_root("main-window");
     capture_root("plugin-off");
+    capture_preferences(&ctx);
     ctx.state
         .borrow_mut()
         .plugins
@@ -926,8 +938,6 @@ fn capture_stills() {
     xdo(&["key", "--clearmodifiers", "alt+2"]);
     settle();
     capture_root("workspaces");
-    xdo(&["key", "--clearmodifiers", "alt+1"]);
-    capture_preferences(&ctx);
     ctx.window.destroy();
 }
 
@@ -1175,10 +1185,17 @@ fn capture_notification() {
     wait_for_text(&ctx, 4, "712 passed");
     feed(&ctx, 5, "bash .demo/status.sh");
     wait_for_text(&ctx, 5, "review.rs");
+    // Leave Review so the banner click has a visible result: the bell belongs
+    // to the status terminal in Review, while Workbench is on screen.
+    xdo(&["key", "--clearmodifiers", "alt+1"]);
+    settle();
+    assert_eq!(ctx.state.borrow().workspaces.active_index(), 0);
 
     let recording = output().join("notification-return.mp4");
     let recorder = start_recording(&recording);
-    pump_for(Duration::from_millis(500));
+    // Leave a beat of Workbench before the ring; the banner must not be the
+    // first frame the viewer sees.
+    pump_for(Duration::from_millis(1200));
     let mut neutral = focus_neutral_window();
     wait_for(|| !ctx.window.is_active(), Duration::from_secs(2));
     terminal(&ctx, 5).feed_child(b"printf '\\a'\n");

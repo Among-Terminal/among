@@ -409,8 +409,8 @@ fn run(args: &[String]) -> Result<std::process::ExitCode> {
                 _ => return Err("media action must be stills, notification, panes or all".into()),
             }
         }
-        [command, output] if command == "media" => {
-            among_tools::media::verify(Path::new(output))?;
+        [command, _] if command == "media" => {
+            return Err("media needs an action: stills, panes, notification, all or verify".into());
         }
         [command, rest @ ..]
             if matches!(
