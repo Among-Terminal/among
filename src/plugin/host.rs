@@ -141,6 +141,9 @@ pub struct PluginHost {
     seen_rejections: Vec<(String, Rejection)>,
     #[cfg(test)]
     test_registered: BTreeSet<String>,
+    /// Package directories created by test-only managed registrations.
+    #[cfg(test)]
+    fixture_roots: Vec<fixtures::FixtureRoot>,
     /// Answers collected during the last [`PluginHost::poll`], for the host to
     /// turn into slot content.
     results: Vec<PluginResult>,
@@ -234,6 +237,8 @@ impl PluginHost {
             seen_rejections: Vec::new(),
             #[cfg(test)]
             test_registered: BTreeSet::new(),
+            #[cfg(test)]
+            fixture_roots: Vec::new(),
             results: Vec::new(),
             notices: Vec::new(),
             invalidated_sources: Default::default(),

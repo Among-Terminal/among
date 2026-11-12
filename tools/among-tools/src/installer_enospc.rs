@@ -194,6 +194,15 @@ pub fn run(records: &Path, scratch: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Removes the disposable fixture tree even when an assertion unwinds.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn only_the_exact_standalone_tmpfs_mount_is_eligible() {
         let valid =
@@ -221,6 +230,7 @@ mod tests {
     fn real_libtest_enumeration_requires_one_exact_artifact_and_propagates_failures() -> Result<()>
     {
         let base = storage::private_directory(&std::env::temp_dir(), "among-enospc-selection")?;
+        let _cleanup = Scratch(base.clone());
         let executable = base.join("selection-only");
         let compile = std::process::Command::new("rustc")
             .args(["--edition=2021", "--test"])
